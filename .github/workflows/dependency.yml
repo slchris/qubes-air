@@ -1,0 +1,117 @@
+# Qubes Air - Dependency Management Workflow
+#
+# 依赖更新检查和漏洞扫描
+
+name: Dependencies
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'console/backend/go.mod'
+      - 'console/backend/go.sum'
+      - 'console/frontend/package.json'
+      - 'console/frontend/package-lock.json'
+  pull_request:
+    branches: [main]
+  schedule:
+    # 每天 UTC 时间 06:00 运行
+    - cron: '0 6 * * *'
+
+env:
+  GO_VERSION: '1.22'
+  NODE_VERSION: '20'
+
+jobs:
+  # Go 依赖检查
+  go-dependencies:
+    name: Go Dependencies
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console/backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: console/backend/go.sum
+
+      - name: Check go.mod tidiness
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Check for vulnerabilities
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
+
+      - name: List outdated dependencies
+        run: go list -u -m all
+
+  # Node.js 依赖检查
+  npm-dependencies:
+    name: NPM Dependencies
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console/frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: console/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check for vulnerabilities
+        run: npm audit --audit-level=high
+
+      - name: Check for outdated packages
+        run: npm outdated || true
+
+  # Dependabot 配置验证
+  dependabot-config:
+    name: Validate Dependabot Config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check Dependabot config exists
+        run: test -f .github/dependabot.yml
+
+  # 许可证合规检查
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: console/backend/go.sum
+
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@latest
+
+      - name: Check Go licenses
+        run: |
+          cd console/backend
+          go-licenses check ./... --disallowed_types=forbidden,restricted || true
+        continue-on-error: true

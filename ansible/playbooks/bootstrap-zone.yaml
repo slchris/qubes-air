@@ -1,0 +1,105 @@
+---
+# Qubes Air - Zone Bootstrap Playbook
+#
+# 初始化远程 Zone 基础设施
+# 在 Salt 接管之前执行一次性配置
+
+- name: Bootstrap Zone Infrastructure
+  hosts: zone_admins
+  become: true
+  gather_facts: true
+  
+  vars:
+    salt_master_version: "3006"
+    wireguard_listen_port: 51820
+  
+  pre_tasks:
+    - name: Display zone information
+      ansible.builtin.debug:
+        msg: "Bootstrapping Zone: {{ zone_name }} ({{ zone_type }})"
+
+  tasks:
+    # ==========================================
+    # 基础系统配置
+    # ==========================================
+    
+    - name: Update system packages
+      ansible.builtin.package:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+
+    - name: Install required packages
+      ansible.builtin.package:
+        name:
+          - wireguard-tools
+          - python3
+          - python3-pip
+          - git
+          - vim
+          - htop
+          - jq
+        state: present
+
+    # ==========================================
+    # WireGuard 配置
+    # ==========================================
+    
+    - name: Create WireGuard directory
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        mode: '0700'
+
+    - name: Generate WireGuard private key
+      ansible.builtin.shell: |
+        if [ ! -f /etc/wireguard/private.key ]; then
+          wg genkey > /etc/wireguard/private.key
+          chmod 600 /etc/wireguard/private.key
+        fi
+        cat /etc/wireguard/private.key
+      register: wg_private_key
+      changed_when: false
+
+    - name: Generate WireGuard public key
+      ansible.builtin.shell: |
+        cat /etc/wireguard/private.key | wg pubkey
+      register: wg_public_key
+      changed_when: false
+
+    - name: Display WireGuard public key
+      ansible.builtin.debug:
+        msg: "WireGuard Public Key: {{ wg_public_key.stdout }}"
+
+    # ==========================================
+    # Salt Master 安装 (可选)
+    # ==========================================
+    
+    - name: Install Salt Master
+      ansible.builtin.shell: |
+        curl -fsSL https://bootstrap.saltproject.io -o install_salt.sh
+        sh install_salt.sh -M -x python3 stable {{ salt_master_version }}
+      args:
+        creates: /usr/bin/salt-master
+      when: install_salt_master | default(false)
+
+    # ==========================================
+    # Qubes Air 目录结构
+    # ==========================================
+    
+    - name: Create Qubes Air directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/qubes-air
+        - /opt/qubes-air/bin
+        - /opt/qubes-air/etc
+        - /opt/qubes-air/log
+
+  handlers:
+    - name: Restart WireGuard
+      ansible.builtin.service:
+        name: wg-quick@wg0
+        state: restarted

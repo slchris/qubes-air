@@ -1,0 +1,97 @@
+# Qubes Air - golangci-lint Configuration
+
+run:
+  timeout: 5m
+  go: '1.22'
+  tests: true
+  
+  skip-dirs:
+    - vendor
+    - bin
+
+linters:
+  enable:
+    # 默认启用
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    
+    # 额外启用
+    - bodyclose
+    - dogsled
+    - dupl
+    - exportloopref
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - gofmt
+    - goimports
+    - goprintffuncname
+    - gosec
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - rowserrcheck
+    - stylecheck
+    - unconvert
+    - unparam
+    - whitespace
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  
+  govet:
+    check-shadowing: true
+  
+  gocyclo:
+    min-complexity: 15
+  
+  funlen:
+    lines: 100
+    statements: 50
+  
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  
+  misspell:
+    locale: US
+  
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: var-naming
+        severity: warning
+  
+  gosec:
+    excludes:
+      - G104  # Audit errors not checked
+    config:
+      G306: "0644"
+
+issues:
+  exclude-rules:
+    # 测试文件允许更长的函数
+    - path: _test\.go
+      linters:
+        - funlen
+        - dupl
+    
+    # main 函数允许初始化
+    - path: main\.go
+      linters:
+        - gochecknoinits
+
+  max-issues-per-linter: 50
+  max-same-issues: 10

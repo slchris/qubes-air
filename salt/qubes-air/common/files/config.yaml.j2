@@ -1,0 +1,36 @@
+# Qubes Air 通用配置模板
+#
+# 此文件由 Salt 渲染生成
+
+qubes_air:
+  # 版本信息
+  version: "0.1.0"
+  
+  # Zone 配置
+  zone:
+    name: {{ pillar.get('zone_name', 'default') }}
+    type: {{ pillar.get('zone_type', 'local') }}
+  
+  # Qube 信息
+  qube:
+    name: {{ grains['id'] }}
+    type: {{ pillar.get('qube_type', 'generic') }}
+  
+  # 网络配置
+  network:
+    wireguard:
+      enabled: {{ pillar.get('wireguard_enabled', false) }}
+      {% if pillar.get('wireguard_enabled', false) %}
+      interface: wg0
+      address: {{ pillar.get('wireguard_address', '') }}
+      {% endif %}
+  
+  # 加密配置
+  crypto:
+    disk_encryption: {{ pillar.get('disk_encryption', true) }}
+    kms_provider: {{ pillar.get('kms_provider', 'local') }}
+  
+  # 日志配置
+  logging:
+    level: {{ pillar.get('log_level', 'info') }}
+    path: /opt/qubes-air/log

@@ -1,0 +1,76 @@
+---
+# Qubes Air - sys-remote Setup Playbook
+#
+# 初始化 sys-remote Qube 配置
+# 从 dom0 或管理 Qube 执行
+
+- name: Setup sys-remote Qube
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    sys_remote_name: "sys-remote-{{ zone_name }}"
+    template: "fedora-39"
+    memory: 1024
+    maxmem: 2048
+  
+  tasks:
+    - name: Check if running in Qubes
+      ansible.builtin.stat:
+        path: /usr/bin/qvm-create
+      register: qubes_check
+      failed_when: not qubes_check.stat.exists
+
+    # ==========================================
+    # 创建 sys-remote Qube
+    # ==========================================
+    
+    - name: Create sys-remote Qube
+      ansible.builtin.command: |
+        qvm-create --class AppVM \
+          --template {{ template }} \
+          --property netvm=sys-firewall \
+          --property provides_network=true \
+          --property memory={{ memory }} \
+          --property maxmem={{ maxmem }} \
+          --label orange \
+          {{ sys_remote_name }}
+      register: create_result
+      changed_when: create_result.rc == 0
+      failed_when: create_result.rc != 0 and "already exists" not in create_result.stderr
+
+    # ==========================================
+    # 配置 qrexec 策略
+    # ==========================================
+    
+    - name: Create qrexec policy directory
+      ansible.builtin.file:
+        path: /etc/qubes/policy.d
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Configure qrexec policy for sys-remote
+      ansible.builtin.copy:
+        dest: /etc/qubes/policy.d/80-qubes-air.policy
+        content: |
+          # Qubes Air qrexec 策略
+          
+          # 允许从工作 Qube 连接到 sys-remote
+          qubes-air.Remote * {{ sys_remote_name }} @default allow target={{ sys_remote_name }}
+          
+          # 允许 sys-remote 执行远程操作
+          qubes-air.RemoteExec {{ sys_remote_name }} @adminvm allow
+        mode: '0644'
+      become: true
+
+    # ==========================================
+    # 启动 sys-remote
+    # ==========================================
+    
+    - name: Start sys-remote Qube
+      ansible.builtin.command: qvm-start {{ sys_remote_name }}
+      register: start_result
+      changed_when: start_result.rc == 0
+      failed_when: start_result.rc != 0 and "already running" not in start_result.stderr

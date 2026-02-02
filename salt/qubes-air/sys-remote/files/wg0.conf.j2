@@ -1,0 +1,40 @@
+# WireGuard 配置模板
+#
+# 用于 sys-remote 到远程 Zone 的 VPN 连接
+
+[Interface]
+# 本地 WireGuard 配置
+Address = {{ pillar['wireguard']['address'] }}/24
+PrivateKey = {{ pillar['wireguard']['private_key'] }}
+ListenPort = {{ pillar.get('wireguard', {}).get('listen_port', 51820) }}
+
+# DNS 配置 (如需)
+{% if pillar.get('wireguard', {}).get('dns') %}
+DNS = {{ pillar['wireguard']['dns'] }}
+{% endif %}
+
+# MTU 配置
+{% if pillar.get('wireguard', {}).get('mtu') %}
+MTU = {{ pillar['wireguard']['mtu'] }}
+{% endif %}
+
+# 启动后脚本
+PostUp = /opt/qubes-air/bin/wg-postup.sh
+PostDown = /opt/qubes-air/bin/wg-postdown.sh
+
+{% for peer in pillar.get('wireguard', {}).get('peers', []) %}
+[Peer]
+# {{ peer.get('name', 'Unknown Peer') }}
+PublicKey = {{ peer['public_key'] }}
+{% if peer.get('preshared_key') %}
+PresharedKey = {{ peer['preshared_key'] }}
+{% endif %}
+AllowedIPs = {{ peer['allowed_ips'] }}
+{% if peer.get('endpoint') %}
+Endpoint = {{ peer['endpoint'] }}
+{% endif %}
+{% if peer.get('persistent_keepalive') %}
+PersistentKeepalive = {{ peer['persistent_keepalive'] }}
+{% endif %}
+
+{% endfor %}

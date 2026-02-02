@@ -1,0 +1,70 @@
+# Qubes Air - CodeQL Analysis Workflow
+#
+# GitHub CodeQL 代码质量和安全分析
+
+name: CodeQL
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 每周三 UTC 时间 12:00 运行
+    - cron: '0 12 * * 3'
+
+env:
+  GO_VERSION: '1.22'
+
+jobs:
+  analyze:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['go', 'javascript-typescript']
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: console/backend/go.sum
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # 自定义查询包 (可选)
+          # queries: +security-extended,security-and-quality
+
+      # Go 构建 (autobuild 会自动处理)
+      - name: Build Go (if autobuild fails)
+        if: matrix.language == 'go' && matrix.build-mode == 'autobuild'
+        shell: bash
+        run: |
+          cd console/backend
+          go build -v ./...
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

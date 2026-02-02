@@ -1,0 +1,35 @@
+# Qubes Air - YAML Lint Configuration
+
+extends: default
+
+rules:
+  line-length:
+    max: 120
+    level: warning
+  
+  indentation:
+    spaces: 2
+    indent-sequences: true
+  
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+    check-keys: false
+  
+  comments:
+    require-starting-space: true
+    min-spaces-from-content: 1
+  
+  document-start: disable
+  
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+  
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 0
+
+ignore: |
+  .github/
+  node_modules/
+  vendor/

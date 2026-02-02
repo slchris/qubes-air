@@ -1,0 +1,91 @@
+# Qubes Air - Dependabot Configuration
+#
+# 自动依赖更新配置
+
+version: 2
+
+registries:
+  # 如需私有 registry，在此配置
+  # npm-private:
+  #   type: npm-registry
+  #   url: https://npm.pkg.github.com
+  #   token: ${{ secrets.NPM_TOKEN }}
+
+updates:
+  # Go 依赖
+  - package-ecosystem: "gomod"
+    directory: "/console/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(go)"
+    labels:
+      - "dependencies"
+      - "go"
+    reviewers:
+      - "your-github-username"
+    groups:
+      go-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # NPM 依赖
+  - package-ecosystem: "npm"
+    directory: "/console/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(npm)"
+    labels:
+      - "dependencies"
+      - "javascript"
+    groups:
+      npm-dev:
+        patterns:
+          - "*"
+        dependency-type: "development"
+      npm-prod:
+        patterns:
+          - "*"
+        dependency-type: "production"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "github-actions"
+
+  # Terraform Provider
+  - package-ecosystem: "terraform"
+    directory: "/terraform"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "deps(terraform)"
+    labels:
+      - "dependencies"
+      - "terraform"
