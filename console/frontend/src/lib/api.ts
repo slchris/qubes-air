@@ -20,7 +20,22 @@ import type {
   ApiError,
 } from './types';
 
-const API_BASE = '/api/v1';
+/**
+ * Get the API base URL from environment or use default.
+ * In production, this uses the same origin.
+ * In development, it can be configured via VITE_API_BASE_URL.
+ */
+function getApiBaseUrl(): string {
+  // Check for environment variable (Vite injects VITE_ prefixed vars)
+  const envApiBase = import.meta.env.VITE_API_BASE_URL;
+  if (envApiBase) {
+    return envApiBase;
+  }
+  // Default to same origin
+  return '/api/v1';
+}
+
+const API_BASE = getApiBaseUrl();
 
 /**
  * Custom error class for API errors.

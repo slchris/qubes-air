@@ -3,14 +3,18 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -22,44 +26,48 @@ const (
 	appVersion = "0.1.0"
 )
 
-// Config holds application configuration.
-type Config struct {
-	Port        string
-	DatabaseDSN string
-	Mode        string
-}
-
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Parse command line flags
+	configPath := flag.String("config", "", "Path to configuration file (YAML)")
+	showVersion := flag.Bool("version", false, "Show version and exit")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("%s v%s\n", appName, appVersion)
+		os.Exit(0)
+	}
+
 	log.Printf("%s v%s starting...", appName, appVersion)
 
-	cfg := loadConfig()
+	// Load configuration
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
 
+	logConfig(cfg)
+
+	// Initialize dependencies
 	deps, err := initDependencies(cfg)
 	if err != nil {
 		log.Fatalf("Failed to initialize: %v", err)
 	}
 	defer deps.Close()
 
-	router := setupRouter(cfg.Mode, deps)
-	runServer(cfg.Port, router)
+	// Setup router and run server
+	router := setupRouter(cfg, deps)
+	runServer(cfg, router)
 }
 
-// loadConfig loads configuration from environment variables.
-func loadConfig() *Config {
-	return &Config{
-		Port:        getEnv("PORT", "8080"),
-		DatabaseDSN: getEnv("DATABASE_DSN", "./qubes-air.db"),
-		Mode:        getEnv("GIN_MODE", gin.ReleaseMode),
-	}
-}
-
-// getEnv retrieves an environment variable or returns default.
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
+// logConfig logs the current configuration (without sensitive data).
+func logConfig(cfg *config.Config) {
+	log.Printf("Configuration:")
+	log.Printf("  Listen: %s", cfg.Address())
+	log.Printf("  TLS: %v", cfg.IsTLSEnabled())
+	log.Printf("  Database: %s", cfg.Database.DSN)
+	log.Printf("  CORS Origins: %v", cfg.CORS.AllowedOrigins)
 }
 
 // Dependencies holds all application dependencies.
@@ -79,9 +87,9 @@ func (d *Dependencies) Close() {
 }
 
 // initDependencies creates and wires all application dependencies.
-func initDependencies(cfg *Config) (*Dependencies, error) {
+func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	dbCfg := database.DefaultConfig()
-	dbCfg.DSN = cfg.DatabaseDSN
+	dbCfg.DSN = cfg.Database.DSN
 
 	db, err := database.New(dbCfg)
 	if err != nil {
@@ -102,13 +110,13 @@ func initDependencies(cfg *Config) (*Dependencies, error) {
 }
 
 // setupRouter creates and configures the Gin router.
-func setupRouter(mode string, deps *Dependencies) *gin.Engine {
-	gin.SetMode(mode)
+func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
+	gin.SetMode(cfg.Server.Mode)
 
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
-	r.Use(corsMiddleware())
+	r.Use(corsMiddleware(cfg))
 
 	r.GET("/health", healthHandler(deps.db))
 
@@ -121,12 +129,16 @@ func setupRouter(mode string, deps *Dependencies) *gin.Engine {
 	return r
 }
 
-// corsMiddleware adds CORS headers for cross-origin requests.
-func corsMiddleware() gin.HandlerFunc {
+// corsMiddleware adds CORS headers based on configuration.
+func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		origin := c.Request.Header.Get("Origin")
+		allowedOrigin := getAllowedOrigin(origin, cfg.CORS.AllowedOrigins)
+
+		c.Header("Access-Control-Allow-Origin", allowedOrigin)
+		c.Header("Access-Control-Allow-Methods", strings.Join(cfg.CORS.AllowedMethods, ", "))
+		c.Header("Access-Control-Allow-Headers", strings.Join(cfg.CORS.AllowedHeaders, ", "))
+		c.Header("Access-Control-Allow-Credentials", "true")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -134,6 +146,23 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// getAllowedOrigin checks if the origin is allowed and returns appropriate value.
+func getAllowedOrigin(origin string, allowedOrigins []string) string {
+	for _, allowed := range allowedOrigins {
+		if allowed == "*" {
+			return "*"
+		}
+		if allowed == origin {
+			return origin
+		}
+	}
+	// If origin not in list, return first allowed origin or empty
+	if len(allowedOrigins) > 0 {
+		return allowedOrigins[0]
+	}
+	return ""
 }
 
 // healthHandler returns a health check endpoint handler.
@@ -171,10 +200,10 @@ func statusHandler(db *database.DB) gin.HandlerFunc {
 	}
 }
 
-// runServer starts the HTTP server with graceful shutdown support.
-func runServer(port string, handler http.Handler) {
+// runServer starts the HTTP/HTTPS server with graceful shutdown support.
+func runServer(cfg *config.Config, handler http.Handler) {
 	srv := &http.Server{
-		Addr:         ":" + port,
+		Addr:         cfg.Address(),
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -182,9 +211,19 @@ func runServer(port string, handler http.Handler) {
 	}
 
 	go func() {
-		log.Printf("Server listening on port %s", port)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+		if cfg.IsTLSEnabled() {
+			log.Printf("Server listening on https://%s", cfg.Address())
+			if err := srv.ListenAndServeTLS(
+				cfg.Server.TLS.CertFile,
+				cfg.Server.TLS.KeyFile,
+			); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server error: %v", err)
+			}
+		} else {
+			log.Printf("Server listening on http://%s", cfg.Address())
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server error: %v", err)
+			}
 		}
 	}()
 

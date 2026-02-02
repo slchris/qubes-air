@@ -22,6 +22,14 @@
 *.dylib
 
 # -----------------------------------------------
+# 配置文件 (保留 example)
+# -----------------------------------------------
+/console/backend/config.yaml
+/console/frontend/.env
+/console/frontend/.env.local
+/console/frontend/.env.*.local
+
+# -----------------------------------------------
 # Go
 # -----------------------------------------------
 vendor/
