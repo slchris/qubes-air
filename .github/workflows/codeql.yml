@@ -12,6 +12,7 @@ on:
   schedule:
     # 每周三 UTC 时间 12:00 运行
     - cron: '0 12 * * 3'
+  workflow_dispatch:
 
 env:
   GO_VERSION: '1.22'
@@ -33,7 +34,7 @@ jobs:
         language: ['go', 'javascript-typescript']
         include:
           - language: go
-            build-mode: autobuild
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
 
@@ -53,12 +54,9 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          # 自定义查询包 (可选)
-          # queries: +security-extended,security-and-quality
 
-      # Go 构建 (autobuild 会自动处理)
-      - name: Build Go (if autobuild fails)
-        if: matrix.language == 'go' && matrix.build-mode == 'autobuild'
+      - name: Build Go
+        if: matrix.language == 'go'
         shell: bash
         run: |
           cd console/backend
