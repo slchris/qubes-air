@@ -21,7 +21,7 @@ var (
 )
 
 // QubeService defines qube business logic operations.
-type QubeService interface {
+type QubeService interface { //nolint:dupl
 	Create(ctx context.Context, req *models.QubeCreateRequest) (*models.Qube, error)
 	GetByID(ctx context.Context, id string) (*models.Qube, error)
 	List(ctx context.Context, opts repository.QubeListOptions) ([]*models.Qube, error)
@@ -38,7 +38,7 @@ type QubeServiceImpl struct {
 }
 
 // NewQubeService creates a new QubeService.
-func NewQubeService(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository) QubeService { //nolint:dupl
+func NewQubeService(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository) QubeService {
 	return &QubeServiceImpl{
 		qubeRepo: qubeRepo,
 		zoneRepo: zoneRepo,

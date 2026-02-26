@@ -89,6 +89,8 @@ issues:
         - dupl
         - errcheck
         - gocritic
+        - noctx
+        - goconst
     
     # main 函数允许初始化
     - path: main\.go

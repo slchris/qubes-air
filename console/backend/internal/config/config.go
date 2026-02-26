@@ -73,7 +73,7 @@ func DefaultConfig() *Config {
 			AllowedHeaders: []string{"Content-Type", "Authorization"},
 		},
 		Security: SecurityConfig{
-			EncryptionKey: "qubes-air-dev-encryption-key32!!", //nolint:gosec // G101: dev default, overridden in production
+			EncryptionKey: "qubes-air-dev-encryption-key32!!", // 32 bytes for AES-256
 		},
 	}
 }
@@ -100,7 +100,7 @@ func Load(configPath string) (*Config, error) {
 
 // loadFromFile loads configuration from a YAML file.
 func (c *Config) loadFromFile(path string) error {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is controlled by the application
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

@@ -13,6 +13,10 @@ on:
     # 每周一 UTC 时间 00:00 运行
     - cron: '0 0 * * 1'
 
+permissions:
+  security-events: write
+  contents: read
+
 env:
   GO_VERSION: '1.22'
 
@@ -33,15 +37,15 @@ jobs:
           cache-dependency-path: console/backend/go.sum
 
       - name: Run Gosec
-        uses: securego/gosec@master
-        with:
-          args: '-no-fail -fmt sarif -out /tmp/gosec-results.sarif ./...'
-          working-directory: console/backend
+        working-directory: console/backend
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -no-fail -fmt sarif -out gosec-results.sarif ./...
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: /tmp/gosec-results.sarif
+          sarif_file: console/backend/gosec-results.sarif
           category: gosec
         if: always()
 
@@ -64,7 +68,7 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy
@@ -102,7 +106,7 @@ jobs:
           additional_args: --format sarif --out results.sarif.json --soft-fail
 
       - name: Upload tfsec SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif.json
           category: tfsec

@@ -20,7 +20,7 @@ var (
 )
 
 // ZoneService defines zone business logic operations.
-type ZoneService interface {
+type ZoneService interface { //nolint:dupl
 	Create(ctx context.Context, req *models.ZoneCreateRequest) (*models.Zone, error)
 	GetByID(ctx context.Context, id string) (*models.Zone, error)
 	List(ctx context.Context, opts repository.ZoneListOptions) ([]*models.Zone, error)
@@ -37,7 +37,7 @@ type ZoneServiceImpl struct {
 }
 
 // NewZoneService creates a new ZoneService.
-func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository) ZoneService { //nolint:dupl
+func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository) ZoneService {
 	return &ZoneServiceImpl{
 		zoneRepo: zoneRepo,
 		qubeRepo: qubeRepo,
