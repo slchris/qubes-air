@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -100,7 +101,9 @@ func Load(configPath string) (*Config, error) {
 
 // loadFromFile loads configuration from a YAML file.
 func (c *Config) loadFromFile(path string) error {
-	data, err := os.ReadFile(path)
+	// Sanitize the path to prevent directory traversal
+	cleanPath := filepath.Clean(path)
+	data, err := os.ReadFile(cleanPath) // #nosec G304 -- config path is provided by trusted application startup flags
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

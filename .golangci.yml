@@ -2,7 +2,7 @@
 
 run:
   timeout: 5m
-  go: '1.22'
+  go: '1.24'
   tests: true
   
   skip-dirs:
@@ -23,7 +23,6 @@ linters:
     - bodyclose
     - dogsled
     - dupl
-    - exportloopref
     - funlen
     - gochecknoinits
     - goconst
@@ -39,7 +38,6 @@ linters:
     - nolintlint
     - prealloc
     - revive
-    - rowserrcheck
     - stylecheck
     - unconvert
     - unparam

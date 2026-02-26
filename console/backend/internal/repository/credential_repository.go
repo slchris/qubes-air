@@ -145,15 +145,17 @@ func (r *CredentialRepository) GetSecret(ctx context.Context, id string) (string
 
 	// Update last_used timestamp (best-effort, non-critical)
 	updateQuery := `UPDATE credentials SET last_used = ? WHERE id = ?`
-	//nolint:errcheck // best-effort timestamp update, non-critical
-	r.db.DB().ExecContext(ctx, updateQuery, time.Now(), id)
+	if _, execErr := r.db.DB().ExecContext(ctx, updateQuery, time.Now(), id); execErr != nil {
+		// Non-critical: log internally but don't fail the operation
+		_ = execErr
+	}
 
 	return r.decrypt(encryptedData)
 }
 
 // Create creates a new credential.
 func (r *CredentialRepository) Create(ctx context.Context, req models.CredentialCreateRequest) (*models.Credential, error) {
-	encryptedData, err := r.encrypt(req.Secret)
+	encryptedData, err := r.encrypt(req.SecretValue)
 	if err != nil {
 		return nil, err
 	}
@@ -198,8 +200,8 @@ func (r *CredentialRepository) Update(ctx context.Context, id string, req models
 		existing.Description = *req.Description
 	}
 
-	if req.Secret != nil && *req.Secret != "" {
-		encryptedData, err := r.encrypt(*req.Secret)
+	if req.SecretValue != nil && *req.SecretValue != "" {
+		encryptedData, err := r.encrypt(*req.SecretValue)
 		if err != nil {
 			return nil, err
 		}

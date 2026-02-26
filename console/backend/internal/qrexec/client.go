@@ -24,13 +24,31 @@ func NewClient() *Client {
 	}
 }
 
+// validQrexecArg checks that a qrexec argument contains only safe characters.
+func validQrexecArg(arg string) bool {
+	for _, r := range arg {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '+') {
+			return false
+		}
+	}
+	return len(arg) > 0
+}
+
 // Call 调用 qrexec 服务
 func (c *Client) Call(ctx context.Context, target, service string, input []byte) ([]byte, error) {
+	// Validate arguments to prevent command injection
+	if !validQrexecArg(target) {
+		return nil, fmt.Errorf("invalid qrexec target: %q", target)
+	}
+	if !validQrexecArg(service) {
+		return nil, fmt.Errorf("invalid qrexec service: %q", service)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	// 构建命令: qrexec-client-vm <target> <service>
-	cmd := exec.CommandContext(ctx, "qrexec-client-vm", target, service)
+	cmd := exec.CommandContext(ctx, "qrexec-client-vm", target, service) // #nosec G204 -- args are validated above
 
 	// 设置输入
 	if input != nil {

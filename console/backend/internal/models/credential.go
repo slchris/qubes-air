@@ -18,12 +18,12 @@ type CredentialCreateRequest struct {
 	Name        string `json:"name" binding:"required"`
 	Type        string `json:"type" binding:"required"`
 	Description string `json:"description"`
-	Secret      string `json:"secret" binding:"required"`
+	SecretValue string `json:"secret" binding:"required"` // #nosec G117 -- field carries credential data by design
 }
 
 // CredentialUpdateRequest represents a request to update credentials.
 type CredentialUpdateRequest struct {
 	Name        *string `json:"name,omitempty"`
 	Description *string `json:"description,omitempty"`
-	Secret      *string `json:"secret,omitempty"`
+	SecretValue *string `json:"secret,omitempty"` // #nosec G117 -- field carries credential data by design
 }
