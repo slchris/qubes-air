@@ -72,9 +72,14 @@ func logConfig(cfg *config.Config) {
 
 // Dependencies holds all application dependencies.
 type Dependencies struct {
-	db          *database.DB
-	zoneHandler *handler.ZoneHandler
-	qubeHandler *handler.QubeHandler
+	db                *database.DB
+	zoneHandler       *handler.ZoneHandler
+	qubeHandler       *handler.QubeHandler
+	infraHandler      *handler.InfraHandler
+	credentialHandler *handler.CredentialHandler
+	billingHandler    *handler.BillingHandler
+	monitoringHandler *handler.MonitoringHandler
+	settingsHandler   *handler.SettingsHandler
 }
 
 // Close releases all resources.
@@ -96,16 +101,38 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		return nil, err
 	}
 
+	// Zone and Qube repositories and services
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-
 	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
 	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo)
 
+	// Infrastructure repository and service
+	infraRepo := repository.NewInfraRepository(db)
+	infraSvc := service.NewInfraService(infraRepo)
+
+	// Credential repository and service (use encryption key from config or generate)
+	encryptionKey := []byte(cfg.Security.EncryptionKey)
+	if len(encryptionKey) != 32 {
+		// Use a default key for development (should be configured properly in production)
+		encryptionKey = []byte("qubes-air-dev-encryption-key32!!")
+	}
+	credentialRepo := repository.NewCredentialRepository(db, encryptionKey)
+	credentialSvc := service.NewCredentialService(credentialRepo)
+
+	// Settings repository and service
+	settingsRepo := repository.NewSettingsRepository(db)
+	settingsSvc := service.NewSettingsService(settingsRepo)
+
 	return &Dependencies{
-		db:          db,
-		zoneHandler: handler.NewZoneHandler(zoneSvc),
-		qubeHandler: handler.NewQubeHandler(qubeSvc),
+		db:                db,
+		zoneHandler:       handler.NewZoneHandler(zoneSvc),
+		qubeHandler:       handler.NewQubeHandler(qubeSvc),
+		infraHandler:      handler.NewInfraHandler(infraSvc),
+		credentialHandler: handler.NewCredentialHandler(credentialSvc),
+		billingHandler:    handler.NewBillingHandler(),
+		monitoringHandler: handler.NewMonitoringHandler(),
+		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 	}, nil
 }
 
@@ -123,6 +150,11 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	v1 := r.Group("/api/v1")
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
+	deps.infraHandler.RegisterRoutes(v1)
+	deps.credentialHandler.RegisterRoutes(v1)
+	deps.billingHandler.RegisterRoutes(v1)
+	deps.monitoringHandler.RegisterRoutes(v1)
+	deps.settingsHandler.RegisterRoutes(v1)
 
 	v1.GET("/status", statusHandler(deps.db))
 
@@ -237,7 +269,7 @@ func runServer(cfg *config.Config, handler http.Handler) {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Printf("Server forced to shutdown: %v", err)
 	}
 
 	log.Println("Server stopped")

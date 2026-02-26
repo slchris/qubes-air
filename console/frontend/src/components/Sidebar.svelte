@@ -5,18 +5,22 @@
   interface Props {
     currentView: string;
     onViewChange: (view: string) => void;
+    isOpen?: boolean;
   }
 
-  let { currentView, onViewChange }: Props = $props();
+  let { currentView, onViewChange, isOpen = false }: Props = $props();
   
   const menuItems = [
-    { id: 'zones', label: 'Zones', icon: '◈' },
     { id: 'qubes', label: 'Qubes', icon: '□' },
+    { id: 'infrastructure', label: 'Infrastructure', icon: '◈' },
+    { id: 'credentials', label: 'Credentials', icon: '⚿' },
+    { id: 'billing', label: 'Billing', icon: '$' },
+    { id: 'monitoring', label: 'Monitoring', icon: '◉' },
     { id: 'settings', label: 'Settings', icon: '⚙' },
   ]
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" class:open={isOpen}>
   <nav class="nav">
     {#each menuItems as item}
       <button
@@ -36,6 +40,7 @@
     width: 200px;
     background: var(--sidebar-bg, #f0f0f0);
     border-right: 1px solid var(--border-color, #ddd);
+    flex-shrink: 0;
   }
   
   .nav {
@@ -70,7 +75,25 @@
   .icon {
     font-size: 1.125rem;
   }
-  
+
+  /* 响应式 - 移动端 */
+  @media (max-width: 768px) {
+    .sidebar {
+      position: fixed;
+      top: 48px; /* Header 高度 */
+      left: 0;
+      bottom: 0;
+      z-index: 100;
+      transform: translateX(-100%);
+      transition: transform 0.2s ease;
+      box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+    }
+
+    .sidebar.open {
+      transform: translateX(0);
+    }
+  }
+
   @media (prefers-color-scheme: dark) {
     .sidebar {
       --sidebar-bg: #252525;

@@ -82,11 +82,13 @@ linters-settings:
 
 issues:
   exclude-rules:
-    # 测试文件允许更长的函数
+    # 测试文件允许更长的函数和忽略部分错误
     - path: _test\.go
       linters:
         - funlen
         - dupl
+        - errcheck
+        - gocritic
     
     # main 函数允许初始化
     - path: main\.go

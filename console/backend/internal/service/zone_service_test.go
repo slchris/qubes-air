@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupTestServices(t *testing.T) (ZoneService, QubeService, func()) {
+func setupTestServices(t *testing.T) (ZoneService, func()) {
 	t.Helper()
 
 	tmpFile, err := os.CreateTemp("", "service-test-*.db")
@@ -29,18 +29,17 @@ func setupTestServices(t *testing.T) (ZoneService, QubeService, func()) {
 	qubeRepo := repository.NewQubeRepository(db)
 
 	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
-	qubeSvc := NewQubeService(qubeRepo, zoneRepo)
 
 	cleanup := func() {
 		db.Close()
 		os.Remove(tmpFile.Name())
 	}
 
-	return zoneSvc, qubeSvc, cleanup
+	return zoneSvc, cleanup
 }
 
 func TestZoneService_Create(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -62,7 +61,7 @@ func TestZoneService_Create(t *testing.T) {
 }
 
 func TestZoneService_Create_InvalidType(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -78,7 +77,7 @@ func TestZoneService_Create_InvalidType(t *testing.T) {
 }
 
 func TestZoneService_Create_EmptyName(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -93,7 +92,7 @@ func TestZoneService_Create_EmptyName(t *testing.T) {
 }
 
 func TestZoneService_GetByID(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -111,7 +110,7 @@ func TestZoneService_GetByID(t *testing.T) {
 }
 
 func TestZoneService_GetByID_NotFound(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -122,7 +121,7 @@ func TestZoneService_GetByID_NotFound(t *testing.T) {
 }
 
 func TestZoneService_List(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -142,7 +141,7 @@ func TestZoneService_List(t *testing.T) {
 }
 
 func TestZoneService_Update(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -164,7 +163,7 @@ func TestZoneService_Update(t *testing.T) {
 }
 
 func TestZoneService_Delete(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -184,7 +183,7 @@ func TestZoneService_Delete(t *testing.T) {
 }
 
 func TestZoneService_Connect(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
@@ -202,7 +201,7 @@ func TestZoneService_Connect(t *testing.T) {
 }
 
 func TestZoneService_Disconnect(t *testing.T) {
-	zoneSvc, _, cleanup := setupTestServices(t)
+	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()

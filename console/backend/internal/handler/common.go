@@ -24,21 +24,6 @@ func respondError(c *gin.Context, code int, err error) {
 	})
 }
 
-// respondSuccess sends a standardized success response with data.
-func respondSuccess(c *gin.Context, data interface{}) {
-	c.JSON(http.StatusOK, data)
-}
-
-// respondCreated sends a 201 Created response with data.
-func respondCreated(c *gin.Context, data interface{}) {
-	c.JSON(http.StatusCreated, data)
-}
-
-// respondNoContent sends a 204 No Content response.
-func respondNoContent(c *gin.Context) {
-	c.Status(http.StatusNoContent)
-}
-
 // PaginationParams holds pagination query parameters.
 type PaginationParams struct {
 	Page     int

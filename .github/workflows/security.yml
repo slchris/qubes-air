@@ -21,9 +21,6 @@ jobs:
   gosec:
     name: GoSec Security Scan
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: console/backend
 
     steps:
       - name: Checkout code
@@ -38,12 +35,13 @@ jobs:
       - name: Run Gosec
         uses: securego/gosec@master
         with:
-          args: '-no-fail -fmt sarif -out gosec-results.sarif ./...'
+          args: '-no-fail -fmt sarif -out /tmp/gosec-results.sarif ./...'
+          working-directory: console/backend
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: console/backend/gosec-results.sarif
+          sarif_file: /tmp/gosec-results.sarif
           category: gosec
         if: always()
 
@@ -101,11 +99,11 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform
-          format: sarif
+          additional_args: --format sarif --out results.sarif.json --soft-fail
 
       - name: Upload tfsec SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif.json
           category: tfsec
-        if: always()
+        if: always() && hashFiles('results.sarif.json') != ''

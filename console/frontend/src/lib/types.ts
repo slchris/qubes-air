@@ -59,7 +59,7 @@ export interface QubeSpec {
 export interface Qube {
   id: string;
   name: string;
-  zone_id: string;
+  zone_id?: string;  // Optional: qube can exist without a zone
   zone_name?: string;
   type: QubeType;
   status: QubeStatus;
@@ -72,7 +72,7 @@ export interface Qube {
 // Request payload for creating a qube
 export interface QubeCreateRequest {
   name: string;
-  zone_id: string;
+  zone_id?: string;  // Optional: qube can exist without a zone
   type: QubeType;
   spec?: Partial<QubeSpec>;
 }

@@ -89,6 +89,9 @@ func (d *DB) migrate() error {
 	migrations := []string{
 		createZonesTable,
 		createQubesTable,
+		createInfrastructureTable,
+		createCredentialsTable,
+		createSettingsTable,
 	}
 
 	for _, m := range migrations {
@@ -116,11 +119,42 @@ CREATE TABLE IF NOT EXISTS qubes (
 	id TEXT PRIMARY KEY,
 	name TEXT NOT NULL,
 	type TEXT NOT NULL,
-	zone_id TEXT NOT NULL,
+	zone_id TEXT DEFAULT '',
 	status TEXT NOT NULL DEFAULT 'stopped',
 	spec TEXT DEFAULT '{}',
 	ip_address TEXT DEFAULT '',
 	created_at DATETIME NOT NULL,
-	updated_at DATETIME NOT NULL,
-	FOREIGN KEY (zone_id) REFERENCES zones(id)
+	updated_at DATETIME NOT NULL
+)`
+
+const createInfrastructureTable = `
+CREATE TABLE IF NOT EXISTS infrastructure (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	type TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'disconnected',
+	region TEXT DEFAULT '',
+	config TEXT DEFAULT '{}',
+	resource_count INTEGER DEFAULT 0,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL
+)`
+
+const createCredentialsTable = `
+CREATE TABLE IF NOT EXISTS credentials (
+	id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	type TEXT NOT NULL,
+	description TEXT DEFAULT '',
+	encrypted_data TEXT NOT NULL,
+	last_used DATETIME,
+	created_at DATETIME NOT NULL,
+	updated_at DATETIME NOT NULL
+)`
+
+const createSettingsTable = `
+CREATE TABLE IF NOT EXISTS settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL,
+	updated_at DATETIME NOT NULL
 )`

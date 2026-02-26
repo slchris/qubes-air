@@ -92,7 +92,6 @@
     actionError = null;
     const data: QubeCreateRequest = {
       name: formName.trim(),
-      zone_id: formZoneId,
       type: formType,
       spec: {
         vcpu: formVcpu,
@@ -101,6 +100,11 @@
         template: formTemplate,
       },
     };
+
+    // Only include zone_id if one is selected
+    if (formZoneId) {
+      data.zone_id = formZoneId;
+    }
 
     try {
       await qubeStore.create(data);
@@ -163,6 +167,7 @@
   }
 
   function getZoneName(zoneId: string): string {
+    if (!zoneId) return 'No Zone';
     return zoneState.zones.find(z => z.id === zoneId)?.name ?? 'Unknown';
   }
 
@@ -187,7 +192,6 @@
     <button
       class="btn-primary"
       onclick={openCreateModal}
-      disabled={connectedZonesList.length === 0}
     >
       + Create Qube
     </button>
@@ -200,9 +204,7 @@
   {:else if qubeState.qubes.length === 0}
     <div class="empty">
       <p>No remote qubes</p>
-      {#if connectedZonesList.length === 0}
-        <p class="hint">Connect a zone first to create qubes</p>
-      {/if}
+      <p class="hint">Click "+ Create Qube" to create your first qube</p>
     </div>
   {:else}
     <div class="qube-grid">
@@ -282,8 +284,9 @@
         </div>
 
         <div class="form-group">
-          <label for="zone">Zone</label>
-          <select id="zone" bind:value={formZoneId} required>
+          <label for="zone">Zone (Optional)</label>
+          <select id="zone" bind:value={formZoneId}>
+            <option value="">-- No Zone --</option>
             {#each connectedZonesList as zone}
               <option value={zone.id}>{zone.name} ({zone.type})</option>
             {/each}

@@ -17,7 +17,7 @@ terraform {
 
 provider "proxmox" {
   endpoint = var.proxmox_endpoint
-  
+
   # 认证配置 - 使用 API Token (推荐)
   api_token = var.proxmox_api_token
 

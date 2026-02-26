@@ -8,10 +8,12 @@ export default defineConfig(({ mode }) => {
   // Load env file based on mode
   const env = loadEnv(mode, process.cwd(), '')
   
-  // Server configuration from environment
-  const serverHost = env.VITE_DEV_HOST || '127.0.0.1'
-  const serverPort = parseInt(env.VITE_DEV_PORT || '5173', 10)
-  const apiTarget = env.VITE_API_TARGET || 'http://127.0.0.1:8080'
+  // Server configuration from environment (check process.env first for CLI overrides)
+  const serverHost = process.env.VITE_DEV_HOST || env.VITE_DEV_HOST || '127.0.0.1'
+  const serverPort = parseInt(process.env.VITE_DEV_PORT || env.VITE_DEV_PORT || '5173', 10)
+  const apiTarget = process.env.VITE_API_TARGET || env.VITE_API_TARGET || 'http://127.0.0.1:8080'
+  
+  console.log(`[vite] API proxy target: ${apiTarget}`)
   
   // TLS configuration
   const tlsEnabled = env.VITE_TLS_ENABLED === 'true'

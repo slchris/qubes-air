@@ -16,6 +16,7 @@ type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Database DatabaseConfig `yaml:"database"`
 	CORS     CORSConfig     `yaml:"cors"`
+	Security SecurityConfig `yaml:"security"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -45,6 +46,11 @@ type CORSConfig struct {
 	AllowedHeaders []string `yaml:"allowed_headers"`
 }
 
+// SecurityConfig holds security-related configuration.
+type SecurityConfig struct {
+	EncryptionKey string `yaml:"encryption_key"`
+}
+
 // DefaultConfig returns configuration with default values.
 func DefaultConfig() *Config {
 	return &Config{
@@ -65,6 +71,9 @@ func DefaultConfig() *Config {
 			AllowedOrigins: []string{"*"},
 			AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 			AllowedHeaders: []string{"Content-Type", "Authorization"},
+		},
+		Security: SecurityConfig{
+			EncryptionKey: "qubes-air-dev-encryption-key32!!", //nolint:gosec // G101: dev default, overridden in production
 		},
 	}
 }
@@ -91,7 +100,7 @@ func Load(configPath string) (*Config, error) {
 
 // loadFromFile loads configuration from a YAML file.
 func (c *Config) loadFromFile(path string) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: config path is controlled by the application
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

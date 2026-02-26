@@ -37,7 +37,7 @@ type ZoneServiceImpl struct {
 }
 
 // NewZoneService creates a new ZoneService.
-func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository) ZoneService {
+func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository) ZoneService { //nolint:dupl
 	return &ZoneServiceImpl{
 		zoneRepo: zoneRepo,
 		qubeRepo: qubeRepo,

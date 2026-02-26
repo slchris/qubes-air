@@ -38,7 +38,7 @@ type QubeServiceImpl struct {
 }
 
 // NewQubeService creates a new QubeService.
-func NewQubeService(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository) QubeService {
+func NewQubeService(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository) QubeService { //nolint:dupl
 	return &QubeServiceImpl{
 		qubeRepo: qubeRepo,
 		zoneRepo: zoneRepo,
@@ -71,8 +71,11 @@ func (s *QubeServiceImpl) validateQubeCreateRequest(ctx context.Context, req *mo
 		return ErrInvalidQubeType
 	}
 
-	if _, err := s.zoneRepo.GetByID(ctx, req.ZoneID); err != nil {
-		return ErrZoneNotFound
+	// Zone is optional - only validate if provided
+	if req.ZoneID != "" {
+		if _, err := s.zoneRepo.GetByID(ctx, req.ZoneID); err != nil {
+			return ErrZoneNotFound
+		}
 	}
 
 	return nil

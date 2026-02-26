@@ -96,13 +96,13 @@ variable "aws_config" {
 variable "remote_qubes" {
   description = "远程 Qube 定义"
   type = map(object({
-    zone     = string           # 所属 Zone
-    type     = string           # Qube 类型 (work/dev/gpu/disp)
+    zone     = string # 所属 Zone
+    type     = string # Qube 类型 (work/dev/gpu/disp)
     cpu      = optional(number, 2)
     memory   = optional(number, 4096)
     disk     = optional(number, 50)
     template = optional(string, "fedora-39")
-    
+
     # 云平台特定配置
     machine_type = optional(string)
     gpu_type     = optional(string)
@@ -135,10 +135,10 @@ variable "encryption_config" {
   description = "数据加密配置"
   type = object({
     enable_disk_encryption = bool
-    kms_provider          = string  # local/aws/gcp
+    kms_provider           = string # local/aws/gcp
   })
   default = {
     enable_disk_encryption = true
-    kms_provider          = "local"
+    kms_provider           = "local"
   }
 }

@@ -48,10 +48,10 @@ module "proxmox_zone" {
   source = "./modules/zone-base"
   count  = var.enable_proxmox_zone ? 1 : 0
 
-  zone_name    = "proxmox-zone"
-  zone_type    = "proxmox"
+  zone_name       = "proxmox-zone"
+  zone_type       = "proxmox"
   provider_config = var.proxmox_config
-  
+
   tags = local.common_tags
 }
 
@@ -60,10 +60,10 @@ module "gcp_zone" {
   source = "./modules/zone-base"
   count  = var.enable_gcp_zone ? 1 : 0
 
-  zone_name    = "gcp-zone"
-  zone_type    = "gcp"
+  zone_name       = "gcp-zone"
+  zone_type       = "gcp"
   provider_config = var.gcp_config
-  
+
   tags = local.common_tags
 }
 
@@ -72,10 +72,10 @@ module "aws_zone" {
   source = "./modules/zone-base"
   count  = var.enable_aws_zone ? 1 : 0
 
-  zone_name    = "aws-zone"
-  zone_type    = "aws"
+  zone_name       = "aws-zone"
+  zone_type       = "aws"
   provider_config = var.aws_config
-  
+
   tags = local.common_tags
 }
 
@@ -87,7 +87,7 @@ module "remote_qubes" {
   qube_name   = each.key
   qube_config = each.value
   zone_id     = each.value.zone
-  
+
   depends_on = [
     module.proxmox_zone,
     module.gcp_zone,

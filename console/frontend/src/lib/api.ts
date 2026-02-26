@@ -25,13 +25,13 @@ import type {
  * In production, this uses the same origin.
  * In development, it can be configured via VITE_API_BASE_URL.
  */
-function getApiBaseUrl(): string {
+export function getApiBaseUrl(): string {
   // Check for environment variable (Vite injects VITE_ prefixed vars)
   const envApiBase = import.meta.env.VITE_API_BASE_URL;
   if (envApiBase) {
     return envApiBase;
   }
-  // Default to same origin
+  // Default to /api/v1 prefix
   return '/api/v1';
 }
 

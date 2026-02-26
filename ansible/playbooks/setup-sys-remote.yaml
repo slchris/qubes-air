@@ -8,13 +8,13 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  
+
   vars:
     sys_remote_name: "sys-remote-{{ zone_name }}"
     template: "fedora-39"
     memory: 1024
     maxmem: 2048
-  
+
   tasks:
     - name: Check if running in Qubes
       ansible.builtin.stat:
@@ -25,7 +25,7 @@
     # ==========================================
     # 创建 sys-remote Qube
     # ==========================================
-    
+
     - name: Create sys-remote Qube
       ansible.builtin.command: |
         qvm-create --class AppVM \
@@ -43,7 +43,7 @@
     # ==========================================
     # 配置 qrexec 策略
     # ==========================================
-    
+
     - name: Create qrexec policy directory
       ansible.builtin.file:
         path: /etc/qubes/policy.d
@@ -56,10 +56,10 @@
         dest: /etc/qubes/policy.d/80-qubes-air.policy
         content: |
           # Qubes Air qrexec 策略
-          
+
           # 允许从工作 Qube 连接到 sys-remote
           qubes-air.Remote * {{ sys_remote_name }} @default allow target={{ sys_remote_name }}
-          
+
           # 允许 sys-remote 执行远程操作
           qubes-air.RemoteExec {{ sys_remote_name }} @adminvm allow
         mode: '0644'
@@ -68,7 +68,7 @@
     # ==========================================
     # 启动 sys-remote
     # ==========================================
-    
+
     - name: Start sys-remote Qube
       ansible.builtin.command: qvm-start {{ sys_remote_name }}
       register: start_result

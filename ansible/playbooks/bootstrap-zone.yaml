@@ -8,11 +8,11 @@
   hosts: zone_admins
   become: true
   gather_facts: true
-  
+
   vars:
     salt_master_version: "3006"
     wireguard_listen_port: 51820
-  
+
   pre_tasks:
     - name: Display zone information
       ansible.builtin.debug:
@@ -22,7 +22,7 @@
     # ==========================================
     # 基础系统配置
     # ==========================================
-    
+
     - name: Update system packages
       ansible.builtin.package:
         name: "*"
@@ -44,7 +44,7 @@
     # ==========================================
     # WireGuard 配置
     # ==========================================
-    
+
     - name: Create WireGuard directory
       ansible.builtin.file:
         path: /etc/wireguard
@@ -74,7 +74,7 @@
     # ==========================================
     # Salt Master 安装 (可选)
     # ==========================================
-    
+
     - name: Install Salt Master
       ansible.builtin.shell: |
         curl -fsSL https://bootstrap.saltproject.io -o install_salt.sh
@@ -86,7 +86,7 @@
     # ==========================================
     # Qubes Air 目录结构
     # ==========================================
-    
+
     - name: Create Qubes Air directories
       ansible.builtin.file:
         path: "{{ item }}"

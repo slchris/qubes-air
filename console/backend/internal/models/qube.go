@@ -79,7 +79,7 @@ type GPUSpec struct {
 // QubeCreateRequest represents a request to create a new qube.
 type QubeCreateRequest struct {
 	Name   string   `json:"name" binding:"required"`
-	ZoneID string   `json:"zone_id" binding:"required"`
+	ZoneID string   `json:"zone_id"` // Optional: qube can exist without a zone
 	Type   QubeType `json:"type" binding:"required"`
 	Spec   QubeSpec `json:"spec"`
 }
