@@ -154,3 +154,63 @@ func TestConfig_IsTLSEnabled(t *testing.T) {
 	cfg.Server.TLS.Enabled = true
 	assert.True(t, cfg.IsTLSEnabled())
 }
+
+func TestConfig_EncryptionKeyBytes(t *testing.T) {
+	tests := []struct {
+		name    string
+		key     string
+		wantErr bool
+		wantDev bool
+	}{
+		{"empty falls back to dev key", "", false, true},
+		{"valid 32-byte key", "0123456789abcdef0123456789abcdef", false, false},
+		{"too short", "short", true, false},
+		{"too long", "0123456789abcdef0123456789abcdef0", true, false},
+		{"the dev key itself is accepted", devEncryptionKey, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Security.EncryptionKey = tt.key
+
+			b, err := cfg.EncryptionKeyBytes()
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Len(t, b, 32)
+			assert.Equal(t, tt.wantDev, cfg.UsesDevEncryptionKey())
+		})
+	}
+}
+
+func TestConfig_ValidateRejectsBadEncryptionKey(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.EncryptionKey = "not-32-bytes"
+	assert.Error(t, cfg.Validate())
+
+	cfg.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestConfig_IsAuthEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.False(t, cfg.IsAuthEnabled())
+
+	cfg.Auth.APIToken = "token"
+	assert.True(t, cfg.IsAuthEnabled())
+}
+
+func TestConfig_LoadFromEnvSecurity(t *testing.T) {
+	t.Setenv("QUBES_AIR_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("QUBES_AIR_API_TOKEN", "env-token")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, "0123456789abcdef0123456789abcdef", cfg.Security.EncryptionKey)
+	assert.Equal(t, "env-token", cfg.Auth.APIToken)
+	assert.True(t, cfg.IsAuthEnabled())
+	assert.False(t, cfg.UsesDevEncryptionKey())
+}

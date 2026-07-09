@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
 )
@@ -48,6 +50,7 @@ func main() {
 	}
 
 	logConfig(cfg)
+	logSecurityWarnings(cfg)
 
 	// Initialize dependencies
 	deps, err := initDependencies(cfg)
@@ -68,6 +71,34 @@ func logConfig(cfg *config.Config) {
 	log.Printf("  TLS: %v", cfg.IsTLSEnabled())
 	log.Printf("  Database: %s", cfg.Database.DSN)
 	log.Printf("  CORS Origins: %v", cfg.CORS.AllowedOrigins)
+	log.Printf("  Auth: %v", authStatus(cfg))
+}
+
+// authStatus returns a human-readable auth status for logging.
+func authStatus(cfg *config.Config) string {
+	if cfg.IsAuthEnabled() {
+		return "enabled (Bearer token)"
+	}
+	return "DISABLED"
+}
+
+// logSecurityWarnings emits prominent warnings for insecure configurations so
+// that an operator does not unknowingly expose the console.
+func logSecurityWarnings(cfg *config.Config) {
+	if !cfg.IsAuthEnabled() {
+		log.Printf("SECURITY WARNING: API authentication is DISABLED. " +
+			"All /api/v1 endpoints (including credential management) are open. " +
+			"Set auth.api_token (or QUBES_AIR_API_TOKEN) before exposing beyond localhost.")
+	}
+	if cfg.UsesDevEncryptionKey() {
+		log.Printf("SECURITY WARNING: using the built-in development encryption key. " +
+			"Stored credential secrets are NOT securely encrypted. " +
+			"Set a real 32-byte security.encryption_key (or QUBES_AIR_ENCRYPTION_KEY) in production.")
+	}
+	if slices.Contains(cfg.CORS.AllowedOrigins, "*") {
+		log.Printf("SECURITY WARNING: CORS allows all origins (\"*\"). " +
+			"Restrict cors.allowed_origins (or QUBES_AIR_CORS_ORIGINS) in production.")
+	}
 }
 
 // Dependencies holds all application dependencies.
@@ -111,11 +142,12 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	infraRepo := repository.NewInfraRepository(db)
 	infraSvc := service.NewInfraService(infraRepo)
 
-	// Credential repository and service (use encryption key from config or generate)
-	encryptionKey := []byte(cfg.Security.EncryptionKey)
-	if len(encryptionKey) != 32 {
-		// Use a default key for development (should be configured properly in production)
-		encryptionKey = []byte("qubes-air-dev-encryption-key32!!")
+	// Credential repository and service. The key is validated in cfg.Validate()
+	// at load time, so a misconfigured key fails startup rather than silently
+	// falling back to the insecure default.
+	encryptionKey, err := cfg.EncryptionKeyBytes()
+	if err != nil {
+		return nil, err
 	}
 	credentialRepo := repository.NewCredentialRepository(db, encryptionKey)
 	credentialSvc := service.NewCredentialService(credentialRepo)
@@ -145,9 +177,14 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	r.Use(gin.Logger())
 	r.Use(corsMiddleware(cfg))
 
+	// /health is intentionally left unauthenticated for liveness probes.
 	r.GET("/health", healthHandler(deps.db))
 
+	// All /api/v1 routes require a valid Bearer token when an API token is
+	// configured. When none is configured, Auth is a pass-through and a
+	// warning is logged at startup (see logSecurityWarnings).
 	v1 := r.Group("/api/v1")
+	v1.Use(middleware.Auth(cfg.Auth.APIToken))
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
 	deps.infraHandler.RegisterRoutes(v1)
@@ -170,7 +207,12 @@ func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Origin", allowedOrigin)
 		c.Header("Access-Control-Allow-Methods", strings.Join(cfg.CORS.AllowedMethods, ", "))
 		c.Header("Access-Control-Allow-Headers", strings.Join(cfg.CORS.AllowedHeaders, ", "))
-		c.Header("Access-Control-Allow-Credentials", "true")
+		// Per the CORS spec, "Allow-Credentials: true" MUST NOT be combined
+		// with a wildcard origin. Only advertise credentials support when a
+		// specific origin is echoed back.
+		if allowedOrigin != "*" && allowedOrigin != "" {
+			c.Header("Access-Control-Allow-Credentials", "true")
+		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)

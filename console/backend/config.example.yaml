@@ -13,6 +13,8 @@
 #   QUBES_AIR_TLS_KEY       -> server.tls.key_file
 #   QUBES_AIR_DATABASE_DSN  -> database.dsn
 #   QUBES_AIR_CORS_ORIGINS  -> cors.allowed_origins (comma-separated)
+#   QUBES_AIR_ENCRYPTION_KEY-> security.encryption_key
+#   QUBES_AIR_API_TOKEN     -> auth.api_token
 
 server:
   # Listen host (0.0.0.0 for all interfaces)
@@ -57,3 +59,17 @@ cors:
   allowed_headers:
     - "Content-Type"
     - "Authorization"
+
+security:
+  # AES-256 key for encrypting credential secrets at rest.
+  # MUST be exactly 32 bytes. Leave empty ONLY for local development —
+  # an insecure built-in dev key is used and a startup warning is logged.
+  # Generate a strong key, e.g.:  openssl rand -base64 24  (24 raw bytes = 32 base64 chars)
+  encryption_key: ""
+
+auth:
+  # Static Bearer token required on every /api/v1 request.
+  # Leave empty to DISABLE authentication (a startup warning is logged).
+  # Set this before exposing the console beyond localhost.
+  # Generate one, e.g.:  openssl rand -hex 32
+  api_token: ""

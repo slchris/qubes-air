@@ -18,6 +18,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	CORS     CORSConfig     `yaml:"cors"`
 	Security SecurityConfig `yaml:"security"`
+	Auth     AuthConfig     `yaml:"auth"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -49,7 +50,49 @@ type CORSConfig struct {
 
 // SecurityConfig holds security-related configuration.
 type SecurityConfig struct {
+	// EncryptionKey is the AES-256 key (must be exactly 32 bytes) used to
+	// encrypt credential secrets at rest. Leave empty ONLY for local
+	// development — a well-known insecure default is used and a warning is
+	// logged. Never leave empty in production.
 	EncryptionKey string `yaml:"encryption_key"`
+}
+
+// AuthConfig holds API authentication configuration.
+type AuthConfig struct {
+	// APIToken, when set, is required as a Bearer token on every /api/v1
+	// request. When empty, authentication is DISABLED (a warning is logged
+	// at startup). Set this before exposing the console beyond localhost.
+	APIToken string `yaml:"api_token"`
+}
+
+// devEncryptionKey is the well-known insecure key used only when no key is
+// configured, to keep local development and tests frictionless.
+const devEncryptionKey = "qubes-air-dev-encryption-key32!!" // 32 bytes for AES-256
+
+// IsAuthEnabled reports whether API authentication is enforced.
+func (c *Config) IsAuthEnabled() bool {
+	return c.Auth.APIToken != ""
+}
+
+// UsesDevEncryptionKey reports whether the insecure development key is in use.
+func (c *Config) UsesDevEncryptionKey() bool {
+	return c.Security.EncryptionKey == "" || c.Security.EncryptionKey == devEncryptionKey
+}
+
+// EncryptionKeyBytes returns the 32-byte AES key. It returns an error if a key
+// is configured but is not exactly 32 bytes, so that a misconfiguration fails
+// fast at startup rather than silently falling back to the insecure default.
+func (c *Config) EncryptionKeyBytes() ([]byte, error) {
+	if c.Security.EncryptionKey == "" {
+		return []byte(devEncryptionKey), nil
+	}
+	if len(c.Security.EncryptionKey) != 32 {
+		return nil, fmt.Errorf(
+			"security.encryption_key must be exactly 32 bytes for AES-256, got %d",
+			len(c.Security.EncryptionKey),
+		)
+	}
+	return []byte(c.Security.EncryptionKey), nil
 }
 
 // DefaultConfig returns configuration with default values.
@@ -74,7 +117,14 @@ func DefaultConfig() *Config {
 			AllowedHeaders: []string{"Content-Type", "Authorization"},
 		},
 		Security: SecurityConfig{
-			EncryptionKey: "qubes-air-dev-encryption-key32!!", // 32 bytes for AES-256
+			// Empty by default: resolves to the insecure dev key with a
+			// startup warning. Configure a real 32-byte key in production.
+			EncryptionKey: "",
+		},
+		Auth: AuthConfig{
+			// Empty by default: authentication is disabled with a startup
+			// warning. Set an API token before exposing beyond localhost.
+			APIToken: "",
 		},
 	}
 }
@@ -145,6 +195,13 @@ func (c *Config) loadFromEnv() {
 	if origins := os.Getenv("QUBES_AIR_CORS_ORIGINS"); origins != "" {
 		c.CORS.AllowedOrigins = strings.Split(origins, ",")
 	}
+
+	if key := os.Getenv("QUBES_AIR_ENCRYPTION_KEY"); key != "" {
+		c.Security.EncryptionKey = key
+	}
+	if token := os.Getenv("QUBES_AIR_API_TOKEN"); token != "" {
+		c.Auth.APIToken = token
+	}
 }
 
 // Validate checks if the configuration is valid.
@@ -167,6 +224,12 @@ func (c *Config) Validate() error {
 		if _, err := os.Stat(c.Server.TLS.KeyFile); os.IsNotExist(err) {
 			return fmt.Errorf("TLS key file not found: %s", c.Server.TLS.KeyFile)
 		}
+	}
+
+	// Fail fast on a misconfigured encryption key rather than silently
+	// falling back to the insecure default.
+	if _, err := c.EncryptionKeyBytes(); err != nil {
+		return err
 	}
 
 	return nil
