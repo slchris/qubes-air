@@ -41,6 +41,22 @@ variable "os_disk_gb" { type = number }
 variable "data_disk_gb" { type = number }
 variable "node_name" { type = string }
 
+variable "template_node_name" {
+  description = <<-EOT
+    模板 VM 所在的节点。留空则回落到 var.node_name。
+
+    这与 var.node_name **是两件事**: 模板住在哪台 (template_node_name) 与新 VM 跑在哪台
+    (node_name)。clone API 必须在**模板所在节点**上调用, 由 target 参数指定落到哪台;
+    在错误的节点上调用会得到 "unable to find configuration file for VM <id>"。
+
+    两者可以不同**仅当模板的盘在共享存储上** —— qemu-server 明确规定
+    "target: Only allowed if the original VM is on shared storage"。
+    在 local-lvm 上模板只能在自己那台 clone。
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "template_vm_id" {
   description = "clone 用的模板 VM ID; 留空则不 clone (需 template_vm_id 才能 apply)"
   type        = number
@@ -149,8 +165,18 @@ resource "proxmox_virtual_environment_file" "agent_identity" {
   datastore_id = "local" # snippets 需要文件系统型存储; RBD 只支持 images
   node_name    = var.node_name
 
+  # checksum 让这个资源依赖**内容**, 而不只是路径。
+  #
+  # 没有它, terraform 只跟踪 path —— 同一路径下内容改了它完全看不见, apply 报成功
+  # 而节点上还是旧文件。真机实测踩到过: console 重新渲染了身份文档 (新增 agent 包的
+  # 安装脚本), 节点上的 snippet 却还是几小时前那份, cloud-init 照着旧文件跑完、
+  # 报 done, 结果是一台"看起来正常、agent 根本没装"的 qube —— 且没有任何报错。
+  #
+  # 影响远不止那一次: **证书轮换同样传不下去**。重新签发的证书会永远到不了 qube,
+  # 而每次 apply 都告诉你成功了。
   source_file {
-    path = var.agent_user_data_file
+    path     = var.agent_user_data_file
+    checksum = filesha256(var.agent_user_data_file)
   }
 }
 
@@ -178,8 +204,10 @@ resource "proxmox_virtual_environment_vm" "compute" {
   dynamic "clone" {
     for_each = var.template_vm_id != null ? [1] : []
     content {
-      vm_id     = var.template_vm_id
-      node_name = var.node_name
+      vm_id = var.template_vm_id
+      # 模板所在节点, 不是放置目标。provider 在这台上发起 clone,
+      # 并把外层 node_name 作为 target 传给 Proxmox。
+      node_name = coalesce(var.template_node_name, var.node_name)
       full      = true
     }
   }

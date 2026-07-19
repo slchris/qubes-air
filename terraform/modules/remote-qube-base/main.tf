@@ -64,6 +64,7 @@ variable "qube_config" {
     # ---- Proxmox 特定 ----
     node_name            = optional(string) # Proxmox 节点名; 留空则用 var.proxmox_default_node
     template_vm_id       = optional(number) # 用于 clone 的模板 VM ID
+    template_node_name   = optional(string) # 模板所在节点 (与放置节点不同时必填)
     datastore_id         = optional(string, "local-lvm")
     network_bridge       = optional(string, "vmbr0")
     ssh_public_keys      = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
@@ -138,6 +139,7 @@ module "proxmox" {
 
   node_name            = coalesce(var.qube_config.node_name, var.proxmox_default_node)
   template_vm_id       = var.qube_config.template_vm_id
+  template_node_name   = coalesce(var.qube_config.template_node_name, "")
   datastore_id         = var.qube_config.datastore_id
   network_bridge       = var.qube_config.network_bridge
   ssh_public_keys      = var.qube_config.ssh_public_keys

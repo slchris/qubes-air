@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -43,6 +45,9 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 
 		zones := map[string]*models.Zone{}
 		out := make(map[string]any, len(qubes))
+		// seen tracks which row currently owns each terraform map key, so a name
+		// collision resolves by age rather than by list order.
+		seen := make(map[string]*models.Qube, len(qubes))
 
 		for _, q := range qubes {
 			if !isRenderable(q) {
@@ -57,6 +62,16 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 				zones[q.ZoneID] = zone
 			}
 			entry, err := renderQube(q, zone)
+			if errors.Is(err, errNoInfrastructure) {
+				// Rendering it can only fail, and failing the snapshot would wedge
+				// every OTHER qube's applies too — one row that never got off the
+				// ground would freeze the whole fleet. Skipping is safe precisely
+				// because it owns nothing: the prevent_destroy hazard that forces
+				// released qubes to stay in the map does not apply to a qube that
+				// never had infrastructure to protect.
+				log.Printf("tfvars: skipping qube %q (%s): %v", q.Name, q.ID, err)
+				continue
+			}
 			if err != nil {
 				return nil, fmt.Errorf("qube %q: %w", q.Name, err)
 			}
@@ -69,11 +84,39 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 					entry["agent_user_data_file"] = path
 				}
 			}
+			// The NAME is the terraform map key, but names are not unique across
+			// rows: a released-but-not-yet-purged qube coexists with a freshly
+			// created one of the same name during a delete/recreate. Both render
+			// into the same key, and whichever the list yields last silently wins.
+			//
+			// That is not a cosmetic race. It was observed reporting success while
+			// the compute VM was never built: the torn-down row's
+			// compute_running=false overwrote the new row's true, terraform saw
+			// nothing to create, and the job reported success for a qube that did
+			// not exist.
+			//
+			// The newest row is by definition the current intent, so it wins —
+			// deterministically, and loudly.
+			if prev, clash := seen[q.Name]; clash {
+				if !q.CreatedAt.After(prev.CreatedAt) {
+					log.Printf("tfvars: qube name %q is used by %s and %s; keeping the newer row %s",
+						q.Name, prev.ID, q.ID, prev.ID)
+					continue
+				}
+				log.Printf("tfvars: qube name %q is used by %s and %s; keeping the newer row %s",
+					q.Name, prev.ID, q.ID, q.ID)
+			}
+			seen[q.Name] = q
 			out[q.Name] = entry
 		}
 		return out, nil
 	}
 }
+
+// errNoInfrastructure marks a qube that terraform could never have built
+// anything for, so it can be left out of the map instead of failing the whole
+// snapshot.
+var errNoInfrastructure = errors.New("qube owns no infrastructure")
 
 // isRenderable reports whether a qube must appear in var.remote_qubes.
 //
@@ -165,11 +208,22 @@ func renderProxmox(entry map[string]any, q *models.Qube, zone *models.Zone) erro
 		node = pc.Node
 	}
 	if node == "" {
-		return fmt.Errorf("zone %q has no node and qube %q does not pin one", zone.Name, q.Name)
+		// No node means terraform was never able to build anything for this
+		// qube: a node is required to create the VM at all. So this is not a
+		// qube whose infrastructure we must keep describing — it is one that
+		// never had any.
+		return fmt.Errorf("%w: zone %q has no default node and qube %q was never placed on one",
+			errNoInfrastructure, zone.Name, q.Name)
 	}
 
 	entry["node_name"] = node
 	entry["template_vm_id"] = pc.TemplateVMID
+	// Where the template LIVES, as opposed to where the qube runs. Omitting it
+	// when the scheduler places a qube away from the template's node makes the
+	// clone fail with "unable to find configuration file".
+	if pc.TemplateNode != "" {
+		entry["template_node_name"] = pc.TemplateNode
+	}
 	if pc.DatastoreID != "" {
 		entry["datastore_id"] = pc.DatastoreID
 	}

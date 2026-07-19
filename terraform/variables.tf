@@ -123,11 +123,14 @@ variable "remote_qubes" {
     gpu_count    = optional(number)
 
     # ---- Proxmox 特定配置 ----
-    node_name       = optional(string) # Proxmox 节点名; 留空用 proxmox_config.node
-    template_vm_id  = optional(number) # clone 用的模板 VM ID
-    datastore_id    = optional(string, "local-lvm")
-    network_bridge  = optional(string, "vmbr0")
-    ssh_public_keys = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
+    node_name      = optional(string) # Proxmox 节点名; 留空用 proxmox_config.node
+    template_vm_id = optional(number) # clone 用的模板 VM ID
+    # template_node_name: 模板 VM 所在节点。与放置节点不同时必填 ——
+    # clone API 要在模板所在节点上调用。仅共享存储支持跨节点 clone。
+    template_node_name = optional(string)
+    datastore_id       = optional(string, "local-lvm")
+    network_bridge     = optional(string, "vmbr0")
+    ssh_public_keys    = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
     # agent_user_data_file: Console 渲染的 cloud-init user-data 的本地路径,
     # 内含该 agent 的 mTLS 身份。传路径而非内容, 使私钥不进 state。
     agent_user_data_file = optional(string, "")

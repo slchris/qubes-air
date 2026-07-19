@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -168,5 +171,105 @@ func TestRenderQube_OnlyPublicKeys(t *testing.T) {
 	for _, k := range keys {
 		assert.NotContains(t, k, "PRIVATE KEY")
 		assert.Regexp(t, `^(ssh-|ecdsa-)`, k, "only OpenSSH public keys belong here")
+	}
+}
+
+// TestRenderQube_EmitsTemplateNode — the clone API must be called on the node
+// the template lives on. Real deployment failed here: the scheduler placed a
+// qube on infra-node4 while template 901 lived on infra-node1, and Proxmox
+// answered "unable to find configuration file for VM 901 on node infra-node4".
+func TestRenderQube_EmitsTemplateNode(t *testing.T) {
+	zone := proxmoxZone()
+	zone.Config.Proxmox.TemplateNode = "infra-node1"
+	q := qubeWith(models.QubeStatusRunning, models.QubeSpec{Node: "infra-node4"})
+
+	got, err := renderQube(q, zone)
+	require.NoError(t, err)
+
+	assert.Equal(t, "infra-node4", got["node_name"], "the qube runs where it was placed")
+	assert.Equal(t, "infra-node1", got["template_node_name"], "but the clone is issued on the template's node")
+}
+
+// TestSnapshot_NodelessQubeDoesNotWedgeTheFleet — a qube that never got a node
+// owns no infrastructure, because terraform needs a node to create anything at
+// all. Failing the snapshot over it would freeze applies for every OTHER qube,
+// which is how a single bad row took down the whole fleet in testing.
+func TestSnapshot_NodelessQubeDoesNotWedgeTheFleet(t *testing.T) {
+	zone := proxmoxZone()
+	zone.Config.Proxmox.Node = "" // no zone default either
+
+	healthy := qubeWith(models.QubeStatusRunning, models.QubeSpec{Node: "infra-node4"})
+	stranded := qubeWith(models.QubeStatusError, models.QubeSpec{})
+	stranded.ID, stranded.Name = "q2", "stranded"
+
+	snap := NewQubeSnapshot(
+		&stubQubeLister{qubes: []*models.Qube{healthy, stranded}},
+		&stubZoneRepo{zone: zone},
+		nil,
+	)
+	out, err := snap(t.Context())
+	require.NoError(t, err, "one stranded qube must not fail the whole snapshot")
+
+	assert.Contains(t, out, "dev-work", "the healthy qube still renders")
+	assert.NotContains(t, out, "stranded", "the stranded qube is left out rather than rendered wrong")
+}
+
+// stubQubeLister satisfies repository.QubeRepository with only List doing work;
+// the snapshot never calls anything else.
+type stubQubeLister struct{ qubes []*models.Qube }
+
+func (s *stubQubeLister) List(context.Context, repository.QubeListOptions) ([]*models.Qube, error) {
+	return s.qubes, nil
+}
+func (s *stubQubeLister) Create(context.Context, *models.Qube) error { return nil }
+func (s *stubQubeLister) GetByID(context.Context, string) (*models.Qube, error) {
+	return nil, nil
+}
+func (s *stubQubeLister) Update(context.Context, *models.Qube) error { return nil }
+func (s *stubQubeLister) Delete(context.Context, string) error       { return nil }
+func (s *stubQubeLister) UpdateStatus(context.Context, string, models.QubeStatus) error {
+	return nil
+}
+func (s *stubQubeLister) UpdateIPAddress(context.Context, string, string) error { return nil }
+func (s *stubQubeLister) ClaimTransition(context.Context, string, []models.QubeStatus, models.QubeStatus) error {
+	return nil
+}
+func (s *stubQubeLister) ListByStatus(context.Context, []models.QubeStatus) ([]*models.Qube, error) {
+	return nil, nil
+}
+func (s *stubQubeLister) UpdateAgentHealth(
+	context.Context, string, models.AgentHealth, time.Time, string,
+) error {
+	return nil
+}
+
+// TestSnapshot_NameCollisionKeepsNewestRow — the qube NAME is the terraform map
+// key, but rows are not unique by name: deleting and recreating a qube leaves
+// the released row in place until its job finishes. Both rows render into the
+// same key.
+//
+// Observed in real deployment: the torn-down row's compute_running=false
+// overwrote the new row's true, so terraform saw nothing to create and the job
+// reported SUCCESS for a compute VM that was never built.
+func TestSnapshot_NameCollisionKeepsNewestRow(t *testing.T) {
+	old := qubeWith(models.QubeStatusReleased, models.QubeSpec{Node: "infra-node4"})
+	old.ID = "old"
+	old.CreatedAt = time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+
+	fresh := qubeWith(models.QubeStatusCreating, models.QubeSpec{Node: "infra-node4"})
+	fresh.ID = "fresh"
+	fresh.CreatedAt = old.CreatedAt.Add(time.Minute)
+
+	// Both orderings must agree, or the result depends on how the DB happened
+	// to sort the rows — which is exactly the bug.
+	for _, order := range [][]*models.Qube{{old, fresh}, {fresh, old}} {
+		snap := NewQubeSnapshot(&stubQubeLister{qubes: order}, &stubZoneRepo{zone: proxmoxZone()}, nil)
+		out, err := snap(t.Context())
+		require.NoError(t, err)
+
+		entry, ok := out["dev-work"].(map[string]any)
+		require.True(t, ok, "the name must still render exactly once")
+		assert.Equal(t, true, entry["compute_running"],
+			"the newer row is the current intent; the released row must not overwrite it")
 	}
 }

@@ -56,6 +56,14 @@ type ProxmoxZoneConfig struct {
 	// be on scsi0 and it must have a cloud-init drive and qemu-guest-agent, or
 	// terraform will wait for an IP that never arrives.
 	TemplateVMID int `json:"template_vm_id,omitempty"`
+	// TemplateNode is the node the template VM lives on.
+	//
+	// Distinct from Node, which is where new qubes RUN. The clone API must be
+	// called on the template's own node — calling it elsewhere returns "unable
+	// to find configuration file for VM <id>". They may differ only when the
+	// template's disks are on shared storage; qemu-server allows the clone
+	// target parameter only in that case.
+	TemplateNode string `json:"template_node,omitempty"`
 	// SSHPublicKeys are injected by cloud-init. PUBLIC keys only — a private
 	// key must never reach this struct, which is persisted and API-visible.
 	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`
