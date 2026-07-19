@@ -39,13 +39,15 @@ output "aws_zone_info" {
 # ============================================
 
 output "remote_qubes" {
-  description = "已创建的远程 Qube 列表"
+  description = "已创建的远程 Qube 列表 (含存算分离状态)"
   value = {
     for name, qube in module.remote_qubes : name => {
-      zone       = qube.zone_id
-      type       = qube.qube_type
-      ip_address = qube.ip_address
-      status     = qube.status
+      zone            = qube.zone_id
+      type            = qube.qube_type
+      compute_running = qube.compute_running # 计算实例是否在运行
+      data_disk_id    = qube.data_disk_id    # 独立持久数据盘 ID (compute 销毁后仍存在)
+      ip_address      = qube.ip_address      # 计算实例可达地址 (供 SSH transport)
+      status          = qube.status          # running / suspended
     }
   }
 }

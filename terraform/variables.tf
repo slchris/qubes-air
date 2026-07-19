@@ -94,19 +94,40 @@ variable "aws_config" {
 # ============================================
 
 variable "remote_qubes" {
-  description = "远程 Qube 定义"
+  description = "远程 Qube 定义 (存算分离)"
   type = map(object({
-    zone     = string # 所属 Zone
-    type     = string # Qube 类型 (work/dev/gpu/disp)
-    cpu      = optional(number, 2)
-    memory   = optional(number, 4096)
-    disk     = optional(number, 50)
-    template = optional(string, "fedora-39")
+    zone = string # 所属 Zone
+    type = string # Qube 类型 (work/dev/gpu/disp)
 
-    # 云平台特定配置
+    # ---- 存算分离核心开关 ----
+    # compute_running: true=计算实例存在(花钱); false=销毁计算保留数据(省钱)
+    #   改为 false 再 apply = suspend (释放计算, 保留数据盘)
+    #   改回 true  再 apply = resume  (重建计算, 挂回同一数据盘)
+    compute_running = optional(bool, true)
+    # data_disk_gb: 独立持久数据盘大小(GB), 与计算实例解耦、受 prevent_destroy 保护
+    data_disk_gb = optional(number, 50)
+
+    # ---- 计算规格 ----
+    # 留空则套用 qube type 的 preset (work/dev/gpu/disp), 显式写值则覆盖 preset。
+    # 不能给默认值 —— 见 modules/remote-qube-base/main.tf 里的说明。
+    cpu    = optional(number)
+    memory = optional(number)
+    disk   = optional(number) # os/root 盘大小 (随实例销毁重建)
+
+    # 注: 原有的 template = optional(string, "fedora-39") 已删除。它在全树没有任何消费者
+    # (只有 template_vm_id 真正生效), 留着会让人误以为能靠它选 OS。
+
+    # ---- 云平台特定配置 ----
     machine_type = optional(string)
     gpu_type     = optional(string)
     gpu_count    = optional(number)
+
+    # ---- Proxmox 特定配置 ----
+    node_name       = optional(string) # Proxmox 节点名; 留空用 proxmox_config.node
+    template_vm_id  = optional(number) # clone 用的模板 VM ID
+    datastore_id    = optional(string, "local-lvm")
+    network_bridge  = optional(string, "vmbr0")
+    ssh_public_keys = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
   }))
   default = {}
 }
