@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +39,23 @@ type ServerConfig struct {
 	// enough: these streams are long-lived, so a revoked agent would keep an
 	// established connection indefinitely.
 	ReauthorizeInterval time.Duration
+	// CertSource, when set, supplies the server certificate on EACH handshake
+	// instead of the static TLS.Certificates.
+	//
+	// This is what lets a RENEWED certificate take effect without restarting
+	// the process — the same reasoning as ClientConfig.TLSProvider, applied to
+	// the accepting side. tls.Config.Certificates is read once, so without this
+	// an agent that has just renewed keeps presenting the superseded
+	// certificate until someone restarts it; on a fleet nobody reboots that
+	// means the certificate expires with a valid replacement sitting on disk,
+	// which is the failure renewal exists to prevent.
+	CertSource ServerCertSource
+}
+
+// ServerCertSource hands out the certificate the listener presents.
+// Implemented by *agent.Identity.
+type ServerCertSource interface {
+	ServerCertificate() (*tls.Certificate, error)
 }
 
 // CertRegistry authorizes client certificates by fingerprint.
@@ -161,6 +179,45 @@ func (s *Server) reauthorizeLoop(ctx context.Context, cancel context.CancelFunc,
 	}
 }
 
+// applyCertSource wires live certificate selection into the TLS config.
+//
+// Two details are load-bearing.
+//
+// Certificates MUST be cleared. Go only consults GetCertificate when
+// Certificates is empty or the ClientHello carried an SNI name, and the
+// console's prober dials a qube by IP address with no SNI to send (see
+// service.probeTLSConfig, which cannot verify by hostname either). Leaving the
+// startup certificate in place would therefore skip this hook for exactly the
+// caller renewal is meant to serve: the agent would renew, report success, and
+// go on presenting the old certificate until it expired.
+//
+// The startup certificate is kept as a fallback rather than discarded. If the
+// source cannot produce a certificate, serving the previous one — still valid,
+// merely older — beats failing the handshake: an agent that answers nothing is
+// unreachable by the console, and the console is the only thing that can fix it.
+func (s *Server) applyCertSource() {
+	if s.cfg.CertSource == nil {
+		return
+	}
+	src := s.cfg.CertSource
+	startup := s.cfg.TLS.Certificates
+	s.cfg.TLS.Certificates = nil
+	s.cfg.TLS.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		cert, err := src.ServerCertificate()
+		if err == nil && cert != nil {
+			return cert, nil
+		}
+		if err == nil {
+			err = errors.New("certificate source returned nothing")
+		}
+		if len(startup) > 0 {
+			log.Printf("grpc server: certificate source unavailable, serving the startup certificate: %v", err)
+			return &startup[0], nil
+		}
+		return nil, fmt.Errorf("grpc server: no server certificate available: %w", err)
+	}
+}
+
 // Serve starts the gRPC server with mTLS and blocks until it stops. When ctx is
 // cancelled the server is gracefully stopped and Serve returns nil.
 func (s *Server) Serve(ctx context.Context) error {
@@ -186,6 +243,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		log.Printf("grpc server: WARNING no certificate registry configured — " +
 			"any CA-signed client certificate is accepted and CANNOT be revoked")
 	}
+
+	s.applyCertSource()
 
 	lis, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {

@@ -27,6 +27,7 @@ import (
 const (
 	blockCertificate = "CERTIFICATE"
 	blockECKey       = "EC PRIVATE KEY"
+	blockCSR         = "CERTIFICATE REQUEST"
 )
 
 // DefaultCALifetime is how long a newly created CA is valid.
@@ -46,6 +47,14 @@ const DefaultAgentCertLifetime = 90 * 24 * time.Hour
 var (
 	ErrNoCA         = errors.New("no CA material available")
 	ErrMalformedPEM = errors.New("malformed PEM material")
+	// ErrCSRSubjectMismatch means a certificate request asked to be signed under
+	// a name other than the one the caller already authenticated. It is a
+	// distinct error because it is the signature of an attempt to move sideways
+	// through the fleet, not an ordinary malformed input.
+	ErrCSRSubjectMismatch = errors.New("certificate request names a different agent")
+	// ErrCSRKeyUnsupported means the key inside a request is not one this fleet
+	// issues certificates for.
+	ErrCSRKeyUnsupported = errors.New("certificate request carries an unsupported public key")
 )
 
 // CA is the console's signing authority.
@@ -69,6 +78,26 @@ type Bundle struct {
 	CAPEM string `json:"ca_pem"`
 	// Fingerprint identifies this certificate in the registry, and is what a
 	// revocation names.
+	Fingerprint string `json:"fingerprint"`
+	// NotAfter is when this certificate stops being accepted.
+	NotAfter time.Time `json:"not_after"`
+}
+
+// SignedCert is a certificate issued from a request, for a key the console
+// never saw.
+//
+// It is a Bundle minus KeyPEM, and that absence is the entire point: the agent
+// generated the key and kept it, so renewal does not repeat the weakness of
+// IssueAgentCert, where the private key travels to the remote inside cloud-init
+// data that anyone holding VM.Config.Cloudinit can read.
+type SignedCert struct {
+	// CertPEM is the newly signed certificate.
+	CertPEM string `json:"cert_pem"`
+	// CAPEM is the CA certificate, sent alongside so an agent whose stored copy
+	// is missing or stale ends a renewal able to verify its peer.
+	CAPEM string `json:"ca_pem"`
+	// Fingerprint identifies this certificate in the registry, and is what a
+	// revocation names. Same value and same encoding as Bundle.Fingerprint.
 	Fingerprint string `json:"fingerprint"`
 	// NotAfter is when this certificate stops being accepted.
 	NotAfter time.Time `json:"not_after"`
@@ -113,21 +142,120 @@ func NewCA(commonName string, lifetime time.Duration) (*CA, error) {
 	return &CA{Cert: cert, Key: key}, nil
 }
 
-// IssueAgentCert signs a client certificate for one agent.
+// IssueAgentCert signs a client certificate for one agent, generating the key
+// pair here.
 //
-// A fresh key pair is generated here rather than having the agent produce a CSR.
-// That is a real trade-off and worth naming: the private key exists on the
-// console and travels to the remote, typically through cloud-init, so anyone who
-// can read that VM's cloud-init data can read the key. The alternative — the
-// agent generating its own key and submitting a CSR — needs a bootstrap channel
-// authenticated some other way, which does not exist yet. Given the remote is
-// assumed compromisable anyway, and the registry bounds the damage by making
-// revocation immediate, this is the pragmatic starting point rather than the
-// end state.
+// This is the BOOTSTRAP path, used when a qube has no identity yet and so has no
+// authenticated channel to ask over. The cost is real and worth naming: the
+// private key exists on the console and travels to the remote through
+// cloud-init, so anyone who can read that VM's cloud-init data can read the key.
+// Once an agent holds a certificate it renews through SignAgentCSR instead,
+// where the key is generated on the remote and never crosses the network.
 func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle, error) {
 	if ca == nil || ca.Cert == nil || ca.Key == nil {
 		return nil, ErrNoCA
 	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate agent key: %w", err)
+	}
+	cert, der, err := ca.signAgentCert(commonName, lifetime, &key.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal agent key: %w", err)
+	}
+
+	return &Bundle{
+		CertPEM:     encodePEM(blockCertificate, der),
+		KeyPEM:      encodePEM(blockECKey, keyDER),
+		CAPEM:       encodePEM(blockCertificate, ca.Cert.Raw),
+		Fingerprint: FingerprintOf(cert),
+		NotAfter:    cert.NotAfter,
+	}, nil
+}
+
+// SignAgentCSR renews an agent's certificate from a request it generated itself.
+//
+// expectedCN is the identity the CALLER already proved, by dialling the agent
+// over mTLS and verifying the certificate it presented. Everything here hangs
+// off that: the console is not deciding who the requester is, it is refusing to
+// sign anything that disagrees with who the requester already turned out to be.
+//
+// A request naming a different agent is refused rather than corrected. Rewriting
+// it to the expected name would produce a working certificate and destroy the
+// only evidence that something asked for another agent's identity — which is an
+// attempt to move sideways through the fleet, not a typo to be helpful about.
+func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*SignedCert, error) {
+	if ca == nil || ca.Cert == nil || ca.Key == nil {
+		return nil, ErrNoCA
+	}
+
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil || block.Type != blockCSR {
+		return nil, fmt.Errorf("%w: certificate request", ErrMalformedPEM)
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse certificate request: %w", err)
+	}
+
+	// A request is signed by the private key matching the public key inside it,
+	// which is the only proof that the requester actually holds that key.
+	// Skipping this check would let anything paste in a public key it does not
+	// control and have an agent identity bound to it — after which whoever DOES
+	// hold the matching private key can authenticate as that agent.
+	if err := csr.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("certificate request signature is invalid: %w", err)
+	}
+
+	// Exact comparison, deliberately not case-insensitive or normalized. These
+	// names are derived from qube names, and two qubes whose names differ only
+	// in case are two different qubes; folding them together would make the
+	// check pass for the wrong one.
+	if csr.Subject.CommonName != expectedCN {
+		return nil, fmt.Errorf("%w: dialled %q but the request asks for %q",
+			ErrCSRSubjectMismatch, expectedCN, csr.Subject.CommonName)
+	}
+
+	if err := checkAgentPublicKey(csr.PublicKey); err != nil {
+		return nil, err
+	}
+
+	// The public key is the ONLY thing taken from the request. Serial, validity,
+	// key usage and extended key usage all come from signAgentCert, so any
+	// extension or attribute the request asked for — a SAN, basic constraints
+	// claiming CA, a longer life — is dropped by construction rather than by
+	// remembering to filter it. A CSR is untrusted input that happens to carry a
+	// signature; the signature proves who sent it, not that anything it asks for
+	// is allowed.
+	cert, der, err := ca.signAgentCert(expectedCN, lifetime, csr.PublicKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &SignedCert{
+		CertPEM:     encodePEM(blockCertificate, der),
+		CAPEM:       encodePEM(blockCertificate, ca.Cert.Raw),
+		Fingerprint: FingerprintOf(cert),
+		NotAfter:    cert.NotAfter,
+	}, nil
+}
+
+// signAgentCert produces the one and only shape of agent certificate this CA
+// issues, for a public key that arrived from anywhere.
+//
+// Both issuance paths go through here so that a renewed agent is
+// indistinguishable from a freshly provisioned one. That property is structural
+// rather than a matter of keeping two templates in step: if each path built its
+// own, they would drift, and a renewal would quietly change what an agent is
+// permitted to do — the kind of difference nobody finds until a certificate that
+// should work does not.
+func (ca *CA) signAgentCert(commonName string, lifetime time.Duration, pub any) (*x509.Certificate, []byte, error) {
 	if lifetime <= 0 {
 		lifetime = DefaultAgentCertLifetime
 	}
@@ -137,14 +265,9 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 	if notAfter.After(ca.Cert.NotAfter) {
 		notAfter = ca.Cert.NotAfter
 	}
-
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate agent key: %w", err)
-	}
 	serial, err := randomSerial()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	tmpl := &x509.Certificate{
@@ -160,27 +283,38 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 		IsCA:                  false,
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, &key.PublicKey, ca.Key)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, pub, ca.Key)
 	if err != nil {
-		return nil, fmt.Errorf("sign agent cert: %w", err)
+		return nil, nil, fmt.Errorf("sign agent cert: %w", err)
 	}
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
-		return nil, fmt.Errorf("parse agent cert: %w", err)
+		return nil, nil, fmt.Errorf("parse agent cert: %w", err)
 	}
+	return cert, der, nil
+}
 
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, fmt.Errorf("marshal agent key: %w", err)
+// checkAgentPublicKey refuses keys this fleet does not issue certificates for.
+//
+// The request's self-signature only proves the requester holds the matching
+// private key — a deliberately weak key satisfies it perfectly well. Since every
+// agent the console provisions gets P-256, a renewal arriving with anything else
+// is either an agent built against a different contract or a request to be bound
+// to a key whose signatures somebody else can produce, and neither should be
+// signed on the strength of a valid mTLS session alone.
+func checkAgentPublicKey(pub any) error {
+	key, ok := pub.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("%w: want an ECDSA key, got %T", ErrCSRKeyUnsupported, pub)
 	}
-
-	return &Bundle{
-		CertPEM:     encodePEM(blockCertificate, der),
-		KeyPEM:      encodePEM(blockECKey, keyDER),
-		CAPEM:       encodePEM(blockCertificate, ca.Cert.Raw),
-		Fingerprint: FingerprintOf(cert),
-		NotAfter:    cert.NotAfter,
-	}, nil
+	switch key.Curve {
+	case elliptic.P256(), elliptic.P384(), elliptic.P521():
+		return nil
+	case nil:
+		return fmt.Errorf("%w: ECDSA key names no curve", ErrCSRKeyUnsupported)
+	default:
+		return fmt.Errorf("%w: unsupported curve %s", ErrCSRKeyUnsupported, key.Curve.Params().Name)
+	}
 }
 
 // FingerprintOf returns the registry key for a certificate. It must match

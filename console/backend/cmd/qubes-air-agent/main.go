@@ -24,8 +24,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"log"
@@ -33,6 +31,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/agent"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
@@ -52,9 +51,13 @@ var buildVersion = "dev"
 // answers "pong <remote_name> <unix_ts>". Deliberately minimal: a probe should
 // answer "is this link up", not "is this host healthy", or one failure becomes
 // several indistinguishable ones.
+// qubesair.Status is deliberately NOT here. It was allowed before anything
+// implemented it, so every agent logged a warning on every start that the
+// service is allowed but missing. A warning that is always present is one
+// operators learn to scroll past, which costs more than the missing service.
+// Add it back in the same change that ships /etc/qubes-rpc/qubesair.Status.
 var defaultAllowedServices = []string{
 	"qubesair.Ping",
-	"qubesair.Status",
 }
 
 func main() {
@@ -89,24 +92,52 @@ func main() {
 		log.Printf("no --remote-name given, using hostname %q", h)
 	}
 
-	tlsCfg, err := buildTLS(*caFile, *certFile, *keyFile)
+	if *caFile == "" || *certFile == "" || *keyFile == "" {
+		// Running without mTLS would mean anyone who can reach the port may
+		// execute this host's qrexec services, and on a LAN that is everyone —
+		// so a missing file is a startup failure, not a warning.
+		log.Fatalf("--ca, --cert and --key are all required (mTLS is mandatory)")
+	}
+	identity, err := agent.LoadIdentity(*certFile, *keyFile, *caFile)
 	if err != nil {
-		log.Fatalf("TLS: %v", err)
+		log.Fatalf("TLS identity: %v", err)
 	}
 
 	inv := agent.NewLocalInvoker(*remoteName, splitCSV(*allowedCSV))
 	inv.ServiceDir = *serviceDir
+
+	// Certificate renewal. Without it the only way to replace an expiring
+	// certificate is to rebuild the VM, because cloud-init delivers user-data
+	// once at first boot — which turns the 90-day certificate lifetime into a
+	// fleet rebuild deadline. Registered as builtins because they rewrite this
+	// process's own key and swap the listener's certificate; a script in
+	// ServiceDir could do neither, and must not be able to pretend it did.
+	renewal := agent.NewRenewalService(identity, agent.DefaultPendingRenewalTTL)
+	if err := renewal.RegisterBuiltins(inv); err != nil {
+		log.Fatalf("register renewal services: %v", err)
+	}
 
 	log.Printf("qubes-air-agent %s starting", buildVersion)
 	log.Printf("  remote name : %s", *remoteName)
 	log.Printf("  listen      : %s", *listen)
 	log.Printf("  service dir : %s", inv.ServiceDir)
 	log.Printf("  allowed     : %s", *allowedCSV)
-	warnMissingServices(inv.ServiceDir, splitCSV(*allowedCSV))
+	if leaf, err := identity.Leaf(); err == nil {
+		// Say which identity is actually loaded and when it runs out. A fleet
+		// that stopped renewing has to be visible long before the certificates
+		// expire; this is the cheapest place to see it on one host.
+		log.Printf("  identity    : %s (expires %s)",
+			leaf.Subject.CommonName, leaf.NotAfter.UTC().Format(time.RFC3339))
+	}
+	warnMissingServices(inv, inv.ServiceDir, splitCSV(*allowedCSV))
 
 	srv := transportgrpc.NewServer(transportgrpc.ServerConfig{
 		Listen: *listen,
-		TLS:    tlsCfg,
+		TLS:    identity.ServerTLSConfig(),
+		// Certificate selection per handshake, so a renewal takes effect on the
+		// next connection instead of the next restart — and without dropping
+		// the tunnels that are already up.
+		CertSource: identity,
 		// No CertRegistry here: the registry lives with the issuer, on the
 		// trusted side. This agent verifies that the peer's certificate chains
 		// to the CA; deciding whether a given relay is still permitted is not
@@ -123,42 +154,20 @@ func main() {
 	log.Printf("qubes-air-agent stopped")
 }
 
-// buildTLS loads the server certificate and the CA used to verify the relay.
-//
-// All three are required. Running without mTLS would mean anyone who can reach
-// the port may execute this host's qrexec services, and on a LAN that is
-// everyone — so a missing file is a startup failure, not a warning.
-func buildTLS(caFile, certFile, keyFile string) (*tls.Config, error) {
-	if caFile == "" || certFile == "" || keyFile == "" {
-		return nil, fmt.Errorf("--ca, --cert and --key are all required (mTLS is mandatory)")
-	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-	if err != nil {
-		return nil, fmt.Errorf("load key pair: %w", err)
-	}
-	caPEM, err := os.ReadFile(caFile) // #nosec G304 -- operator-supplied path
-	if err != nil {
-		return nil, fmt.Errorf("read CA: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("CA file %q contains no usable certificate", caFile)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		ClientCAs:    pool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		MinVersion:   tls.VersionTLS13,
-	}, nil
-}
-
 // warnMissingServices reports allowed services with no implementation.
 //
 // Worth saying at startup: an allowlisted service whose script was never
 // installed fails only when someone calls it, and then looks like a transport
 // fault rather than a missing file.
-func warnMissingServices(dir string, allowed []string) {
+//
+// Builtins are skipped. They have no file in ServiceDir and never will — see
+// internal/agent/builtin.go — so warning about one would send an operator
+// looking for a script that must not exist.
+func warnMissingServices(inv *agent.LocalInvoker, dir string, allowed []string) {
 	for _, s := range allowed {
+		if inv.IsBuiltin(s) {
+			continue
+		}
 		path := dir + "/" + s
 		if _, err := os.Stat(path); err != nil {
 			log.Printf("  WARNING service %q is allowed but %s does not exist; calls to it will fail", s, path)
