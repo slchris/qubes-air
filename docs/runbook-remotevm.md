@@ -11,11 +11,15 @@
 > 也就是说 §3 之后依赖这些的步骤(§5 起 autossh、§9 反向调用验证)**目前没有对应的 state**。
 > 缺口逐项列在 §3。
 >
-> 持久化曾是第三个缺口(重启即丢 transport),**已在 qubes-salt-config 修复**
+> 持久化曾是第三个缺口(重启即丢 transport),**已在 qubes-salt-config 修复并真机验证**
 > (`fix(remotevm): persist the relay's transport instead of losing it at reboot`)。
 > 同一个 bug 当时**两条路都有**——gRPC 那条声明了 bind-dirs 却把 unit 写到了真实路径,
 > 看着更像已处理,其实一样丢——一并修了。本文 §3 描述的是修复后的行为,
 > 需要 qubes-salt-config 含该提交。
+>
+> 真机验证做法(R4.3):在一次性 AppVM 上 apply → 重启 → transport 仍在且仍是 bind 挂载;
+> 又把布局改回修复前(直接写 `/etc/qubes-rpc`、无 bind-dirs)重启一次,文件**消失且不报错**。
+> **跨机那一跳仍未验证**(当时没有远端主机),所以 §4 之后的步骤照旧未经真机。
 
 > 目标: 从"terraform 建出远端 VM"到"本地 AppVM 里 `qrexec-client-vm remote-dev-1 <service>` 调通",
 > 全链路可照做。含零入站验证与反向调用验证。
@@ -121,7 +125,7 @@ sudo qubesctl --skip-dom0 --targets=sys-relay-pve state.apply mgmt.remotevm.rela
 要么改走 gRPC 那条路(`mgmt.remotevm.grpc-relay`,反向回程在同一条长连接里,不需要
 回环 sshd)。
 
-**持久化检查** (原先这里会失败,现已修复,见顶部横幅):
+**持久化检查** (原先这里会失败,现已修复**并在真机验证过**,见顶部横幅):
 
 ```bash
 qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'          # 存在

@@ -78,8 +78,14 @@ git show <commit>^:salt/qubes-air/remotevm/relay.sls
 路径内容播种它的 `/rw` 副本，而那时根卷已经重置、模板里没有这个 unit，于是拿空文件
 盖空文件。声明了反而更像已处理。两处都已在 `qubes-salt-config` 修复
 （`fix(remotevm): persist the relay's transport instead of losing it at reboot`）:
-canonical 副本写 `/rw/bind-dirs/`，当次开机补 `mount --bind`，首次开机再由 rc.local
-兜底。**要点: 写 `/rw/bind-dirs/<path>`，不要写 `<path>` 本身。**
+canonical 副本写 `/rw/bind-dirs/`，当次开机补 `mount --bind`。
+**要点: 写 `/rw/bind-dirs/<path>`，不要写 `<path>` 本身。**
+
+已在 R4.3 真机验证:一次性 AppVM 上 apply → 重启 → transport 仍在且仍是 bind 挂载;
+把布局改回修复前再重启,文件**消失且不报错**。另外真机上的 `bind-dirs.sh`
+（`qubes-core-agent 4.3.45-1+deb13u1`）**会自行创建缺失的挂载目标**，所以不需要
+rc.local 兜底——这一点与 `qubes-salt-config` 里 `console.sls` / `tailscale/install.sls`
+两处注释的断言相反，那两处待订正。
 
 ## 还留在这里的东西
 
