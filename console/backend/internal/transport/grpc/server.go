@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 
@@ -145,12 +146,25 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 	if hs == nil {
 		return fmt.Errorf("grpc server: expected Handshake as first frame, got %T", first.GetKind())
 	}
-	if hs.GetProtocolVersion() != protocolVersion {
-		return fmt.Errorf("grpc server: unsupported protocol version %q (want %q)",
-			hs.GetProtocolVersion(), protocolVersion)
+	if !supportsProtocol(hs.GetProtocolVersion()) {
+		msg := protocolMismatchMessage(hs.GetProtocolVersion())
+		// Tell the peer WHY before closing. A bare stream error is
+		// indistinguishable from a network fault, which sends whoever is
+		// debugging it looking at firewalls instead of versions.
+		_ = send(&pb.Frame{Kind: &pb.Frame_Error{Error: &pb.CallError{
+			Code:    CodeProtocolMismatch,
+			Message: msg,
+		}}})
+		log.Printf("grpc server: rejecting relay %q (build %q): %s",
+			hs.GetRelayName(), hs.GetBuildVersion(), msg)
+		return fmt.Errorf("grpc server: %s", msg)
 	}
 	relayName := hs.GetRelayName()
 	remoteName := hs.GetRemoteName()
+	// Build version is observability only — logged so an operator can tell which
+	// agent build is actually running out there, without it gating anything.
+	log.Printf("grpc server: relay %q connected (protocol %s, build %s)",
+		relayName, hs.GetProtocolVersion(), orUnknown(hs.GetBuildVersion()))
 	// Acknowledge with our own Handshake frame.
 	if err := send(handshakeFrame(remoteName, relayName)); err != nil {
 		return err

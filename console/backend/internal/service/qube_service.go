@@ -537,8 +537,13 @@ func (s *QubeServiceImpl) CheckReachable(ctx context.Context, id string) (string
 	}
 
 	// Forward a qrexec health check to the remote qube over the tunnel. The
-	// transport validates the target/service name and only carries the frame;
-	// both dom0s authorize the call.
+	// transport validates the target/service name and only carries the frame.
+	//
+	// Authorization happens in the LOCAL dom0 only — a non-Qubes remote has no
+	// dom0 to re-check with (see docs/remote-agent-design.md §3). The remote
+	// executes remote/qubes-rpc/qubesair.Ping, which answers "pong <name> <ts>".
+	// Until an agent is deployed there, this call cannot succeed: that is the
+	// honest failure, not a bug in this function.
 	resp, err := s.transport.Call(ctx, qube.Name, pingService, nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: ping %q: %v", ErrUnreachable, qube.Name, err)

@@ -182,9 +182,26 @@ UI 建 qube
 
 ## 8. 待决问题
 
-1. **证书签发与轮换**：Console 自建 CA？每 qube 一证？撤销走 CRL 还是短期证书？
-2. **agent 升级**：远端 agent 版本落后于 Console 时如何协商？`Handshake.protocol_version` 已预留字段但无策略。
-3. **可观测性**：远端执行失败时，操作者从哪看到原因？`CallError` 已有 code/message，
-   但需接入 jobs 审计表那类持久记录。
-4. **`qubesair.Ping` 尚不存在**（`internal/service/qube_service.go` 的 `pingService` 常量已引用它）。
-   agent 落地时需一并提供，否则 `CheckReachable` 永远失败。
+1. **agent 身份认证方式**（待定，倾向改用 token）：现状是 mTLS，每 agent 一张客户端证书，
+   随之而来的是签发、轮换、吊销（CRL 或短期证书）整套机械。
+   **建议改为「服务端 TLS + 每 agent 一个 token」**：安全属性相同——agent 靠服务端证书确认
+   对方是真 relay，relay 靠 token 确认 agent 身份，传输依然加密——但**吊销退化为删一行
+   数据库记录**，而凭据加密库已经存在。mTLS 保留为可选的更强模式，不拆除。
+   注意这不是「要不要加密」的问题：该连接跨机器，明文意味着局域网上任何人都能冒充 agent
+   并发起反向调用去读本地 vault（虽有 `ask` 兜底，但那不该是唯一一道）。
+2. ~~**agent 升级协商**~~ **[已实现]** 关键是把**线协议版本**与**构建版本**分开：
+   - `protocol_version` 参与兼容性判断，服务端用**支持集合**（而非相等判断）比对，
+     使得同时支持 v1/v2 的构建可以让两侧按任意顺序升级，不需要 flag day
+   - `build_version` **仅用于可观测性**，绝不参与判断——否则每次发版都会踢掉所有在网 agent
+   - 版本不匹配时先发一个带 `PROTOCOL_MISMATCH` 码、指明双方版本的 `CallError` 再断开，
+     而不是让对端只看到「流断了」（那和网络故障无法区分，会把人引去查防火墙）
+3. **可观测性**（部分实现）：`CallError` 的错误码已固化为契约
+   （`PROTOCOL_MISMATCH`/`DENIED`/`TIMEOUT`/`UNAVAILABLE`/`INTERNAL`，有测试钉住，
+   因为调用方会 switch 它们），握手拒绝与连接建立都会记日志并带上对端 build 版本。
+   **仍待做**：把远端调用失败接进 jobs 审计表，让操作者在 UI 上看到原因而不是只在日志里。
+4. ~~**`qubesair.Ping` 尚不存在**~~ **[已实现]** 服务脚本在 `remote/qubes-rpc/qubesair.Ping`，
+   由 agent 部署到远端 `/etc/qubes-rpc/`。契约（`CheckReachable` 依赖，改动即破坏调用方）：
+   stdout 单行 `pong <remote_name> <unix_ts>`，exit 0 表示可达。
+   刻意保持最小——探针回答的是「链路通不通」，不是「远端健不健康」；
+   掺进磁盘/负载检查会让一次探测有多种失败原因，反而说不清哪里断了。
+   深度检查应是独立的 `qubesair.Status`。

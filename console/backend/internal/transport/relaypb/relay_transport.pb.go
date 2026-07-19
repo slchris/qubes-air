@@ -267,12 +267,19 @@ func (*Frame_KeepAlive) isFrame_Kind() {}
 // Handshake：建流后 client→server（及 server→client 回应）首帧。
 // 承载协议版本与 relay 身份（remote_name 对齐 Qubes RemoteVM 的 remote_name 属性）。
 type Handshake struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion string                 `protobuf:"bytes,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"` // 例 "v1"
-	RelayName       string                 `protobuf:"bytes,2,opt,name=relay_name,json=relayName,proto3" json:"relay_name,omitempty"`                   // 本地 relay 标识（sys-relay-<zone>）
-	RemoteName      string                 `protobuf:"bytes,3,opt,name=remote_name,json=remoteName,proto3" json:"remote_name,omitempty"`                // 目标远端标识（对齐 RemoteVM remote_name）
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// protocol_version：**线协议**版本，例 "v1"。
+	//
+	// 与 build_version 严格区分。一方发布新版本不应强迫另一方升级 —— 只有帧
+	// 格式或语义真的变了才 bump 这个。把两者混为一谈会导致每次发版都断连。
+	ProtocolVersion string `protobuf:"bytes,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	RelayName       string `protobuf:"bytes,2,opt,name=relay_name,json=relayName,proto3" json:"relay_name,omitempty"`    // 本地 relay 标识（sys-relay-<zone>）
+	RemoteName      string `protobuf:"bytes,3,opt,name=remote_name,json=remoteName,proto3" json:"remote_name,omitempty"` // 目标远端标识（对齐 RemoteVM remote_name）
+	// build_version：发送方的构建版本（如 "0.3.7"）。**仅用于可观测性**，
+	// 不参与兼容性判断。运维排查「远端跑的是哪个 agent」时看这个。
+	BuildVersion  string `protobuf:"bytes,4,opt,name=build_version,json=buildVersion,proto3" json:"build_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Handshake) Reset() {
@@ -322,6 +329,13 @@ func (x *Handshake) GetRelayName() string {
 func (x *Handshake) GetRemoteName() string {
 	if x != nil {
 		return x.RemoteName
+	}
+	return ""
+}
+
+func (x *Handshake) GetBuildVersion() string {
+	if x != nil {
+		return x.BuildVersion
 	}
 	return ""
 }
@@ -623,13 +637,14 @@ const file_relay_transport_proto_rawDesc = "" +
 	"\x05error\x18\x06 \x01(\v2 .qubesair.transport.v1.CallErrorH\x00R\x05error\x12A\n" +
 	"\n" +
 	"keep_alive\x18\a \x01(\v2 .qubesair.transport.v1.KeepAliveH\x00R\tkeepAliveB\x06\n" +
-	"\x04kind\"v\n" +
+	"\x04kind\"\x9b\x01\n" +
 	"\tHandshake\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\tR\x0fprotocolVersion\x12\x1d\n" +
 	"\n" +
 	"relay_name\x18\x02 \x01(\tR\trelayName\x12\x1f\n" +
 	"\vremote_name\x18\x03 \x01(\tR\n" +
-	"remoteName\"\xe2\x01\n" +
+	"remoteName\x12#\n" +
+	"\rbuild_version\x18\x04 \x01(\tR\fbuildVersion\"\xe2\x01\n" +
 	"\rRequestHeader\x12>\n" +
 	"\tdirection\x18\x01 \x01(\x0e2 .qubesair.transport.v1.DirectionR\tdirection\x12%\n" +
 	"\x0eqrexec_service\x18\x02 \x01(\tR\rqrexecService\x12\x1f\n" +

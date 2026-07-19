@@ -57,10 +57,18 @@ message Frame {
 // Handshake：建流后 client→server（及 server→client 回应）首帧。
 // 承载协议版本与 relay 身份（remote_name 对齐 Qubes RemoteVM 的 remote_name 属性）。
 message Handshake {
-  string protocol_version = 1;   // 例 "v1"
+  // protocol_version：**线协议**版本，例 "v1"。
+  //
+  // 与 build_version 严格区分。一方发布新版本不应强迫另一方升级 —— 只有帧
+  // 格式或语义真的变了才 bump 这个。把两者混为一谈会导致每次发版都断连。
+  string protocol_version = 1;
   string relay_name       = 2;   // 本地 relay 标识（sys-relay-<zone>）
   string remote_name      = 3;   // 目标远端标识（对齐 RemoteVM remote_name）
-  // 认证在传输层（mTLS）完成，此处仅带非机密的元数据，不放任何密钥。
+  // build_version：发送方的构建版本（如 "0.3.7"）。**仅用于可观测性**，
+  // 不参与兼容性判断。运维排查「远端跑的是哪个 agent」时看这个。
+  string build_version    = 4;
+  // 认证在传输层完成（服务端 TLS + 每 agent token，或 mTLS）；
+  // 此处仅带非机密元数据，不放任何密钥。
 }
 
 // Direction：调用发起方向。决定该 request_id 属于正向还是反向回程，

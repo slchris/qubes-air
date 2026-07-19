@@ -1,0 +1,22 @@
+#!/bin/sh
+# qubesair.Ping — 远端可达性探针
+#
+# 由 RemoteVM agent 在收到 qrexec 服务名 "qubesair.Ping" 时执行。
+# console/backend/internal/service/qube_service.go 的 pingService 常量引用它；
+# 在它存在之前, CheckReachable 必然失败 —— 这个文件就是补上那个缺口。
+#
+# 契约 (被 CheckReachable 依赖, 改动即破坏调用方):
+#   stdin  : 忽略
+#   stdout : 单行 "pong <remote_name> <unix_ts>"
+#   exit   : 0 = 可达
+#
+# 刻意保持最小: 探针的作用是回答"这条链路通不通", 不是"远端健不健康"。
+# 掺进磁盘/负载检查会让一次探测有多种失败原因, 反而说不清到底哪里断了。
+# 深度检查应是独立服务 (qubesair.Status)。
+set -eu
+
+# QUBESAIR_REMOTE_NAME 由 agent 注入, 对齐 Qubes RemoteVM 的 remote_name 属性。
+# 缺失时回落到主机名, 让探针在配置不全时仍能回答"通", 而不是假装不可达。
+remote_name="${QUBESAIR_REMOTE_NAME:-$(hostname)}"
+
+printf 'pong %s %s\n' "$remote_name" "$(date +%s)"
