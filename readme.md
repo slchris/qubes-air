@@ -673,9 +673,12 @@ qubes-air/
 |   |-- playbooks/
 |   |   |-- bootstrap-zone.yaml
 |   |   |-- setup-sys-remote.yaml
-|-- packer/                          # [部分实现] 单个模板
+|-- packer/                          # [部分实现] 单个模板 (不再负责装 agent)
 |   |-- templates/fedora.pkr.hcl
-|   |-- scripts/install-agent.sh
+|-- packaging/agent-deb/             # [已实现] agent .deb 打包 (唯一的 unit 来源)
+|   |-- Dockerfile                   #    交叉编译 amd64 + dpkg-deb
+|   |-- qubes-air-agent.service
+|   |-- control.in / postinst / prerm / postrm
 |-- dom0-scripts/                    # [部分实现] dom0 引导/管理脚本
 |   |-- init-qubes-air.sh
 |   |-- manage-qubes-air.sh

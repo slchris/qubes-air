@@ -55,7 +55,10 @@ terraform output -json
 > 更根本的是这个包**装不上**——它依赖 Xen vchan，KVM guest 里不存在。
 > 实际方案见 [remote-agent-design.md](remote-agent-design.md)：由 cloud-init 安装
 > `qubes-air-agent`，它提供一个同名同接口的 `qrexec-client-vm`，底层走 gRPC 而非 vchan。
-> **该 agent 尚未实现**（`packer/scripts/install-agent.sh` 当前是 `sleep infinity` 占位符）。
+> 该 agent **已实现**（`console/backend/cmd/qubes-air-agent`），并以
+> `qubes-air-agent_<version>_amd64.deb` 的形式发布到局域网 artifact store，
+> 由 cloud-init 下载 + 校验 SHA256 后安装 —— **不烤进镜像**，
+> 原因和残留风险见 [bootstrap-design.md](bootstrap-design.md) §6。
 
 ---
 
