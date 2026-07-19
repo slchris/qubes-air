@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -628,7 +629,54 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 
 	v1.GET("/status", statusHandler(deps.db))
 
+	registerWebUI(r, cfg)
+
 	return r
+}
+
+// registerWebUI serves the built frontend from cfg.Server.WebRoot, at the same
+// origin as the API.
+//
+// No-op when WebRoot is empty or missing. A console with no UI still manages the
+// fleet through /api/v1; refusing to start because a directory of static files
+// is absent would turn a cosmetic gap into an outage.
+func registerWebUI(r *gin.Engine, cfg *config.Config) {
+	root := cfg.Server.WebRoot
+	if root == "" {
+		return
+	}
+	index := filepath.Join(root, "index.html")
+	if _, err := os.Stat(index); err != nil {
+		log.Printf("web UI disabled: %s not readable: %v", index, err)
+		return
+	}
+
+	r.Static("/assets", filepath.Join(root, "assets"))
+	r.StaticFile("/favicon.ico", filepath.Join(root, "favicon.ico"))
+	r.GET("/", func(c *gin.Context) { c.File(index) })
+
+	// SPA fallback: the frontend routes client-side, so a reload on /qubes must
+	// return index.html rather than 404.
+	//
+	// The API prefixes are excluded deliberately. Without this, an unknown
+	// /api/v1 path would return 200 and a page of HTML, and a caller expecting
+	// JSON gets a parse error somewhere far from the wrong URL that caused it —
+	// including the frontend's own client, which would report the console as
+	// broken rather than the request as misspelled.
+	r.NoRoute(func(c *gin.Context) {
+		p := c.Request.URL.Path
+		if strings.HasPrefix(p, "/api/") || p == "/health" {
+			c.JSON(http.StatusNotFound, gin.H{"code": http.StatusNotFound, "error": "Not Found"})
+			return
+		}
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			c.JSON(http.StatusNotFound, gin.H{"code": http.StatusNotFound, "error": "Not Found"})
+			return
+		}
+		c.File(index)
+	})
+
+	log.Printf("web UI served from %s", root)
 }
 
 // corsMiddleware adds CORS headers based on configuration.

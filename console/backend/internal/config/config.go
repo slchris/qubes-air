@@ -226,6 +226,16 @@ type ServerConfig struct {
 	Port int       `yaml:"port"`
 	Mode string    `yaml:"mode"`
 	TLS  TLSConfig `yaml:"tls"`
+
+	// WebRoot is the directory holding the built frontend (index.html plus
+	// assets/). Empty disables serving it, which is the default: the API is
+	// useful on its own and a missing directory must not stop the console from
+	// starting.
+	//
+	// Serving the UI from the same origin as the API is what makes it work
+	// without configuration — the frontend calls the relative path /api/v1, so
+	// there is no base URL to set and no CORS origin to allow.
+	WebRoot string `yaml:"web_root"`
 }
 
 // TLSConfig holds TLS/HTTPS configuration.
@@ -443,6 +453,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if mode := os.Getenv("GIN_MODE"); mode != "" {
 		c.Server.Mode = mode
+	}
+	if webRoot := os.Getenv("QUBES_AIR_WEB_ROOT"); webRoot != "" {
+		c.Server.WebRoot = webRoot
 	}
 
 	if enabled := os.Getenv("QUBES_AIR_TLS_ENABLED"); enabled != "" {
