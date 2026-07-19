@@ -133,6 +133,53 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 	return bundle, nil
 }
 
+// ReissueFor replaces a qube's agent identity, retiring whatever it held before.
+//
+// This is the resume path, and it exists because a suspended qube CANNOT renew.
+// Suspend DESTROYS the compute instance and keeps only the data disk (see
+// terraform/modules/remote-qube-base: compute_running=false), so there is no
+// agent process to renew against — the renewal sweep skips suspended qubes for
+// exactly that reason. A qube suspended across its whole renewal window is
+// therefore resumed with an EXPIRED certificate, and the agent deliberately
+// refuses to start without a valid one rather than serve its qrexec services to
+// anyone on the LAN. Nothing about that qube looks wrong until someone tries to
+// use it, and by then it is locked out with no way back in over the mTLS
+// channel that would have fixed it.
+//
+// Resume is where that closes, and closing it there costs nothing: resume
+// already destroys and rebuilds the compute instance, so a fresh identity rides
+// along on a cloud-init document terraform was going to render and upload
+// anyway. It also means a resumed qube always starts from a full certificate
+// lifetime instead of whatever was left of an old one.
+//
+// Revocation happens BEFORE issuance, never after. RevokeByQube revokes every
+// row belonging to the qube, so running it afterwards would revoke the
+// certificate just minted and the qube would boot holding a revoked one — the
+// same permanent lockout, reached from the other side.
+func (c *CertIssuer) ReissueFor(ctx context.Context, qube *models.Qube, reason string) (*pki.Bundle, error) {
+	if qube == nil {
+		return nil, errors.New("reissue: no qube given")
+	}
+
+	// The instance that held the previous certificate is gone: suspend destroyed
+	// it along with its OS disk. Leaving that certificate valid for the rest of
+	// its 90 days would leave a credential with no legitimate holder — usable by
+	// anyone who kept a copy of the cloud-init snippet, the OS disk image or a
+	// backup of either. Renewal deliberately does not revoke, because there the
+	// agent is still running and still holding the old certificate; here there is
+	// no agent and nothing to protect.
+	if err := c.RevokeFor(ctx, qube.ID, reason); err != nil {
+		// Not fatal, on purpose. Refusing to resume because an OLD certificate
+		// could not be retired would convert a bookkeeping failure into exactly
+		// the lockout this function exists to prevent. Loud, because until it is
+		// fixed that certificate keeps authenticating until it expires on its own.
+		log.Printf("pki: could NOT revoke the previous certificate(s) for qube %q (%v); "+
+			"reissuing anyway — the old certificate stays valid until it expires", qube.Name, err)
+	}
+
+	return c.IssueFor(ctx, qube)
+}
+
 // RevokeFor revokes every certificate issued to a qube.
 //
 // Called when a qube is purged: a decommissioned machine must not keep a

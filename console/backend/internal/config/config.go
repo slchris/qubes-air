@@ -111,6 +111,24 @@ type OrchestratorConfig struct {
 	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
 	// Env: QUBES_AIR_AGENT_LISTEN.
 	AgentListen string `yaml:"agent_listen"`
+	// AptMirror is the base URL of a Debian mirror for provisioned qubes, e.g.
+	// "http://10.31.0.2/debian". Empty leaves the image's own sources alone.
+	//
+	// Not a tuning knob — it dominates provisioning time. Setting user-data
+	// REPLACES a template's vendor data, so whatever mirror the template
+	// configured at boot stops being applied and apt falls back to the public
+	// Debian redirector. Measured on real hardware: installing two small
+	// packages took 857 seconds of a 15-minute provision, 99% of the total, and
+	// pushed the apply past the executor's timeout. With a LAN mirror the same
+	// step is seconds.
+	// Env: QUBES_AIR_APT_MIRROR.
+	AptMirror string `yaml:"apt_mirror"`
+	// AptSecurityMirror is the security suite's base URL, e.g.
+	// "http://10.31.0.2/debian-security". Falls back to AptMirror when empty,
+	// which is wrong for most mirrors — Debian serves security from a separate
+	// path — so it is worth setting explicitly.
+	// Env: QUBES_AIR_APT_SECURITY_MIRROR.
+	AptSecurityMirror string `yaml:"apt_security_mirror"`
 	// AgentPackageURL is where a booting qube fetches the agent .deb from, e.g.
 	// http://10.31.0.2/local/qubes-air/qubes-air-agent_0.1.0_amd64.deb.
 	//
@@ -166,6 +184,40 @@ type OrchestratorConfig struct {
 	// "starting" forever, which would hide the failure just as effectively.
 	// Env: QUBES_AIR_AGENT_PROBE_SETTLE_SECONDS.
 	AgentProbeSettleSeconds int `yaml:"agent_probe_settle_seconds"`
+	// AgentCertRenewIntervalSeconds is how often the fleet is checked for agent
+	// certificates that are due for renewal (default 3600). Zero or negative
+	// DISABLES renewal.
+	//
+	// Disabling it puts the fleet back on the only other delivery channel there
+	// is: cloud-init, which a VM reads once at first boot. Rotating a certificate
+	// then means REBUILDING the qube, which turns the certificate lifetime into a
+	// fleet rebuild period — and since every certificate in a rollout is issued
+	// within the same few minutes, they all expire on the same day.
+	// Env: QUBES_AIR_AGENT_CERT_RENEW_INTERVAL_SECONDS.
+	AgentCertRenewIntervalSeconds int `yaml:"agent_cert_renew_interval_seconds"`
+	// AgentCertRenewThresholdPercent is how much of a certificate's TOTAL
+	// lifetime must remain for it to still count as fresh (default 33). Below
+	// that it is renewed. Values outside 1..99 fall back to the default.
+	//
+	// A third of the 90-day agent certificate is roughly a 30-day window — but
+	// that width is
+	// NOT the margin any individual qube gets. Renewals are jittered forward
+	// across the first quarter of the window so a rollout does not renew all at
+	// once, so the last qube in the spread begins renewing with substantially
+	// less. The console logs the real runway at boot — reason about THAT number
+	// before lowering this, not the window width; the console logs
+	// the computed value at startup (service.renewalRunway) so it cannot drift
+	// away from whatever the threshold is set to here.
+	//
+	// Sized by how much repeated failure it has to survive rather than by taste:
+	// with an hourly sweep and a retry backoff capped at six hours, a qube that
+	// is unreachable for a fortnight still gets many tens of attempts in the
+	// eight days that remain. It is a PERCENTAGE rather than a fixed number
+	// of days so that shortening pki.DefaultAgentCertLifetime shortens the
+	// renewal period with it — a fixed 30 days against a 14-day certificate would
+	// mean every certificate is born already overdue.
+	// Env: QUBES_AIR_AGENT_CERT_RENEW_THRESHOLD_PERCENT.
+	AgentCertRenewThresholdPercent int `yaml:"agent_cert_renew_threshold_percent"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -327,6 +379,11 @@ func DefaultConfig() *Config {
 			AgentProbeIntervalSeconds: 60,
 			AgentProbeTimeoutSeconds:  10,
 			AgentProbeSettleSeconds:   300,
+			// Renewal defaults ON for the same reason probing does: a console
+			// that only renews when someone remembered to switch it on is a
+			// console that has not renewed anything on the day it matters.
+			AgentCertRenewIntervalSeconds:  3600,
+			AgentCertRenewThresholdPercent: 33,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -437,6 +494,12 @@ func (c *Config) loadFromEnv() {
 	if listen := os.Getenv("QUBES_AIR_AGENT_LISTEN"); listen != "" {
 		c.Orchestrator.AgentListen = listen
 	}
+	if v := os.Getenv("QUBES_AIR_APT_MIRROR"); v != "" {
+		c.Orchestrator.AptMirror = v
+	}
+	if v := os.Getenv("QUBES_AIR_APT_SECURITY_MIRROR"); v != "" {
+		c.Orchestrator.AptSecurityMirror = v
+	}
 	if url := os.Getenv("QUBES_AIR_AGENT_PACKAGE_URL"); url != "" {
 		c.Orchestrator.AgentPackageURL = url
 	}
@@ -462,6 +525,16 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_PROBE_SETTLE_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentProbeSettleSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_CERT_RENEW_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentCertRenewIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_CERT_RENEW_THRESHOLD_PERCENT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentCertRenewThresholdPercent = n
 		}
 	}
 

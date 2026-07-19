@@ -141,6 +141,10 @@ type Dependencies struct {
 	// agents re-probes qube agents in the background so a dead one is noticed
 	// without anyone asking. Nil-safe: its methods tolerate a nil receiver.
 	agents *service.AgentHealthMonitor
+	// certRenewals replaces agent certificates before they expire, over the
+	// mTLS channel the agent already holds. Without it the only way to rotate a
+	// certificate is to rebuild the qube. Nil-safe.
+	certRenewals *service.CertRenewalMonitor
 }
 
 // Close releases all resources.
@@ -155,6 +159,10 @@ func (d *Dependencies) Close() {
 	// closes — a probe writing agent health into a closed handle would log an
 	// error on every shutdown — but nothing about a probe is worth waiting for.
 	d.agents.Shutdown(agentHealthShutdownGrace)
+	// Renewals on the same short grace and for the same reason: an abandoned
+	// renewal leaves the agent holding the certificate it already had, so there
+	// is nothing to finish and nothing to strand.
+	d.certRenewals.Shutdown(agentHealthShutdownGrace)
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -205,9 +213,11 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	certIssuer := service.NewCertIssuer(credentialRepo, agentCertRepo,
 		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen,
 		service.AgentPackage{
-			URL:     cfg.Orchestrator.AgentPackageURL,
-			SHA256:  cfg.Orchestrator.AgentPackageSHA256,
-			Version: cfg.Orchestrator.AgentPackageVersion,
+			AptMirror:         cfg.Orchestrator.AptMirror,
+			AptSecurityMirror: cfg.Orchestrator.AptSecurityMirror,
+			URL:               cfg.Orchestrator.AgentPackageURL,
+			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
+			Version:           cfg.Orchestrator.AgentPackageVersion,
 		})
 	if cfg.Orchestrator.AgentPackageURL == "" {
 		log.Printf("WARNING: orchestrator.agent_package_url is not set; " +
@@ -230,10 +240,29 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		cfg.Orchestrator.AgentListen,
 		time.Duration(cfg.Orchestrator.AgentProbeTimeoutSeconds)*time.Second)
 
+	// Certificate renewal over the agent's existing mTLS channel. Built before
+	// the qube service because the service publishes the monitor's warnings into
+	// agent health on every probe — a renewal failure recorded only once would be
+	// erased by the next successful probe, leaving the fleet reading healthy
+	// until the day its certificates ran out.
+	certRenewals := service.NewCertRenewalMonitor(
+		qubeRepo, agentCertRepo,
+		service.NewCertRenewer(certIssuer, certIssuer, agentCertRepo, agentCertRepo,
+			cfg.Orchestrator.AgentListen, service.DefaultCertRenewalTimeout),
+		qubeRepo,
+		service.CertRenewalConfig{
+			Interval:  time.Duration(cfg.Orchestrator.AgentCertRenewIntervalSeconds) * time.Second,
+			Threshold: float64(cfg.Orchestrator.AgentCertRenewThresholdPercent) / 100,
+		})
+
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
 		service.WithAgentProber(agentProber),
+		// Keeps a renewal failure attached to the qube's health on every probe,
+		// so it stays visible for the weeks between "renewal broke" and "the
+		// certificate expired" instead of for one minute.
+		service.WithRenewalWatch(certRenewals),
 		// Automatic node selection. Cluster credentials are resolved from the
 		// encrypted credential store via the zone's credential_id — never from
 		// the environment, so they can be rotated, scoped and audited in one
@@ -247,6 +276,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	jobRepo := repository.NewJobRepository(db)
 	qubeSvc, runner, agents := startOrchestration(
 		cfg.Orchestrator, jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
+
+	certRenewals.Start()
 
 	// A qube left in a transient status belongs to a job that died with a
 	// previous process — the queue is in memory, so nothing will ever finish it.
@@ -276,6 +307,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		transport:         xport,
 		runner:            runner,
 		agents:            agents,
+		certRenewals:      certRenewals,
 	}, nil
 }
 

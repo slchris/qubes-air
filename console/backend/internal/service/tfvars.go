@@ -181,6 +181,15 @@ func renderQube(q *models.Qube, zone *models.Zone) (map[string]any, error) {
 //
 // Transient statuses report the state being moved TOWARD, because the render
 // happens immediately before the apply that performs the move.
+//
+// It is also the console's answer to "does this qube have a compute instance at
+// all", and the probe and certificate-reissue paths ask it here rather than
+// keeping their own list of statuses (see ProbeAgent and
+// reissueIdentityForResume in qube_service.go). One predicate, because a
+// disagreement between "terraform will not build a VM for this" and "there is a
+// VM here to talk to" is precisely how a qube ends up being probed at an address
+// that DHCP has since handed to somebody else, or having its identity file
+// rewritten underneath a live instance.
 func computeRunning(status models.QubeStatus) bool {
 	switch status {
 	case models.QubeStatusRunning, models.QubeStatusCreating, models.QubeStatusResuming:

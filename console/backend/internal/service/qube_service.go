@@ -120,6 +120,15 @@ type QubeServiceImpl struct {
 	// inline, which preserves the previous synchronous behaviour for tests and
 	// for deployments with no orchestration configured.
 	submitter JobSubmitter
+	// renewals reports certificates that are failing to renew, so a probe can
+	// carry that warning alongside its own result. Nil simply omits it.
+	renewals RenewalWatch
+}
+
+// RenewalWatch reports an outstanding certificate-renewal problem for a qube.
+// Implemented by *CertRenewalMonitor.
+type RenewalWatch interface {
+	RenewalWarning(qubeID string) string
 }
 
 // JobSubmitter queues an infrastructure operation and returns the job that will
@@ -183,6 +192,16 @@ func WithTransport(t transport.Transport) QubeServiceOption {
 // cannot answer the question for an arbitrary qube.
 func WithAgentProber(p *AgentProber) QubeServiceOption {
 	return func(s *QubeServiceImpl) { s.prober = p }
+}
+
+// WithRenewalWatch makes certificate-renewal failures visible in agent health.
+//
+// Without it a renewal failure survives only until the next probe: the health
+// reconciler rewrites agent_last_error every sweep, so a successful ping would
+// clear the warning within a minute and the fleet would read healthy right up
+// to the day its certificates expire.
+func WithRenewalWatch(w RenewalWatch) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.renewals = w }
 }
 
 // NewQubeService creates a new QubeService. By default it uses a NoopExecutor
@@ -261,7 +280,7 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{models.QubeStatusPending},
-		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError)
+		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError, nil)
 }
 
 // validateQubeCreateRequest validates qube creation request.
@@ -434,7 +453,7 @@ func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 			models.QubeStatusSuspended, models.QubeStatusPending,
 			models.QubeStatusError,
 		},
-		models.QubeStatusDeleting, orchestrator.ActionRelease, qube.Status)
+		models.QubeStatusDeleting, orchestrator.ActionRelease, qube.Status, nil)
 	return err
 }
 
@@ -458,9 +477,27 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	to models.QubeStatus,
 	action orchestrator.Action,
 	revertTo models.QubeStatus,
+	prepare func(context.Context) error,
 ) (*Operation, error) {
 	if err := s.qubeRepo.ClaimTransition(ctx, qube.ID, from, to); err != nil {
 		return nil, err
+	}
+
+	// Work that must happen after the qube is CLAIMED but before anything is
+	// enqueued. The claim is the only serialization point on this path, and
+	// certificate reissue depends on it: two concurrent resumes that each minted
+	// an identity before claiming would each revoke the other's, and whichever
+	// one terraform delivered, the qube would boot holding a revoked certificate
+	// and be locked out — by the code written to prevent lockout.
+	//
+	// A failure here releases the claim, for the same reason a failed enqueue
+	// does: nothing is running, so leaving the qube pinned in a transient status
+	// would make it permanently "busy".
+	if prepare != nil {
+		if err := prepare(ctx); err != nil {
+			_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, revertTo)
+			return nil, err
+		}
 	}
 
 	// No submitter configured: run inline and settle the status here. This keeps
@@ -553,12 +590,110 @@ func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*Operation, err
 	if err := s.verifyZoneConnected(ctx, qube.ZoneID); err != nil {
 		return nil, err
 	}
+
+	// Captured before the claim overwrites it: the reissue decision below turns
+	// on whether a compute instance exists RIGHT NOW, and by the time the hook
+	// runs the status already says "resuming".
+	prior := qube.Status
+
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{
 			models.QubeStatusStopped, models.QubeStatusSuspended,
 			models.QubeStatusReleased, models.QubeStatusError,
 		},
-		models.QubeStatusResuming, orchestrator.ActionResume, qube.Status)
+		models.QubeStatusResuming, orchestrator.ActionResume, qube.Status,
+		func(ctx context.Context) error { return s.reissueIdentityForResume(ctx, qube, prior) })
+}
+
+// reissueIdentityForResume hands a resuming qube a brand new agent identity.
+//
+// This closes the suspended-qube lockout. Renewal runs over the agent's own
+// mTLS channel, and suspend DESTROYS the compute instance, so a suspended qube
+// has nothing to renew against — the renewal sweep skips it, correctly. Left
+// alone, a qube parked across its whole renewal window is resumed with an
+// expired certificate, the agent refuses to start without a valid one, and the
+// qube is locked out for good with the repair channel being the very thing that
+// is broken. Reissuing here is not renewing harder; it is delivering the
+// identity through the channel that is actually open at that moment.
+//
+// It is free rather than merely acceptable, and that was checked rather than
+// assumed. Resume drives compute_running false -> true, which makes
+// proxmox_virtual_environment_vm.compute go from count=0 to count=1 — the
+// instance is CREATED, not modified. The identity snippet
+// (proxmox_virtual_environment_file.agent_identity) is gated on the same
+// variable and is an upstream dependency of the compute VM, so the targeted
+// resume apply creates it too, reading whatever content is at the path at that
+// moment. The filesha256 checksum that normally forces a replacement has
+// nothing to replace: neither resource exists yet. See
+// terraform/modules/remote-qube-base/providers/proxmox/main.tf and the
+// agent_user_data_file wiring in tfvars.go.
+//
+// The computeRunning guard is what keeps that true. Every status Start accepts
+// today renders compute_running=false, so it never fires — but it is the single
+// predicate that decides whether terraform builds a compute VM, so if that
+// accepted-source list ever grows to include a status with a LIVE instance, the
+// reissue is skipped instead of quietly changing the identity file underneath a
+// running VM and provoking a rebuild nobody asked for.
+func (s *QubeServiceImpl) reissueIdentityForResume(
+	ctx context.Context, qube *models.Qube, prior models.QubeStatus,
+) error {
+	if s.issuer == nil {
+		return nil
+	}
+	// Only statuses that PROVE the compute instance was destroyed get a reissue.
+	//
+	// The guard used to be computeRunning(prior), which answers a different
+	// question: "should terraform build a VM", not "is one running". Error is
+	// exactly where those diverge, and it is reached with a live VM routinely —
+	// reconcileStrandedQubes rewrites every Creating/Resuming qube to Error when
+	// the console restarts, including ones whose apply had already finished and
+	// whose agent is healthy.
+	//
+	// Starting such a qube would revoke the certificate of a RUNNING agent and
+	// then not replace anything: terraform sees the compute VM already matching
+	// compute_running=true, so it is not rebuilt and never re-reads cloud-init.
+	// The result is a healthy VM whose agent is refused by both the prober and
+	// the renewer — unreachable, unrenewable, recoverable only by rebuilding.
+	//
+	// Same asymmetry as discardUninstalled: withdrawing a credential that is
+	// still in use is unrecoverable, while keeping one that is already gone
+	// merely leaves a stale row. When the state does not tell us which we are
+	// looking at, we take the recoverable one.
+	if !instanceProvablyDestroyed(prior) {
+		log.Printf("pki: qube %q is %s, which does not prove its compute instance is gone; "+
+			"keeping its current identity rather than risk revoking a certificate a live agent is using",
+			qube.Name, prior)
+		return nil
+	}
+
+	// A failure here aborts the resume. That is the safe direction: without a
+	// delivered identity the qube would come up and its agent would refuse to
+	// start anyway, so reporting "resuming" would promise something that cannot
+	// happen — and this project's recurring defect is exactly the failure that
+	// looks like success.
+	if _, err := s.issuer.ReissueFor(ctx, qube,
+		fmt.Sprintf("compute instance rebuilt on resume from %s", prior)); err != nil {
+		return fmt.Errorf("%w: reissue agent identity for %q: %v", ErrOrchestration, qube.Name, err)
+	}
+	return nil
+}
+
+// instanceProvablyDestroyed reports whether a status GUARANTEES there is no
+// compute instance, and therefore no agent that could still be holding the
+// current certificate.
+//
+// Deliberately narrow. This gates revocation, so "probably gone" is not good
+// enough — only the statuses terraform reaches by actually destroying the
+// instance qualify. Anything else, including Error and Stopped, may or may not
+// have a live VM behind it, and the cost of guessing wrong is a qube that can
+// never authenticate again.
+func instanceProvablyDestroyed(status models.QubeStatus) bool {
+	switch status {
+	case models.QubeStatusSuspended, models.QubeStatusReleased:
+		return true
+	default:
+		return false
+	}
 }
 
 // Stop suspends a qube: terraform destroys the compute VM and keeps the data
@@ -570,7 +705,7 @@ func (s *QubeServiceImpl) Stop(ctx context.Context, id string) (*Operation, erro
 	}
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{models.QubeStatusRunning, models.QubeStatusError},
-		models.QubeStatusSuspending, orchestrator.ActionSuspend, qube.Status)
+		models.QubeStatusSuspending, orchestrator.ActionSuspend, qube.Status, nil)
 }
 
 // verifyZoneConnected checks if the zone is connected.
@@ -636,6 +771,28 @@ func (s *QubeServiceImpl) ProbeAgent(
 ) AgentProbeResult {
 	if qube == nil {
 		return AgentProbeResult{Status: AgentProbeNotConfigured, Reason: "no qube given"}
+	}
+
+	// A qube with no compute instance is not an unreachable qube. Suspend
+	// destroys the instance and keeps the data disk, so "nothing answered" is
+	// the expected and correct state of a parked qube — the same reasoning that
+	// made the settle phase necessary for booting ones. Recording it as
+	// unreachable would paint every suspended qube red for as long as it stayed
+	// parked, and a field that is red for expected states stops being read.
+	//
+	// The decision lives HERE rather than in each caller so the reconciler, the
+	// settle loop and the on-demand endpoint cannot disagree about it — the same
+	// single-answer discipline ProbeAgent already enforces for everything else.
+	if !computeRunning(qube.Status) {
+		res := AgentProbeResult{
+			QubeID: qube.ID, QubeName: qube.Name, CheckedAt: time.Now().UTC(),
+			Status: AgentProbeNoCompute,
+			Reason: fmt.Sprintf(
+				"qube %q is %s: suspend destroys the compute instance, so there is no agent to probe "+
+					"(it gets a fresh identity when it is resumed)", qube.Name, qube.Status),
+		}
+		s.recordAgentHealth(ctx, qube, res, phase)
+		return res
 	}
 
 	res := s.runAgentProbe(ctx, qube)
@@ -709,13 +866,37 @@ func (s *QubeServiceImpl) recordAgentHealth(
 		probedAt = time.Now().UTC()
 	}
 
+	// A qube whose agent answers but whose certificate is not being renewed is
+	// healthy TODAY and dead on a known date. That warning is re-attached on
+	// every write rather than recorded once by the renewal monitor, because this
+	// function overwrites agent_last_error every sweep — a warning written once
+	// would be erased by the next successful probe, and the fleet would look
+	// perfectly healthy until the certificates ran out.
+	failure := res.Reason
+	// ...but only while there is a compute instance for the warning to be about.
+	// A suspended qube has no agent to renew against, so whatever the monitor
+	// last remembered describes an instance that no longer exists — and it will
+	// be handed a fresh certificate the moment it is resumed. Republishing
+	// "certificate EXPIRED, this qube can no longer authenticate" against a
+	// parked qube is a permanent red mark for an expected state, which is how a
+	// health field stops being believed.
+	if computeRunning(qube.Status) {
+		if warn := s.renewalWarning(qube.ID); warn != "" {
+			if failure == "" {
+				failure = warn
+			} else {
+				failure = failure + "; " + warn
+			}
+		}
+	}
+
 	// Detached from the caller's deadline: the observation already exists, and
 	// dropping it because an HTTP request was cancelled a millisecond later
 	// would leave the console reporting a health reading it has disproved.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
-	if err := s.qubeRepo.UpdateAgentHealth(ctx, qube.ID, health, probedAt, res.Reason); err != nil {
+	if err := s.qubeRepo.UpdateAgentHealth(ctx, qube.ID, health, probedAt, failure); err != nil {
 		if errors.Is(err, repository.ErrQubeNotFound) {
 			// Deleted between probe and write. Expected, and not worth a scary
 			// line — but not silent either, because a probe loop that writes
@@ -725,6 +906,14 @@ func (s *QubeServiceImpl) recordAgentHealth(
 		}
 		log.Printf("agentprobe: qube %q probed %s but recording it failed: %v", qube.Name, health, err)
 	}
+}
+
+// renewalWarning is the outstanding certificate-renewal problem for a qube.
+func (s *QubeServiceImpl) renewalWarning(qubeID string) string {
+	if s.renewals == nil {
+		return ""
+	}
+	return s.renewals.RenewalWarning(qubeID)
 }
 
 // agentHealthFor turns a probe status into the health to store.
@@ -755,6 +944,12 @@ func agentHealthFor(status AgentProbeStatus, phase AgentProbePhase) models.Agent
 	case status == AgentProbeNotConfigured:
 		// This console cannot probe. It has learned nothing about the agent and
 		// must not pretend otherwise — see AgentHealthUnknown.
+		return models.AgentHealthUnknown
+	case status == AgentProbeNoCompute:
+		// There is no agent to have an opinion about: the instance was destroyed
+		// by suspend. Unknown regardless of phase — "starting" would claim it is
+		// on its way up and "unreachable" would claim it is broken, and a parked
+		// qube is neither.
 		return models.AgentHealthUnknown
 	case phase == AgentProbeSettling:
 		// Inside the post-boot budget: the agent is not up yet, which for a

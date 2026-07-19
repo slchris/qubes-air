@@ -50,6 +50,15 @@ const (
 	// available, or no prober wired up). The agent's health is UNKNOWN, which is
 	// deliberately not the same as unhealthy.
 	AgentProbeNotConfigured AgentProbeStatus = "not_configured"
+	// AgentProbeNoCompute means the qube has no compute instance, so there is no
+	// agent to probe. Suspend DESTROYS the instance and keeps the data disk, so
+	// this is the ordinary resting state of a parked qube, not a fault.
+	//
+	// Nothing is dialled in this state, for a second reason: the address on the
+	// row belonged to an instance that no longer exists, and DHCP may well have
+	// handed it to somebody else by now. A probe would then be answered — or
+	// refused — by a machine that has nothing to do with this qube.
+	AgentProbeNoCompute AgentProbeStatus = "no_compute"
 )
 
 // DefaultAgentProbeTimeout bounds one probe end to end.
@@ -422,6 +431,40 @@ func (p *AgentProber) touchLastSeen(ctx context.Context, res AgentProbeResult) {
 }
 
 // probeTLSConfig builds the mTLS config a probe dials with.
+// probeTLSConfig builds the mTLS config a probe or renewal dials with.
+//
+// authorize, when non-nil, is consulted with the peer's fingerprint DURING the
+// handshake, so a revoked certificate cannot complete a connection at all.
+//
+// It lives here rather than at each call site on purpose. The prober and the
+// renewer previously answered "is this peer allowed" differently — the prober
+// consulted the registry, the renewer did not — so the same revoked agent was
+// refused by one and handed a fresh 90-day certificate by the other, in the same
+// sweep. Two code paths deciding one trust question is how that happens; one
+// place cannot diverge from itself.
+func probeTLSConfigWithAuthz(
+	bundle *pki.Bundle, wantCN string, authorize func(fingerprint string) error,
+) (*tls.Config, error) {
+	cfg, err := probeTLSConfig(bundle, wantCN)
+	if err != nil {
+		return nil, err
+	}
+	if authorize == nil {
+		return cfg, nil
+	}
+	chain := cfg.VerifyConnection
+	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if err := chain(cs); err != nil {
+			return err
+		}
+		if len(cs.PeerCertificates) == 0 {
+			return errors.New("agent presented no certificate")
+		}
+		return authorize(pki.FingerprintOf(cs.PeerCertificates[0]))
+	}
+	return cfg, nil
+}
+
 func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 	pair, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM))
 	if err != nil {
