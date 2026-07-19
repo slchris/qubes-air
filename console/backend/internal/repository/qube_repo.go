@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
@@ -21,6 +23,12 @@ type QubeRepository interface {
 	Delete(ctx context.Context, id string) error
 	UpdateStatus(ctx context.Context, id string, status models.QubeStatus) error
 	UpdateIPAddress(ctx context.Context, id, ipAddress string) error
+	// ClaimTransition atomically moves a qube into a new status only if it is
+	// currently in one of `from`, returning ErrTransitionConflict otherwise.
+	// This is what serializes mutating operations on a single qube.
+	ClaimTransition(ctx context.Context, id string, from []models.QubeStatus, to models.QubeStatus) error
+	// ListByStatus returns every qube in one of the given statuses.
+	ListByStatus(ctx context.Context, statuses []models.QubeStatus) ([]*models.Qube, error)
 }
 
 // QubeListOptions contains filtering options for listing qubes.
@@ -226,6 +234,84 @@ func (r *qubeRepository) UpdateStatus(ctx context.Context, id string, status mod
 	query := `UPDATE qubes SET status = ?, updated_at = ? WHERE id = ?`
 	_, err := r.db.DB().ExecContext(ctx, query, status, time.Now(), id)
 	return err
+}
+
+// ErrTransitionConflict means the qube was not in any of the expected source
+// statuses. In practice that almost always means an operation is already in
+// flight for it.
+var ErrTransitionConflict = errors.New("qube is busy: another operation is in progress")
+
+// ClaimTransition atomically moves a qube into a new status, but only from one
+// of the statuses in from. It reports ErrTransitionConflict if the qube was in
+// none of them.
+//
+// This is the concurrency guard for every mutating qube endpoint. Two
+// simultaneous Start requests issue two UPDATEs; the first matches a row and
+// the second affects zero, so exactly one job is ever enqueued. Expressing this
+// as a read-then-write in Go would leave a window between the check and the
+// write — and since a terraform apply takes minutes, that window is wide enough
+// to matter in practice, not just in theory.
+func (r *qubeRepository) ClaimTransition(
+	ctx context.Context, id string, from []models.QubeStatus, to models.QubeStatus,
+) error {
+	if len(from) == 0 {
+		return errors.New("ClaimTransition: no source statuses given")
+	}
+
+	placeholders := make([]string, len(from))
+	args := make([]any, 0, len(from)+3)
+	args = append(args, string(to), time.Now(), id)
+	for i, s := range from {
+		placeholders[i] = "?"
+		args = append(args, string(s))
+	}
+
+	// #nosec G201 -- only "?" placeholders are interpolated into the SQL; every
+	// value, including each source status, is passed as a bound argument.
+	query := fmt.Sprintf(
+		`UPDATE qubes SET status = ?, updated_at = ? WHERE id = ? AND status IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+
+	res, err := r.db.DB().ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrTransitionConflict
+	}
+	return nil
+}
+
+// ListByStatus returns every qube currently in one of the given statuses.
+// Startup reconciliation uses it to find qubes stranded in a transient status
+// by a process that died mid-operation.
+func (r *qubeRepository) ListByStatus(ctx context.Context, statuses []models.QubeStatus) ([]*models.Qube, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]any, 0, len(statuses))
+	for i, s := range statuses {
+		placeholders[i] = "?"
+		args = append(args, string(s))
+	}
+	// #nosec G201 -- placeholders only; statuses are bound arguments.
+	query := fmt.Sprintf(`
+		SELECT id, name, type, zone_id, status, spec, ip_address, created_at, updated_at
+		FROM qubes WHERE status IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := r.db.DB().QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanQubes(rows)
 }
 
 // UpdateIPAddress updates qube IP address.

@@ -54,14 +54,56 @@ const (
 	// compute and re-attaching the same disk. See the orchestrator package and
 	// the terraform compute/storage separation (compute_running).
 	QubeStatusSuspended QubeStatus = "suspended"
-	QubeStatusError     QubeStatus = "error"
+
+	// Transient statuses: a terraform job for this qube is queued or running.
+	//
+	// These are claims as much as descriptions. A transition into one is made
+	// atomically and only from an expected source status, which is what stops a
+	// double-clicked button from enqueuing two applies against the same qube.
+	// Terraform operations here take minutes, so this window is wide.
+	QubeStatusResuming   QubeStatus = "resuming"
+	QubeStatusSuspending QubeStatus = "suspending"
+	QubeStatusDeleting   QubeStatus = "deleting"
+
+	// QubeStatusReleased means the compute VM is gone and the qube has been
+	// removed from the user's active list, but its data disk (and the
+	// storage-holder VM that owns it) still exist.
+	//
+	// This is the resting state after a "delete" in the UI. Purging the disk is
+	// a separate, explicitly confirmed action, because the storage holder
+	// carries lifecycle.prevent_destroy and destroying it is irreversible.
+	// Critically, a released qube must STILL be rendered into the terraform
+	// variables: dropping it from the map while its storage VM remains in state
+	// does not bypass prevent_destroy — it wedges every subsequent apply, for
+	// every qube.
+	QubeStatusReleased QubeStatus = "released"
+
+	QubeStatusError QubeStatus = "error"
 )
 
 // IsValid checks if the qube status is valid.
 func (s QubeStatus) IsValid() bool {
 	switch s {
 	case QubeStatusPending, QubeStatusCreating, QubeStatusRunning,
-		QubeStatusStopped, QubeStatusSuspended, QubeStatusError:
+		QubeStatusStopped, QubeStatusSuspended, QubeStatusError,
+		QubeStatusResuming, QubeStatusSuspending, QubeStatusDeleting,
+		QubeStatusReleased:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTransient reports whether a terraform job is expected to be in flight for
+// this qube.
+//
+// The job queue lives in memory, so a qube found in a transient status at
+// startup belongs to a job that died with the previous process. Startup
+// reconciliation uses this to find them; without it they would stay stuck
+// forever, and every future operation on them would be refused as "busy".
+func (s QubeStatus) IsTransient() bool {
+	switch s {
+	case QubeStatusCreating, QubeStatusResuming, QubeStatusSuspending, QubeStatusDeleting:
 		return true
 	default:
 		return false

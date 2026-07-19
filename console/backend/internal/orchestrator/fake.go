@@ -5,18 +5,14 @@ import (
 	"sync"
 )
 
-// Action names recorded by FakeExecutor.
-const (
-	ActionSuspend   = "suspend"
-	ActionResume    = "resume"
-	ActionProvision = "provision"
-	ActionDestroy   = "destroy"
-	ActionStatus    = "status"
-)
+// ActionStatus is recorded by FakeExecutor for Status calls. It is not a job
+// action — Status is a read and never goes through the Runner queue — so it
+// lives here rather than with the Action constants in runner.go.
+const ActionStatus Action = "status"
 
 // Call records a single Executor method invocation.
 type Call struct {
-	Action string
+	Action Action
 	Qube   string
 }
 
@@ -29,7 +25,7 @@ type FakeExecutor struct {
 
 	// FailOn maps an action name to an error to return for that action. Nil or
 	// missing means success.
-	FailOn map[string]error
+	FailOn map[Action]error
 	// StatusResult is returned by Status when no failure is configured.
 	StatusResult string
 }
@@ -37,12 +33,12 @@ type FakeExecutor struct {
 // NewFakeExecutor returns a ready-to-use FakeExecutor.
 func NewFakeExecutor() *FakeExecutor {
 	return &FakeExecutor{
-		FailOn:       map[string]error{},
+		FailOn:       map[Action]error{},
 		StatusResult: "running",
 	}
 }
 
-func (f *FakeExecutor) record(action, qube string) error {
+func (f *FakeExecutor) record(action Action, qube string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, Call{Action: action, Qube: qube})
