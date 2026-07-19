@@ -1,0 +1,7 @@
+# Qubes Air 原型站点 robots
+User-agent: *
+Allow: /qubes-air/prototype/landing.html
+Disallow: /qubes-air/prototype/console.html
+Disallow: /qubes-air/prototype/logo.html
+
+Sitemap: https://slchris.github.io/qubes-air/prototype/sitemap.xml

@@ -1,0 +1,29 @@
+<svg viewBox="0 0 220 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Qubes Air">
+  <title>Qubes Air</title>
+  <!-- 图标 + 文字锁定版。文字用 system-ui 半粗体，避免依赖外部字体。 -->
+  <defs>
+    <linearGradient id="lk-top" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#c3d9ff"/>
+      <stop offset="1" stop-color="#93bbff"/>
+    </linearGradient>
+    <linearGradient id="lk-right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6aa4ff"/>
+      <stop offset="1" stop-color="#3f7fe6"/>
+    </linearGradient>
+    <linearGradient id="lk-left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fbaff"/>
+      <stop offset="1" stop-color="#6b9bf0"/>
+    </linearGradient>
+  </defs>
+  <g>
+    <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="url(#lk-top)" stroke="#d3e3ff" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="url(#lk-left)" stroke="#7eadff" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="url(#lk-right)" stroke="#63a0ff" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14" stroke="#4f8bee" stroke-width="0.6" stroke-linejoin="round"/>
+    <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f" opacity="0.9"/>
+  </g>
+  <text x="66" y="40" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="24" font-weight="600" letter-spacing="-0.5" fill="#eef1f5">Qubes</text>
+  <text x="144" y="40" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="24" font-weight="400" letter-spacing="0.3" fill="#63a0ff">Air</text>
+</svg>

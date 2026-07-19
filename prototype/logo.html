@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qubes Air — 品牌标志</title>
+<meta name="description" content="Qubes Air 标志系统：图标、文字锁定、favicon、留白与用色规范。参考官方 Qubes 等距立方体。" />
+<!-- 内部品牌规范页，无需被搜索收录 -->
+<meta name="robots" content="noindex, follow" />
+<meta name="theme-color" content="#0a0c10" />
+<link rel="canonical" href="https://slchris.github.io/qubes-air/prototype/logo.html" />
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Qubes Air" />
+<meta property="og:title" content="Qubes Air — 品牌标志" />
+<meta property="og:description" content="Qubes Air 标志系统：图标、文字锁定、favicon、留白与用色规范。" />
+<meta property="og:image" content="https://slchris.github.io/qubes-air/prototype/assets/og-image.png" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      fontFamily: {
+        sans: ['ui-sans-serif','system-ui','-apple-system','Segoe UI','Roboto','Noto Sans SC','sans-serif'],
+        mono: ['ui-monospace','SFMono-Regular','Menlo','Consolas','monospace'],
+      },
+      colors: {
+        ink: { 950:'#0a0c10',900:'#0e1116',850:'#12161d',800:'#171b23',700:'#242a35',600:'#333b48',500:'#4b5563',400:'#8a93a2',300:'#b6bdc9',200:'#d6dbe3',100:'#eef1f5' },
+        signal:{ DEFAULT:'#63a0ff', bright:'#8fbaff', dim:'#3f7fe6', wash:'#0f2438' },
+      },
+    }},
+  };
+</script>
+<style>
+  :root{ color-scheme:dark; }
+  body{ background:#0a0c10; }
+  .swatch{ height:56px; border-radius:10px; }
+</style>
+</head>
+<body class="font-sans text-ink-200 antialiased">
+
+<header class="border-b border-ink-800/70">
+  <div class="mx-auto max-w-5xl px-6 h-16 flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <!-- 内联图标 mark -->
+      <svg viewBox="0 0 64 64" class="w-7 h-7" fill="none" aria-hidden="true">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#a9caff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+        <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/>
+      </svg>
+      <span class="font-semibold text-ink-100">Qubes Air</span>
+      <span class="text-ink-500 text-sm">/ 品牌标志</span>
+    </div>
+    <div class="flex items-center gap-5 text-sm text-ink-400">
+      <a href="landing.html" class="hover:text-ink-100 transition-colors">落地页</a>
+      <a href="console.html" class="hover:text-ink-100 transition-colors">控制台</a>
+    </div>
+  </div>
+</header>
+
+<main class="mx-auto max-w-5xl px-6 py-14 space-y-14">
+
+  <!-- 主视觉 -->
+  <section>
+    <p class="text-xs font-mono uppercase tracking-widest text-signal">品牌标志</p>
+    <h1 class="mt-3 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100">把隔离抬到空中</h1>
+    <p class="mt-4 max-w-2xl text-ink-300 leading-relaxed">
+      标志基于官方 Qubes 的等距立方体（三面三种蓝）。Qubes Air 在此之上把顶面上浮、留出气隙——
+      隐喻"把 Qubes 的隔离抬到云端与远端设备"，同时保留与官方一脉相承的视觉血统。
+    </p>
+  </section>
+
+  <!-- 主标志展示 -->
+  <section class="rounded-2xl border border-ink-800 bg-gradient-to-b from-ink-900/60 to-ink-950 p-12 flex items-center justify-center">
+    <svg viewBox="0 0 220 64" class="w-full max-w-md" fill="none" role="img" aria-label="Qubes Air">
+      <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/>
+      <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+      <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+      <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+      <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/>
+      <text x="66" y="40" font-family="ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="600" letter-spacing="-0.5" fill="#eef1f5">Qubes</text>
+      <text x="144" y="40" font-family="ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="400" letter-spacing="0.3" fill="#63a0ff">Air</text>
+    </svg>
+  </section>
+
+  <!-- 变体网格 -->
+  <section class="grid sm:grid-cols-3 gap-4">
+    <!-- 图标 mark -->
+    <div class="rounded-xl border border-ink-800 bg-ink-900/40 p-6 flex flex-col items-center gap-4">
+      <svg viewBox="0 0 64 64" class="w-16 h-16" fill="none">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+        <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/>
+      </svg>
+      <p class="text-xs text-ink-500 font-mono">图标 mark</p>
+    </div>
+    <!-- app 图标 / favicon -->
+    <div class="rounded-xl border border-ink-800 bg-ink-900/40 p-6 flex flex-col items-center gap-4">
+      <svg viewBox="0 0 64 64" class="w-16 h-16">
+        <rect width="64" height="64" rx="14" fill="#0e1116"/>
+        <path d="M32 10 L49 18.5 L32 27 L15 18.5 Z" fill="#a9caff"/>
+        <path d="M15 33 L32 42 L32 58 L15 49 Z" fill="#7eadff"/>
+        <path d="M49 33 L32 42 L32 58 L49 49 Z" fill="#4f8bee"/>
+        <path d="M15 33 L32 42 L49 33 L32 24 Z" fill="#0a0c10"/>
+      </svg>
+      <p class="text-xs text-ink-500 font-mono">app 图标 / favicon</p>
+    </div>
+    <!-- 浅底反白 -->
+    <div class="rounded-xl border border-ink-200 bg-ink-100 p-6 flex flex-col items-center gap-4">
+      <svg viewBox="0 0 64 64" class="w-16 h-16" fill="none">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#6aa4ff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#4f8bee"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#3874d8"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#eef1f5"/>
+        <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#cfe0ff"/>
+      </svg>
+      <p class="text-xs text-ink-500 font-mono">浅底适配</p>
+    </div>
+  </section>
+
+  <!-- 尺寸阶梯 -->
+  <section>
+    <h2 class="text-sm font-medium text-ink-100 mb-4">缩放稳定性</h2>
+    <div class="rounded-xl border border-ink-800 bg-ink-900/40 p-8 flex items-end justify-center gap-8">
+      <svg viewBox="0 0 64 64" class="w-12 h-12" fill="none"><path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/><path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/><path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/><path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/><path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/></svg>
+      <svg viewBox="0 0 64 64" class="w-8 h-8" fill="none"><path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/><path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/><path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/><path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/><path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/></svg>
+      <svg viewBox="0 0 64 64" class="w-6 h-6" fill="none"><path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/><path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/><path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/><path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/></svg>
+      <svg viewBox="0 0 64 64" class="w-4 h-4" fill="none"><path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/><path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/><path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/><path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/></svg>
+    </div>
+  </section>
+
+  <!-- 用色 -->
+  <section>
+    <h2 class="text-sm font-medium text-ink-100 mb-4">用色 · 对齐官方 Qubes 蓝</h2>
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div><div class="swatch" style="background:#a9caff"></div><p class="mt-2 text-xs font-mono text-ink-400">顶面 #a9caff</p></div>
+      <div><div class="swatch" style="background:#7eadff"></div><p class="mt-2 text-xs font-mono text-ink-400">左面 #7eadff</p></div>
+      <div><div class="swatch" style="background:#4f8bee"></div><p class="mt-2 text-xs font-mono text-ink-400">右面 #4f8bee</p></div>
+      <div><div class="swatch" style="background:#63a0ff"></div><p class="mt-2 text-xs font-mono text-ink-400">Qubes Blue #63a0ff</p></div>
+    </div>
+    <p class="mt-4 text-xs text-ink-500 leading-relaxed max-w-2xl">
+      三面用色源自官方 <span class="font-mono text-ink-300">qubes-logo-blue</span>（#99bfff / #63a0ff / #7eadff），
+      在深色背景上略作提亮与加深以拉开层次。强调色统一为 Qubes Blue，全站不引入 AI 紫。
+    </p>
+  </section>
+
+</main>
+
+<footer class="border-t border-ink-800/60 py-8">
+  <div class="mx-auto max-w-5xl px-6 text-xs text-ink-500 flex flex-wrap items-center justify-between gap-3">
+    <span>Qubes Air · 社区实现 · 标志衍生自官方 Qubes artwork (CC BY-SA 4.0)</span>
+    <span class="font-mono">assets/logo.svg · logo-lockup.svg · favicon.svg</span>
+  </div>
+</footer>
+</body>
+</html>

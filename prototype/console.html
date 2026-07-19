@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Qubes Air Console — 控制台</title>
+<meta name="description" content="Qubes Air 管理控制台：点一下即可开机 / 挂起远程 Qube，凭据请求可视化确认。存算分离、UI 优先。" />
+<!-- 操作台，不应进搜索结果 -->
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0a0c10" />
+<link rel="canonical" href="https://slchris.github.io/qubes-air/prototype/console.html" />
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Qubes Air" />
+<meta property="og:title" content="Qubes Air Console — 控制台" />
+<meta property="og:description" content="点一下即可开机 / 挂起远程 Qube，凭据请求可视化确认。存算分离、UI 优先。" />
+<meta property="og:image" content="https://slchris.github.io/qubes-air/prototype/assets/og-image.png" />
+<!-- 原型约定：Tailwind CDN 便于预览；正式落地按项目安全原则本地化 + SRI，见 readme.md。 -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      fontFamily: {
+        sans: ['ui-sans-serif','system-ui','-apple-system','Segoe UI','Roboto','Noto Sans SC','sans-serif'],
+        mono: ['ui-monospace','SFMono-Regular','Menlo','Consolas','monospace'],
+      },
+      colors: {
+        ink:{ 950:'#0a0c10',900:'#0e1116',850:'#12161d',800:'#171b23',700:'#242a35',600:'#333b48',500:'#4b5563',400:'#8a93a2',300:'#b6bdc9',200:'#d6dbe3',100:'#eef1f5' },
+        signal:{ DEFAULT:'#63a0ff',bright:'#8fbaff',dim:'#3f7fe6',wash:'#0f2438' },
+        ok:{ DEFAULT:'#3fb37f',wash:'#0f2a20' },
+        warn:{ DEFAULT:'#d9a441',wash:'#2b2110' },
+        idle:{ DEFAULT:'#8a93a2',wash:'#1a1e26' },
+      },
+    }},
+  };
+</script>
+<style>
+  :root{ color-scheme:dark; }
+  body{ background:#0a0c10; }
+  ::-webkit-scrollbar{ width:10px;height:10px }
+  ::-webkit-scrollbar-thumb{ background:#242a35;border-radius:6px }
+  ::-webkit-scrollbar-track{ background:transparent }
+
+  @keyframes rowflash { 0%{ background:rgba(99,160,255,.14) } 100%{ background:transparent } }
+  .row-flash{ animation:rowflash 1.1s ease-out; }
+
+  @keyframes toastin { from{ opacity:0; transform:translateY(8px) } to{ opacity:1; transform:none } }
+  .toast{ animation:toastin .22s cubic-bezier(.16,1,.3,1); }
+
+  .modal-backdrop{ transition:opacity .18s ease; }
+  @keyframes modalpop { from{ opacity:0; transform:translateY(10px) scale(.98) } to{ opacity:1; transform:none } }
+  .modal-card{ animation:modalpop .2s cubic-bezier(.16,1,.3,1); }
+
+  @keyframes indet { 0%{ left:-40% } 100%{ left:100% } }
+  .indet::after{ content:''; position:absolute; top:0; bottom:0; width:40%; left:-40%;
+    background:linear-gradient(90deg,transparent,#63a0ff,transparent); animation:indet 1s linear infinite; }
+
+  .dot-pulse{ animation:dp 1.4s ease-in-out infinite; }
+  @keyframes dp{ 0%,100%{ opacity:1 } 50%{ opacity:.35 } }
+
+  @keyframes viewin { from{ opacity:0; transform:translateY(6px) } to{ opacity:1; transform:none } }
+  .view-in{ animation:viewin .2s cubic-bezier(.16,1,.3,1); }
+
+  @media (prefers-reduced-motion: reduce){
+    .row-flash,.toast,.modal-card,.indet::after,.dot-pulse,.view-in{ animation:none !important; }
+  }
+</style>
+</head>
+<body class="font-sans text-ink-200 antialiased">
+
+<div class="flex min-h-[100dvh]">
+
+  <!-- SIDEBAR -->
+  <aside class="hidden md:flex w-60 shrink-0 flex-col border-r border-ink-800 bg-ink-950">
+    <a href="landing.html" class="h-14 flex items-center gap-2.5 px-5 border-b border-ink-800 group">
+      <svg viewBox="0 0 64 64" class="w-7 h-7 shrink-0 transition-transform group-hover:-translate-y-0.5" fill="none" aria-hidden="true">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+        <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/>
+      </svg>
+      <span class="font-semibold text-ink-100">Qubes Air</span>
+    </a>
+    <nav id="nav" class="flex-1 p-3 space-y-0.5 text-sm"></nav>
+    <div class="p-3 border-t border-ink-800">
+      <div class="rounded-md bg-ink-900 px-3 py-2.5 text-xs">
+        <div class="flex items-center gap-2 text-ok"><span class="w-1.5 h-1.5 rounded-full bg-ok dot-pulse"></span>控制台在线</div>
+        <div class="mt-1 font-mono text-ink-500">mgmt-air · 127.0.0.1:8080</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="flex-1 min-w-0 flex flex-col">
+    <header class="h-14 shrink-0 flex items-center justify-between gap-4 px-6 border-b border-ink-800 bg-ink-950/80 backdrop-blur sticky top-0 z-30">
+      <div class="flex items-center gap-2 text-sm min-w-0">
+        <!-- 移动端视图切换 -->
+        <select id="mobile-nav" class="md:hidden rounded-md bg-ink-900 border border-ink-700 px-2 py-1 text-xs text-ink-200"></select>
+        <span id="crumb" class="hidden md:inline text-ink-300 font-medium truncate">概览</span>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="hidden sm:inline text-xs font-mono text-ink-500">orchestrator: <span id="orch-state" class="text-ok">enabled</span></span>
+        <button data-action="new" class="rounded-md px-3.5 py-1.5 text-sm font-medium bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition inline-flex items-center gap-1.5">
+          <svg viewBox="0 0 16 16" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M3 8h10" stroke-linecap="round"/></svg>
+          建远程 Qube
+        </button>
+      </div>
+    </header>
+
+    <main id="view" class="flex-1 overflow-y-auto p-6"></main>
+  </div>
+</div>
+
+<!-- TOAST 容器 -->
+<div id="toasts" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 items-end"></div>
+
+<!-- MODAL 容器 -->
+<div id="modal-root" class="hidden fixed inset-0 z-50">
+  <div class="modal-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm" data-close></div>
+  <div class="absolute inset-0 flex items-center justify-center p-4">
+    <div id="modal-card" class="modal-card w-full max-w-md rounded-xl border border-ink-700 bg-ink-900 shadow-2xl"></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ========================= 数据模型 ========================= */
+  const qubes = [
+    { id:'remote-gpu',   zone:'gcp-zone', state:'running',   spec:'8c · 32G · T4', cores:8, disk:'500 GB', rate:0.92 },
+    { id:'remote-build', zone:'gcp-zone', state:'running',   spec:'8c · 16G',      cores:8, disk:'120 GB', rate:0.34 },
+    { id:'remote-work',  zone:'pve-zone', state:'suspended', spec:'4c · 8G',       cores:4, disk:'100 GB', rate:0.00 },
+    { id:'remote-data',  zone:'pve-zone', state:'suspended', spec:'4c · 16G',      cores:4, disk:'2 TB',   rate:0.00 },
+    { id:'remote-ci',    zone:'gcp-zone', state:'building',  spec:'4c · 8G',       cores:4, disk:'分配中', rate:0.00 },
+    { id:'remote-arch',  zone:'aws-zone', state:'offline',   spec:'8c · 16G',      cores:8, disk:'256 GB', rate:0.00 },
+  ];
+
+  const zones = [
+    { id:'pve-zone', kind:'Proxmox',      state:'connected', endpoint:'pve.lan:8006',        inbound:'零入站 · 出站 SSH 回程' },
+    { id:'gcp-zone', kind:'GCP',          state:'connected', endpoint:'europe-west1',         inbound:'零入站 · 出站 SSH 回程' },
+    { id:'aws-zone', kind:'AWS',          state:'on-demand', endpoint:'ap-northeast-1',       inbound:'零入站 · 出站 SSH 回程' },
+  ];
+
+  const creds = [
+    { id:'proxmox-token',  kind:'API Token',   vault:'vault-cloud', used:'remote-* 建机', rotated:'6 天前',  policy:'ask' },
+    { id:'gcp-sa-key',     kind:'Service Acct', vault:'vault-cloud', used:'gcp-zone 编排', rotated:'2 天前',  policy:'ask' },
+    { id:'relay-ssh-key',  kind:'SSH 私钥',     vault:'vault-cloud', used:'sys-relay 出站', rotated:'14 天前', policy:'ask' },
+    { id:'luks-data-key',  kind:'LUKS 卷密钥',  vault:'vault',       used:'数据盘加密',     rotated:'从未',    policy:'never-remote' },
+  ];
+
+  let policies = [
+    { id:'p1', title:'取凭据', target:'proxmox-token', tone:'signal', from:'mgmt-air 到 vault-cloud' },
+    { id:'p2', title:'远端签名', target:'qubes.Gpg',   tone:'warn',   from:'remote-work 到 vault' },
+  ];
+
+  const settings = {
+    orchestrator: true,
+    remoteAsk: true,          // 远端到本地一律询问
+    dom0Offline: true,        // dom0 永远离线（只读展示）
+    clientSideEncrypt: true,  // state 客户端加密后再进 backend
+    relay: 'sys-relay',
+  };
+
+  /* ========================= 通用工具 ========================= */
+  const $  = (s, r=document) => r.querySelector(s);
+  const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+  const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  const STATE = {
+    running:   { label:'运行', cls:'text-ok',   wash:'bg-ok-wash',   ring:'ring-ok/25',   dot:'bg-ok' },
+    suspended: { label:'挂起', cls:'text-idle', wash:'bg-idle-wash', ring:'ring-idle/25', dot:null },
+    building:  { label:'建中', cls:'text-signal', wash:'bg-signal/10', ring:'ring-signal/25', dot:'bg-signal' },
+    offline:   { label:'离线', cls:'text-idle', wash:'bg-idle-wash', ring:'ring-idle/25', dot:null },
+    working:   { label:'处理中', cls:'text-signal', wash:'bg-signal/10', ring:'ring-signal/25', dot:null },
+  };
+
+  function badge(state){
+    const s = STATE[state];
+    const dot = s.dot ? `<span class="w-1.5 h-1.5 rounded-full ${s.dot} ${state==='building'||state==='working'?'dot-pulse':''}"></span>` : '';
+    return `<span class="inline-flex items-center gap-1.5 rounded-full ${s.wash} px-2.5 py-1 text-xs ${s.cls} ring-1 ${s.ring}">${dot}${s.label}</span>`;
+  }
+
+  function card(title, right, body){
+    return `<section class="rounded-lg border border-ink-800 bg-ink-900/40 overflow-hidden">
+      <div class="flex items-center justify-between px-5 h-12 border-b border-ink-800">
+        <h2 class="text-sm font-medium text-ink-100">${title}</h2>
+        ${right ? `<span class="text-xs font-mono text-ink-500">${right}</span>` : ''}
+      </div>
+      ${body}
+    </section>`;
+  }
+
+  /* ========================= toast ========================= */
+  function toast(msg, tone){
+    tone = tone||'ok';
+    const map = { ok:'text-ok ring-ok/30', warn:'text-warn ring-warn/30', signal:'text-signal ring-signal/30', neutral:'text-ink-200 ring-ink-700' };
+    const el = document.createElement('div');
+    el.className = `toast pointer-events-auto flex items-center gap-2.5 rounded-lg border ring-1 ${map[tone]} border-ink-700 bg-ink-900/95 backdrop-blur px-3.5 py-2.5 text-sm shadow-xl max-w-xs`;
+    el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${tone==='warn'?'bg-warn':tone==='signal'?'bg-signal':tone==='neutral'?'bg-ink-400':'bg-ok'} shrink-0"></span><span class="text-ink-200">${msg}</span>`;
+    $('#toasts').appendChild(el);
+    setTimeout(()=>{ el.style.transition='opacity .3s, transform .3s'; el.style.opacity='0'; el.style.transform='translateY(6px)'; setTimeout(()=>el.remove(),320); }, 2600);
+  }
+
+  /* ========================= modal ========================= */
+  const modalRoot = $('#modal-root'), modalCard = $('#modal-card');
+  function openModal(html){
+    modalCard.innerHTML = html;
+    modalRoot.classList.remove('hidden');
+    const first = modalCard.querySelector('[data-autofocus]');
+    if(first) first.focus();
+  }
+  function closeModal(){ modalRoot.classList.add('hidden'); modalCard.innerHTML=''; }
+  modalRoot.addEventListener('click', e => { if(e.target.hasAttribute('data-close')) closeModal(); });
+  document.addEventListener('keydown', e => { if(e.key==='Escape' && !modalRoot.classList.contains('hidden')) closeModal(); });
+
+  /* ========================= 状态切换 ========================= */
+  // 重渲染当前视图后，给指定 qube 行加高亮
+  function flashRow(id){ const nu = $('#row-'+CSS.escape(id)); if(nu) nu.classList.add('row-flash'); }
+
+  function setState(id, state){
+    const q = qubes.find(x=>x.id===id); if(!q) return;
+    q.state = state;
+    if(state==='running' && !q.rate) q.rate = q.cores>=8 ? (q.spec.includes('T4')?0.92:0.34) : 0.12;
+    if(state==='suspended') q.rate = 0;
+    rerender();          // 重渲染当前视图，保证概览/成本等页数字同步
+    flashRow(id);
+  }
+
+  function runTransition(id, settleState, okMsg){
+    const q = qubes.find(x=>x.id===id); if(!q) return;
+    q.state = 'working'; rerender();
+    const tr = $('#row-'+CSS.escape(id));
+    if(tr){
+      const cell = tr.querySelector('td:last-child');
+      if(cell) cell.innerHTML = `<div class="relative ml-auto h-1 w-16 overflow-hidden rounded bg-ink-800 indet"></div>`;
+    }
+    const delay = 1100 + Math.floor(Math.random()*700);
+    setTimeout(()=>{ setState(id, settleState); toast(okMsg, settleState==='running'?'ok':'signal'); }, delay);
+  }
+
+  /* ========================= qube 行 & 操作 ========================= */
+  function actionCell(q){
+    if(q.state==='running')   return `<button data-op="suspend" data-id="${q.id}" class="rounded-md px-2.5 py-1 text-xs text-ink-200 ring-1 ring-ink-700 hover:ring-warn/60 hover:text-warn transition">挂起</button>`;
+    if(q.state==='suspended') return `<button data-op="resume"  data-id="${q.id}" class="rounded-md px-2.5 py-1 text-xs text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">恢复</button>`;
+    if(q.state==='building')  return `<button class="rounded-md px-2.5 py-1 text-xs text-ink-500 ring-1 ring-ink-800" disabled>建中</button>`;
+    if(q.state==='offline')   return `<button data-op="resume" data-id="${q.id}" class="rounded-md px-2.5 py-1 text-xs text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">拉起</button>`;
+    return `<button class="rounded-md px-2.5 py-1 text-xs text-ink-500 ring-1 ring-ink-800" disabled>…</button>`;
+  }
+  function qubeRow(q){
+    const dim = (q.state==='suspended'||q.state==='offline') ? 'text-ink-500' : 'text-ink-300';
+    const disk = q.state==='building' ? `<span class="text-ink-500">${esc(q.disk)}</span>` : `<span class="tabular-nums">${esc(q.disk)}</span>`;
+    return `<tr id="row-${esc(q.id)}" class="hover:bg-ink-800/30 transition-colors">
+      <td class="px-5 py-3"><span class="font-mono text-ink-100">${esc(q.id)}</span></td>
+      <td class="px-5 py-3 text-ink-300">${esc(q.zone)}</td>
+      <td class="px-5 py-3">${badge(q.state)}</td>
+      <td class="px-5 py-3 font-mono ${dim} text-xs">${esc(q.spec)}</td>
+      <td class="px-5 py-3 font-mono text-ink-300 text-xs">${disk}</td>
+      <td class="px-5 py-3 text-right">${actionCell(q)}</td>
+    </tr>`;
+  }
+  function qubeTable(list){
+    return `<div class="overflow-x-auto"><table class="w-full text-sm min-w-[760px]">
+      <thead><tr class="text-left text-xs text-ink-400 border-b border-ink-800">
+        <th class="font-medium px-5 py-2.5">名称</th><th class="font-medium px-5 py-2.5">Zone</th>
+        <th class="font-medium px-5 py-2.5">状态</th><th class="font-medium px-5 py-2.5">规格</th>
+        <th class="font-medium px-5 py-2.5">数据盘</th><th class="font-medium px-5 py-2.5 text-right">操作</th>
+      </tr></thead>
+      <tbody class="divide-y divide-ink-800/70">${list.map(qubeRow).join('')}</tbody>
+    </table></div>`;
+  }
+
+  function confirmSuspend(id){
+    const q = qubes.find(x=>x.id===id); if(!q) return;
+    openModal(`<div class="p-5">
+      <div class="flex items-start gap-3">
+        <div class="mt-0.5 w-9 h-9 shrink-0 rounded-lg bg-warn-wash text-warn grid place-items-center">
+          <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 6v5M10 14h.01M8.6 3.2 2.3 14a1.6 1.6 0 0 0 1.4 2.4h12.6A1.6 1.6 0 0 0 17.7 14L11.4 3.2a1.6 1.6 0 0 0-2.8 0Z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-ink-100">挂起 <span class="font-mono text-warn">${esc(id)}</span>？</h3>
+          <p class="mt-2 text-sm text-ink-400 leading-relaxed">将<strong class="text-ink-200">销毁计算实例</strong>以停止计费，<strong class="text-ink-200">保留数据盘</strong>（${esc(q.disk)}）。下次恢复会拉起新实例并挂回同一块盘，数据原样回来。</p>
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2.5">
+        <button data-close class="rounded-md px-3.5 py-2 text-sm text-ink-300 ring-1 ring-ink-700 hover:text-ink-100 transition">取消</button>
+        <button data-confirm data-autofocus class="rounded-md px-3.5 py-2 text-sm font-medium bg-warn text-ink-950 hover:brightness-110 active:scale-[.98] transition">确认挂起</button>
+      </div></div>`);
+    $('[data-confirm]', modalCard).addEventListener('click', ()=>{ closeModal(); runTransition(id, 'suspended', `已挂起 ${id} · 计算已释放，数据盘保留`); });
+  }
+
+  function confirmResume(id){
+    const q = qubes.find(x=>x.id===id); if(!q) return;
+    openModal(`<div class="p-5">
+      <div class="flex items-start gap-3">
+        <div class="mt-0.5 w-9 h-9 shrink-0 rounded-lg bg-signal/10 text-signal grid place-items-center">
+          <svg viewBox="0 0 20 20" class="w-5 h-5" fill="currentColor"><path d="M6 4.5v11a1 1 0 0 0 1.5.87l9-5.5a1 1 0 0 0 0-1.74l-9-5.5A1 1 0 0 0 6 4.5Z"/></svg>
+        </div>
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-ink-100">恢复 <span class="font-mono text-signal">${esc(id)}</span>？</h3>
+          <p class="mt-2 text-sm text-ink-400 leading-relaxed">在 <span class="font-mono text-ink-300">${esc(q.zone)}</span> 拉起 <span class="font-mono text-ink-300">${esc(q.spec)}</span> 的新实例，挂回数据盘（${esc(q.disk)}），并经 RemoteVM 接回本地。仅对运行时段计费。</p>
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2.5">
+        <button data-close class="rounded-md px-3.5 py-2 text-sm text-ink-300 ring-1 ring-ink-700 hover:text-ink-100 transition">取消</button>
+        <button data-confirm data-autofocus class="rounded-md px-3.5 py-2 text-sm font-medium bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition">确认恢复</button>
+      </div></div>`);
+    $('[data-confirm]', modalCard).addEventListener('click', ()=>{ closeModal(); runTransition(id, 'running', `已恢复 ${id} · 实例运行中，数据盘已挂回`); });
+  }
+
+  function openNewForm(){
+    openModal(`<form id="new-form" class="p-5">
+      <h3 class="text-base font-semibold text-ink-100">建远程 Qube</h3>
+      <p class="mt-1 text-sm text-ink-500">编排在联网的 mgmt-air 完成，凭据从 vault 按需取，用完即弃。</p>
+      <div class="mt-4 space-y-3.5">
+        <label class="block"><span class="text-xs text-ink-400">名称</span>
+          <input data-autofocus name="name" required placeholder="remote-lab" autocomplete="off" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm font-mono text-ink-100 placeholder:text-ink-600 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition" />
+        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-ink-400">Zone</span>
+            <select name="zone" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm text-ink-100 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition">
+              ${zones.map(z=>`<option value="${z.id}">${z.id} · ${z.kind}</option>`).join('')}
+            </select>
+          </label>
+          <label class="block"><span class="text-xs text-ink-400">规格</span>
+            <select name="spec" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm text-ink-100 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition">
+              <option value="4c · 8G">4c · 8G</option><option value="8c · 16G">8c · 16G</option><option value="8c · 32G · T4">8c · 32G · T4（GPU）</option>
+            </select>
+          </label>
+        </div>
+        <label class="block"><span class="text-xs text-ink-400">数据盘</span>
+          <select name="disk" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm text-ink-100 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition">
+            <option>100 GB</option><option>500 GB</option><option>2 TB</option>
+          </select>
+        </label>
+      </div>
+      <div class="mt-5 flex justify-end gap-2.5">
+        <button type="button" data-close class="rounded-md px-3.5 py-2 text-sm text-ink-300 ring-1 ring-ink-700 hover:text-ink-100 transition">取消</button>
+        <button type="submit" class="rounded-md px-3.5 py-2 text-sm font-medium bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition">创建并接回本地</button>
+      </div></form>`);
+    $('#new-form', modalCard).addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const name = (fd.get('name')||'').toString().trim() || 'remote-new';
+      if(qubes.some(q=>q.id===name)){ toast(`名称 ${name} 已存在`, 'warn'); return; }
+      const cores = /8c/.test(fd.get('spec')) ? 8 : 4;
+      qubes.push({ id:name, zone:fd.get('zone'), state:'building', spec:fd.get('spec'), cores, disk:'分配中', rate:0 });
+      closeModal();
+      if(location.hash!=='#/qubes' && location.hash!=='#/' && location.hash!=='') { /* keep view */ }
+      rerender(); flashRow(name);
+      toast(`正在建 ${name} … 分配计算与数据盘`, 'signal');
+      const target = fd.get('disk');
+      setTimeout(()=>{ const qq=qubes.find(x=>x.id===name); if(qq){ qq.disk=target; setState(name,'running'); toast(`${name} 已就绪 · 已经 RemoteVM 接回本地`, 'ok'); } }, 2200);
+    });
+  }
+
+  /* ========================= policy ========================= */
+  function policyRow(p){
+    const toneCls = p.tone==='warn' ? 'text-warn' : 'text-signal';
+    return `<li id="pol-${p.id}" class="flex items-center justify-between gap-3 px-5 py-3 transition-colors">
+      <div class="min-w-0">
+        <p class="text-ink-200 truncate">${esc(p.title)} <span class="font-mono ${toneCls}">${esc(p.target)}</span></p>
+        <p class="text-xs text-ink-500 font-mono">${esc(p.from)}</p>
+      </div>
+      <div class="flex gap-2 shrink-0">
+        <button data-pol="allow" data-id="${p.id}" class="rounded-md px-2.5 py-1 text-xs text-ok ring-1 ring-ok/40 hover:bg-ok/10 transition">允许</button>
+        <button data-pol="deny"  data-id="${p.id}" class="rounded-md px-2.5 py-1 text-xs text-ink-400 ring-1 ring-ink-700 hover:text-ink-200 transition">拒绝</button>
+      </div></li>`;
+  }
+  function policyPanelBody(){
+    if(!policies.length) return `<div class="px-5 py-8 text-center text-sm text-ink-500">
+      <div class="mx-auto w-9 h-9 rounded-full bg-ok-wash text-ok grid place-items-center mb-2">
+        <svg viewBox="0 0 16 16" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"><path d="M3.5 8.5l3 3 6-7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>没有待确认的请求</div>`;
+    return `<ul class="divide-y divide-ink-800/70 text-sm">${policies.map(policyRow).join('')}</ul>`;
+  }
+  function resolvePolicy(id, allow){
+    const li = $('#pol-'+id), p = policies.find(x=>x.id===id);
+    if(li){ li.style.transition='opacity .25s, transform .25s'; li.style.opacity='0'; li.style.transform='translateX(8px)'; }
+    setTimeout(()=>{ policies = policies.filter(x=>x.id!==id); rerender(); }, 220);
+    if(p) toast(allow ? `已允许 · ${p.target}` : `已拒绝 · ${p.target}`, allow?'ok':'neutral');
+  }
+
+  /* ========================= 视图：概览 ========================= */
+  function viewOverview(){
+    const running   = qubes.filter(q=>q.state==='running').length;
+    const suspended = qubes.filter(q=>q.state==='suspended').length;
+    const building  = qubes.filter(q=>q.state==='building'||q.state==='working').length;
+    const retained  = qubes.filter(q=>q.state!=='building').reduce((a,q)=>a + parseDisk(q.disk), 0);
+    const mtd = estMonthCost();
+    return `<div class="space-y-6">
+      <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        ${stat('远程 Qube', qubes.length, `<span class="text-ok">${running} 运行</span> · ${suspended} 挂起 · ${building} 建中`)}
+        ${stat('本月计算成本', '$'+mtd.toFixed(2), '按当前实例费率估算 · 占位', 'warn')}
+        ${stat('保留数据盘', fmtGB(retained), '挂起时持续留存')}
+        ${stat('Zone', zones.length, zones.map(z=>z.kind).join(' · '))}
+      </section>
+      ${card('远程 Qube', '点操作即执行 · suspend 释放计算 / 保留数据盘', qubeTable(qubes))}
+      <section class="grid lg:grid-cols-2 gap-6">
+        ${card('Zone', '', `<ul class="divide-y divide-ink-800/70 text-sm">${zones.map(zoneMiniRow).join('')}</ul>`)}
+        ${card('待确认的 policy 请求', 'dom0 ask', policyPanelBody())}
+      </section>
+    </div>`;
+  }
+  function stat(label, value, sub, subtone){
+    const subcls = subtone==='warn' ? 'text-warn' : 'text-ink-500';
+    return `<div class="rounded-lg border border-ink-800 bg-ink-900/50 p-4">
+      <p class="text-xs text-ink-400">${label}</p>
+      <p class="mt-1.5 font-mono text-2xl text-ink-100 tabular-nums">${value}</p>
+      <p class="mt-1 text-xs ${subcls}">${sub}</p></div>`;
+  }
+  function zoneMiniRow(z){
+    const st = z.state==='connected'
+      ? `<span class="inline-flex items-center gap-1.5 text-xs text-ok"><span class="w-1.5 h-1.5 rounded-full bg-ok"></span>已连接</span>`
+      : `<span class="inline-flex items-center gap-1.5 text-xs text-idle">按需上线</span>`;
+    return `<li class="flex items-center justify-between px-5 py-3">
+      <div><span class="font-mono text-ink-100">${esc(z.id)}</span> <span class="text-ink-500 text-xs">${esc(z.kind)}</span></div>${st}</li>`;
+  }
+
+  /* ========================= 视图：远程 Qube ========================= */
+  let qubeFilter = 'all';
+  function viewQubes(){
+    const list = qubeFilter==='all' ? qubes : qubes.filter(q=>q.state===qubeFilter || (qubeFilter==='building' && q.state==='working'));
+    const tabs = [['all','全部'],['running','运行'],['suspended','挂起'],['building','建中'],['offline','离线']];
+    const filterBar = `<div class="flex items-center gap-1.5 px-5 py-3 border-b border-ink-800 flex-wrap">
+      ${tabs.map(([k,l])=>{
+        const n = k==='all' ? qubes.length : qubes.filter(q=> k==='building' ? (q.state==='building'||q.state==='working') : q.state===k).length;
+        const active = qubeFilter===k;
+        return `<button data-filter="${k}" class="rounded-md px-2.5 py-1 text-xs transition ${active?'bg-signal/15 text-signal ring-1 ring-signal/40':'text-ink-400 hover:text-ink-200 hover:bg-ink-800/50'}">${l} <span class="tabular-nums opacity-70">${n}</span></button>`;
+      }).join('')}
+      <button data-action="new" class="ml-auto rounded-md px-2.5 py-1 text-xs font-medium bg-signal text-ink-950 hover:bg-signal-bright transition inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 16 16" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v10M3 8h10" stroke-linecap="round"/></svg>建远程 Qube</button>
+    </div>`;
+    const body = list.length ? qubeTable(list) : `<div class="px-5 py-12 text-center text-sm text-ink-500">该状态下暂无 Qube</div>`;
+    return `<div class="space-y-6">
+      <div><h1 class="text-lg font-semibold text-ink-100">远程 Qube</h1>
+        <p class="mt-1 text-sm text-ink-400">Qube 不必是本地 Xen VM——它可以是 Proxmox、GCP、AWS 上的云 VM。点操作即执行。</p></div>
+      <section class="rounded-lg border border-ink-800 bg-ink-900/40 overflow-hidden">${filterBar}${body}</section>
+    </div>`;
+  }
+
+  /* ========================= 视图：Zone ========================= */
+  function viewZones(){
+    return `<div class="space-y-6">
+      <div class="flex items-start justify-between gap-4">
+        <div><h1 class="text-lg font-semibold text-ink-100">Zone</h1>
+          <p class="mt-1 text-sm text-ink-400">每个 Zone 是一处承载远程 Qube 的地方：Proxmox VE、Google Cloud、AWS。零入站，靠出站 SSH 回程。</p></div>
+        <button data-action="add-zone" class="shrink-0 rounded-md px-3 py-1.5 text-sm font-medium text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">接入 Zone</button>
+      </div>
+      <section class="grid md:grid-cols-2 xl:grid-cols-3 gap-4">${zones.map(zoneCard).join('')}</section>
+    </div>`;
+  }
+  function zoneCard(z){
+    const count = qubes.filter(q=>q.zone===z.id).length;
+    const running = qubes.filter(q=>q.zone===z.id && q.state==='running').length;
+    const st = z.state==='connected'
+      ? `<span class="inline-flex items-center gap-1.5 text-xs text-ok"><span class="w-1.5 h-1.5 rounded-full bg-ok"></span>已连接</span>`
+      : `<span class="inline-flex items-center gap-1.5 text-xs text-idle"><span class="w-1.5 h-1.5 rounded-full bg-idle"></span>按需上线</span>`;
+    return `<div class="rounded-lg border border-ink-800 bg-ink-900/40 p-5">
+      <div class="flex items-center justify-between">
+        <div><p class="font-mono text-ink-100">${esc(z.id)}</p><p class="text-xs text-ink-500 mt-0.5">${esc(z.kind)}</p></div>${st}
+      </div>
+      <dl class="mt-4 space-y-2 text-xs">
+        <div class="flex justify-between"><dt class="text-ink-500">端点</dt><dd class="font-mono text-ink-300">${esc(z.endpoint)}</dd></div>
+        <div class="flex justify-between"><dt class="text-ink-500">入站</dt><dd class="text-ink-300">${esc(z.inbound)}</dd></div>
+        <div class="flex justify-between"><dt class="text-ink-500">承载 Qube</dt><dd class="font-mono text-ink-300 tabular-nums">${count} 个 · ${running} 运行</dd></div>
+      </dl>
+      <div class="mt-4 flex gap-2">
+        <button data-action="new" class="rounded-md px-2.5 py-1 text-xs text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">在此建 Qube</button>
+        <button data-zone-decom="${z.id}" class="rounded-md px-2.5 py-1 text-xs text-ink-400 ring-1 ring-ink-700 hover:text-warn hover:ring-warn/50 transition">退役</button>
+      </div>
+    </div>`;
+  }
+  function openAddZone(){
+    openModal(`<form id="zone-form" class="p-5">
+      <h3 class="text-base font-semibold text-ink-100">接入 Zone</h3>
+      <p class="mt-1 text-sm text-ink-500">仅登记连接方式。凭据仍存 vault，按需经 qrexec 下发，不落盘。</p>
+      <div class="mt-4 space-y-3.5">
+        <label class="block"><span class="text-xs text-ink-400">名称</span>
+          <input data-autofocus name="id" required placeholder="aws-zone" autocomplete="off" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm font-mono text-ink-100 placeholder:text-ink-600 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition" /></label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block"><span class="text-xs text-ink-400">类型</span>
+            <select name="kind" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm text-ink-100 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition">
+              <option>Proxmox VE</option><option>GCP</option><option>AWS</option></select></label>
+          <label class="block"><span class="text-xs text-ink-400">端点</span>
+            <input name="endpoint" placeholder="region / host" autocomplete="off" class="mt-1 w-full rounded-md bg-ink-950 border border-ink-700 px-3 py-2 text-sm font-mono text-ink-100 placeholder:text-ink-600 focus:border-signal focus:ring-1 focus:ring-signal outline-none transition" /></label>
+        </div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2.5">
+        <button type="button" data-close class="rounded-md px-3.5 py-2 text-sm text-ink-300 ring-1 ring-ink-700 hover:text-ink-100 transition">取消</button>
+        <button type="submit" class="rounded-md px-3.5 py-2 text-sm font-medium bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition">接入</button>
+      </div></form>`);
+    $('#zone-form', modalCard).addEventListener('submit',(e)=>{
+      e.preventDefault();
+      const fd=new FormData(e.target); const id=(fd.get('id')||'').toString().trim();
+      if(!id) return;
+      if(zones.some(z=>z.id===id)){ toast(`Zone ${id} 已存在`,'warn'); return; }
+      zones.push({ id, kind:fd.get('kind'), state:'connected', endpoint:(fd.get('endpoint')||'—').toString(), inbound:'零入站 · 出站 SSH 回程' });
+      closeModal(); rerender(); toast(`已接入 Zone ${id}`, 'ok');
+    });
+  }
+  function decomZone(id){
+    const n = qubes.filter(q=>q.zone===id).length;
+    if(n>0){ toast(`${id} 上还有 ${n} 个 Qube，先迁走或销毁`, 'warn'); return; }
+    openModal(confirmBox('退役 Zone', `<span class="font-mono text-warn">${esc(id)}</span> 将从控制台移除。此操作只清连接登记，不动云上任何资源。`, '确认退役', 'warn'));
+    $('[data-confirm]', modalCard).addEventListener('click', ()=>{
+      const i=zones.findIndex(z=>z.id===id); if(i>=0) zones.splice(i,1);
+      closeModal(); rerender(); toast(`已退役 Zone ${id}`, 'neutral');
+    });
+  }
+
+  /* ========================= 视图：凭据 ========================= */
+  function viewCreds(){
+    return `<div class="space-y-6">
+      <div><h1 class="text-lg font-semibold text-ink-100">凭据</h1>
+        <p class="mt-1 text-sm text-ink-400">私钥存无网络的 vault，永不出 vault。用时经 qrexec 询问下发，不落盘、不上云。</p></div>
+      <section class="rounded-lg border border-ink-800 bg-ink-900/40 overflow-hidden">
+        <div class="overflow-x-auto"><table class="w-full text-sm min-w-[720px]">
+          <thead><tr class="text-left text-xs text-ink-400 border-b border-ink-800">
+            <th class="font-medium px-5 py-2.5">凭据</th><th class="font-medium px-5 py-2.5">类型</th>
+            <th class="font-medium px-5 py-2.5">存放</th><th class="font-medium px-5 py-2.5">用途</th>
+            <th class="font-medium px-5 py-2.5">上次轮换</th><th class="font-medium px-5 py-2.5 text-right">操作</th></tr></thead>
+          <tbody class="divide-y divide-ink-800/70">${creds.map(credRow).join('')}</tbody>
+        </table></div>
+      </section>
+      <p class="text-xs text-ink-500 leading-relaxed max-w-2xl">
+        <span class="font-mono text-idle">never-remote</span> 的凭据（如 LUKS 卷密钥）在 policy 里被硬编码为永不下发到远端——即便远端被攻陷也拿不到。
+      </p>
+    </div>`;
+  }
+  function credRow(c){
+    const policyBadge = c.policy==='never-remote'
+      ? `<span class="rounded-full bg-idle-wash px-2 py-0.5 text-[11px] text-idle ring-1 ring-idle/25 font-mono">never-remote</span>`
+      : `<span class="rounded-full bg-signal/10 px-2 py-0.5 text-[11px] text-signal ring-1 ring-signal/25 font-mono">ask</span>`;
+    const canRotate = c.policy!=='never-remote';
+    return `<tr id="cred-${esc(c.id)}" class="hover:bg-ink-800/30 transition-colors">
+      <td class="px-5 py-3"><span class="font-mono text-ink-100">${esc(c.id)}</span> <span class="ml-1.5 align-middle">${policyBadge}</span></td>
+      <td class="px-5 py-3 text-ink-300 text-xs">${esc(c.kind)}</td>
+      <td class="px-5 py-3 font-mono text-ink-300 text-xs">${esc(c.vault)}</td>
+      <td class="px-5 py-3 text-ink-400 text-xs">${esc(c.used)}</td>
+      <td class="px-5 py-3 text-ink-400 text-xs tabular-nums">${esc(c.rotated)}</td>
+      <td class="px-5 py-3 text-right whitespace-nowrap">
+        <button data-cred-req="${c.id}" class="rounded-md px-2.5 py-1 text-xs text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">请求下发</button>
+        <button data-cred-rot="${c.id}" ${canRotate?'':'disabled'} class="ml-1.5 rounded-md px-2.5 py-1 text-xs ${canRotate?'text-ink-200 ring-1 ring-ink-700 hover:text-ink-100 hover:ring-ink-500':'text-ink-600 ring-1 ring-ink-800'} transition">轮换</button>
+      </td></tr>`;
+  }
+  function requestCred(id){
+    const c = creds.find(x=>x.id===id); if(!c) return;
+    if(c.policy==='never-remote'){ toast(`${id} 为 never-remote · 请求已在 policy 层拒绝`, 'warn'); return; }
+    // 生成一条 dom0 待确认请求，跳转到概览让用户"允许/拒绝"
+    const pid = 'c'+Date.now();
+    policies.push({ id:pid, title:'取凭据', target:id, tone:'signal', from:'mgmt-air 到 '+c.vault });
+    toast(`已发起下发请求 · 待 dom0 在"概览"确认`, 'signal');
+    location.hash = '#/';
+  }
+  function rotateCred(id){
+    const c = creds.find(x=>x.id===id); if(!c) return;
+    openModal(confirmBox('轮换凭据', `将为 <span class="font-mono text-signal">${esc(id)}</span> 原子生成新密钥并替换旧值，旧值立即失效。在途请求不受影响。`, '确认轮换', 'signal'));
+    $('[data-confirm]', modalCard).addEventListener('click', ()=>{
+      closeModal();
+      const row=$('#cred-'+CSS.escape(id));
+      if(row){ const cell=row.querySelector('td:last-child'); if(cell) cell.innerHTML=`<div class="relative ml-auto h-1 w-16 overflow-hidden rounded bg-ink-800 indet"></div>`; }
+      setTimeout(()=>{ c.rotated='刚刚'; rerender(); toast(`已轮换 ${id} · 旧密钥已失效`, 'ok'); }, 1200);
+    });
+  }
+
+  /* ========================= 视图：成本 ========================= */
+  function estMonthCost(){
+    // 简化：按当前费率 × 假设已运行机时（占位）
+    const hours = { 'remote-gpu':38, 'remote-build':46 };
+    return qubes.reduce((a,q)=> a + (q.rate||0) * (hours[q.id]||(q.state==='running'?20:0)), 0);
+  }
+  function parseDisk(d){ const m=/([\d.]+)\s*(TB|GB)/i.exec(d||''); if(!m) return 0; return parseFloat(m[1]) * (/TB/i.test(m[2])?1024:1); }
+  function fmtGB(gb){ return gb>=1024 ? (gb/1024).toFixed(gb%1024?1:0)+' TB' : Math.round(gb)+' GB'; }
+  function viewCost(){
+    const hours = { 'remote-gpu':38, 'remote-build':46 };
+    const rows = qubes.map(q=>{
+      const h = hours[q.id] || (q.state==='running'?20:0);
+      const cost = (q.rate||0)*h;
+      const storeGB = q.state==='building'?0:parseDisk(q.disk);
+      return { q, h, cost, storeGB };
+    });
+    const compute = rows.reduce((a,r)=>a+r.cost,0);
+    const storeGB = rows.reduce((a,r)=>a+r.storeGB,0);
+    const storeCost = storeGB/1024 * 4.2; // 假设 $4.2 / TB-月
+    return `<div class="space-y-6">
+      <div><h1 class="text-lg font-semibold text-ink-100">成本</h1>
+        <p class="mt-1 text-sm text-ink-400">存算分离：计算只在运行时计费，数据盘常驻但便宜。下面是占位估算，正式版接云账单 API。</p></div>
+      <section class="grid grid-cols-2 lg:grid-cols-3 gap-4">
+        ${stat('本月计算', '$'+compute.toFixed(2), '仅运行机时 · 占位', 'warn')}
+        ${stat('本月存储', '$'+storeCost.toFixed(2), fmtGB(storeGB)+' 常驻 · 占位', 'warn')}
+        ${stat('合计', '$'+(compute+storeCost).toFixed(2), '计算 + 存储 · 占位', 'warn')}
+      </section>
+      <section class="rounded-lg border border-ink-800 bg-ink-900/40 overflow-hidden">
+        <div class="flex items-center justify-between px-5 h-12 border-b border-ink-800">
+          <h2 class="text-sm font-medium text-ink-100">按 Qube 拆分</h2>
+          <span class="text-xs font-mono text-ink-500">挂起 → 计算归零，存储照留</span>
+        </div>
+        <div class="overflow-x-auto"><table class="w-full text-sm min-w-[720px]">
+          <thead><tr class="text-left text-xs text-ink-400 border-b border-ink-800">
+            <th class="font-medium px-5 py-2.5">Qube</th><th class="font-medium px-5 py-2.5">状态</th>
+            <th class="font-medium px-5 py-2.5">费率</th><th class="font-medium px-5 py-2.5">本月机时</th>
+            <th class="font-medium px-5 py-2.5">计算</th><th class="font-medium px-5 py-2.5">存储</th>
+            <th class="font-medium px-5 py-2.5 text-right">小计</th></tr></thead>
+          <tbody class="divide-y divide-ink-800/70">${rows.map(costRow).join('')}</tbody>
+        </table></div>
+      </section>
+      <p class="text-xs text-ink-500 leading-relaxed max-w-2xl">
+        真实价值：GPU 训练只付周一那几小时，数据盘全月留存。挂起用 <span class="font-mono text-ink-300">prevent_destroy</span> 保住数据盘，销毁的只是昂贵的计算实例。
+      </p>
+    </div>`;
+  }
+  function costRow(r){
+    const q=r.q;
+    const storeCost = r.storeGB/1024*4.2;
+    return `<tr class="hover:bg-ink-800/30 transition-colors">
+      <td class="px-5 py-3 font-mono text-ink-100">${esc(q.id)}</td>
+      <td class="px-5 py-3">${badge(q.state)}</td>
+      <td class="px-5 py-3 font-mono text-ink-300 text-xs tabular-nums">${q.rate?('$'+q.rate.toFixed(2)+'/h'):'—'}</td>
+      <td class="px-5 py-3 font-mono text-ink-400 text-xs tabular-nums">${r.h?r.h+' h':'0'}</td>
+      <td class="px-5 py-3 font-mono ${r.cost?'text-ink-200':'text-ink-500'} text-xs tabular-nums">$${r.cost.toFixed(2)}</td>
+      <td class="px-5 py-3 font-mono text-ink-400 text-xs tabular-nums">${r.storeGB?('$'+storeCost.toFixed(2)):'—'}</td>
+      <td class="px-5 py-3 text-right font-mono text-ink-100 text-xs tabular-nums">$${(r.cost+storeCost).toFixed(2)}</td>
+    </tr>`;
+  }
+
+  /* ========================= 视图：设置 ========================= */
+  function viewSettings(){
+    return `<div class="space-y-6 max-w-2xl">
+      <div><h1 class="text-lg font-semibold text-ink-100">设置</h1>
+        <p class="mt-1 text-sm text-ink-400">安全红线锁死不可关；其余是可调开关。改动只影响这台 mgmt-air 的行为。</p></div>
+
+      ${card('编排', '', `<div class="divide-y divide-ink-800/70">
+        ${toggleRow('orchestrator','Orchestrator','允许控制台在 mgmt-air 上编排 Terraform / RemoteVM。关掉后只读。', settings.orchestrator, true)}
+        ${infoRow('回程 Relay', `<span class="font-mono text-ink-200">${esc(settings.relay)}</span>`, '本地出站 SSH 的中继 qube，qrexec 请求经它转发')}
+      </div>`)}
+
+      ${card('安全红线', '锁定 · 不可关', `<div class="divide-y divide-ink-800/70">
+        ${toggleRow('dom0Offline','dom0 永远离线','编排全在联网的 mgmt-air，dom0 只经 Admin API 被动配合。', true, false, true)}
+        ${toggleRow('remoteAsk','远端到本地一律询问','远端发起的调用永不自动放行，破坏性操作在 dom0 弹窗确认。', settings.remoteAsk, true)}
+        ${toggleRow('clientSideEncrypt','state 客户端加密','Terraform state 先加密再进 backend，云只看到密文。', true, false, true)}
+      </div>`)}
+
+      <p class="text-xs text-ink-500 leading-relaxed">
+        标"锁定"的三条写进了代码与 policy，控制台无权关闭——防止误操作把安全模型改坏。见落地页「安全模型」。
+      </p>
+    </div>`;
+  }
+  function toggleRow(key, title, desc, on, editable, locked){
+    const sw = `<span class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition ${on?'bg-signal':'bg-ink-700'} ${editable?'cursor-pointer':'opacity-90'}" ${editable?`data-toggle="${key}"`:''}>
+        <span class="inline-block h-3.5 w-3.5 transform rounded-full bg-ink-950 transition ${on?'translate-x-4':'translate-x-1'}"></span></span>`;
+    const lock = locked ? `<svg viewBox="0 0 16 16" class="w-3.5 h-3.5 text-ink-500 ml-2" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="6" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>` : '';
+    return `<div class="flex items-start justify-between gap-4 px-5 py-4">
+      <div class="min-w-0"><div class="flex items-center"><p class="text-sm font-medium text-ink-100">${title}</p>${lock}</div>
+        <p class="mt-1 text-xs text-ink-400 leading-relaxed">${desc}</p></div>${sw}</div>`;
+  }
+  function infoRow(title, value, desc){
+    return `<div class="flex items-start justify-between gap-4 px-5 py-4">
+      <div class="min-w-0"><p class="text-sm font-medium text-ink-100">${title}</p><p class="mt-1 text-xs text-ink-400">${desc}</p></div>
+      <div class="text-sm">${value}</div></div>`;
+  }
+
+  /* ========================= 通用确认框 ========================= */
+  function confirmBox(title, body, confirmLabel, tone){
+    const btn = tone==='warn' ? 'bg-warn text-ink-950 hover:brightness-110' : 'bg-signal text-ink-950 hover:bg-signal-bright';
+    const iconWash = tone==='warn' ? 'bg-warn-wash text-warn' : 'bg-signal/10 text-signal';
+    return `<div class="p-5">
+      <div class="flex items-start gap-3">
+        <div class="mt-0.5 w-9 h-9 shrink-0 rounded-lg ${iconWash} grid place-items-center">
+          <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M10 6v5M10 14h.01" stroke-linecap="round"/><circle cx="10" cy="10" r="7.5"/></svg>
+        </div>
+        <div class="min-w-0"><h3 class="text-base font-semibold text-ink-100">${title}</h3>
+          <p class="mt-2 text-sm text-ink-400 leading-relaxed">${body}</p></div>
+      </div>
+      <div class="mt-5 flex justify-end gap-2.5">
+        <button data-close class="rounded-md px-3.5 py-2 text-sm text-ink-300 ring-1 ring-ink-700 hover:text-ink-100 transition">取消</button>
+        <button data-confirm data-autofocus class="rounded-md px-3.5 py-2 text-sm font-medium ${btn} active:scale-[.98] transition">${confirmLabel}</button>
+      </div></div>`;
+  }
+
+  /* ========================= 路由 ========================= */
+  const ROUTES = [
+    { hash:'#/',         key:'overview', label:'概览',      render:viewOverview, dot:true },
+    { hash:'#/zones',    key:'zones',    label:'Zone',      render:viewZones },
+    { hash:'#/qubes',    key:'qubes',    label:'远程 Qube', render:viewQubes },
+    { hash:'#/creds',    key:'creds',    label:'凭据',      render:viewCreds },
+    { hash:'#/cost',     key:'cost',     label:'成本',      render:viewCost },
+    { hash:'#/settings', key:'settings', label:'设置',      render:viewSettings },
+  ];
+  function currentRoute(){ return ROUTES.find(r=>r.hash===location.hash) || ROUTES[0]; }
+
+  function renderNav(){
+    const cur = currentRoute();
+    $('#nav').innerHTML = ROUTES.map(r=>{
+      const active = r.key===cur.key;
+      const dot = r.dot ? `<span class="w-1.5 h-1.5 rounded-full ${active?'bg-signal':'bg-ink-600'}"></span>` : '';
+      return `<a href="${r.hash}" class="flex items-center gap-3 rounded-md px-3 py-2 transition-colors ${active?'bg-ink-800 text-ink-100':'text-ink-300 hover:bg-ink-900 hover:text-ink-100'}">${dot}${r.label}</a>`;
+    }).join('');
+    // 移动端下拉
+    const m = $('#mobile-nav');
+    m.innerHTML = ROUTES.map(r=>`<option value="${r.hash}" ${r.key===cur.key?'selected':''}>${r.label}</option>`).join('');
+    $('#crumb').textContent = cur.label;
+    // 顶栏 orchestrator 状态同步
+    const o=$('#orch-state'); if(o){ o.textContent = settings.orchestrator?'enabled':'disabled'; o.className = settings.orchestrator?'text-ok':'text-idle'; }
+  }
+
+  function rerender(){
+    const cur = currentRoute();
+    const view = $('#view');
+    view.innerHTML = `<div class="view-in">${cur.render()}</div>`;
+    renderNav();
+  }
+
+  window.addEventListener('hashchange', ()=>{ qubeFilter='all'; rerender(); window.scrollTo?.(0,0); const v=$('#view'); if(v) v.scrollTop=0; });
+
+  /* ========================= 事件委托 ========================= */
+  document.addEventListener('click', (e)=>{
+    const t = e.target;
+    const opBtn = t.closest('[data-op]');
+    if(opBtn){ const id=opBtn.getAttribute('data-id'); opBtn.getAttribute('data-op')==='suspend'?confirmSuspend(id):confirmResume(id); return; }
+    const polBtn = t.closest('[data-pol]');
+    if(polBtn){ resolvePolicy(polBtn.getAttribute('data-id'), polBtn.getAttribute('data-pol')==='allow'); return; }
+    if(t.closest('[data-action="new"]')){ openNewForm(); return; }
+    if(t.closest('[data-action="add-zone"]')){ openAddZone(); return; }
+    const decom = t.closest('[data-zone-decom]');
+    if(decom){ decomZone(decom.getAttribute('data-zone-decom')); return; }
+    const filt = t.closest('[data-filter]');
+    if(filt){ qubeFilter=filt.getAttribute('data-filter'); rerender(); return; }
+    const req = t.closest('[data-cred-req]');
+    if(req){ requestCred(req.getAttribute('data-cred-req')); return; }
+    const rot = t.closest('[data-cred-rot]');
+    if(rot && !rot.disabled){ rotateCred(rot.getAttribute('data-cred-rot')); return; }
+    const tog = t.closest('[data-toggle]');
+    if(tog){ const k=tog.getAttribute('data-toggle'); settings[k]=!settings[k]; rerender();
+      toast(`${k==='orchestrator'?'Orchestrator':'远端一律询问'} 已${settings[k]?'开启':'关闭'}`, settings[k]?'ok':'neutral'); return; }
+  });
+  $('#mobile-nav').addEventListener('change', (e)=>{ location.hash = e.target.value; });
+
+  /* ========================= 初始 ========================= */
+  if(!location.hash) location.hash = '#/';
+  rerender();
+})();
+</script>
+</body>
+</html>

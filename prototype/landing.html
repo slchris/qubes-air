@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<!-- ============ SEO ============ -->
+<title>Qubes Air — 把 Qubes 的隔离带到云端和远端设备</title>
+<meta name="description" content="社区实现的 Qubes Air：用一台低配 Qubes 笔记本做控制中枢，经官方 RemoteVM 与 qrexec 把算力放到 Proxmox、GCP、AWS 并接回本地。存算分离低成本、凭据不出 vault、云厂商不可信的安全优先设计。" />
+<meta name="keywords" content="Qubes OS, Qubes Air, RemoteVM, qrexec, 存算分离, 安全隔离, Terraform, 云安全, vault, 零入站" />
+<meta name="author" content="slchris" />
+<meta name="robots" content="index, follow, max-image-preview:large" />
+<meta name="theme-color" content="#0a0c10" />
+<link rel="canonical" href="https://slchris.github.io/qubes-air/prototype/landing.html" />
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+
+<!-- Open Graph -->
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="Qubes Air" />
+<meta property="og:locale" content="zh_CN" />
+<meta property="og:title" content="Qubes Air — 把 Qubes 的隔离带到云端和远端设备" />
+<meta property="og:description" content="经官方 RemoteVM 与 qrexec 把算力放到 Proxmox、GCP、AWS 并接回本地。存算分离低成本、凭据不出 vault、云厂商不可信的安全优先设计。" />
+<meta property="og:url" content="https://slchris.github.io/qubes-air/prototype/landing.html" />
+<meta property="og:image" content="https://slchris.github.io/qubes-air/prototype/assets/og-image.png" />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta property="og:image:alt" content="Qubes Air：把 Qubes 的隔离带到云端和远端设备" />
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Qubes Air — 把 Qubes 的隔离带到云端和远端设备" />
+<meta name="twitter:description" content="经官方 RemoteVM 与 qrexec 把算力放到 Proxmox、GCP、AWS 并接回本地。存算分离、凭据不出 vault、云厂商不可信的安全优先设计。" />
+<meta name="twitter:image" content="https://slchris.github.io/qubes-air/prototype/assets/og-image.png" />
+
+<!-- 结构化数据：软件应用 + 组织 -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Qubes Air",
+  "applicationCategory": "SecurityApplication",
+  "operatingSystem": "Qubes OS 4.2+",
+  "description": "社区实现的 Qubes Air：经官方 RemoteVM 把 Qubes OS 的隔离模型扩展到云端与物理分离设备，存算分离降低成本，凭据不出 vault。",
+  "url": "https://slchris.github.io/qubes-air/prototype/landing.html",
+  "image": "https://slchris.github.io/qubes-air/prototype/assets/og-image.png",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "codeRepository": "https://github.com/slchris/qubes-air",
+  "author": { "@type": "Person", "name": "slchris" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<!-- ============ /SEO ============ -->
+<!-- 原型约定：用 Tailwind CDN 便于即时预览。正式落地时按项目安全原则本地化构建
+     （不依赖 CDN、静态资源本地化 + SRI 校验），见 readme.md 前端设计原则。 -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'Noto Sans SC', 'sans-serif'],
+          mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono', 'monospace'],
+        },
+        colors: {
+          ink: {
+            950: '#0a0c10', 900: '#0e1116', 850: '#12161d', 800: '#171b23',
+            700: '#242a35', 600: '#333b48', 500: '#4b5563', 400: '#8a93a2',
+            300: '#b6bdc9', 200: '#d6dbe3', 100: '#eef1f5',
+          },
+          signal: { DEFAULT: '#63a0ff', bright: '#8fbaff', dim: '#3f7fe6', wash: '#0f2438' },
+          ok: { DEFAULT: '#3fb37f', wash: '#0f2a20' },
+          idle: { DEFAULT: '#8a93a2', wash: '#1a1e26' },
+        },
+      },
+    },
+  };
+</script>
+<style>
+  /* 单一强调色锁定为 signal(冷蓝)，非 AI 紫。整页 dark theme 锁定。 */
+  :root { color-scheme: dark; }
+  html { scroll-behavior: smooth; }
+  body { background: #0a0c10; }
+  /* 细网格背景，仅在 hero，低强度，不喧宾夺主 */
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, rgba(99,160,255,.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(99,160,255,.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+  }
+  .fade-up { opacity: 0; transform: translateY(14px); transition: opacity .6s cubic-bezier(.16,1,.3,1), transform .6s cubic-bezier(.16,1,.3,1); }
+  .fade-up.in { opacity: 1; transform: none; }
+
+  /* 架构图：数据在连线上流动。dash 向前跑 = 出站发起；回程线反向跑 */
+  .flow      { stroke-dasharray: 6 8; animation: flow 1.1s linear infinite; }
+  .flow-back { stroke-dasharray: 5 9; animation: flow 1.4s linear infinite reverse; }
+  .flow-cred { stroke-dasharray: 3 6; animation: flow 1.6s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -14; } }
+  /* 节点脉冲：活跃 Qube 的呼吸感 */
+  .diag-pulse { animation: diagpulse 2.4s ease-in-out infinite; }
+  @keyframes diagpulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+  /* 沿路径运动的小光点 */
+  .packet { animation: pkt 2.4s cubic-bezier(.45,0,.55,1) infinite; }
+  @keyframes pkt { 0% { opacity:0; } 10% { opacity:1; } 90% { opacity:1; } 100% { opacity:0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .fade-up { opacity: 1 !important; transform: none !important; transition: none !important; }
+    .flow, .flow-back, .flow-cred, .diag-pulse, .packet { animation: none !important; }
+    .flow, .flow-back, .flow-cred { stroke-dasharray: 6 8; }
+    .packet { opacity: 1 !important; }
+  }
+</style>
+</head>
+<body class="font-sans text-ink-200 antialiased selection:bg-signal/30">
+
+<!-- NAV: one line, height under 80px -->
+<header class="fixed top-0 inset-x-0 z-40 border-b border-ink-800/70 bg-ink-950/80 backdrop-blur">
+  <nav class="mx-auto max-w-[1600px] px-8 lg:px-14 h-16 flex items-center justify-between">
+    <a href="#top" class="flex items-center gap-2.5 font-semibold text-ink-100 group">
+      <svg viewBox="0 0 64 64" class="w-7 h-7 transition-transform group-hover:-translate-y-0.5" fill="none" aria-hidden="true">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+        <path d="M32 43 L50 33 L32 28 L14 33 Z" fill="#12233f"/>
+      </svg>
+      Qubes Air
+    </a>
+    <div class="hidden md:flex items-center gap-7 text-sm text-ink-300">
+      <a href="#how" class="hover:text-ink-100 transition-colors">工作原理</a>
+      <a href="#finops" class="hover:text-ink-100 transition-colors">存算分离</a>
+      <a href="#start" class="hover:text-ink-100 transition-colors">如何落地</a>
+      <a href="#security" class="hover:text-ink-100 transition-colors">安全模型</a>
+      <a href="console.html" class="hover:text-ink-100 transition-colors">控制台</a>
+    </div>
+    <a href="https://github.com/slchris/qubes-air" class="text-sm font-medium rounded-md px-3.5 py-2 bg-ink-100 text-ink-950 hover:bg-white active:scale-[.98] transition">
+      在 GitHub 查看
+    </a>
+  </nav>
+</header>
+
+<main id="top">
+
+<!-- HERO: 左文案 + 右简洁引子。完整架构图移到下方全宽 section -->
+<section class="relative min-h-[100dvh] flex items-center pt-16 overflow-hidden">
+  <div class="grid-bg absolute inset-0 pointer-events-none"></div>
+  <div class="relative mx-auto max-w-[1600px] px-8 lg:px-14 grid lg:grid-cols-12 gap-12 items-center w-full">
+    <div class="lg:col-span-6">
+      <p class="inline-flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-signal">
+        <span class="w-1.5 h-1.5 rounded-full bg-signal"></span>
+        社区实现 · 对齐官方 RemoteVM
+      </p>
+      <h1 class="mt-5 text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.05] text-ink-100">
+        把 Qubes 的隔离，<br class="hidden sm:block" />带到云端和远端设备
+      </h1>
+      <p class="mt-6 max-w-xl text-lg leading-relaxed text-ink-300">
+        用一台低配 Qubes 笔记本做控制中枢，把算力放到 Proxmox、GCP、AWS 等平台。经官方 RemoteVM 与 qrexec 接回本地，安全边界不打折。
+      </p>
+      <div class="mt-9 flex flex-wrap items-center gap-3">
+        <a href="console.html" class="rounded-md px-5 py-3 text-sm font-semibold bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition shadow-[0_1px_0_0_rgba(255,255,255,.15)_inset] inline-flex items-center gap-2">
+          打开控制台
+          <svg viewBox="0 0 16 16" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 8h8M8 4l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+        <a href="#how" class="rounded-md px-5 py-3 text-sm font-medium text-ink-200 ring-1 ring-ink-700 hover:ring-ink-500 hover:text-ink-100 transition">
+          看它怎么工作
+        </a>
+      </div>
+      <dl class="mt-12 grid grid-cols-3 gap-4 border-t border-ink-800 pt-7">
+        <!-- 编排：Terraform + OpenTofu 真 logo -->
+        <div>
+          <dt class="text-xs text-ink-400">编排</dt>
+          <dd class="mt-2.5 flex items-center gap-3">
+            <span class="inline-flex items-center gap-2" title="Terraform">
+              <svg viewBox="0 0 24 24" class="w-5 h-5" aria-label="Terraform"><path d="M1.44 0v7.575l6.561 3.79V3.787zm21.12 4.227l-6.561 3.791v7.574l6.56-3.787zM8.72 4.23v7.575l6.561 3.787V8.018zm0 8.405v7.575L15.28 24v-7.578z" fill="#844FBA"/></svg>
+              <span class="font-mono text-[13px] text-ink-200">Terraform</span>
+            </span>
+          </dd>
+          <dd class="mt-2 flex items-center gap-2" title="OpenTofu">
+            <svg viewBox="19 -0.03 473.9 512.15" class="w-5 h-5" aria-label="OpenTofu">
+              <path d="M273.3 4.4a36.03 36.03 0 0 0-34.6 0L61.4 101.9c-.1.1-.3.2-.4.2L37.6 115C26.2 121.3 19 133.3 19 146.4v219.2c0 13.1 7.1 25.2 18.6 31.5l179 98.4c.2.1.5.2.7.4l21.4 11.8c10.8 5.9 23.8 5.9 34.6 0l21.5-11.8.6-.3 178.9-98.4c11.5-6.3 18.6-18.4 18.6-31.5V146.4c0-13.1-7.1-25.2-18.6-31.5L451 102.1c-.2-.1-.4-.2-.5-.3zM284.7 256l165.9-91.2c.2-.1.3-.2.5-.3l2-1.1c5.5-3 12.3 1 12.3 7.3v170.6c0 6.3-6.8 10.3-12.3 7.3l-1.5-.8c-.3-.2-.6-.4-1-.5zM61 164.6c.1.1.3.2.4.2L227.3 256 61.4 347.2c-.3.2-.6.3-.9.5l-1.6.9c-5.5 3-12.3-1-12.3-7.3V170.7c0-6.3 6.8-10.3 12.3-7.3zm376.5-38.4L282.1 40.8c-5.4-3-12.1.9-12.3 7v184.8l167.7-92.2c5.4-3.1 5.4-11 0-14.2m-363 14.3 167.7 92.2V47.9c-.2-6.2-6.8-10-12.3-7L74.5 126.2c-5.4 3.2-5.4 11.1 0 14.3m.2 245.4c-5.6-3.1-5.7-11-.4-14.3l167.9-92.3v184.8c-.2 6-6.6 9.9-11.9 7.2z" fill="#ffda18"/>
+            </svg>
+            <span class="font-mono text-[13px] text-ink-200">OpenTofu</span>
+          </dd>
+        </div>
+        <!-- 跨机信任 -->
+        <div>
+          <dt class="text-xs text-ink-400">跨机信任</dt>
+          <dd class="mt-2.5 flex items-center gap-2">
+            <span class="grid place-items-center w-5 h-5 shrink-0 text-signal">
+              <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 12a3 3 0 0 1 0-4l2-2a3 3 0 0 1 4 4l-1 1" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 8a3 3 0 0 1 0 4l-2 2a3 3 0 0 1-4-4l1-1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="font-mono text-[13px] text-ink-200">RemoteVM</span>
+          </dd>
+          <dd class="mt-2 font-mono text-[13px] text-ink-300 pl-7">+ qrexec</dd>
+        </div>
+        <!-- 凭据 -->
+        <div>
+          <dt class="text-xs text-ink-400">凭据</dt>
+          <dd class="mt-2.5 flex items-center gap-2">
+            <span class="grid place-items-center w-5 h-5 shrink-0 text-signal">
+              <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="10" r="3"/><path d="M9.5 10H17l-2 2m2-2-2-2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span class="font-mono text-[13px] text-ink-200">vault</span>
+          </dd>
+          <dd class="mt-2 font-mono text-[13px] text-ink-300 pl-7">隔离下发</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- Right: 简洁引子——三段式，完整拓扑图在下方全宽 section -->
+    <div class="lg:col-span-6">
+      <div class="relative rounded-2xl border border-ink-800 bg-gradient-to-br from-ink-900/70 to-ink-950/50 p-6 sm:p-8 overflow-hidden">
+        <div class="absolute inset-0 grid-bg opacity-40 pointer-events-none"></div>
+        <div class="relative">
+          <p class="text-xs font-mono uppercase tracking-widest text-ink-400 mb-6">调用路径 · 三段</p>
+          <!-- 三段横向：本地控制 → 零入站隧道 → 远端算力 -->
+          <div class="flex items-stretch gap-2 sm:gap-3">
+            <!-- 本地 -->
+            <div class="flex-1 rounded-xl border border-ink-700 bg-ink-900/60 p-4 text-center">
+              <span class="mx-auto grid place-items-center w-9 h-9 rounded-lg bg-signal/10 ring-1 ring-signal/30 text-signal mb-3">
+                <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="14" height="9" rx="1.5"/><path d="M7 16h6M10 13v3" stroke-linecap="round"/></svg>
+              </span>
+              <p class="text-sm font-medium text-ink-100">本地控制</p>
+              <p class="mt-1 text-[11px] text-ink-500 leading-snug font-mono">mgmt-air<br/>vault 无网</p>
+            </div>
+            <!-- 箭头 -->
+            <div class="flex items-center text-signal shrink-0">
+              <svg viewBox="0 0 24 16" class="w-6 h-5" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8h18M15 3l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <!-- NAT 隧道 -->
+            <div class="flex-1 rounded-xl border border-ink-700 bg-ink-900/60 p-4 text-center">
+              <span class="mx-auto grid place-items-center w-9 h-9 rounded-lg bg-ink-800 ring-1 ring-ink-600 text-ink-300 mb-3">
+                <svg viewBox="0 0 20 20" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="9" width="12" height="7" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9" stroke-linecap="round"/></svg>
+              </span>
+              <p class="text-sm font-medium text-ink-100">零入站隧道</p>
+              <p class="mt-1 text-[11px] text-ink-500 leading-snug font-mono">gRPC 双向流<br/>NAT 后穿透</p>
+            </div>
+            <!-- 箭头 -->
+            <div class="flex items-center text-signal shrink-0">
+              <svg viewBox="0 0 24 16" class="w-6 h-5" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 8h18M15 3l5 5-5 5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <!-- 远端 -->
+            <div class="flex-1 rounded-xl border border-ink-700 bg-ink-900/60 p-4 text-center">
+              <span class="mx-auto grid place-items-center w-9 h-9 rounded-lg bg-signal/10 ring-1 ring-signal/30 text-signal mb-3">
+                <svg viewBox="0 0 64 64" class="w-5 h-5"><path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/><path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/><path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/><path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/></svg>
+              </span>
+              <p class="text-sm font-medium text-ink-100">远端算力</p>
+              <p class="mt-1 text-[11px] text-ink-500 leading-snug font-mono">Proxmox<br/>GCP · AWS</p>
+            </div>
+          </div>
+          <!-- 回程提示 -->
+          <div class="mt-5 flex items-center gap-2 text-[11px] font-mono text-ink-500">
+            <svg viewBox="0 0 24 12" class="w-6 h-3 text-ink-500" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M22 6H4M9 1L4 6l5 5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            反向调用经同一连接回程 · 两侧 dom0 各校验一次
+          </div>
+          <a href="#arch" class="mt-6 inline-flex items-center gap-1.5 text-sm font-medium text-signal hover:text-signal-bright transition-colors">
+            看完整调用路径与网域分割
+            <svg viewBox="0 0 16 16" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 3v10M4 9l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCH: 全宽横向架构图。三网域横向分区，数据流清晰 -->
+<section id="arch" class="border-t border-ink-800/60 py-20 lg:py-24 overflow-hidden">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14">
+    <div class="fade-up max-w-2xl">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">调用路径</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        数据怎么流，网域怎么分
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed">
+        自上而下三层：<span class="text-ink-100">① 本地控制域</span> → <span class="text-ink-100">② 网络出口链</span> → <span class="text-ink-100">③ 远端算力域</span>。本地发起、经四级隔离出站、穿过 NAT 到远端执行，回程沿同一连接返回。
+      </p>
+    </div>
+
+    <figure class="fade-up mt-12 rounded-2xl border border-ink-800 bg-ink-950/40 p-4 sm:p-6 overflow-x-auto">
+      <svg viewBox="0 0 1200 660" class="w-full min-w-[820px] h-auto" role="img" aria-label="Qubes Air 三层架构：上层本地控制域（dom0、无网 vault-cloud、mgmt-air、sys-relay），中层网络链（sys-airnf → sys-airnet → sys-firewall → sys-net 四级隔离出网）与家庭 NAT 零入站边界，下层远端算力域（Remote-Relay 与 Proxmox / GCP / AWS 三个 Zone）。数据从本地出站、穿过 NAT 到远端，回程沿同一连接返回；凭据在本地 vault 内按需下发。">
+        <defs>
+          <marker id="m-out"  markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#63a0ff"/></marker>
+          <marker id="m-back" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5b6472"/></marker>
+          <marker id="m-cred" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3fb37f"/></marker>
+          <marker id="m-net"  markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8a93a2"/></marker>
+        </defs>
+
+        <!-- ============ 上带：本地控制域 ============ -->
+        <rect x="20" y="20" width="1160" height="176" rx="14" fill="#0d1117" stroke="#242a35"/>
+        <text x="40" y="46" fill="#b6bdc9" font-size="14" font-weight="600" font-family="ui-sans-serif,system-ui">① 本地控制域</text>
+        <text x="132" y="46" fill="#4b5563" font-size="11" font-family="monospace">你的 Qubes 笔记本 · 低配即可</text>
+
+        <!-- dom0 横条 -->
+        <rect x="40" y="60" width="1120" height="30" rx="8" fill="#1a1206" stroke="#d9a441" stroke-opacity="0.45"/>
+        <circle cx="58" cy="75" r="4" fill="#d9a441"/>
+        <text x="70" y="79" fill="#e6b959" font-size="11.5" font-family="ui-sans-serif,system-ui">dom0 · 唯一授权点（永远离线，破坏性操作弹窗确认）</text>
+
+        <!-- 一行横排：vault-cloud(无网) → mgmt-air → sys-relay -->
+        <!-- vault-cloud（无网子域） -->
+        <rect x="40" y="104" width="240" height="76" rx="10" fill="#0f1a14" stroke="#3fb37f" stroke-opacity="0.5" stroke-dasharray="5 4"/>
+        <text x="52" y="122" fill="#3f7d63" font-size="9.5" font-family="monospace">无网络子域</text>
+        <rect x="52" y="128" width="152" height="44" rx="8" fill="#12211a" stroke="#3fb37f"/>
+        <text x="66" y="148" fill="#8fe0bd" font-size="12" font-weight="600" font-family="ui-sans-serif,system-ui">vault-cloud</text>
+        <text x="66" y="163" fill="#3f7d63" font-size="8.5" font-family="monospace">netvm=none · 凭据不外泄</text>
+
+        <!-- mgmt-air -->
+        <rect x="360" y="118" width="180" height="52" rx="9" fill="#12161d" stroke="#333b48"/>
+        <text x="376" y="140" fill="#eef1f5" font-size="12.5" font-weight="600" font-family="ui-sans-serif,system-ui">mgmt-air</text>
+        <text x="376" y="156" fill="#5f6672" font-size="9" font-family="monospace">编排控制台 · 联网</text>
+
+        <!-- sys-relay -->
+        <rect x="620" y="104" width="260" height="76" rx="10" fill="#0f2438" stroke="#3f7fe6"/>
+        <text x="636" y="126" fill="#8fbaff" font-size="13" font-weight="600" font-family="ui-sans-serif,system-ui">sys-relay</text>
+        <text x="636" y="143" fill="#5f7fa8" font-size="9.5" font-family="monospace">gRPC 双向流出站长连接 · 请求转发</text>
+        <text x="636" y="160" fill="#3fb37f" font-size="9.5" font-family="monospace">反向调用走同一双向流回程</text>
+
+        <!-- 上带内横向连线：vault →(凭据)→ mgmt →(编排)→ relay -->
+        <path d="M204,150 H356" fill="none" stroke="#3fb37f" stroke-width="1.8" class="flow-cred" marker-end="url(#m-cred)"/>
+        <text x="280" y="140" fill="#3f7d63" font-size="9" text-anchor="middle" font-family="monospace">凭据 ask 下发</text>
+        <path d="M540,144 H616" fill="none" stroke="#3f7fe6" stroke-width="2" class="flow" marker-end="url(#m-out)"/>
+        <text x="578" y="134" fill="#63a0ff" font-size="9" text-anchor="middle" font-family="monospace">编排</text>
+
+        <!-- ============ 中带：网络链 + NAT ============ -->
+        <rect x="20" y="228" width="1160" height="176" rx="14" fill="#0b0e13" stroke="#242a35"/>
+        <text x="40" y="254" fill="#b6bdc9" font-size="14" font-weight="600" font-family="ui-sans-serif,system-ui">② 网络出口链</text>
+        <text x="150" y="254" fill="#4b5563" font-size="11" font-family="monospace">sys-relay 经四级隔离才触外网 · vault 全程无网</text>
+
+        <!-- 四级网络链横排（出站向左）：sys-airnf → sys-airnet → sys-firewall → sys-net → 外网。整链居中带左半，主竖线走右侧空隙 -->
+        <!-- airnf -->
+        <rect x="620" y="286" width="160" height="66" rx="9" fill="#12161d" stroke="#8a93a2"/>
+        <text x="700" y="316" fill="#d6dbe3" font-size="11.5" text-anchor="middle" font-family="ui-sans-serif,system-ui">sys-airnf</text>
+        <text x="700" y="332" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">air 防火墙</text>
+        <!-- airnet -->
+        <rect x="440" y="286" width="160" height="66" rx="9" fill="#12161d" stroke="#8a93a2"/>
+        <text x="520" y="316" fill="#d6dbe3" font-size="11.5" text-anchor="middle" font-family="ui-sans-serif,system-ui">sys-airnet</text>
+        <text x="520" y="332" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">组网 · 建隧道</text>
+        <!-- firewall -->
+        <rect x="260" y="286" width="160" height="66" rx="9" fill="#12161d" stroke="#333b48"/>
+        <text x="340" y="316" fill="#b6bdc9" font-size="11.5" text-anchor="middle" font-family="ui-sans-serif,system-ui">sys-firewall</text>
+        <text x="340" y="332" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">总防火墙</text>
+        <!-- net -->
+        <rect x="80" y="286" width="160" height="66" rx="9" fill="#12161d" stroke="#333b48"/>
+        <text x="160" y="316" fill="#b6bdc9" font-size="11.5" text-anchor="middle" font-family="ui-sans-serif,system-ui">sys-net</text>
+        <text x="160" y="332" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">物理网卡 · 出外网</text>
+
+        <!-- 链路串联（出站向左，每段独立箭头，有明确起止） -->
+        <path d="M620,319 H584" fill="none" stroke="#8a93a2" stroke-width="1.8" class="flow" marker-end="url(#m-net)"/>
+        <path d="M440,319 H404" fill="none" stroke="#8a93a2" stroke-width="1.8" class="flow" marker-end="url(#m-net)"/>
+        <path d="M260,319 H224" fill="none" stroke="#8a93a2" stroke-width="1.8" class="flow" marker-end="url(#m-net)"/>
+        <!-- net → 互联网（链条收尾，不再断在半空） -->
+        <path d="M80,319 H56" fill="none" stroke="#8a93a2" stroke-width="1.8" class="flow" marker-end="url(#m-net)"/>
+        <circle cx="44" cy="300" r="9" fill="none" stroke="#5f6672" stroke-width="1.3"/>
+        <path d="M35,300 H53 M44,291 v18 M37,295 q7,5 14,0 M37,305 q7,-5 14,0" fill="none" stroke="#5f6672" stroke-width="0.9"/>
+        <text x="44" y="330" fill="#5f6672" font-size="8.5" text-anchor="middle" font-family="monospace">互联网</text>
+
+        <!-- NAT 零入站边界（中带最右侧标签） -->
+        <g transform="translate(1060 320)">
+          <circle cx="0" cy="-20" r="11" fill="none" stroke="#8a93a2" stroke-width="1.5"/>
+          <path d="M-5.5,-20 v-4.5 a5.5 5.5 0 0 1 11 0 v4.5" fill="none" stroke="#8a93a2" stroke-width="1.4"/>
+          <text x="0" y="4" fill="#b6bdc9" font-size="11.5" text-anchor="middle" font-family="ui-sans-serif,system-ui">家庭 NAT</text>
+          <text x="0" y="20" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">零入站</text>
+          <text x="0" y="34" fill="#5f6672" font-size="9" text-anchor="middle" font-family="monospace">无公网入站端口</text>
+        </g>
+
+        <!-- ============ 下带：远端算力域 ============ -->
+        <rect x="20" y="436" width="1160" height="204" rx="14" fill="#0d1117" stroke="#242a35"/>
+        <text x="40" y="462" fill="#b6bdc9" font-size="14" font-weight="600" font-family="ui-sans-serif,system-ui">③ 远端算力域</text>
+        <text x="132" y="462" fill="#4b5563" font-size="11" font-family="monospace">云 · 按需拉起 · 存算分离</text>
+
+        <!-- Remote-Relay 横条 -->
+        <rect x="40" y="476" width="1120" height="46" rx="9" fill="#0f2438" stroke="#3f7fe6"/>
+        <circle cx="60" cy="499" r="4" fill="#3f7fe6"/>
+        <text x="74" y="495" fill="#8fbaff" font-size="12.5" font-weight="600" font-family="ui-sans-serif,system-ui">Remote-Relay</text>
+        <text x="74" y="511" fill="#5f7fa8" font-size="9.5" font-family="monospace">远端 dom0 再校验 · 远端 policy 二次确认</text>
+
+        <!-- 三个紧凑云卡片（矮，横排）：logo + 名 + 规格 + 状态 -->
+        <!-- Proxmox VE -->
+        <rect x="40" y="540" width="360" height="80" rx="10" fill="#12161d" stroke="#333b48"/>
+        <g transform="translate(60,562) scale(1.5)" fill="#e57000">
+          <path d="M4.928 1.825c-1.09.553-1.09.64-.07 1.78 5.655 6.295 7.004 7.782 7.107 7.782.139.017 7.971-8.542 8.058-8.801.034-.07-.208-.312-.519-.536-.415-.312-.864-.433-1.712-.467-1.59-.104-2.144.242-4.115 2.455-.899 1.003-1.66 1.833-1.66 1.833-.017 0-.76-.813-1.642-1.798S8.473 2.1 8.127 1.91c-.796-.45-2.421-.484-3.2-.086zM1.297 4.367C.45 4.695 0 5.007 0 5.248c0 .121 1.331 1.678 2.94 3.459 1.625 1.78 2.939 3.268 2.939 3.302 0 .035-1.331 1.522-2.94 3.303C1.314 17.11.017 18.683.035 18.822c.086.467 1.504 1.055 2.541 1.055 1.678-.018 2.058-.312 5.603-4.202 1.78-1.954 3.233-3.614 3.233-3.666 0-.069-1.435-1.694-3.199-3.63-2.3-2.508-3.423-3.632-3.96-3.874-.812-.398-2.126-.467-2.956-.138zm18.467.12c-.502.26-1.764 1.505-3.943 3.891-1.763 1.937-3.199 3.562-3.199 3.631 0 .07 1.453 1.712 3.234 3.666 3.544 3.89 3.925 4.184 5.602 4.202 1.038 0 2.455-.588 2.542-1.055.017-.156-1.28-1.712-2.905-3.493-1.608-1.78-2.94-3.285-2.94-3.32 0-.034 1.332-1.539 2.94-3.32C22.72 6.91 24.017 5.352 24 5.214c-.087-.45-1.366-.968-2.473-1.038-.795-.034-1.21.035-1.763.312zM7.954 16.973c-2.144 2.369-3.908 4.374-3.943 4.46-.034.07.208.312.52.537.414.311.864.432 1.711.467 1.574.103 2.161-.26 4.15-2.508.864-.968 1.608-1.78 1.625-1.78s.761.812 1.643 1.798c2.023 2.248 2.559 2.576 4.132 2.49.848-.035 1.297-.156 1.712-.467.311-.225.553-.467.519-.536-.087-.26-7.92-8.819-8.058-8.801-.069 0-1.867 1.954-4.011 4.34z"/>
+        </g>
+        <text x="118" y="574" fill="#eef1f5" font-size="13" font-weight="600" font-family="ui-sans-serif,system-ui">Proxmox VE</text>
+        <text x="118" y="592" fill="#5f7fa8" font-size="10" font-family="monospace">8c · 32G · T4</text>
+        <g class="diag-pulse"><circle cx="122" cy="605" r="4" fill="#3fb37f"/><text x="134" y="609" fill="#3fb37f" font-size="10.5" font-family="monospace">运行</text></g>
+
+        <!-- Google Cloud -->
+        <rect x="420" y="540" width="360" height="80" rx="10" fill="#12161d" stroke="#333b48"/>
+        <g transform="translate(440,560) scale(0.62)">
+          <path d="M40.728 20.488l2.05.035 5.57-5.57.27-2.36C44.2 8.657 38.367 6.26 31.993 6.26c-11.54 0-21.28 7.852-24.163 18.488.608-.424 1.908-.106 1.908-.106l11.13-1.83s.572-.947.862-.9A13.88 13.88 0 0 1 32 17.375c3.3.007 6.34 1.173 8.728 3.113z" fill="#ea4335"/>
+          <path d="M56.17 24.77c-1.293-4.77-3.958-8.982-7.555-12.177l-7.887 7.887c3.16 2.55 5.187 6.452 5.187 10.82v1.392c3.837 0 6.954 3.124 6.954 6.954 0 3.837-3.124 6.954-6.954 6.954H32.007L30.615 48v8.346l1.392 1.385h13.908A18.11 18.11 0 0 0 64 39.647c-.007-6.155-3.1-11.6-7.83-14.876z" fill="#4285f4"/>
+          <path d="M18.085 57.74h13.9V46.6h-13.9a6.89 6.89 0 0 1-2.862-.622l-2.007.615-5.57 5.57-.488 1.88a18 18 0 0 0 10.926 3.689z" fill="#34a853"/>
+          <path d="M18.085 21.57A18.11 18.11 0 0 0 0 39.654c0 5.873 2.813 11.095 7.166 14.403l8.064-8.064a6.96 6.96 0 0 1-4.099-6.339c0-3.837 3.124-6.954 6.954-6.954 2.82 0 5.244 1.7 6.34 4.1l8.064-8.064c-3.307-4.353-8.53-7.166-14.403-7.166z" fill="#fbbc05"/>
+        </g>
+        <text x="498" y="574" fill="#eef1f5" font-size="13" font-weight="600" font-family="ui-sans-serif,system-ui">Google Cloud</text>
+        <text x="498" y="592" fill="#5f7fa8" font-size="10" font-family="monospace">GPU · T4/L4</text>
+        <g class="diag-pulse"><circle cx="502" cy="605" r="4" fill="#3fb37f"/><text x="514" y="609" fill="#3fb37f" font-size="10.5" font-family="monospace">运行</text></g>
+
+        <!-- AWS -->
+        <rect x="800" y="540" width="360" height="80" rx="10" fill="#12161d" stroke="#333b48"/>
+        <g transform="translate(820,566)">
+          <text x="22" y="14" fill="#ff9900" font-size="18" font-weight="700" text-anchor="middle" font-family="ui-sans-serif,system-ui" letter-spacing="-1">aws</text>
+          <path d="M2 26 Q22 35 42 26" fill="none" stroke="#ff9900" stroke-width="2.6" stroke-linecap="round"/>
+          <path d="M37 23.5 L44 26 L39.5 30.5" fill="none" stroke="#ff9900" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+        <text x="890" y="574" fill="#eef1f5" font-size="13" font-weight="600" font-family="ui-sans-serif,system-ui">AWS</text>
+        <text x="890" y="592" fill="#5f7fa8" font-size="10" font-family="monospace">数据盘留存</text>
+        <g><circle cx="894" cy="605" r="4" fill="none" stroke="#8a93a2" stroke-width="1.4"/><text x="906" y="609" fill="#8a93a2" font-size="10.5" font-family="monospace">挂起</text></g>
+
+        <!-- Remote-Relay → 三云 分发 -->
+        <path d="M220,522 V540" fill="none" stroke="#3f7fe6" stroke-width="1.6" class="flow" marker-end="url(#m-out)"/>
+        <path d="M600,522 V540" fill="none" stroke="#3f7fe6" stroke-width="1.6" class="flow" marker-end="url(#m-out)"/>
+        <path d="M980,522 V540" fill="none" stroke="#3f7fe6" stroke-width="1.6" class="flow" marker-end="url(#m-out)"/>
+
+        <!-- ============ 竖向主数据流（应用调用）：本地 → NAT → 远端。走网络链(≤780)与 NAT标签(≥1005)之间的空隙通道 ============ -->
+        <!-- 出站主线：sys-relay 底(x=850) → 竖直穿中带空隙 → Remote-Relay 顶。终点加锚点 -->
+        <path d="M850,180 V472" fill="none" stroke="#63a0ff" stroke-width="2.6" class="flow" marker-end="url(#m-out)"/>
+        <circle cx="850" cy="476" r="4" fill="#63a0ff"/>
+        <circle r="3.6" fill="#8fbaff" class="packet"><animateMotion dur="2.6s" repeatCount="indefinite" path="M850,180 V472"/></circle>
+        <text x="838" y="350" fill="#63a0ff" font-size="10.5" text-anchor="end" font-family="monospace">应用调用</text>
+        <text x="838" y="364" fill="#63a0ff" font-size="10.5" text-anchor="end" font-family="monospace">↓ gRPC 双向流到远端</text>
+        <!-- 回程主线：Remote-Relay 顶(x=912) → 竖直向上 → sys-relay 底。起点加锚点 -->
+        <circle cx="912" cy="476" r="4" fill="#5b6472"/>
+        <path d="M912,474 V182" fill="none" stroke="#5b6472" stroke-width="1.8" class="flow-back" marker-end="url(#m-back)"/>
+        <text x="924" y="350" fill="#5b6472" font-size="10.5" font-family="monospace">回程 ↑</text>
+        <text x="924" y="364" fill="#5b6472" font-size="10.5" font-family="monospace">同一连接返回</text>
+
+        <!-- relay → 网络链(netvm)：relay 底(x=680) → 下折到 airnf 顶(x=700)。标注在折线上方 -->
+        <path d="M680,180 V264 H700 V284" fill="none" stroke="#8a93a2" stroke-width="1.6" class="flow" marker-end="url(#m-net)"/>
+        <text x="686" y="208" fill="#5f6672" font-size="9" font-family="monospace">底层网络出口 ↓</text>
+      </svg>
+
+      <!-- 图例 -->
+      <figcaption class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs font-mono text-ink-500">
+        <span class="inline-flex items-center gap-2"><span class="w-5 h-0.5 bg-signal"></span>应用调用（到远端）</span>
+        <span class="inline-flex items-center gap-2"><span class="w-5 h-0.5 bg-ink-500"></span>回程（同一连接）</span>
+        <span class="inline-flex items-center gap-2"><span class="w-5 h-0.5 bg-ok"></span>凭据下发（仅本地）</span>
+        <span class="inline-flex items-center gap-2"><span class="w-5 h-0.5 bg-idle"></span>网络出口链（底层 · 四级隔离）</span>
+      </figcaption>
+    </figure>
+
+    <p class="fade-up mt-6 text-sm text-ink-500 leading-relaxed max-w-3xl">
+      <span class="text-ink-300">两个视角</span>：蓝线是 sys-relay 发起的<span class="text-ink-300">应用层调用</span>（gRPC 双向流到远端 Zone，请求与回程同一条流）；灰链是这条流量的<span class="text-ink-300">底层网络出口</span>——所有出站都必须经 airnf → airnet → firewall → net 四级隔离才触外网。<span class="text-ink-300">vault-cloud</span> 全程无网；家庭 NAT 后无需公网入站端口，两侧 dom0 各校验一次。
+    </p>
+  </div>
+</section>
+
+<!-- PROBLEM / WHY -->
+<section class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14 grid lg:grid-cols-2 gap-14 items-start">
+    <div class="fade-up">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">为什么</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        Qubes 很安全，但被硬件困住了
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed max-w-xl">
+        找到兼容 Qubes 的硬件很难，本地资源也跑不动 GPU 训练或大编译。Qubes Air 的思路是：Qube 不必是本地 Xen VM，它可以是云上的 VM，也可以是一台物理分离的设备。
+      </p>
+    </div>
+    <div class="fade-up grid sm:grid-cols-2 gap-4">
+      <div class="rounded-lg border border-ink-800 bg-ink-900/50 p-5">
+        <p class="font-mono text-2xl text-ink-100">本地弱</p>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">笔记本只做控制中枢，几个轻量 qube 就够。</p>
+      </div>
+      <div class="rounded-lg border border-ink-800 bg-ink-900/50 p-5">
+        <p class="font-mono text-2xl text-signal">远端强</p>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">GPU、大内存、快网络放在云上，按需拉起。</p>
+      </div>
+      <div class="rounded-lg border border-ink-800 bg-ink-900/50 p-5 sm:col-span-2">
+        <p class="text-sm text-ink-300 leading-relaxed">
+          用官方 RemoteVM 机制接回本地，而不是自造一套私有隧道协议。方向和官方一致，两侧 dom0 policy 双重校验。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW: three real steps, verb-first (no "Stage 1/2/3") -->
+<section id="how" class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14">
+    <div class="fade-up max-w-2xl">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">工作原理</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        在控制台点一下，从建机到接回本地
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed">
+        底层是 Terraform、RemoteVM、qrexec，但你不用碰命令行。日常操作在控制台点按钮完成，命令行留给想深入的人。
+      </p>
+    </div>
+    <div class="mt-12 grid md:grid-cols-3 gap-px bg-ink-800 rounded-xl overflow-hidden border border-ink-800">
+      <div class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-2.5 text-signal">
+          <svg viewBox="0 0 20 20" class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4v12M4 10h12" stroke-linecap="round"/></svg>
+          <span class="text-sm font-medium">建远程 Qube</span>
+        </div>
+        <h3 class="mt-3 text-lg font-medium text-ink-100">填个表单就建好</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          选 Zone、规格、数据盘，点"创建"。控制台在后台编排 Terraform，计算与数据盘自动拆开。
+        </p>
+      </div>
+      <div class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-2.5 text-signal">
+          <svg viewBox="0 0 20 20" class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 10a7 7 0 0 1 7-7M17 10a7 7 0 0 1-7 7M10 3l-2.5 2.5M10 17l2.5-2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="text-sm font-medium">自动接回本地</span>
+        </div>
+        <h3 class="mt-3 text-lg font-medium text-ink-100">建好即经 RemoteVM 接回</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          本地 sys-relay 维持一条出站 gRPC 双向流长连接，qrexec 请求经它转发。反向调用走同一条流回程，无需公网入站。
+        </p>
+      </div>
+      <div class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-2.5 text-signal">
+          <svg viewBox="0 0 20 20" class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="12" height="12" rx="2"/><path d="M8.5 8v4M11.5 8v4" stroke-linecap="round"/></svg>
+          <span class="text-sm font-medium">一键挂起</span>
+        </div>
+        <h3 class="mt-3 text-lg font-medium text-ink-100">不用时点"挂起"</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          点一下销毁计算实例、保留数据盘。下次点"恢复"挂回同一块盘，只付用到的机时。
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FINOPS: the differentiator, with a real terminal-style code sample (real content, not fake UI) -->
+<section id="finops" class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14 grid lg:grid-cols-2 gap-14 items-center">
+    <div class="fade-up">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">存算分离</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        计算的钱只在真用时花，数据一直在
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed max-w-xl">
+        计算实例和数据盘是两个独立资源。挂起时销毁昂贵的计算实例，便宜的数据盘用 prevent_destroy 保留。恢复时几分钟拉起新实例、挂回原盘，数据原样回来。
+      </p>
+      <ul class="mt-7 space-y-3 text-sm text-ink-300">
+        <li class="flex gap-3"><span class="text-signal font-mono">+</span> GPU 训练：只付周一那几小时，数据盘全月留存</li>
+        <li class="flex gap-3"><span class="text-signal font-mono">+</span> 数据盘用云侧 LUKS 加密，密钥只在本地</li>
+        <li class="flex gap-3"><span class="text-signal font-mono">+</span> 销毁即丢密钥，不依赖云盘上无效的擦除</li>
+      </ul>
+    </div>
+    <!-- UI 优先：用真实的控制台面板示意"点一下就挂起/恢复"，而非命令行 -->
+    <div class="fade-up rounded-xl border border-ink-800 bg-ink-900/50 overflow-hidden shadow-2xl shadow-black/40">
+      <div class="flex items-center justify-between px-4 h-10 border-b border-ink-800 bg-ink-950/60">
+        <div class="flex items-center gap-2 text-xs font-mono text-ink-500">
+          <svg viewBox="0 0 64 64" class="w-4 h-4" fill="none" aria-hidden="true">
+            <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#c3d9ff"/>
+            <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#8fbaff"/>
+            <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+            <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+          </svg>
+          控制台 / 远程 Qube
+        </div>
+        <span class="text-[11px] font-mono text-ink-600">点操作即执行</span>
+      </div>
+      <div class="divide-y divide-ink-800/70">
+        <!-- 运行中：可点"挂起" -->
+        <div class="flex items-center justify-between gap-4 px-5 py-4">
+          <div class="min-w-0">
+            <p class="font-mono text-sm text-ink-100">remote-gpu</p>
+            <p class="mt-0.5 text-xs text-ink-500 font-mono">gcp-zone · 8c · 32G · T4 · 数据盘 500 GB</p>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-ok-wash px-2.5 py-1 text-xs text-ok ring-1 ring-ok/25"><span class="w-1.5 h-1.5 rounded-full bg-ok"></span>运行</span>
+            <span class="rounded-md px-3 py-1.5 text-xs text-ink-200 ring-1 ring-ink-700">挂起</span>
+          </div>
+        </div>
+        <!-- 挂起中：可点"恢复"，高亮为主动作 -->
+        <div class="flex items-center justify-between gap-4 px-5 py-4 bg-signal/[0.04]">
+          <div class="min-w-0">
+            <p class="font-mono text-sm text-ink-100">remote-work</p>
+            <p class="mt-0.5 text-xs text-ink-500 font-mono">pve-zone · 计算已释放 · 数据盘 100 GB 保留</p>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-idle-wash px-2.5 py-1 text-xs text-idle ring-1 ring-idle/25">挂起</span>
+            <span class="rounded-md px-3 py-1.5 text-xs font-medium text-signal ring-1 ring-signal/40 bg-signal/10">恢复</span>
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 px-5 py-3 border-t border-ink-800 bg-ink-950/40 text-xs text-ink-500">
+        <svg viewBox="0 0 16 16" class="w-3.5 h-3.5 text-ok" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5l3 3 6-7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        挂起只销毁计算、保留数据盘 · 账单只算用到的机时
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- GETTING STARTED: 用户从哪开始落地 -->
+<section id="start" class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14">
+    <div class="fade-up max-w-2xl">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">如何落地</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        从本地 Qubes 起步，四步接上云
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed">
+        起点是你自己的 Qubes 笔记本，不是任何托管服务。云凭据放进本地无网络的 vault，永不上云，也不交给控制台。
+      </p>
+    </div>
+
+    <ol class="mt-14 grid lg:grid-cols-4 gap-px bg-ink-800 rounded-xl overflow-hidden border border-ink-800">
+      <li class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-3">
+          <span class="grid place-items-center w-7 h-7 rounded-full bg-signal/15 ring-1 ring-signal/40 text-signal font-mono text-sm">1</span>
+          <span class="text-xs font-mono uppercase tracking-widest text-ink-500">本地初始化</span>
+        </div>
+        <h3 class="mt-4 text-lg font-medium text-ink-100">在 dom0 建三个 qube</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          跑一次 <span class="font-mono text-ink-300">init-qubes-air.sh</span>，建好 <span class="font-mono text-ink-300">mgmt-air</span>（编排控制台）、<span class="font-mono text-ink-300">sys-relay</span>（出站回程）、<span class="font-mono text-ink-300">vault-cloud</span>（无网络凭据库）。
+        </p>
+      </li>
+      <li class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-3">
+          <span class="grid place-items-center w-7 h-7 rounded-full bg-signal/15 ring-1 ring-signal/40 text-signal font-mono text-sm">2</span>
+          <span class="text-xs font-mono uppercase tracking-widest text-ink-500">放云凭据</span>
+        </div>
+        <h3 class="mt-4 text-lg font-medium text-ink-100">AK/SK 存进 vault-cloud</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          把 GCP 服务账号密钥、Proxmox API token、SSH 私钥放进 <span class="font-mono text-ink-300">vault-cloud</span>。它没有网卡，密钥出不去；用时经 qrexec 询问按需下发，不落盘。
+        </p>
+      </li>
+      <li class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-3">
+          <span class="grid place-items-center w-7 h-7 rounded-full bg-signal/15 ring-1 ring-signal/40 text-signal font-mono text-sm">3</span>
+          <span class="text-xs font-mono uppercase tracking-widest text-ink-500">建远程 Qube</span>
+        </div>
+        <h3 class="mt-4 text-lg font-medium text-ink-100">在控制台点"建"</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          选 Zone、规格、数据盘，控制台在 <span class="font-mono text-ink-300">mgmt-air</span> 上编排 Terraform，在 Proxmox / GCP / AWS 上拉起实例，计算与数据盘自动拆开。
+        </p>
+      </li>
+      <li class="bg-ink-900 p-7 fade-up">
+        <div class="flex items-center gap-3">
+          <span class="grid place-items-center w-7 h-7 rounded-full bg-signal/15 ring-1 ring-signal/40 text-signal font-mono text-sm">4</span>
+          <span class="text-xs font-mono uppercase tracking-widest text-ink-500">接回本地</span>
+        </div>
+        <h3 class="mt-4 text-lg font-medium text-ink-100">经 RemoteVM 回到桌面</h3>
+        <p class="mt-3 text-sm text-ink-400 leading-relaxed">
+          远程 Qube 经 RemoteVM 与 qrexec 接回本地，像本地 qube 一样用。家庭 NAT 后无需公网入站，两侧 dom0 各校验一次。
+        </p>
+      </li>
+    </ol>
+
+    <div class="mt-10 flex flex-wrap items-center gap-x-8 gap-y-3 fade-up">
+      <p class="text-sm text-ink-400 leading-relaxed max-w-2xl">
+        起点是本地部署，云只提供算力。<strong class="text-ink-200">你连的是自己的 Google / Proxmox 账号</strong>——凭据始终在你手里，控制台和云厂商都拿不到明文。
+      </p>
+      <div class="flex gap-3">
+        <a href="https://github.com/slchris/qubes-air/blob/main/docs/getting-started.md" class="rounded-md px-4 py-2 text-sm font-medium text-signal ring-1 ring-signal/40 hover:bg-signal/10 transition">
+          上手文档
+        </a>
+        <a href="https://github.com/slchris/qubes-air/tree/main/docs" class="rounded-md px-4 py-2 text-sm font-medium text-ink-200 ring-1 ring-ink-700 hover:ring-ink-500 hover:text-ink-100 transition">
+          全部文档
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SECURITY: red lines. two-column, not three-equal-cards -->
+<section id="security" class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14">
+    <div class="fade-up max-w-2xl">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">安全模型</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        不为功能牺牲安全
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed">
+        这套东西经过一轮对抗性设计评审重构。下面几条是硬红线，写进了代码和文档。
+      </p>
+    </div>
+    <div class="mt-12 grid md:grid-cols-2 gap-x-12 gap-y-10">
+      <div class="fade-up border-t border-ink-700 pt-5">
+        <h3 class="font-medium text-ink-100">dom0 永远离线</h3>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">编排全在联网的管理 qube，dom0 只经 Admin API 被动配合。这是 Qubes 的第一铁律。</p>
+      </div>
+      <div class="fade-up border-t border-ink-700 pt-5">
+        <h3 class="font-medium text-ink-100">私钥不出 vault</h3>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">云 API key、SSH 私钥存无网络的 vault-cloud，用时经 qrexec 询问下发，不落盘、不上云。</p>
+      </div>
+      <div class="fade-up border-t border-ink-700 pt-5">
+        <h3 class="font-medium text-ink-100">远端到本地一律询问</h3>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">qrexec policy 里，远端发起的调用永不自动放行，破坏性操作在 dom0 弹窗确认。Relay 不得直达 dom0。</p>
+      </div>
+      <div class="fade-up border-t border-ink-700 pt-5">
+        <h3 class="font-medium text-ink-100">云厂商不可信</h3>
+        <p class="mt-2 text-sm text-ink-400 leading-relaxed">state 用客户端加密后再进 backend，云只看到密文。不用云 KMS 去"防云厂商"，逻辑上讲不通。</p>
+      </div>
+    </div>
+    <p class="fade-up mt-10 text-sm text-ink-500 max-w-2xl leading-relaxed">
+      诚实说明：无机密计算（如 AMD SEV-SNP）时，云运营商仍能读 VM 内存。因此云 Zone 当前只承载低敏感或一次性负载，高敏感任务留在本地或物理分离设备。
+    </p>
+  </div>
+</section>
+
+<!-- STATUS: honest project state, no fake completeness -->
+<section id="status" class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14 grid lg:grid-cols-12 gap-12">
+    <div class="lg:col-span-5 fade-up">
+      <p class="text-xs font-mono uppercase tracking-widest text-signal">项目状态</p>
+      <h2 class="mt-4 text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+        可运行骨架，端到端待真机验证
+      </h2>
+      <p class="mt-5 text-ink-300 leading-relaxed">
+        代码层面已打通并有测试，但因缺真实 Qubes 与云环境，还没在真机上跑通完整链路。这里如实写清楚。
+      </p>
+    </div>
+    <div class="lg:col-span-7 fade-up">
+      <ul class="divide-y divide-ink-800 border-y border-ink-800">
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">存算分离 Terraform（Proxmox 真实资源）</span>
+          <span class="text-xs font-mono text-signal shrink-0">已实现</span>
+        </li>
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">RemoteVM + 零入站 SSH transport + policy</span>
+          <span class="text-xs font-mono text-signal shrink-0">已实现</span>
+        </li>
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">凭据 vault 下发 + 密钥原子轮换</span>
+          <span class="text-xs font-mono text-signal shrink-0">已实现</span>
+        </li>
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">控制台接真实 suspend / resume</span>
+          <span class="text-xs font-mono text-signal shrink-0">已实现</span>
+        </li>
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">真机端到端链路（Qubes R4.3 + 云）</span>
+          <span class="text-xs font-mono text-ink-400 shrink-0">待验证</span>
+        </li>
+        <li class="flex items-center justify-between gap-4 py-3.5">
+          <span class="text-sm text-ink-200">GCP / AWS 真实资源</span>
+          <span class="text-xs font-mono text-ink-400 shrink-0">骨架</span>
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="border-t border-ink-800/60 py-24">
+  <div class="mx-auto max-w-3xl px-5 text-center fade-up">
+    <h2 class="text-3xl md:text-4xl font-semibold tracking-tight text-ink-100 leading-tight">
+      想读代码，还是想一起把真机链路打通？
+    </h2>
+    <p class="mt-5 text-ink-300 leading-relaxed">
+      项目是 MIT 许可的社区实现。设计评审、落地方案、真机 runbook 都在仓库里。
+    </p>
+    <div class="mt-8 flex justify-center">
+      <a href="https://github.com/slchris/qubes-air" class="rounded-md px-6 py-3 text-sm font-semibold bg-signal text-ink-950 hover:bg-signal-bright active:scale-[.98] transition">
+        在 GitHub 查看
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="border-t border-ink-800/60 py-10">
+  <div class="mx-auto max-w-[1600px] px-8 lg:px-14 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-ink-500">
+    <div class="flex items-center gap-2.5">
+      <svg viewBox="0 0 64 64" class="w-6 h-6" fill="none" aria-hidden="true">
+        <path d="M32 8 L50 17 L32 26 L14 17 Z" fill="#8fbaff"/>
+        <path d="M14 33 L32 43 L32 61 L14 51 Z" fill="#6b9bf0"/>
+        <path d="M50 33 L32 43 L32 61 L50 51 Z" fill="#4f8bee"/>
+        <path d="M14 33 L32 43 L50 33 L32 23 Z" fill="#0c0f14"/>
+      </svg>
+      Qubes Air · 社区实现
+    </div>
+    <div class="flex items-center gap-6">
+      <a href="https://github.com/slchris/qubes-air" class="hover:text-ink-200 transition-colors">GitHub</a>
+      <a href="https://www.qubes-os.org/" class="hover:text-ink-200 transition-colors">Qubes OS</a>
+      <span class="font-mono text-xs text-ink-600">MIT License</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Scroll reveal via IntersectionObserver (no scroll listener). Respects reduced-motion via CSS.
+  const els = document.querySelectorAll('.fade-up');
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { rootMargin: '0px 0px -10% 0px' });
+    els.forEach((el) => io.observe(el));
+  } else {
+    els.forEach((el) => el.classList.add('in'));
+  }
+</script>
+</body>
+</html>

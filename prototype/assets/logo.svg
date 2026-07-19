@@ -1,0 +1,45 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Qubes Air 标志">
+  <title>Qubes Air</title>
+  <!--
+    参考官方 Qubes 等距立方体（三面三种蓝：上 #99bfff / 右 #63a0ff / 左 #7eadff）。
+    "Air" 语义：立方体的顶面从主体上浮、留出气隙，表示把隔离"抬到云端/空中"。
+    纯几何等距投影，可无损缩放；不依赖任何外部字体或资源。
+    坐标以中心 x=32 对称；等距菱形半宽 18、半高 9。
+  -->
+  <defs>
+    <linearGradient id="qa-top" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#c3d9ff"/>
+      <stop offset="1" stop-color="#93bbff"/>
+    </linearGradient>
+    <linearGradient id="qa-right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6aa4ff"/>
+      <stop offset="1" stop-color="#3f7fe6"/>
+    </linearGradient>
+    <linearGradient id="qa-left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8fbaff"/>
+      <stop offset="1" stop-color="#6b9bf0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 上浮的顶面（floating lid）：抬到主体上方，留出清晰气隙 -->
+  <path d="M32 8 L50 17 L32 26 L14 17 Z"
+        fill="url(#qa-top)"
+        stroke="#d3e3ff" stroke-width="0.6" stroke-linejoin="round"/>
+
+  <!-- 主体：两面 grounded base -->
+  <!-- 左面 -->
+  <path d="M14 33 L32 43 L32 61 L14 51 Z"
+        fill="url(#qa-left)"
+        stroke="#7eadff" stroke-width="0.6" stroke-linejoin="round"/>
+  <!-- 右面 -->
+  <path d="M50 33 L32 43 L32 61 L50 51 Z"
+        fill="url(#qa-right)"
+        stroke="#63a0ff" stroke-width="0.6" stroke-linejoin="round"/>
+  <!-- 主体顶部空腔（顶面被抬走后留下的凹口） -->
+  <path d="M14 33 L32 43 L50 33 L32 23 Z"
+        fill="#0c0f14"
+        stroke="#4f8bee" stroke-width="0.6" stroke-linejoin="round"/>
+  <!-- 空腔内的浅色内沿高光，暗示纵深 -->
+  <path d="M32 43 L50 33 L32 28 L14 33 Z"
+        fill="#12233f" opacity="0.9"/>
+</svg>
