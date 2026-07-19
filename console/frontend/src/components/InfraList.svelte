@@ -2,7 +2,7 @@
   Qubes Air Console - Infrastructure List Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl } from '../lib/api';
+  import { getApiBaseUrl, apiFetch } from '../lib/api';
 
   interface InfraProvider {
     id: string;
@@ -35,7 +35,7 @@
     loading = true;
     error = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/infrastructure`);
+      const response = await apiFetch(`/infrastructure`);
       if (!response.ok) throw new Error('Failed to load infrastructure');
       const data = await response.json();
       providers = data.providers || [];
@@ -84,7 +84,7 @@
         : `${getApiBaseUrl()}/infrastructure`;
       const method = editingId ? 'PUT' : 'POST';
       
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
@@ -106,7 +106,7 @@
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
 
     try {
-      const response = await fetch(`${getApiBaseUrl()}/infrastructure/${id}`, {
+      const response = await apiFetch(`/infrastructure/${id}`, {
         method: 'DELETE'
       });
 
@@ -119,7 +119,7 @@
 
   async function handleConnect(id: string) {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/infrastructure/${id}/connect`, {
+      const response = await apiFetch(`/infrastructure/${id}/connect`, {
         method: 'POST'
       });
       if (!response.ok) throw new Error('Failed to connect');
@@ -131,7 +131,7 @@
 
   async function handleDisconnect(id: string) {
     try {
-      const response = await fetch(`${getApiBaseUrl()}/infrastructure/${id}/disconnect`, {
+      const response = await apiFetch(`/infrastructure/${id}/disconnect`, {
         method: 'POST'
       });
       if (!response.ok) throw new Error('Failed to disconnect');

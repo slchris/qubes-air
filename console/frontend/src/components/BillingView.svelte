@@ -2,7 +2,7 @@
   Qubes Air Console - Billing View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl } from '../lib/api';
+  import { getApiBaseUrl, apiFetch } from '../lib/api';
 
   interface BillingSummary {
     currentMonth: number;
@@ -27,7 +27,7 @@
     loading = true;
     error = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/billing`);
+      const response = await apiFetch(`/billing`);
       if (!response.ok) throw new Error('Failed to load billing');
       const data = await response.json();
       summary = data.summary || null;

@@ -7,6 +7,7 @@
   import { onMount } from 'svelte';
   import { qubeStore, zoneStore } from '../lib/stores';
   import type { Zone, Qube, QubeType, QubeCreateRequest } from '../lib/types';
+  import { isTransientStatus } from '../lib/types';
   import { ApiException } from '../lib/api';
 
   // Subscribe to stores
@@ -36,22 +37,59 @@
   let formVcpu = $state(2);
   let formMemory = $state(2048);
   let formDisk = $state(20);
-  let formTemplate = $state('debian-12');
+  // The OS image is a property of the ZONE (its template VM), not of a qube —
+  // a per-qube template field existed here but the backend never consumed it.
+  let formDataDisk = $state(20);
+  let formNode = $state('');
 
   const qubeTypes: QubeType[] = ['app', 'work', 'dev', 'gpu', 'disp', 'sys'];
 
   onMount(async () => {
     await Promise.all([qubeStore.load(), zoneStore.load()]);
+    // A reload lands mid-operation often enough to matter: an apply runs for
+    // minutes, so pick the watches back up rather than showing a frozen status.
+    qubeStore.resumeWatches();
   });
 
   function getStatusColor(status: string): string {
     switch (status) {
       case 'running': return '#4caf50';
       case 'stopped': return '#9e9e9e';
+      // Suspended and released both mean "compute gone, data disk kept". They
+      // are shown distinctly from stopped because they are the cheap state the
+      // whole compute/storage separation exists to provide.
+      case 'suspended': return '#7e57c2';
+      case 'released': return '#616161';
       case 'error': return '#f44336';
-      case 'creating': return '#2196f3';
+      case 'creating':
+      case 'resuming':
+      case 'suspending':
+      case 'deleting': return '#2196f3';
       default: return '#ff9800';
     }
+  }
+
+  /**
+   * Human-readable label for a status. Transient ones read as verbs so the UI
+   * says what is happening rather than showing an opaque noun for the several
+   * minutes a terraform apply takes.
+   */
+  function getStatusLabel(status: string): string {
+    switch (status) {
+      case 'creating': return 'Provisioning…';
+      case 'resuming': return 'Resuming…';
+      case 'suspending': return 'Suspending…';
+      case 'deleting': return 'Releasing…';
+      case 'suspended': return 'Suspended (data kept)';
+      case 'released': return 'Released (data kept)';
+      default: return status;
+    }
+  }
+
+  /** A qube can be resumed from any state where its compute is not running. */
+  function canStart(status: string): boolean {
+    return status === 'stopped' || status === 'suspended'
+      || status === 'released' || status === 'error';
   }
 
   function resetForm(): void {
@@ -61,7 +99,8 @@
     formVcpu = 2;
     formMemory = 2048;
     formDisk = 20;
-    formTemplate = 'debian-12';
+    formDataDisk = 20;
+    formNode = '';
     actionError = null;
   }
 
@@ -76,7 +115,8 @@
     formVcpu = qube.spec.vcpu;
     formMemory = qube.spec.memory;
     formDisk = qube.spec.disk;
-    formTemplate = qube.spec.template;
+    formDataDisk = qube.spec.data_disk_gb ?? 20;
+    formNode = qube.spec.node ?? '';
     actionError = null;
     showEditModal = true;
   }
@@ -97,7 +137,8 @@
         vcpu: formVcpu,
         memory: formMemory,
         disk: formDisk,
-        template: formTemplate,
+        data_disk_gb: formDataDisk,
+        node: formNode || undefined,
       },
     };
 
@@ -125,7 +166,8 @@
           vcpu: formVcpu,
           memory: formMemory,
           disk: formDisk,
-          template: formTemplate,
+          data_disk_gb: formDataDisk,
+          node: formNode || undefined,
         },
       });
       closeModals();
@@ -215,7 +257,7 @@
             <span
               class="status-dot"
               style="background: {getStatusColor(qube.status)}"
-              title={qube.status}
+              title={getStatusLabel(qube.status)}
             ></span>
           </div>
 
@@ -241,22 +283,34 @@
           </div>
 
           <div class="qube-actions">
-            {#if processing === qube.id}
-              <button class="btn" disabled>Processing...</button>
-            {:else if qube.status === 'stopped'}
-              <button class="btn" onclick={() => handleStart(qube)}>Start</button>
+            {#if isTransientStatus(qube.status)}
+              <!-- An operation is in flight. The backend refuses a second one,
+                   so the buttons are disabled rather than offering a click that
+                   would come back 409. -->
+              <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
+            {:else if canStart(qube.status)}
+              <button class="btn" onclick={() => handleStart(qube)}>
+                {qube.status === 'suspended' || qube.status === 'released' ? 'Resume' : 'Start'}
+              </button>
             {:else if qube.status === 'running'}
-              <button class="btn" onclick={() => handleStop(qube)}>Stop</button>
+              <button class="btn" onclick={() => handleStop(qube)} title="Destroy the compute instance and keep the data disk">
+                Suspend
+              </button>
             {:else}
-              <button class="btn" disabled>{qube.status}</button>
+              <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
             {/if}
-            <button class="btn btn-secondary" onclick={() => openEditModal(qube)}>Edit</button>
+            <button
+              class="btn btn-secondary"
+              onclick={() => openEditModal(qube)}
+              disabled={isTransientStatus(qube.status)}
+            >Edit</button>
             <button
               class="btn btn-danger"
               onclick={() => handleDelete(qube)}
-              disabled={qube.status === 'running'}
+              disabled={isTransientStatus(qube.status) || qube.status === 'released'}
+              title="Release the compute instance. The data disk is kept and can be purged separately."
             >
-              Delete
+              Release
             </button>
           </div>
         </div>
@@ -321,8 +375,18 @@
           </div>
 
           <div class="form-group">
-            <label for="template">Template</label>
-            <input id="template" type="text" bind:value={formTemplate} />
+            <label for="data-disk">Data disk (GB)</label>
+            <input id="data-disk" type="number" bind:value={formDataDisk} min="1" />
+            <small class="field-hint">
+              Persistent. Survives suspend/resume; the OS disk does not.
+            </small>
+          </div>
+          <div class="form-group">
+            <label for="node">Node (optional)</label>
+            <input id="node" type="text" bind:value={formNode} placeholder="zone default" />
+            <small class="field-hint">
+              Pin to a cluster node. Only safe to leave blank on shared storage.
+            </small>
           </div>
         </div>
 
@@ -382,8 +446,11 @@
           </div>
 
           <div class="form-group">
-            <label for="edit-template">Template</label>
-            <input id="edit-template" type="text" bind:value={formTemplate} />
+            <label for="edit-data-disk">Data disk (GB)</label>
+            <input id="edit-data-disk" type="number" bind:value={formDataDisk} min="1" />
+            <small class="field-hint">
+              Growing this is applied on the next resume. Disks cannot shrink.
+            </small>
           </div>
         </div>
 
@@ -623,5 +690,13 @@
     .hint {
       --label-color: #aaa;
     }
+  }
+
+  .field-hint {
+    display: block;
+    margin-top: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-muted, #888);
+    line-height: 1.4;
   }
 </style>

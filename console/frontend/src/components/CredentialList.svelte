@@ -2,7 +2,7 @@
   Qubes Air Console - Credentials List Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl } from '../lib/api';
+  import { getApiBaseUrl, apiFetch } from '../lib/api';
 
   interface Credential {
     id: string;
@@ -41,7 +41,7 @@
     loading = true;
     error = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/credentials`);
+      const response = await apiFetch(`/credentials`);
       if (!response.ok) throw new Error('Failed to load credentials');
       const data = await response.json();
       credentials = data.credentials || [];
@@ -106,7 +106,7 @@
         body.secret = formData.secret;
       }
       
-      const response = await fetch(url, {
+      const response = await apiFetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -128,7 +128,7 @@
     if (!confirm(`Are you sure you want to delete "${name}"? This cannot be undone.`)) return;
 
     try {
-      const response = await fetch(`${getApiBaseUrl()}/credentials/${id}`, {
+      const response = await apiFetch(`/credentials/${id}`, {
         method: 'DELETE'
       });
 

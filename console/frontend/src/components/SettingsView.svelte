@@ -2,7 +2,7 @@
   Qubes Air Console - Settings View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl } from '../lib/api';
+  import { getApiBaseUrl, apiFetch, getApiToken, setApiToken } from '../lib/api';
 
   interface Settings {
     general: {
@@ -47,7 +47,7 @@
     loading = true;
     error = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/settings`);
+      const response = await apiFetch(`/settings`);
       if (!response.ok) throw new Error('Failed to load settings');
       const data = await response.json();
       if (data.settings) {
@@ -68,12 +68,31 @@
     }
   }
 
+  let apiToken = $state('');
+  let hasStoredToken = $state(Boolean(getApiToken()));
+  let tokenMessage = $state('');
+
+  /**
+   * Persists the API token in this browser.
+   *
+   * Deliberately not round-tripped through the server: it is the credential
+   * used to talk to the server, so storing it there would be circular, and
+   * echoing it back would widen its exposure.
+   */
+  function saveToken(): void {
+    setApiToken(apiToken);
+    hasStoredToken = Boolean(apiToken);
+    tokenMessage = apiToken ? 'Token saved for this browser' : 'Token cleared';
+    apiToken = '';
+    setTimeout(() => { tokenMessage = ''; }, 4000);
+  }
+
   async function saveSettings() {
     saving = true;
     error = null;
     success = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/settings`, {
+      const response = await apiFetch(`/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
@@ -113,6 +132,36 @@
     {#if success}
       <div class="message success">{success}</div>
     {/if}
+
+    <!-- API token lives outside the settings form: it is a browser-local
+         credential used to authenticate requests, not a server-side setting.
+         Saving it through the settings endpoint would require the very
+         authentication it provides. -->
+    <section class="section">
+      <h3>API authentication</h3>
+      <div class="field">
+        <label for="api-token">API token</label>
+        <input
+          id="api-token"
+          type="password"
+          bind:value={apiToken}
+          placeholder={hasStoredToken ? '•••••••• (stored)' : 'Bearer token from auth.api_token'}
+          autocomplete="off"
+        />
+        <small class="hint">
+          Sent as <code>Authorization: Bearer …</code> on every API request.
+          Required once the server has <code>auth.api_token</code> set — without
+          it every request returns 401. Stored in this browser only; it is never
+          sent to the settings endpoint.
+        </small>
+      </div>
+      <div class="field">
+        <button type="button" class="btn-primary" onclick={saveToken}>
+          {apiToken ? 'Save token' : 'Clear token'}
+        </button>
+        {#if tokenMessage}<span class="token-message">{tokenMessage}</span>{/if}
+      </div>
+    </section>
 
     <form onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
       <section class="section">
@@ -364,5 +413,24 @@
     .btn-primary {
       width: 100%;
     }
+  }
+
+  .hint {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: var(--text-muted, #888);
+    line-height: 1.5;
+  }
+  .hint code {
+    font-size: 0.72rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: 3px;
+    background: var(--bg-subtle, rgba(128, 128, 128, 0.15));
+  }
+  .token-message {
+    margin-left: 0.75rem;
+    font-size: 0.8rem;
+    color: var(--success, #4caf50);
   }
 </style>

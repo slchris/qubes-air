@@ -2,7 +2,7 @@
   Qubes Air Console - Monitoring View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl } from '../lib/api';
+  import { getApiBaseUrl, apiFetch } from '../lib/api';
 
   interface MetricPoint {
     timestamp: string;
@@ -35,7 +35,7 @@
     loading = true;
     error = null;
     try {
-      const response = await fetch(`${getApiBaseUrl()}/monitoring`);
+      const response = await apiFetch(`/monitoring`);
       if (!response.ok) throw new Error('Failed to load monitoring data');
       const data = await response.json();
       metrics = data.metrics || null;

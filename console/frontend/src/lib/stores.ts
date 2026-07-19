@@ -5,7 +5,8 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
-import type { Zone, Qube, ListOptions } from './types';
+import type { Zone, Qube, QubeStatus, ListOptions } from './types';
+import { isTransientStatus } from './types';
 import * as api from './api';
 
 // Zone store state
@@ -107,8 +108,71 @@ function createQubeStore() {
     error: null,
   });
 
+  /**
+   * Qubes currently being polled, so overlapping operations do not stack
+   * timers on the same qube.
+   */
+  const watching = new Set<string>();
+
+  /**
+   * How often to re-check a qube that has an operation in flight.
+   *
+   * Terraform applies take minutes (a provision against a real cluster ran
+   * about six), so this trades a little staleness for far fewer requests. It
+   * is deliberately not sub-second: nothing here completes that fast.
+   */
+  const POLL_INTERVAL_MS = 3000;
+
+  /** Give up after this long so a stuck job cannot poll forever. */
+  const POLL_TIMEOUT_MS = 20 * 60 * 1000;
+
+  /**
+   * Polls one qube until it leaves its transient status.
+   *
+   * The UI cannot simply await the mutating call: those return 202 as soon as
+   * the job is queued, and the real outcome lands minutes later on a background
+   * worker. Without this the qube would sit at "resuming" until a manual
+   * refresh.
+   */
+  function watch(id: string): void {
+    if (watching.has(id)) return;
+    watching.add(id);
+
+    const startedAt = Date.now();
+    const tick = async (): Promise<void> => {
+      try {
+        const qube = await api.getQube(id);
+        update(s => ({
+          ...s,
+          qubes: s.qubes.map((q: Qube) => (q.id === id ? qube : q)),
+        }));
+        if (!isTransientStatus(qube.status)) {
+          watching.delete(id);
+          return;
+        }
+      } catch {
+        // A transient failure (server restart, network blip) should not end the
+        // watch; the timeout below is what bounds it.
+      }
+      if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+        watching.delete(id);
+        return;
+      }
+      setTimeout(() => void tick(), POLL_INTERVAL_MS);
+    };
+    setTimeout(() => void tick(), POLL_INTERVAL_MS);
+  }
+
   return {
     subscribe,
+
+    /** Resumes polling for any qube already mid-operation, e.g. after a reload. */
+    resumeWatches(): void {
+      update(s => {
+        s.qubes.filter((q: Qube) => isTransientStatus(q.status)).forEach(q => watch(q.id));
+        return s;
+      });
+    },
 
     async load(options?: ListOptions): Promise<void> {
       update(s => ({ ...s, loading: true, error: null }));
@@ -122,9 +186,12 @@ function createQubeStore() {
     },
 
     async create(data: Parameters<typeof api.createQube>[0]): Promise<Qube> {
-      const qube = await api.createQube(data);
-      update(s => ({ ...s, qubes: [...s.qubes, qube] }));
-      return qube;
+      // Provisioning is asynchronous: the qube arrives in a transient status
+      // and settles minutes later, so start watching it immediately.
+      const op = await api.createQube(data);
+      update(s => ({ ...s, qubes: [...s.qubes, op.qube] }));
+      watch(op.qube.id);
+      return op.qube;
     },
 
     async updateQube(id: string, data: Parameters<typeof api.updateQube>[1]): Promise<Qube> {
@@ -136,30 +203,42 @@ function createQubeStore() {
       return updated;
     },
 
+    /**
+     * Releases a qube: the compute VM is destroyed, the data disk is kept.
+     *
+     * The qube deliberately stays in the list. It is NOT gone — it moves to
+     * "released" and still owns a data disk, and it must remain in terraform's
+     * variable map until that disk is purged. Filtering it out here would have
+     * the UI claim a deletion that did not happen.
+     */
     async remove(id: string): Promise<void> {
       await api.deleteQube(id);
       update(s => ({
         ...s,
-        qubes: s.qubes.filter((q: Qube) => q.id !== id),
+        qubes: s.qubes.map((q: Qube) =>
+          q.id === id ? { ...q, status: 'deleting' as QubeStatus } : q),
       }));
+      watch(id);
     },
 
     async start(id: string): Promise<Qube> {
-      const updated = await api.startQube(id);
+      const op = await api.startQube(id);
       update(s => ({
         ...s,
-        qubes: s.qubes.map((q: Qube) => q.id === id ? updated : q),
+        qubes: s.qubes.map((q: Qube) => q.id === id ? op.qube : q),
       }));
-      return updated;
+      watch(id);
+      return op.qube;
     },
 
     async stop(id: string): Promise<Qube> {
-      const updated = await api.stopQube(id);
+      const op = await api.stopQube(id);
       update(s => ({
         ...s,
-        qubes: s.qubes.map((q: Qube) => q.id === id ? updated : q),
+        qubes: s.qubes.map((q: Qube) => q.id === id ? op.qube : q),
       }));
-      return updated;
+      watch(id);
+      return op.qube;
     },
 
     clearError(): void {

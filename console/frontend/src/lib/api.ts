@@ -14,6 +14,9 @@ import type {
   QubeCreateRequest,
   QubeUpdateRequest,
   QubeListResponse,
+  Job,
+  JobListResponse,
+  Operation,
   ListOptions,
   HealthResponse,
   StatusResponse,
@@ -36,6 +39,57 @@ export function getApiBaseUrl(): string {
 }
 
 const API_BASE = getApiBaseUrl();
+
+/**
+ * localStorage key holding the API bearer token.
+ *
+ * The backend accepts a single static token (see middleware.Auth). When it is
+ * configured server-side, EVERY /api/v1 request must carry it — without this
+ * the whole console 401s the moment an operator secures their deployment.
+ */
+const AUTH_TOKEN_KEY = 'qubesair.apiToken';
+
+/** Returns the stored API token, or null when none is set. */
+export function getApiToken(): string | null {
+  try {
+    return localStorage.getItem(AUTH_TOKEN_KEY);
+  } catch {
+    // localStorage can throw in private-browsing or sandboxed contexts.
+    return null;
+  }
+}
+
+/** Stores the API token, or clears it when given an empty value. */
+export function setApiToken(token: string): void {
+  try {
+    if (token) {
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // Non-fatal: the request layer simply keeps sending unauthenticated calls.
+  }
+}
+
+/**
+ * Builds request headers, attaching the bearer token when one is configured.
+ *
+ * Every request funnels through here precisely so authentication cannot be
+ * forgotten on one verb — which is exactly how the client ended up sending no
+ * Authorization header at all.
+ */
+function buildHeaders(hasBody: boolean): HeadersInit {
+  const headers: Record<string, string> = {};
+  if (hasBody) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const token = getApiToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 /**
  * Custom error class for API errors.
@@ -97,42 +151,53 @@ async function parseErrorResponse(response: Response): Promise<ApiError> {
 }
 
 /**
- * Makes a GET request to the API.
+ * Authenticated fetch for callers that need the raw Response.
+ *
+ * Components that talk to endpoints without a typed wrapper MUST use this
+ * rather than calling fetch directly — several did, which meant they kept
+ * sending unauthenticated requests even after the client learned to
+ * authenticate. Takes a path relative to the API base.
  */
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const hasBody = init?.body !== undefined;
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...buildHeaders(hasBody), ...(init?.headers ?? {}) },
+  });
+}
+
+/**
+ * Single exit point for every API call. Centralising this is what guarantees
+ * the Authorization header is attached uniformly.
+ */
+async function request<T>(method: string, path: string, body?: unknown): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    method,
+    headers: buildHeaders(body !== undefined),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+
+/** Makes a GET request to the API. */
 async function get<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`);
-  return handleResponse<T>(response);
+  return handleResponse<T>(await request<T>('GET', path));
 }
 
-/**
- * Makes a POST request to the API.
- */
+/** Makes a POST request to the API. */
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return handleResponse<T>(response);
+  return handleResponse<T>(await request<T>('POST', path, body));
 }
 
-/**
- * Makes a PUT request to the API.
- */
+/** Makes a PUT request to the API. */
 async function put<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return handleResponse<T>(response);
+  return handleResponse<T>(await request<T>('PUT', path, body));
 }
 
 /**
  * Makes a DELETE request to the API.
  */
 async function del(path: string): Promise<void> {
-  const response = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
+  const response = await request<void>('DELETE', path);
   if (!response.ok) {
     const error = await parseErrorResponse(response);
     throw new ApiException(
@@ -218,8 +283,8 @@ export async function getQube(id: string): Promise<Qube> {
 /**
  * Creates a new qube.
  */
-export async function createQube(data: QubeCreateRequest): Promise<Qube> {
-  return post<Qube>('/qubes', data);
+export async function createQube(data: QubeCreateRequest): Promise<Operation> {
+  return post<Operation>('/qubes', data);
 }
 
 /**
@@ -239,15 +304,15 @@ export async function deleteQube(id: string): Promise<void> {
 /**
  * Starts a qube.
  */
-export async function startQube(id: string): Promise<Qube> {
-  return post<Qube>(`/qubes/${id}/start`);
+export async function startQube(id: string): Promise<Operation> {
+  return post<Operation>(`/qubes/${id}/start`);
 }
 
 /**
  * Stops a qube.
  */
-export async function stopQube(id: string): Promise<Qube> {
-  return post<Qube>(`/qubes/${id}/stop`);
+export async function stopQube(id: string): Promise<Operation> {
+  return post<Operation>(`/qubes/${id}/stop`);
 }
 
 // ============================================================================
@@ -267,4 +332,30 @@ export async function getHealth(): Promise<HealthResponse> {
  */
 export async function getStatus(): Promise<StatusResponse> {
   return get<StatusResponse>('/status');
+}
+
+
+// ============================================================================
+// Orchestration jobs
+// ============================================================================
+
+/**
+ * Gets a single job — the poll target for the job_id returned by a 202.
+ */
+export async function getJob(id: string): Promise<Job> {
+  return get<Job>(`/jobs/${id}`);
+}
+
+/**
+ * Lists recent jobs, newest first. Pass qubeId to scope to one qube.
+ *
+ * This is the audit view: every infrastructure change the console made,
+ * including the failures and terraform's own error text.
+ */
+export async function listJobs(qubeId?: string, limit?: number): Promise<JobListResponse> {
+  const params = new URLSearchParams();
+  if (qubeId) params.set('qube_id', qubeId);
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return get<JobListResponse>(`/jobs${query ? `?${query}` : ''}`);
 }
