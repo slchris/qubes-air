@@ -61,7 +61,15 @@ remote_qube="$(qubesdb-read "/remote/$target" 2>/dev/null || true)"
 ssh "$remote_qube" qrexec-client-vm --source-qube="$QREXEC_REMOTE_DOMAIN" "$remote_qube" "$service"
 ```
 
-配套 `~/.ssh/config` 把目标 host 固定到 Remote-Relay 的 IP。**非 Qubes 机器**（Linux/Windows/树莓派/KVM）只要装上 `qrexec-client-vm` 即可作为 `Remote-Relay`/`Remote-Qube` 接入。
+配套 `~/.ssh/config` 把目标 host 固定到 Remote-Relay 的 IP。
+
+> **[已更正 2026-07] 原文称「非 Qubes 机器只要装上 `qrexec-client-vm` 即可接入」——这是错的，
+> 且曾是本架构的地基假设。** `qrexec-client-vm` 来自 `qubes-core-agent-linux`，运行时依赖
+> Xen vchan（`libvchan`）、`qubesdb` 与 dom0 的 `qrexec-daemon`。vchan 是 **Xen 单机域间**
+> 共享内存原语，跨主机没有意义；一台跑在 KVM 上的普通 Debian 三样都没有，官方源也不提供此包。
+>
+> 非 Qubes 远端的接入方式见 [remote-agent-design.md](remote-agent-design.md)：实现一个
+> qrexec **命令行接口**兼容、底层走 gRPC 的 agent，而非安装上游二进制。
 
 ## 3. 本项目现状 vs RemoteVM
 

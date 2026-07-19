@@ -45,7 +45,17 @@ terraform output -json
 ```
 
 预期: 远端 VM 起来, `ip_address` 非空, `status=running`。
-远端主机需装 `qrexec-client-vm` (由阶段1 cloud-init 或后续 ansible bootstrap-zone 完成)。
+远端主机需要 qrexec 调用能力。
+
+> **[已更正 2026-07]** 原文写「需装 `qrexec-client-vm`（由阶段1 cloud-init 或后续 ansible
+> bootstrap-zone 完成）」。两处都不成立：cloud-init 目前只注入 ip_config 与 SSH 公钥；
+> `ansible/playbooks/bootstrap-zone.yaml` 的 `hosts: zone_admins` 指向 **Proxmox 宿主机**
+> 而非被创建的 guest，且它安装的 7 个包里没有 qrexec。
+>
+> 更根本的是这个包**装不上**——它依赖 Xen vchan，KVM guest 里不存在。
+> 实际方案见 [remote-agent-design.md](remote-agent-design.md)：由 cloud-init 安装
+> `qubes-air-agent`，它提供一个同名同接口的 `qrexec-client-vm`，底层走 gRPC 而非 vchan。
+> **该 agent 尚未实现**（`packer/scripts/install-agent.sh` 当前是 `sleep infinity` 占位符）。
 
 ---
 

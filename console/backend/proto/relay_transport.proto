@@ -10,12 +10,18 @@
 //   - 认证：mTLS（客户端证书 + 服务端证书），证书/私钥存 vault-cloud，
 //     用时经 qrexec ask 下发（替代原 relay SSH 私钥）。[TODO 实现]
 //
-// 【安全模型不变】两侧 dom0 各校验一次：
-//   - 正向：本地 dom0 policy A/B 已放行并改写后，请求才进入本 Tunnel；
-//     远端 Remote-Relay 收到后经【远端 dom0/policy 再校验】才交 qrexec-client-vm。
+// 【安全模型】授权决策只发生在**本地 dom0**：
+//   - 正向：本地 dom0 policy A/B 放行并改写后，请求才进入本 Tunnel。
+//     远端收到后执行；远端 agent 内的服务白名单是**纵深防御，不是安全边界**。
 //   - 反向（远端→本地，如取 vault 凭据）：帧经 Tunnel 回到本地 relay，
 //     必须再过【本地 dom0 policy C：ask】才执行。Relay 不得直达 dom0。
-//   → 传输层只搬运帧，不做授权决策；授权始终在两侧 dom0。
+//     这是真正危险的方向 —— 被攻破的远端会尝试调用本地服务。
+//   → 传输层只搬运帧，不做授权决策。
+//
+// 【更正 2026-07】原文写「两侧 dom0 各校验一次」，并假设远端也有 dom0。
+// 非 Qubes 远端（PVE 上的普通 Debian）没有 dom0，也没有 vchan —— 详见
+// docs/remote-agent-design.md。因此正向的第二道校验并不存在，安全性完全
+// 依赖本地这一侧；反向白名单则必须由本地 dom0 强制，而非信任远端自律。
 // =====================================================================
 
 syntax = "proto3";
@@ -61,7 +67,12 @@ message Handshake {
 // 以及落到远端后要再过哪一侧 dom0 policy。
 enum Direction {
   DIRECTION_UNSPECIFIED = 0;
-  // 正向：本地 → 远端。本地 dom0 已校验；远端 dom0/policy 再校验后执行。
+  // 正向：本地 → 远端。授权由**本地 dom0** 裁决，且仅由本地裁决。
+  //
+  // 【更正 2026-07】此处原写「远端 dom0/policy 再校验后执行」。非 Qubes 远端
+  // 没有 dom0——它是一台普通 Linux VM（见 docs/remote-agent-design.md §3）。
+  // 远端 agent 内的白名单是**纵深防御**，不是安全边界：被攻破的远端可以跳过
+  // 自己的所有检查。凡本地需要保证的，必须在本地 dom0 policy 强制。
   LOCAL_TO_REMOTE = 1;
   // 反向回程：远端 → 本地（如远端取本地 vault 凭据）。
   // 回到本地必须过本地 dom0 policy C（ask）。
@@ -74,7 +85,7 @@ message RequestHeader {
   // qrexec_service：qrexec 服务名（如 qubesair.SomeService、qubes.Gpg）。
   string    qrexec_service = 2;
   // source_qube / target_qube：调用的源/目标 qube 名（用于日志与远端 policy 匹配，
-  // 【非】授权凭据——授权由两侧 dom0 独立决定）。
+  // 【非】授权凭据——授权由**本地 dom0** 决定（见文件头更正说明）。
   string    source_qube  = 3;
   string    target_qube  = 4;
   // deadline_unix_ms：可选超时（0 表示不设）。

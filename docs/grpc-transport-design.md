@@ -1,5 +1,22 @@
 # gRPC 双向流传输层设计（阶段 T）
 
+> ## ⚠️ 安全模型更正（2026-07）
+>
+> **本文档多处描述「两侧 dom0 各校验一次」「正向过远端 dom0 policy」，这个假设不成立。**
+>
+> 非 Qubes 远端（PVE 上 clone 出的普通 Debian）**没有 dom0，也没有 vchan** ——
+> 因此 `qrexec-client-vm` 装不上，正向调用的「第二道校验」并不存在。
+>
+> 正确的模型是：**授权只发生在本地 dom0**。远端 agent 内的白名单是纵深防御，
+> 不是安全边界——被攻破的远端可以跳过自己的所有检查。反向方向尤其危险，
+> 必须由本地 dom0 policy（`ask`）强制，而非信任远端自律。
+>
+> 完整分析与替代方案见 **[remote-agent-design.md](remote-agent-design.md)**。
+> 本文档下方涉及"远端 dom0"的段落应按此理解，尚未逐句重写。
+>
+> 传输层设计本身（帧格式、双向流、零入站、mTLS）**不受影响且依然正确** ——
+> 需要修正的只是"谁来做授权决策"这一点。
+
 > **状态：Go 实现完整、真机（单机）跑通。** 这是路线图 [阶段 T](roadmap-to-production.md#阶段-t--grpc-双向流传输关键路径) 的设计文档。
 >
 > **真机验证（2026-07）：** 交叉编译 linux/amd64 的 `grpc-server` + `relay-client` 在真实 Qubes AppVM（mgmt-jump）上跑通——`relay-client` 读 `mgmt.remotevm.grpc-relay` salt state 渲染出的 `relay.env`，与 `grpc-server` 建立 mTLS 双向流 Tunnel（`ss` 确认 ESTABLISHED、零重连），`grpc-smoke` 完成一次 `qubesair.Ping` Call 往返。dom0 policy 在真机上确实拒绝 relay→dom0 直连（安全红线生效）。待做：跨两台机验证、Salt 在真 dom0 apply、远端提供 `qubesair.Ping`。
