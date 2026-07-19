@@ -7,9 +7,15 @@
 > ⚠️ **本文照做不通了(§3 起)**: 它 apply 的 `qubes-air.remotevm.relay/.autossh` 骨架**已删除**
 > (见 [salt/qubes-air/README.md](../salt/qubes-air/README.md))。接替它的
 > `qubes-salt-config` 仓库 `mgmt.remotevm.relay` **只覆盖其中一部分**——装 transport 脚本
-> 与 `~/.ssh/config`,**没有** autossh 单元、回环 sshd、反向 handler、bind-dirs 持久化。
+> 与 `~/.ssh/config`,**没有** autossh 单元、回环 sshd、反向 handler。
 > 也就是说 §3 之后依赖这些的步骤(§5 起 autossh、§9 反向调用验证)**目前没有对应的 state**。
-> 缺口逐项列在 §3。gRPC 那条路是完整的(`mgmt.remotevm.grpc-relay`,含 bind-dirs)。
+> 缺口逐项列在 §3。
+>
+> 持久化曾是第三个缺口(重启即丢 transport),**已在 qubes-salt-config 修复**
+> (`fix(remotevm): persist the relay's transport instead of losing it at reboot`)。
+> 同一个 bug 当时**两条路都有**——gRPC 那条声明了 bind-dirs 却把 unit 写到了真实路径,
+> 看着更像已处理,其实一样丢——一并修了。本文 §3 描述的是修复后的行为,
+> 需要 qubes-salt-config 含该提交。
 
 > 目标: 从"terraform 建出远端 VM"到"本地 AppVM 里 `qrexec-client-vm remote-dev-1 <service>` 调通",
 > 全链路可照做。含零入站验证与反向调用验证。
@@ -92,10 +98,10 @@ qvm-tags  sys-relay-pve list               # 期望含 relay
 > (Salt top 匹配字面量 qube 名)。
 
 ```bash
-# 3a. 先对 Relay 用的模板装包: openssh-client
-#     mgmt.remotevm.relay 里的兜底是 `apt-get`(仅 Debian 系), 本文的 relay 模板是
-#     fedora-42 —— 兜底在这里不起作用, 必须自己装进模板:
-#     qvm-run -u root fedora-42 'dnf install -y openssh-clients' && qvm-shutdown --wait fedora-42
+# 3a. 先对 Relay 用的模板装包: openssh-clients
+#     (state 里有 apt/dnf 兜底, 但那是装在 AppVM 上、随根卷一起丢的, 只顶当前这次开机;
+#      装进模板才持久)
+qvm-run -u root fedora-42 'dnf install -y openssh-clients' && qvm-shutdown --wait fedora-42
 
 # 3b. 再对 Relay AppVM 应用 transport 配置
 sudo qubesctl --skip-dom0 --targets=sys-relay-pve state.apply mgmt.remotevm.relay
@@ -110,24 +116,24 @@ sudo qubesctl --skip-dom0 --targets=sys-relay-pve state.apply mgmt.remotevm.rela
 |---|---|
 | `autossh-qubesair@.service` 出站隧道单元 | §5 起隧道、§10 停隧道 |
 | 回环 sshd + `reverse-qrexec-handler`(ForceCommand) | §9 反向调用验证 |
-| bind-dirs 持久化 | 见下 |
 
-**持久化: 目前会丢。** 旧骨架用 bind-dirs 把 transport 脚本绑回 `/etc/qubes-rpc/`;
-`mgmt.remotevm.relay` 直接写 `/etc/qubes-rpc/`,而 AppVM 的 `/etc` 属**根卷**,
-重启即还原(`~/.ssh/config` 在私有卷,不受影响)。所以:
+这两条目前**没有替代品**: 本文 §5 与 §9 现在没有 state 可 apply,要么手写单元,
+要么改走 gRPC 那条路(`mgmt.remotevm.grpc-relay`,反向回程在同一条长连接里,不需要
+回环 sshd)。
+
+**持久化检查** (原先这里会失败,现已修复,见顶部横幅):
 
 ```bash
-# 装完当场可用:
-qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'   # 存在
-# 但重启后没了 —— 这是已知缺口, 不是操作失误:
+qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'          # 存在
+qvm-run -p sys-relay-pve 'ls -l /rw/bind-dirs/etc/qubes-rpc/qubesair.SSHProxy'  # 真身在持久卷
+qvm-run -p sys-relay-pve 'cat /rw/config/qubes-bind-dirs.d/50_qubesair.conf'
+# 重启后仍在 (bind-dirs 生效):
 qvm-shutdown --wait sys-relay-pve && qvm-start sys-relay-pve
-qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'   # 不存在
+qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'          # 应存在
 ```
 
-绕过办法二选一: 把 transport 脚本装进**模板**, 或每次 Relay 启动后重新 apply。
-根治要在 `qubes-salt-config` 的 `mgmt.remotevm.relay` 里补 bind-dirs——
-同仓库的 `mgmt.remotevm.grpc-relay` 已经这么做了(`/rw/config/qubes-bind-dirs.d/50_qubesair_grpc.conf`),
-照它抄即可。
+最后一条是这条链路上最容易被漏掉的检查: transport 丢失不会报错,
+症状是很久以后某次跨机调用失败,离原因很远。**别跳过重启这一步。**
 
 ---
 

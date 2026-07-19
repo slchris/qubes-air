@@ -66,15 +66,20 @@ git show <commit>^:salt/qubes-air/remotevm/relay.sls
 
 1. **autossh 出站隧道单元**（`autossh-qubesair@.service`）;
 2. **回环 sshd + `reverse-qrexec-handler`**（`ssh -R` 反向回程的落点）;
-3. **bind-dirs 持久化** —— 旧 `relay.sls` 把 transport 脚本放 `/rw/bind-dirs/` 再绑回
-   `/etc/qubes-rpc/`；`mgmt.remotevm.relay` 直接写 `/etc/qubes-rpc/`，而 AppVM 的 `/etc`
-   属根卷，**Relay 一重启就没了**。
+3. ~~**bind-dirs 持久化**~~ —— **已修复**，见下。
 
-前两条使 [docs/runbook-remotevm.md](../../docs/runbook-remotevm.md) §5 / §9 目前无 state 可用，
-第三条使该 runbook 原有的持久化检查必然失败。三条都已写进该 runbook 的 §3 与顶部横幅。
-根治第三条: 照同仓库 `mgmt.remotevm.grpc-relay` 的
-`/rw/config/qubes-bind-dirs.d/50_qubesair_grpc.conf` 给 `relay.sls` 补上。
-**gRPC 那条路没有这个问题**——`grpc-relay.sls` 三件事都做了（除 autossh，它本就不需要）。
+前两条仍然缺，使 [docs/runbook-remotevm.md](../../docs/runbook-remotevm.md) §5 / §9
+目前无 state 可用；已写进该 runbook 的 §3 与顶部横幅。走 gRPC 那条路不需要它们
+（反向回程在同一条长连接里）。
+
+第三条最初的判断是「旧的有、新的没有」，查下来比这更糟: **两条路都丢**。
+`relay.sls` 压根没写 bind-dirs；`grpc-relay.sls` 声明了 `binds+=(...)` 却把 unit
+写到 `/etc/systemd/system/` 真实路径——bind-dirs 是在**第一次见到该 bind 时**从当前
+路径内容播种它的 `/rw` 副本，而那时根卷已经重置、模板里没有这个 unit，于是拿空文件
+盖空文件。声明了反而更像已处理。两处都已在 `qubes-salt-config` 修复
+（`fix(remotevm): persist the relay's transport instead of losing it at reboot`）:
+canonical 副本写 `/rw/bind-dirs/`，当次开机补 `mount --bind`，首次开机再由 rc.local
+兜底。**要点: 写 `/rw/bind-dirs/<path>`，不要写 `<path>` 本身。**
 
 ## 还留在这里的东西
 
