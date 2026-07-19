@@ -351,6 +351,56 @@ func (t *TerraformExecutor) renderQubes(qubes map[string]any) error {
 // bother terraform. This is not belt-and-braces: terraform exits 0 with "No
 // changes" when a -target matches nothing, so without this check a resume of an
 // unknown qube looks like a success and the caller records it as running.
+// execReadOnly runs a terraform command that only READS state.
+//
+// Two things it deliberately does not do, both of which exec must:
+//
+//   - It does not render the generated var-file. `terraform output` reads state
+//     and ignores variables entirely, so rendering would be a pure side effect —
+//     and the health monitor calls this, meaning a read-only probe was rewriting
+//     the file that defines which qubes should exist.
+//
+//   - It does not block on the executor mutex. exec holds that lock for the
+//     whole terraform subprocess, up to DefaultTimeout (15 minutes), and a
+//     context deadline cannot interrupt a mutex acquisition. A single
+//     address-less qube would therefore stall the entire health sweep for the
+//     length of an in-flight apply — no qube probed, no dead agent noticed,
+//     which is exactly what the sweep exists to prevent. If the lock is busy we
+//     say so and move on; the next sweep will ask again.
+func (t *TerraformExecutor) execReadOnly(ctx context.Context, qubeName string, buildArgs func() []string) (string, error) {
+	if !ValidQubeName(qubeName) {
+		return "", &ErrInvalidQubeName{Name: qubeName}
+	}
+	if t.WorkDir == "" {
+		return "", fmt.Errorf("terraform executor: WorkDir is not configured")
+	}
+
+	if !t.mu.TryLock() {
+		return "", ErrExecutorBusy
+	}
+	defer t.mu.Unlock()
+
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > t.Timeout {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, t.Timeout)
+		defer cancel()
+	}
+
+	var env []string
+	if t.EnvFunc != nil {
+		var err error
+		if env, err = t.EnvFunc(ctx); err != nil {
+			return "", fmt.Errorf("terraform executor: resolve credentials: %w", err)
+		}
+	}
+	return t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs(), env)
+}
+
+// ErrExecutorBusy reports that terraform is mid-run and a read-only query
+// declined to wait. Distinct from a failure: nothing is wrong, the answer is
+// simply not available right now.
+var ErrExecutorBusy = errors.New("terraform executor is busy with another run")
+
 func (t *TerraformExecutor) exec(ctx context.Context, qubeName string, requireKey bool, buildArgs func() []string) (string, error) {
 	if !ValidQubeName(qubeName) {
 		return "", &ErrInvalidQubeName{Name: qubeName}
@@ -467,6 +517,23 @@ func (t *TerraformExecutor) Status(ctx context.Context, qubeName string) (string
 		return "", err
 	}
 	return parseQubeStatus(out, qubeName)
+}
+
+// Address reads terraform output and extracts this qube's IP address.
+//
+// Deliberately NOT part of the Executor interface: every other method there
+// CHANGES infrastructure, and adding a read-only accessor would oblige the noop
+// and fake executors to answer a question they have no way to answer. Consumers
+// type-assert for it (see service.AgentAddressReader) and degrade when it is
+// absent.
+func (t *TerraformExecutor) Address(ctx context.Context, qubeName string) (string, error) {
+	out, err := t.execReadOnly(ctx, qubeName, func() []string {
+		return []string{"output", "-json", "remote_qubes"}
+	})
+	if err != nil {
+		return "", err
+	}
+	return parseQubeAddress(out, qubeName)
 }
 
 // strconvQuote quotes a string for a terraform module index. We use %q via

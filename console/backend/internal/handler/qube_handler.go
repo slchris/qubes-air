@@ -53,6 +53,11 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 }
 
 // List handles GET /qubes.
+//
+// Each qube carries both status (the compute instance) and agent_health (whether
+// the agent inside it answers). They are reported separately and are meant to be
+// read together: "running" plus "unreachable" is the case an operator previously
+// had to discover by SSHing to a hypervisor node and running systemctl by hand.
 func (h *QubeHandler) List(c *gin.Context) {
 	opts := parseQubeListOptions(c)
 
@@ -86,6 +91,11 @@ func parseQubeListOptions(c *gin.Context) repository.QubeListOptions {
 }
 
 // GetByID handles GET /qubes/:id.
+//
+// The response reports agent_health alongside status, plus when the agent was
+// last probed, when it was last seen answering, and why the last probe failed.
+// agent_health is always present — a missing field would read as "no opinion"
+// when the honest answer for an unprobed qube is "unknown".
 func (h *QubeHandler) GetByID(c *gin.Context) {
 	id := c.Param("id")
 

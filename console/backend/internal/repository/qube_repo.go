@@ -29,7 +29,24 @@ type QubeRepository interface {
 	ClaimTransition(ctx context.Context, id string, from []models.QubeStatus, to models.QubeStatus) error
 	// ListByStatus returns every qube in one of the given statuses.
 	ListByStatus(ctx context.Context, statuses []models.QubeStatus) ([]*models.Qube, error)
+	// UpdateAgentHealth records the outcome of one agent probe, touching only
+	// the agent_* columns. It never reads or writes status.
+	UpdateAgentHealth(
+		ctx context.Context, id string, health models.AgentHealth, probedAt time.Time, failure string,
+	) error
 }
+
+// ErrQubeNotFound means no row exists for the given id.
+var ErrQubeNotFound = errors.New("qube not found")
+
+// qubeColumns is the column list shared by every qube read.
+//
+// Kept in one place because the SELECT order and the Scan order must agree, and
+// three hand-maintained copies drifting apart is exactly how a nullable
+// agent_* timestamp ends up scanned into the wrong field.
+const qubeColumns = `id, name, type, zone_id, status, spec, ip_address,
+		agent_health, agent_last_probed_at, agent_last_healthy_at, agent_last_error,
+		created_at, updated_at`
 
 // QubeListOptions contains filtering options for listing qubes.
 type QubeListOptions struct {
@@ -65,9 +82,19 @@ func (r *qubeRepository) Create(ctx context.Context, qube *models.Qube) error {
 		return err
 	}
 
+	// A qube has never been probed at creation time, so agent health starts
+	// unknown. Normalised onto the struct as well as the row: the caller returns
+	// this same struct in the create response, and an empty string there would
+	// read as "this console has no such concept" while a later GET said
+	// "unknown". The probe timestamps stay NULL — only an actual probe is
+	// entitled to claim an observation happened.
+	if qube.AgentHealth == "" {
+		qube.AgentHealth = models.AgentHealthUnknown
+	}
+
 	query := `
-		INSERT INTO qubes (id, name, type, zone_id, status, spec, ip_address, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		INSERT INTO qubes (id, name, type, zone_id, status, spec, ip_address, agent_health, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = r.db.DB().ExecContext(ctx, query,
 		qube.ID,
@@ -77,6 +104,7 @@ func (r *qubeRepository) Create(ctx context.Context, qube *models.Qube) error {
 		qube.Status,
 		specJSON,
 		qube.IPAddress,
+		qube.AgentHealth,
 		qube.CreatedAt,
 		qube.UpdatedAt,
 	)
@@ -86,14 +114,36 @@ func (r *qubeRepository) Create(ctx context.Context, qube *models.Qube) error {
 
 // GetByID retrieves a qube by ID.
 func (r *qubeRepository) GetByID(ctx context.Context, id string) (*models.Qube, error) {
-	query := `
-		SELECT id, name, type, zone_id, status, spec, ip_address, created_at, updated_at
-		FROM qubes WHERE id = ?`
+	query := `SELECT ` + qubeColumns + ` FROM qubes WHERE id = ?`
 
+	qube, err := scanQube(r.db.DB().QueryRowContext(ctx, query, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrQubeNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return qube, nil
+}
+
+// scanQube reads one row in qubeColumns order. Takes the package's rowScanner
+// (see job_repository.go) so a single-row Get and a multi-row List cannot drift.
+//
+// The agent_* timestamps are NULL for a qube that has never been probed (and
+// for every row that predates the columns), so they are scanned through
+// sql.NullTime and left nil rather than becoming a zero time — "never probed"
+// and "probed at year 1" must not look alike to a caller deciding whether the
+// health reading is stale.
+func scanQube(row rowScanner) (*models.Qube, error) {
 	qube := &models.Qube{}
-	var specJSON []byte
+	var (
+		specJSON  []byte
+		probedAt  sql.NullTime
+		healthyAt sql.NullTime
+	)
 
-	err := r.db.DB().QueryRowContext(ctx, query, id).Scan(
+	if err := row.Scan(
 		&qube.ID,
 		&qube.Name,
 		&qube.Type,
@@ -101,14 +151,13 @@ func (r *qubeRepository) GetByID(ctx context.Context, id string) (*models.Qube, 
 		&qube.Status,
 		&specJSON,
 		&qube.IPAddress,
+		&qube.AgentHealth,
+		&probedAt,
+		&healthyAt,
+		&qube.AgentLastError,
 		&qube.CreatedAt,
 		&qube.UpdatedAt,
-	)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errors.New("qube not found")
-	}
-	if err != nil {
+	); err != nil {
 		return nil, err
 	}
 
@@ -116,6 +165,14 @@ func (r *qubeRepository) GetByID(ctx context.Context, id string) (*models.Qube, 
 		if err := json.Unmarshal(specJSON, &qube.Spec); err != nil {
 			return nil, err
 		}
+	}
+	if probedAt.Valid {
+		t := probedAt.Time
+		qube.AgentLastProbedAt = &t
+	}
+	if healthyAt.Valid {
+		t := healthyAt.Time
+		qube.AgentLastHealthyAt = &t
 	}
 
 	return qube, nil
@@ -136,9 +193,7 @@ func (r *qubeRepository) List(ctx context.Context, opts QubeListOptions) ([]*mod
 
 // buildQubeListQuery constructs the list query with filters.
 func buildQubeListQuery(opts QubeListOptions) (string, []interface{}) {
-	query := `
-		SELECT id, name, type, zone_id, status, spec, ip_address, created_at, updated_at
-		FROM qubes WHERE 1=1`
+	query := `SELECT ` + qubeColumns + ` FROM qubes WHERE 1=1`
 	args := []interface{}{}
 
 	if opts.ZoneID != "" {
@@ -167,30 +222,10 @@ func scanQubes(rows *sql.Rows) ([]*models.Qube, error) {
 	var qubes []*models.Qube
 
 	for rows.Next() {
-		qube := &models.Qube{}
-		var specJSON []byte
-
-		err := rows.Scan(
-			&qube.ID,
-			&qube.Name,
-			&qube.Type,
-			&qube.ZoneID,
-			&qube.Status,
-			&specJSON,
-			&qube.IPAddress,
-			&qube.CreatedAt,
-			&qube.UpdatedAt,
-		)
+		qube, err := scanQube(rows)
 		if err != nil {
 			return nil, err
 		}
-
-		if len(specJSON) > 0 {
-			if err := json.Unmarshal(specJSON, &qube.Spec); err != nil {
-				return nil, err
-			}
-		}
-
 		qubes = append(qubes, qube)
 	}
 
@@ -198,6 +233,12 @@ func scanQubes(rows *sql.Rows) ([]*models.Qube, error) {
 }
 
 // Update updates an existing qube.
+//
+// It deliberately does not write the agent_* columns. The struct handed here
+// comes from a read that may be seconds or minutes old, and probes run
+// concurrently on their own worker: writing agent health back from a stale copy
+// would silently resurrect a "healthy" reading that has since been disproved.
+// Agent health has exactly one writer, UpdateAgentHealth.
 func (r *qubeRepository) Update(ctx context.Context, qube *models.Qube) error {
 	specJSON, err := json.Marshal(qube.Spec)
 	if err != nil {
@@ -301,9 +342,10 @@ func (r *qubeRepository) ListByStatus(ctx context.Context, statuses []models.Qub
 		args = append(args, string(s))
 	}
 	// #nosec G201 -- placeholders only; statuses are bound arguments.
-	query := fmt.Sprintf(`
-		SELECT id, name, type, zone_id, status, spec, ip_address, created_at, updated_at
-		FROM qubes WHERE status IN (%s)`, strings.Join(placeholders, ","))
+	query := fmt.Sprintf(
+		`SELECT `+qubeColumns+` FROM qubes WHERE status IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
 
 	rows, err := r.db.DB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -312,6 +354,64 @@ func (r *qubeRepository) ListByStatus(ctx context.Context, statuses []models.Qub
 	defer func() { _ = rows.Close() }()
 
 	return scanQubes(rows)
+}
+
+// UpdateAgentHealth records the outcome of a single agent probe.
+//
+// Only the agent_* columns are written, in one statement. A read-modify-write
+// of the whole row would lose concurrent status changes: provisioning updates
+// status from the orchestrator worker while probes run on their own schedule,
+// so a probe that read the row before an apply finished and wrote it back after
+// would quietly revert the qube to its pre-apply status. Same reasoning as
+// ClaimTransition — let SQLite arbitrate rather than a Go-side check-then-write.
+//
+// agent_last_healthy_at only advances on a healthy probe, which is what makes
+// "unreachable for the last 40 minutes" answerable. It is computed in SQL
+// rather than by reading the old value first, for the reason above.
+//
+// updated_at is deliberately left alone. Probes run continuously, and bumping
+// it on every one would destroy its meaning as "when this qube last actually
+// changed" — agent_last_probed_at already records probe time, and more
+// precisely.
+func (r *qubeRepository) UpdateAgentHealth(
+	ctx context.Context, id string, health models.AgentHealth, probedAt time.Time, failure string,
+) error {
+	if !health.IsValid() {
+		// A typo'd health value would be persisted and rendered verbatim, so it
+		// would show up as an unrecognised state in the UI rather than as a
+		// visible failure. Refuse it here instead.
+		return fmt.Errorf("UpdateAgentHealth: invalid agent health %q", health)
+	}
+
+	const query = `
+		UPDATE qubes SET
+			agent_health = ?,
+			agent_last_probed_at = ?,
+			agent_last_healthy_at = CASE WHEN ? = ? THEN ? ELSE agent_last_healthy_at END,
+			agent_last_error = ?
+		WHERE id = ?`
+
+	res, err := r.db.DB().ExecContext(ctx, query,
+		string(health),
+		probedAt.UTC(),
+		string(health), string(models.AgentHealthHealthy), probedAt.UTC(),
+		failure,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// The qube was deleted between the probe starting and its result
+		// arriving. Harmless, but reported rather than swallowed: a probe loop
+		// silently writing nothing looks exactly like a probe loop that works.
+		return ErrQubeNotFound
+	}
+	return nil
 }
 
 // UpdateIPAddress updates qube IP address.

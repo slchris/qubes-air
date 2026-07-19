@@ -110,6 +110,22 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Agent health: whether the agent inside a qube answers, which is a separate
+	// fact from the VM's own status (see models.Qube). Existing rows backfill to
+	// 'unknown' — the truthful value for a qube that has never been probed, and
+	// specifically not 'healthy', which would reproduce the very bug these
+	// columns exist to catch.
+	for _, c := range []struct{ column, definition string }{
+		{"agent_health", "TEXT NOT NULL DEFAULT 'unknown'"},
+		{"agent_last_probed_at", "DATETIME"},
+		{"agent_last_healthy_at", "DATETIME"},
+		{"agent_last_error", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		if err := d.addColumnIfMissing("qubes", c.column, c.definition); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -117,10 +133,15 @@ func (d *DB) migrate() error {
 // exist, making the migration safe to run repeatedly on existing databases.
 //
 // SQLite has no "ALTER TABLE ... ADD COLUMN IF NOT EXISTS", so the column set is
-// inspected via PRAGMA table_info first. The ADD COLUMN definition MUST include
-// a non-NULL DEFAULT (as callers pass) so that pre-existing rows receive a
-// deterministic value — for key_version this backfills legacy rows to version 1,
-// which is exactly the key that originally encrypted them.
+// inspected via PRAGMA table_info first. The ADD COLUMN definition MUST give
+// pre-existing rows a deterministic value — for key_version that means a
+// non-NULL DEFAULT backfilling legacy rows to version 1, which is exactly the
+// key that originally encrypted them.
+//
+// Nullable columns are the one exception, and only where NULL is itself the
+// correct answer for a legacy row: agent_last_probed_at has no default because
+// "never probed" is the truth about a qube that predates probing, and a
+// fabricated zero timestamp would assert an observation that never happened.
 func (d *DB) addColumnIfMissing(table, column, definition string) error {
 	// #nosec G202 -- table/column/definition are compile-time constants from
 	// this package, never user input; PRAGMA cannot be parameterized.
@@ -173,6 +194,14 @@ CREATE TABLE IF NOT EXISTS zones (
 	updated_at DATETIME NOT NULL
 )`
 
+// createQubesTable defines the schema for freshly created databases.
+//
+// status describes the compute instance; the agent_* columns describe whether
+// the agent inside it answers. They are separate columns because they are
+// separate facts — a running VM with a dead agent is a state the console has to
+// be able to express (see models.Qube). Databases created before the agent_*
+// columns existed are upgraded by addColumnIfMissing in migrate(), which
+// backfills agent_health='unknown'.
 const createQubesTable = `
 CREATE TABLE IF NOT EXISTS qubes (
 	id TEXT PRIMARY KEY,
@@ -182,6 +211,10 @@ CREATE TABLE IF NOT EXISTS qubes (
 	status TEXT NOT NULL DEFAULT 'stopped',
 	spec TEXT DEFAULT '{}',
 	ip_address TEXT DEFAULT '',
+	agent_health TEXT NOT NULL DEFAULT 'unknown',
+	agent_last_probed_at DATETIME,
+	agent_last_healthy_at DATETIME,
+	agent_last_error TEXT NOT NULL DEFAULT '',
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL
 )`

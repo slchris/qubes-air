@@ -38,6 +38,12 @@ const (
 	// shutdown. A real apply takes minutes; cutting one short is what leaves
 	// infrastructure that terraform has no record of.
 	orchestratorShutdownGrace = 10 * time.Minute
+
+	// agentHealthShutdownGrace is how long in-flight agent probes may finish.
+	// Seconds, not minutes: a probe writes one row and abandoning it costs a
+	// health reading that the next sweep takes anyway, so there is nothing here
+	// worth delaying a restart for.
+	agentHealthShutdownGrace = 5 * time.Second
 )
 
 func main() {
@@ -132,6 +138,9 @@ type Dependencies struct {
 	// runner serializes terraform work onto one goroutine. Nil when
 	// orchestration is disabled, in which case the service runs inline.
 	runner *orchestrator.Runner
+	// agents re-probes qube agents in the background so a dead one is noticed
+	// without anyone asking. Nil-safe: its methods tolerate a nil receiver.
+	agents *service.AgentHealthMonitor
 }
 
 // Close releases all resources.
@@ -142,6 +151,10 @@ func (d *Dependencies) Close() {
 	if d.runner != nil {
 		d.runner.Shutdown(orchestratorShutdownGrace)
 	}
+	// Probes second, and on a short grace. They must stop before the database
+	// closes — a probe writing agent health into a closed handle would log an
+	// error on every shutdown — but nothing about a probe is worth waiting for.
+	d.agents.Shutdown(agentHealthShutdownGrace)
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -186,25 +199,41 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// too, injected into the subprocess environment. They are deliberately NOT
 	// passed as terraform variables: a variable's value is written to state in
 	// plaintext, which the state design forbids for long-lived credentials.
+	// The agent package is pinned by digest: the artifact store it comes from is
+	// unauthenticated plain HTTP, so the hash carried in the identity document
+	// is the only thing that makes the download safe to install.
 	certIssuer := service.NewCertIssuer(credentialRepo, agentCertRepo,
-		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen)
+		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen,
+		service.AgentPackage{
+			URL:     cfg.Orchestrator.AgentPackageURL,
+			SHA256:  cfg.Orchestrator.AgentPackageSHA256,
+			Version: cfg.Orchestrator.AgentPackageVersion,
+		})
+	if cfg.Orchestrator.AgentPackageURL == "" {
+		log.Printf("WARNING: orchestrator.agent_package_url is not set; " +
+			"new qubes will boot without an agent (set QUBES_AIR_AGENT_PACKAGE_URL and _SHA256)")
+	}
 
 	exec := buildExecutor(cfg.Orchestrator,
 		service.NewQubeSnapshot(qubeRepo, zoneRepo, certIssuer),
 		service.NewTerraformEnvFunc(zoneRepo, credentialRepo))
 
-	// The runner turns orchestration asynchronous. Without it the service falls
-	// back to running terraform inline, which cannot work for real applies: they
-	// take minutes against a 15s server write deadline.
-	var runner *orchestrator.Runner
 	// One scheduler instance, shared by placement (qube service) and the
 	// capacity endpoint (zone handler).
 	clusterScheduler := service.NewClusterScheduler(zoneRepo,
 		service.NewZoneCredentialResolver(zoneRepo, credentialRepo))
 
+	// The prober dials each qube's OWN address. It is what makes agent health a
+	// per-qube fact; the global transport below is pinned to a single
+	// configured endpoint and cannot answer for an arbitrary qube.
+	agentProber := service.NewAgentProber(certIssuer, agentCertRepo,
+		cfg.Orchestrator.AgentListen,
+		time.Duration(cfg.Orchestrator.AgentProbeTimeoutSeconds)*time.Second)
+
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
+		service.WithAgentProber(agentProber),
 		// Automatic node selection. Cluster credentials are resolved from the
 		// encrypted credential store via the zone's credential_id — never from
 		// the environment, so they can be rotated, scoped and audited in one
@@ -216,26 +245,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	}
 
 	jobRepo := repository.NewJobRepository(db)
-	if cfg.Orchestrator.Enabled {
-		// Jobs are persisted, not held in memory: they are the audit record of
-		// every infrastructure change this console made.
-		if n, err := jobRepo.FailUnfinished(context.Background(),
-			"console restarted while this job was in flight; outcome unknown"); err != nil {
-			log.Printf("orchestrator: could not reconcile unfinished jobs: %v", err)
-		} else if n > 0 {
-			log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
-		}
-
-		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
-			Executor: exec,
-			Store:    jobRepo,
-			OnDone:   makeCompletionHook(qubeRepo),
-		})
-		runner.Start()
-		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
-	}
-
-	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, qubeSvcOpts...)
+	qubeSvc, runner, agents := startOrchestration(
+		cfg.Orchestrator, jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
 
 	// A qube left in a transient status belongs to a job that died with a
 	// previous process — the queue is in memory, so nothing will ever finish it.
@@ -264,13 +275,119 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		jobHandler:        handler.NewJobHandler(jobRepo),
 		transport:         xport,
 		runner:            runner,
+		agents:            agents,
 	}, nil
+}
+
+// startOrchestration builds and starts the qube service, the terraform runner
+// and the agent-health monitor.
+//
+// The three are constructed together because they refer to one another: the
+// service submits jobs to the runner, the monitor probes through the service,
+// and the runner's completion hook schedules a probe on the monitor when an
+// apply finishes. That last edge is what forces the ordering below.
+//
+// The runner turns orchestration asynchronous. Without it the service falls
+// back to running terraform inline, which cannot work for real applies: they
+// take minutes against a 15s server write deadline.
+func startOrchestration(
+	cfg config.OrchestratorConfig,
+	jobRepo *repository.JobRepository,
+	qubeRepo repository.QubeRepository,
+	zoneRepo repository.ZoneRepository,
+	exec orchestrator.Executor,
+	qubeSvcOpts []service.QubeServiceOption,
+) (service.QubeService, *orchestrator.Runner, *service.AgentHealthMonitor) {
+	// agents is assigned below, once the service it probes through exists, but
+	// the completion hook has to be handed to the runner before that. The hook
+	// therefore reads it through a getter rather than capturing a value.
+	//
+	// This is safe without a lock only because runner.Start() is deliberately
+	// deferred to the end: creating the worker goroutine is the synchronisation
+	// point that publishes the write to it.
+	var agents *service.AgentHealthMonitor
+	var runner *orchestrator.Runner
+
+	if cfg.Enabled {
+		// Jobs are persisted, not held in memory: they are the audit record of
+		// every infrastructure change this console made.
+		if n, err := jobRepo.FailUnfinished(context.Background(),
+			"console restarted while this job was in flight; outcome unknown"); err != nil {
+			log.Printf("orchestrator: could not reconcile unfinished jobs: %v", err)
+		} else if n > 0 {
+			log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
+		}
+
+		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
+			Executor: exec,
+			Store:    jobRepo,
+			OnDone:   makeCompletionHook(qubeRepo, func() *service.AgentHealthMonitor { return agents }),
+		})
+		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
+	}
+
+	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, qubeSvcOpts...)
+
+	agents = buildAgentHealthMonitor(cfg, qubeRepo, qubeSvc, exec)
+	agents.Start()
+
+	// Started only now: its worker calls the completion hook, which reaches
+	// `agents`. Starting it before the line above would race that assignment.
+	if runner != nil {
+		runner.Start()
+	}
+	return qubeSvc, runner, agents
+}
+
+// buildAgentHealthMonitor wires the background agent prober.
+//
+// exec is passed so the monitor can read a qube's IP address back out of
+// terraform: the console has no other source for it, and without an address
+// there is nothing to probe. A non-terraform executor simply does not satisfy
+// the interface, and the monitor degrades to probing whatever addresses are
+// already recorded.
+func buildAgentHealthMonitor(
+	cfg config.OrchestratorConfig,
+	qubeRepo repository.QubeRepository,
+	prober service.AgentProbeRunner,
+	exec orchestrator.Executor,
+) *service.AgentHealthMonitor {
+	opts := []service.AgentHealthOption{}
+	if reader, ok := exec.(service.AgentAddressReader); ok {
+		opts = append(opts, service.WithAgentAddressReader(reader))
+	} else {
+		log.Printf("agenthealth: this executor cannot report qube addresses; " +
+			"qubes with no recorded ip_address will report agent health as unknown")
+	}
+
+	return service.NewAgentHealthMonitor(qubeRepo, prober, service.AgentHealthConfig{
+		Interval:     time.Duration(cfg.AgentProbeIntervalSeconds) * time.Second,
+		SettleBudget: time.Duration(cfg.AgentProbeSettleSeconds) * time.Second,
+		SettleRetry:  service.DefaultAgentSettleRetry,
+	}, opts...)
 }
 
 // makeCompletionHook returns the callback that records a job's outcome on the
 // qube. It is the only writer of a terminal status once operations are
 // asynchronous: nothing else is still around when terraform finishes.
-func makeCompletionHook(qubeRepo repository.QubeRepository) orchestrator.Completion {
+//
+// It is also where the agent probe is triggered, rather than terminalStatusFor
+// in the service. Two reasons, both concrete:
+//
+//   - terminalStatusFor's only remaining caller is the INLINE path, used when no
+//     job submitter is configured. That path runs a no-op executor: there is no
+//     VM there and nothing to probe.
+//   - this hook is the one place that knows a real apply just finished, for
+//     which qube, and whether it succeeded. That is exactly the trigger
+//     condition, and duplicating it in the service would give two places that
+//     have to agree about when a qube became probeable.
+//
+// The probe is scheduled, never performed here: this runs on the single
+// terraform worker goroutine, so waiting for an agent to boot would stall every
+// queued apply behind it.
+func makeCompletionHook(
+	qubeRepo repository.QubeRepository, agents func() *service.AgentHealthMonitor,
+) orchestrator.Completion {
 	return func(ctx context.Context, j *orchestrator.Job) {
 		status := models.QubeStatusError
 		if j.State == orchestrator.JobSucceeded {
@@ -287,6 +404,19 @@ func makeCompletionHook(qubeRepo repository.QubeRepository) orchestrator.Complet
 			log.Printf("orchestrator: job %s finished (%s) but recording status %q failed: %v",
 				j.ID, j.State, status, err)
 		}
+
+		// Only a successful provision or resume produces a VM that should have
+		// a live agent. A failed job, a suspend or a release has nothing to
+		// probe, and probing them would fill the health column with failures
+		// that mean "this qube is intentionally off".
+		if j.State != orchestrator.JobSucceeded ||
+			(j.Action != orchestrator.ActionProvision && j.Action != orchestrator.ActionResume) {
+			return
+		}
+		// Note what is NOT happening: the job's outcome is already recorded and
+		// is not revisited. The VM exists and the apply did its work, so a
+		// silent agent is a fact about the qube, not a failed job.
+		agents().Settle(j.QubeID, j.QubeName, string(j.Action))
 	}
 }
 

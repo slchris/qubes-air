@@ -4,6 +4,22 @@ package models
 import "time"
 
 // Qube represents a remote virtual machine instance.
+//
+// Status and AgentHealth are DIFFERENT FACTS and are deliberately not merged.
+// Status says what we asked the hypervisor for and what it reports about the
+// compute instance; AgentHealth says whether the agent inside that instance
+// answered a probe. A VM can be genuinely running while its agent is dead —
+// the package failed to install, the unit will not start, the hash did not
+// match — and that qube is running, with an unhealthy agent. Folding the two
+// together would make "suspended" and "the agent is not answering"
+// indistinguishable, and would throw away the only signal that separates a
+// working qube from an unusable one.
+//
+// This distinction is not theoretical. A stale cloud-init snippet once meant
+// the agent was never installed at all: the job reported succeeded, the status
+// read running, and every console-side signal stayed green for hours. The bug
+// was found only by SSHing to a hypervisor node and running systemctl by hand.
+// These fields exist so that never happens silently again.
 type Qube struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
@@ -14,6 +30,68 @@ type Qube struct {
 	Spec      QubeSpec   `json:"spec"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+
+	// AgentHealth is the result of the most recent agent probe. Never omitted
+	// from the API: an absent field would read as "this console has no opinion",
+	// when the honest answer for a qube nobody has probed is "unknown".
+	AgentHealth AgentHealth `json:"agent_health"`
+	// AgentLastProbedAt is when a probe last ran, whatever its outcome. Nil
+	// means never probed — distinct from a probe that ran and failed, which is
+	// why this is a pointer and not a zero time.
+	AgentLastProbedAt *time.Time `json:"agent_last_probed_at,omitempty"`
+	// AgentLastHealthyAt is when the agent last actually answered. It is the
+	// field that answers "how long has this been broken", which a bare
+	// unreachable status cannot.
+	AgentLastHealthyAt *time.Time `json:"agent_last_healthy_at,omitempty"`
+	// AgentLastError is why the most recent probe failed, empty when it
+	// succeeded. It always describes the LAST probe, not the last failure ever
+	// seen, so a recovered agent does not keep displaying a stale complaint.
+	// Carrying the real error is the point: "unreachable" alone sends an
+	// operator to SSH, "x509: certificate signed by unknown authority" does not.
+	AgentLastError string `json:"agent_last_error,omitempty"`
+}
+
+// AgentHealth is what the console knows about the agent inside a qube, as
+// opposed to QubeStatus, which is what it knows about the VM itself.
+type AgentHealth string
+
+// Agent health constants.
+//
+// Deliberately a small set. Every value here is something the console has
+// actually observed or honestly admits it has not; there is no "degraded" or
+// "warning" state, because nothing in the probe path can distinguish one.
+const (
+	// AgentHealthUnknown means no probe has completed for this qube yet — a
+	// brand new qube, or one whose probes have never run. It is NOT a synonym
+	// for healthy, and must never be rendered as one.
+	AgentHealthUnknown AgentHealth = "unknown"
+	// AgentHealthHealthy means the agent answered a probe.
+	AgentHealthHealthy AgentHealth = "healthy"
+	// AgentHealthUnreachable means a probe ran and did not get an answer. The
+	// reason is in AgentLastError.
+	AgentHealthUnreachable AgentHealth = "unreachable"
+	// AgentHealthStarting means probes are running inside a freshly booted
+	// qube's grace period and have not answered YET.
+	//
+	// This is an observation, not a warning level: cloud-init downloads and
+	// installs the agent only after the VM reports its address, so the agent is
+	// reliably absent for the first minute or two of a qube's life. Without this
+	// value every healthy qube would read "unreachable" immediately after
+	// provisioning — which is worse than reporting nothing, because it teaches
+	// operators that the field is noise and then they ignore the one time it is
+	// real. It becomes healthy or unreachable when the grace period resolves;
+	// it must never be the resting state.
+	AgentHealthStarting AgentHealth = "starting"
+)
+
+// IsValid checks if the agent health value is valid.
+func (h AgentHealth) IsValid() bool {
+	switch h {
+	case AgentHealthUnknown, AgentHealthHealthy, AgentHealthUnreachable, AgentHealthStarting:
+		return true
+	default:
+		return false
+	}
 }
 
 // QubeType defines the type of qube workload.

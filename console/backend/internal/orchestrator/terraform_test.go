@@ -3,9 +3,13 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // recordingRunner captures the argv and workdir a TerraformExecutor would run,
@@ -234,4 +238,55 @@ func assertContains(t *testing.T, argv []string, want string) {
 		return
 	}
 	t.Errorf("argv %v does not contain %q", argv, want)
+}
+
+// TestReadOnlyQueryDoesNotRenderVarFile — `terraform output` reads state and
+// ignores variables, so rendering the generated var-file would be a pure side
+// effect. It matters because the agent-health monitor calls Address(): a
+// READ-ONLY health probe was rewriting the file that defines which qubes should
+// exist.
+func TestReadOnlyQueryDoesNotRenderVarFile(t *testing.T) {
+	dir := t.TempDir()
+	generated := filepath.Join(dir, "generated", "qubes.tfvars.json")
+
+	rendered := 0
+	ex := &TerraformExecutor{
+		WorkDir: dir, Binary: "terraform", GeneratedVarFile: "generated/qubes.tfvars.json",
+		Snapshot: func(context.Context) (map[string]any, error) {
+			rendered++
+			return map[string]any{"dev-work": map[string]any{}}, nil
+		},
+	}
+	ex.runner = &recordingRunner{stdout: `{"dev-work":{"ip_address":"10.0.0.5"}}`}
+
+	_, _ = ex.Address(context.Background(), "dev-work")
+
+	assert.Zero(t, rendered, "a read-only query must not invoke the snapshot")
+	assert.NoFileExists(t, generated, "a read-only query must not write the generated var-file")
+}
+
+// TestReadOnlyQueryDoesNotBlockOnAnApply — exec holds the executor mutex for the
+// entire terraform subprocess, up to 15 minutes, and a context deadline cannot
+// interrupt a mutex acquisition. The health monitor iterates qubes serially, so
+// one address-less qube would stall the whole sweep for the length of an
+// in-flight apply: no qube probed, no dead agent noticed.
+func TestReadOnlyQueryDoesNotBlockOnAnApply(t *testing.T) {
+	ex := &TerraformExecutor{WorkDir: t.TempDir(), Binary: "terraform"}
+	ex.runner = &recordingRunner{}
+
+	ex.mu.Lock() // stand in for an apply in progress
+	defer ex.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ex.Address(context.Background(), "dev-work")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, ErrExecutorBusy, "a busy executor must be reported, not waited on")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Address blocked on the executor mutex; one qube would stall the whole health sweep")
+	}
 }

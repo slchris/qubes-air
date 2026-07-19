@@ -63,7 +63,31 @@ type QubeService interface { //nolint:dupl
 	// CheckReachable probes a remote qube over the gRPC transport (cross-machine
 	// qrexec health check). Returns the probe response on success.
 	CheckReachable(ctx context.Context, id string) (string, error)
+	// ProbeAgent probes ONE qube's agent and records what it found. It is the
+	// single answer to "is this agent alive": the on-demand endpoint, the
+	// post-provision settle loop and the periodic reconciler all come through
+	// here, so they cannot disagree.
+	ProbeAgent(ctx context.Context, qube *models.Qube, phase AgentProbePhase) AgentProbeResult
 }
+
+// AgentProbePhase says how an INCONCLUSIVE probe should be recorded. It changes
+// only the stored health, never the probe itself or the reason attached to it.
+type AgentProbePhase string
+
+// Agent probe phases.
+const (
+	// AgentProbeSteady records what was observed. This is the normal case: the
+	// qube has been up long enough that "no answer" means the agent is broken.
+	AgentProbeSteady AgentProbePhase = "steady"
+	// AgentProbeSettling records a failure as "starting" rather than
+	// "unreachable" because the qube is still inside its post-boot budget.
+	//
+	// Not a softer failure — a different fact. cloud-init installs the agent
+	// after the VM reports its address, so a just-provisioned qube legitimately
+	// refuses connections for a while. Recording that as unreachable would flag
+	// every healthy qube and train operators to disregard the field.
+	AgentProbeSettling AgentProbePhase = "settling"
+)
 
 // QubeServiceImpl implements QubeService.
 type QubeServiceImpl struct {
@@ -76,7 +100,15 @@ type QubeServiceImpl struct {
 	// transport forwards cross-machine qrexec calls to remote qubes over the
 	// gRPC tunnel. Never nil: defaults to NoopTransport (CheckReachable then
 	// fails loudly with "no transport configured").
+	//
+	// It is pinned to one configured RemoteEndpoint, so it can only ever reach
+	// that one remote. It is kept as the FALLBACK for a console with no CA
+	// wired; prober is what can actually ask "is THIS qube's agent alive".
 	transport transport.Transport
+	// prober dials each qube's own address to check its agent. Nil falls back
+	// to transport, which cannot address an arbitrary qube — a degradation, so
+	// it is logged when it happens rather than passing for a real answer.
+	prober *AgentProber
 	// issuer mints and registers the agent's client certificate. Nil disables
 	// issuance, in which case a qube is created without an agent identity and
 	// its agent cannot authenticate.
@@ -144,6 +176,13 @@ func WithTransport(t transport.Transport) QubeServiceOption {
 			s.transport = t
 		}
 	}
+}
+
+// WithAgentProber enables per-qube agent probing. Without it agent health falls
+// back to the single global transport, which is pinned to one endpoint and so
+// cannot answer the question for an arbitrary qube.
+func WithAgentProber(p *AgentProber) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.prober = p }
 }
 
 // NewQubeService creates a new QubeService. By default it uses a NoopExecutor
@@ -473,6 +512,20 @@ func (s *QubeServiceImpl) runInline(ctx context.Context, qube *models.Qube, acti
 }
 
 // terminalStatusFor maps an action to the status a successful run lands on.
+//
+// It still maps a successful provision to "running" unconditionally, and that
+// is correct: this says the COMPUTE VM is up, which is exactly what a completed
+// terraform apply establishes. Whether the agent inside it works is a separate
+// fact, tracked in Qube.AgentHealth. Folding a dead agent into this status would
+// make "suspended" and "running but unusable" indistinguishable and would lose
+// the only signal that tells them apart.
+//
+// The agent probe is deliberately NOT triggered from here. Its only caller left
+// is the inline path in claimAndEnqueue, which runs when no job submitter is
+// configured — tests and consoles with no orchestration, where the executor is
+// a no-op and there is no VM to probe. The real asynchronous path settles its
+// status in the orchestrator's completion hook, so that is where the probe is
+// hooked in (see makeCompletionHook in cmd/server).
 func terminalStatusFor(action orchestrator.Action) models.QubeStatus {
 	switch action {
 	case orchestrator.ActionResume, orchestrator.ActionProvision:
@@ -543,15 +596,17 @@ func (s *QubeServiceImpl) verifyZoneConnected(ctx context.Context, zoneID string
 // preserved and the qube can be resumed. If orchestration fails the DB status is
 // left unchanged.
 
-// CheckReachable probes a remote qube's reachability over the gRPC transport: it
-// forwards a qrexec health-check call (qubesair.Ping) to the qube's name across
-// the tunnel and returns the response. This is a genuine cross-machine qrexec
-// call — distinct from Start/Stop, which drive terraform. It does not change any
-// state.
+// CheckReachable answers "is this qube's agent alive?" on demand.
 //
-// With the default NoopTransport it returns ErrUnreachable wrapping
-// "no transport configured", so the feature fails loudly until a real transport
-// is wired (transport.enabled=true).
+// It is now a thin wrapper over ProbeAgent rather than a second implementation.
+// It used to call the global transport directly, which meant the endpoint and
+// any background check could give DIFFERENT answers for the same qube — the
+// on-demand path asking a fixed configured endpoint while the recorded health
+// came from the qube's own address. Two sources of truth for one fact is how
+// the duplicate systemd unit went unnoticed earlier in this project.
+//
+// A consequence worth stating: a manual check now updates the stored health,
+// because a probe is a probe whoever asked for it.
 func (s *QubeServiceImpl) CheckReachable(ctx context.Context, id string) (string, error) {
 	qube, err := s.qubeRepo.GetByID(ctx, id)
 	if err != nil {
@@ -561,17 +616,151 @@ func (s *QubeServiceImpl) CheckReachable(ctx context.Context, id string) (string
 		return "", err
 	}
 
-	// Forward a qrexec health check to the remote qube over the tunnel. The
-	// transport validates the target/service name and only carries the frame.
-	//
-	// Authorization happens in the LOCAL dom0 only — a non-Qubes remote has no
-	// dom0 to re-check with (see docs/remote-agent-design.md §3). The remote
-	// executes remote/qubes-rpc/qubesair.Ping, which answers "pong <name> <ts>".
-	// Until an agent is deployed there, this call cannot succeed: that is the
-	// honest failure, not a bug in this function.
-	resp, err := s.transport.Call(ctx, qube.Name, pingService, nil)
-	if err != nil {
-		return "", fmt.Errorf("%w: ping %q: %v", ErrUnreachable, qube.Name, err)
+	res := s.ProbeAgent(ctx, qube, AgentProbeSteady)
+	if !res.Reachable {
+		// The real reason is carried through, not flattened: "unreachable"
+		// alone is what sends an operator to SSH into a hypervisor node.
+		return "", fmt.Errorf("%w: ping %q: %s", ErrUnreachable, qube.Name, res.Reason)
 	}
-	return strings.TrimSpace(string(resp)), nil
+	return res.Pong, nil
+}
+
+// ProbeAgent probes one qube's agent and records the outcome on the qube row.
+//
+// It returns no error, deliberately: "the agent did not answer" is a successful
+// probe with a bad result, and every caller — an HTTP handler, the settle loop,
+// the reconciler — needs to record it rather than decide whether to abort. In
+// particular a failed probe must never fail provisioning.
+func (s *QubeServiceImpl) ProbeAgent(
+	ctx context.Context, qube *models.Qube, phase AgentProbePhase,
+) AgentProbeResult {
+	if qube == nil {
+		return AgentProbeResult{Status: AgentProbeNotConfigured, Reason: "no qube given"}
+	}
+
+	res := s.runAgentProbe(ctx, qube)
+	s.recordAgentHealth(ctx, qube, res, phase)
+	return res
+}
+
+// runAgentProbe performs the probe itself, preferring the per-qube prober.
+func (s *QubeServiceImpl) runAgentProbe(ctx context.Context, qube *models.Qube) AgentProbeResult {
+	if s.prober != nil {
+		return s.prober.Probe(ctx, qube)
+	}
+
+	// Fallback: the single global transport. It is pinned to one configured
+	// RemoteEndpoint, so it answers for THAT remote regardless of which qube was
+	// asked about — useful only in the single-remote deployment it was built
+	// for. Said out loud on every use: a wrong answer that looks like a right
+	// one is the failure mode this whole feature exists to remove.
+	log.Printf("agentprobe: no per-qube prober configured, falling back to the global transport for qube %q; "+
+		"the result describes the configured remote endpoint, not necessarily this qube", qube.Name)
+
+	started := time.Now()
+	res := AgentProbeResult{
+		QubeID: qube.ID, QubeName: qube.Name, CheckedAt: started.UTC(),
+	}
+	resp, err := s.transport.Call(ctx, qube.Name, pingService, nil)
+	res.Duration = time.Since(started)
+	res.LatencyMS = res.Duration.Milliseconds()
+	if err != nil {
+		// No transport at all means nothing was attempted, which is "unknown",
+		// not "unhealthy" — the distinction the health field is built on.
+		res.Status = AgentProbeRPCFailed
+		if errors.Is(err, transport.ErrNoTransport) {
+			res.Status = AgentProbeNotConfigured
+		}
+		res.Reason = fmt.Sprintf("ping %q over the global transport failed: %v", qube.Name, err)
+		return res
+	}
+	res.Reachable = true
+	res.Status = AgentProbeOK
+	res.Pong = strings.TrimSpace(string(resp))
+	return res
+}
+
+// recordAgentHealth persists one probe outcome, and never anything else.
+//
+// It writes through UpdateAgentHealth, which touches only the agent_* columns:
+// probes run concurrently with provisioning, and a read-modify-write of the
+// whole row here would revert a status the orchestrator had just set.
+func (s *QubeServiceImpl) recordAgentHealth(
+	ctx context.Context, qube *models.Qube, res AgentProbeResult, phase AgentProbePhase,
+) {
+	health := agentHealthForResult(res, phase)
+
+	// Unknown is RECORDED, not skipped.
+	//
+	// Returning early here looked conservative and was the opposite: the row
+	// kept its previous "healthy" and its old probe timestamp, so a console that
+	// had LOST the ability to probe (unusable CA, failed decrypt after a key
+	// rotation) went on presenting a stale green verdict indistinguishable from
+	// one confirmed a second ago. The agent could be dead the whole time.
+	//
+	// Writing unknown with a fresh timestamp and the reason makes the loss of
+	// visibility itself visible — which is the entire point of this field.
+
+	// A probe that somehow reported no time still happened. Storing the zero
+	// time would render as year 1 in the UI, which reads as corruption rather
+	// than as the recent observation it is.
+	probedAt := res.CheckedAt
+	if probedAt.IsZero() {
+		probedAt = time.Now().UTC()
+	}
+
+	// Detached from the caller's deadline: the observation already exists, and
+	// dropping it because an HTTP request was cancelled a millisecond later
+	// would leave the console reporting a health reading it has disproved.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	if err := s.qubeRepo.UpdateAgentHealth(ctx, qube.ID, health, probedAt, res.Reason); err != nil {
+		if errors.Is(err, repository.ErrQubeNotFound) {
+			// Deleted between probe and write. Expected, and not worth a scary
+			// line — but not silent either, because a probe loop that writes
+			// nothing at all looks exactly the same from outside.
+			log.Printf("agentprobe: qube %q disappeared before its probe result could be recorded", qube.Name)
+			return
+		}
+		log.Printf("agentprobe: qube %q probed %s but recording it failed: %v", qube.Name, health, err)
+	}
+}
+
+// agentHealthFor turns a probe status into the health to store.
+//
+// The mapping lives in exactly one place on purpose: an endpoint and a
+// background loop that classified the same probe differently would put two
+// contradictory readings into the same column.
+// agentHealthForResult maps a whole probe result, honouring authority.
+//
+// A non-authoritative success must NOT become healthy. The global transport is
+// pinned to one endpoint whose invoker ignores the target name (see
+// internal/agent/invoker.go: "target carries no authority"), so it answers for
+// every qube alike. Recording that as healthy stores a verdict about a machine
+// nothing ever contacted — a qube with no address at all would be marked green
+// off a pong that named some other remote.
+func agentHealthForResult(res AgentProbeResult, phase AgentProbePhase) models.AgentHealth {
+	h := agentHealthFor(res.Status, phase)
+	if h == models.AgentHealthHealthy && !res.Authoritative {
+		return models.AgentHealthUnknown
+	}
+	return h
+}
+
+func agentHealthFor(status AgentProbeStatus, phase AgentProbePhase) models.AgentHealth {
+	switch {
+	case status == AgentProbeOK:
+		return models.AgentHealthHealthy
+	case status == AgentProbeNotConfigured:
+		// This console cannot probe. It has learned nothing about the agent and
+		// must not pretend otherwise — see AgentHealthUnknown.
+		return models.AgentHealthUnknown
+	case phase == AgentProbeSettling:
+		// Inside the post-boot budget: the agent is not up yet, which for a
+		// brand new qube is the expected state rather than a fault.
+		return models.AgentHealthStarting
+	default:
+		return models.AgentHealthUnreachable
+	}
 }

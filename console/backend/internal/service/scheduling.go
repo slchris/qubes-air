@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/models"
@@ -255,6 +256,17 @@ func (s *QubeServiceImpl) resolvePlacement(ctx context.Context, qube *models.Qub
 		}
 		// Anything else (unreachable cluster, missing credential) degrades to the
 		// zone default: scheduling is an optimisation, not a prerequisite.
+		//
+		// Logged rather than swallowed. The degraded path looks identical to a
+		// zone that was simply never configured, so without this line a broken
+		// credential or an unreachable cluster is indistinguishable from an
+		// unconfigured one — and the operator only finds out at provision time,
+		// from an error that names the wrong cause.
+		if err != nil {
+			log.Printf("scheduler: cluster placement unavailable for zone %q, falling back to the zone default: %v", zone.Name, err)
+		} else if placement == nil || placement.Node == "" {
+			log.Printf("scheduler: cluster returned no node for zone %q, falling back to the zone default", zone.Name)
+		}
 	}
 	if zone.Config.Proxmox != nil && zone.Config.Proxmox.Node != "" {
 		return zone.Config.Proxmox.Node, "zone default", nil
