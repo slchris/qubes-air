@@ -393,7 +393,40 @@ func (t *TerraformExecutor) execReadOnly(ctx context.Context, qubeName string, b
 			return "", fmt.Errorf("terraform executor: resolve credentials: %w", err)
 		}
 	}
-	return t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs(), env)
+	out, err := t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs(), env)
+	return out, t.explainTimeout(ctx, qubeName, out, err)
+}
+
+// ErrApplyTimedOut reports that terraform was still running when its deadline
+// expired and was signalled to stop.
+var ErrApplyTimedOut = errors.New("terraform did not finish before its deadline and was interrupted")
+
+// explainTimeout turns an interrupted run into an actionable message.
+//
+// When the deadline fires the executor signals terraform, which prints
+// "execution halted" and exits non-zero. That output says nothing about a
+// timeout, so the failure reads as a terraform error and sends whoever is
+// looking to the wrong place — observed on real hardware, where a provision was
+// interrupted at exactly 15m and reported only "execution halted".
+//
+// The second half matters more than the naming: an interrupted apply may have
+// ALREADY CREATED infrastructure. Terraform was stopped, not rolled back, so the
+// console records a failure for a qube that exists and is billing. Saying so is
+// the difference between "retry it" and "go look at the cluster first".
+func (t *TerraformExecutor) explainTimeout(ctx context.Context, qubeName, out string, err error) error {
+	if err == nil || ctx.Err() == nil {
+		return err
+	}
+	limit := t.Timeout
+	if limit <= 0 {
+		limit = DefaultTimeout
+	}
+	return fmt.Errorf(
+		"%w after %s while working on %q: terraform was signalled to stop, so it may have "+
+			"ALREADY created or changed infrastructure that is not reflected here — check the "+
+			"cluster before retrying, and raise the executor timeout if provisioning legitimately "+
+			"takes this long (underlying error: %v)",
+		ErrApplyTimedOut, limit, qubeName, err)
 }
 
 // ErrExecutorBusy reports that terraform is mid-run and a read-only query

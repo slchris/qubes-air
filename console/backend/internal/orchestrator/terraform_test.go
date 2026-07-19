@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -289,4 +290,27 @@ func TestReadOnlyQueryDoesNotBlockOnAnApply(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Address blocked on the executor mutex; one qube would stall the whole health sweep")
 	}
+}
+
+// TestTimeoutSaysSoAndWarnsAboutPartialWork — an interrupted apply must not
+// read as an ordinary terraform error.
+//
+// When the deadline fires the executor signals terraform, which prints
+// "execution halted" and exits non-zero. Observed on real hardware: a provision
+// was cut off at exactly 15m and reported only that, so nothing said "timeout"
+// and nothing said the VM had in fact been created and was billing. The console
+// recorded a failure for a qube that existed.
+func TestTimeoutSaysSoAndWarnsAboutPartialWork(t *testing.T) {
+	ex := &TerraformExecutor{WorkDir: t.TempDir(), Binary: "terraform", Timeout: 50 * time.Millisecond}
+	ex.runner = &recordingRunner{err: errors.New("exit status 1, stderr: execution halted")}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	time.Sleep(5 * time.Millisecond) // let the deadline pass
+
+	_, err := ex.Address(ctx, "dev-work")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrApplyTimedOut, "a deadline expiry must be distinguishable from a terraform error")
+	assert.Contains(t, err.Error(), "ALREADY created",
+		"an interrupted apply may have built infrastructure; retrying blindly is the wrong next step")
 }
