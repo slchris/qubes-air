@@ -234,10 +234,36 @@ export interface NodeInfo {
   mem_free_bytes: number;
 }
 
-/** Response from GET /zones/:id/nodes. */
-export interface NodeListResponse {
-  nodes: NodeInfo[];
-  count: number;
+/**
+ * How a provider expresses "can I fit another workload?".
+ *
+ * The two kinds ask genuinely different questions. A node pool is a finite set
+ * of machines you own, where placement is bin-packing against free memory. An
+ * elastic provider decides the machine itself and never tells you which, so the
+ * binding constraints are quota and cost — there is no node to pick.
+ */
+export type CapacityKind = 'node_pool' | 'quota' | 'unknown';
+
+/** Elastic-provider usage against account limits. */
+export interface QuotaInfo {
+  instances_used: number;
+  instances_limit?: number;
+  vcpu_used: number;
+  vcpu_limit?: number;
+  memory_mb_used: number;
+  month_to_date_usd?: number;
+  hourly_rate_usd?: number;
+}
+
+/**
+ * Response from GET /zones/:id/capacity. Exactly one of nodes/quota is
+ * populated, selected by kind.
+ */
+export interface ZoneCapacity {
+  kind: CapacityKind;
+  nodes?: NodeInfo[];
+  quota?: QuotaInfo;
+  note?: string;
 }
 
 /**

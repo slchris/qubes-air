@@ -8,8 +8,8 @@
   import { qubeStore, zoneStore } from '../lib/stores';
   import type { Zone, Qube, QubeType, QubeCreateRequest } from '../lib/types';
   import { isTransientStatus, nodeCanFit, SCHEDULER_HEADROOM } from '../lib/types';
-  import type { NodeInfo } from '../lib/types';
-  import { listZoneNodes } from '../lib/api';
+  import type { NodeInfo, CapacityKind, QuotaInfo } from '../lib/types';
+  import { getZoneCapacity } from '../lib/api';
   import { ApiException } from '../lib/api';
 
   // Subscribe to stores
@@ -52,26 +52,42 @@
    * up on whichever node happened to be the default.
    */
   let nodes = $state<NodeInfo[]>([]);
+  let capacityKind = $state<CapacityKind | null>(null);
+  let quota = $state<QuotaInfo | null>(null);
+  let capacityNote = $state('');
   let nodesError = $state<string | null>(null);
   let loadingNodes = $state(false);
 
   /** Fetches capacity for a zone, degrading quietly when unavailable. */
   async function loadNodes(zoneId: string): Promise<void> {
     nodes = [];
+    quota = null;
+    capacityKind = null;
+    capacityNote = '';
     nodesError = null;
     if (!zoneId) return;
     loadingNodes = true;
     try {
-      const res = await listZoneNodes(zoneId);
-      nodes = res.nodes ?? [];
+      const cap = await getZoneCapacity(zoneId);
+      capacityKind = cap.kind;
+      capacityNote = cap.note ?? '';
+      nodes = cap.nodes ?? [];
+      quota = cap.quota ?? null;
     } catch (e) {
       // 503 (unreachable / no credential) and 501 (no scheduler) are expected.
       // The node field stays usable as free text.
-      nodesError = e instanceof ApiException ? e.message : 'Cluster capacity unavailable';
+      nodesError = e instanceof ApiException ? e.message : 'Capacity unavailable';
     } finally {
       loadingNodes = false;
     }
   }
+
+  /**
+   * Node selection only applies to a finite node pool. On an elastic provider
+   * the cloud picks the machine and never reports which, so offering a node
+   * field there would be asking for something that has no effect.
+   */
+  let showNodePicker = $derived(capacityKind === 'node_pool' || nodesError !== null);
 
   /** The node automatic placement would choose for the current form values. */
   let autoPick = $derived.by(() => {
@@ -426,6 +442,21 @@
             </small>
           </div>
           <div class="form-group">
+            {#if !showNodePicker && capacityKind === 'quota'}
+              <!-- Elastic provider: placement is the cloud's decision, so no
+                   node field. What matters instead is usage against quota. -->
+              <label for="quota-info">Placement</label>
+              <p id="quota-info" class="field-hint">
+                Handled by the provider — cloud zones have no node to choose.
+                {#if quota}
+                  Using {quota.vcpu_used}{quota.vcpu_limit ? ` of ${quota.vcpu_limit}` : ''} vCPU
+                  across {quota.instances_used} instance{quota.instances_used === 1 ? '' : 's'}.
+                  {#if quota.month_to_date_usd}${quota.month_to_date_usd.toFixed(2)} month to date.{/if}
+                {:else if capacityNote}
+                  {capacityNote}
+                {/if}
+              </p>
+            {:else}
             <label for="node">Node</label>
             <select id="node" bind:value={formNode}>
               <option value="">
@@ -452,6 +483,7 @@
                 {Math.round(SCHEDULER_HEADROOM * 100)}% of each node in reserve —
                 a node that looks free enough can still be refused.
               </small>
+            {/if}
             {/if}
           </div>
         </div>

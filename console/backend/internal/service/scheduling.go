@@ -77,8 +77,57 @@ func parseProxmoxSecret(secret string) scheduler.Credentials {
 	return scheduler.Credentials{}
 }
 
-// NodeInfo is a node's capacity as reported to the UI, plus whether the
-// scheduler would currently consider it.
+// CapacityKind discriminates how a provider expresses "can I fit another
+// workload?".
+//
+// This is not cosmetic. The two kinds ask genuinely different questions, and
+// conflating them produced a UI that offered a node picker for clouds where
+// node selection does not exist as a concept.
+type CapacityKind string
+
+// Capacity kinds.
+const (
+	// CapacityKindNodePool is a finite pool of machines you already own, where
+	// placement is bin-packing and the binding constraint is physical memory.
+	// Proxmox and other on-premise hypervisors work this way.
+	CapacityKindNodePool CapacityKind = "node_pool"
+
+	// CapacityKindQuota is elastic capacity, where the provider decides which
+	// physical machine runs a workload and you cannot see or influence it. The
+	// binding constraints are the account's quota and its cost, not free RAM,
+	// so "how much am I using" replaces "where does this fit".
+	CapacityKindQuota CapacityKind = "quota"
+
+	// CapacityKindUnknown means the provider cannot report capacity yet.
+	CapacityKindUnknown CapacityKind = "unknown"
+)
+
+// QuotaInfo is elastic-provider usage against account limits.
+//
+// Limits are the hard constraint; cost is usually the one that actually binds
+// first, which is why it is reported alongside rather than buried in billing.
+type QuotaInfo struct {
+	InstancesUsed  int     `json:"instances_used"`
+	InstancesLimit int     `json:"instances_limit,omitempty"`
+	VCPUUsed       int     `json:"vcpu_used"`
+	VCPULimit      int     `json:"vcpu_limit,omitempty"`
+	MemoryMBUsed   int     `json:"memory_mb_used"`
+	MonthToDateUSD float64 `json:"month_to_date_usd,omitempty"`
+	HourlyRateUSD  float64 `json:"hourly_rate_usd,omitempty"`
+}
+
+// ZoneCapacity is what a zone can tell the UI about its headroom.
+//
+// Exactly one of Nodes or Quota is populated, selected by Kind. Note carries an
+// operator-facing explanation when a provider cannot answer.
+type ZoneCapacity struct {
+	Kind  CapacityKind `json:"kind"`
+	Nodes []NodeInfo   `json:"nodes,omitempty"`
+	Quota *QuotaInfo   `json:"quota,omitempty"`
+	Note  string       `json:"note,omitempty"`
+}
+
+// NodeInfo is one machine in a node pool.
 type NodeInfo struct {
 	Name          string  `json:"name"`
 	Online        bool    `json:"online"`
@@ -89,35 +138,64 @@ type NodeInfo struct {
 	MemFreeBytes  int64   `json:"mem_free_bytes"`
 }
 
-// CapacityReader exposes cluster capacity for display.
+// CapacityReader exposes a zone's capacity for display.
 type CapacityReader interface {
-	Nodes(ctx context.Context, zoneID string) ([]NodeInfo, error)
+	Capacity(ctx context.Context, zoneID string) (*ZoneCapacity, error)
 }
 
-// Nodes returns live per-node capacity for a zone.
+// Capacity reports a zone's headroom in whichever form its provider uses.
 //
-// This exists so the UI can show what "automatic" is choosing between. Offering
-// a node picker without capacity numbers asks the operator to guess, which is
-// how a cluster ends up with everything piled onto whichever node was
-// hardcoded first.
-func (c *ClusterScheduler) Nodes(ctx context.Context, zoneID string) ([]NodeInfo, error) {
-	creds, err := c.resolve(ctx, zoneID)
+// For a node pool this is live per-node free memory, so the UI can show what
+// "automatic" is choosing between. For an elastic provider it would be usage
+// against quota and cost — node-level numbers are meaningless there, since the
+// provider picks the machine and never tells you which.
+func (c *ClusterScheduler) Capacity(ctx context.Context, zoneID string) (*ZoneCapacity, error) {
+	zone, err := c.zones.GetByID(ctx, zoneID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load zone %q: %w", zoneID, err)
 	}
-	nodes, err := scheduler.NewProxmoxProvider(creds).Nodes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("read cluster capacity: %w", err)
+
+	switch zone.Type {
+	case models.ZoneTypeProxmox:
+		creds, err := c.resolve(ctx, zoneID)
+		if err != nil {
+			return nil, err
+		}
+		nodes, err := scheduler.NewProxmoxProvider(creds).Nodes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read cluster capacity: %w", err)
+		}
+		out := make([]NodeInfo, 0, len(nodes))
+		for _, n := range nodes {
+			out = append(out, NodeInfo{
+				Name: n.Name, Online: n.Online, MaxCPU: n.MaxCPU, CPUUsage: n.CPUUsage,
+				MemUsedBytes: n.MemUsedBytes, MemTotalBytes: n.MemTotalBytes,
+				MemFreeBytes: n.FreeMemBytes(),
+			})
+		}
+		return &ZoneCapacity{Kind: CapacityKindNodePool, Nodes: out}, nil
+
+	case models.ZoneTypeGCP, models.ZoneTypeAWS, models.ZoneTypeAzure:
+		// Reported honestly as an elastic provider with nothing measured yet,
+		// rather than as a node pool with zero nodes — the difference tells the
+		// UI to hide node selection entirely instead of showing an empty picker.
+		//
+		// Wiring real numbers means querying each provider's quota and billing
+		// APIs. That is deliberately not done while the GCP/AWS terraform
+		// modules are still skeletons that create no resources: there is no
+		// usage to report yet.
+		return &ZoneCapacity{
+			Kind: CapacityKindQuota,
+			Note: "usage and quota reporting is not implemented for this provider yet; " +
+				"placement is handled by the cloud, not by this console",
+		}, nil
+
+	default:
+		return &ZoneCapacity{
+			Kind: CapacityKindUnknown,
+			Note: fmt.Sprintf("no capacity model for zone type %q", zone.Type),
+		}, nil
 	}
-	out := make([]NodeInfo, 0, len(nodes))
-	for _, n := range nodes {
-		out = append(out, NodeInfo{
-			Name: n.Name, Online: n.Online, MaxCPU: n.MaxCPU, CPUUsage: n.CPUUsage,
-			MemUsedBytes: n.MemUsedBytes, MemTotalBytes: n.MemTotalBytes,
-			MemFreeBytes: n.FreeMemBytes(),
-		})
-	}
-	return out, nil
 }
 
 // PlacementDecider chooses the node a qube should run on.
@@ -128,12 +206,13 @@ type PlacementDecider interface {
 // ClusterScheduler resolves credentials, reads live capacity and picks a node.
 type ClusterScheduler struct {
 	resolve scheduler.CredentialResolver
+	zones   repository.ZoneRepository
 	sched   *scheduler.Scheduler
 }
 
 // NewClusterScheduler wires a scheduler onto a credential resolver.
-func NewClusterScheduler(resolve scheduler.CredentialResolver) *ClusterScheduler {
-	return &ClusterScheduler{resolve: resolve, sched: scheduler.New()}
+func NewClusterScheduler(zones repository.ZoneRepository, resolve scheduler.CredentialResolver) *ClusterScheduler {
+	return &ClusterScheduler{resolve: resolve, zones: zones, sched: scheduler.New()}
 }
 
 // Place selects a node for a qube in the given zone.

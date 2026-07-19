@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/scheduler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -123,4 +124,49 @@ func TestCredentialsValidRequiresEndpoint(t *testing.T) {
 	assert.True(t, scheduler.Credentials{Endpoint: "https://pve", APIToken: "u@pve!t=s"}.Valid())
 	assert.True(t, scheduler.Credentials{Endpoint: "https://pve", Username: "u", Password: "p"}.Valid())
 	assert.False(t, scheduler.Credentials{Endpoint: "https://pve", Username: "u"}.Valid())
+}
+
+// stubZoneRepo returns a fixed zone.
+type stubZoneRepo struct{ zone *models.Zone }
+
+func (s *stubZoneRepo) GetByID(context.Context, string) (*models.Zone, error) { return s.zone, nil }
+func (s *stubZoneRepo) Create(context.Context, *models.Zone) error            { return nil }
+func (s *stubZoneRepo) List(context.Context, repository.ZoneListOptions) ([]*models.Zone, error) {
+	return nil, nil
+}
+func (s *stubZoneRepo) Update(context.Context, *models.Zone) error         { return nil }
+func (s *stubZoneRepo) Delete(context.Context, string) error               { return nil }
+func (s *stubZoneRepo) UpdateStatus(context.Context, string, string) error { return nil }
+func (s *stubZoneRepo) GetByName(context.Context, string) (*models.Zone, error) {
+	return s.zone, nil
+}
+
+// TestCapacityCloudZoneIsNotANodePool is the distinction the whole abstraction
+// exists for. A cloud has no node to pick: the provider chooses the machine and
+// never tells you which. Reporting an empty node pool would have the UI offer a
+// node picker with nothing in it; reporting kind=quota tells it to hide node
+// selection entirely.
+func TestCapacityCloudZoneIsNotANodePool(t *testing.T) {
+	for _, zt := range []models.ZoneType{models.ZoneTypeGCP, models.ZoneTypeAWS, models.ZoneTypeAzure} {
+		zone := &models.Zone{ID: "z", Name: "cloud", Type: zt}
+		cs := NewClusterScheduler(&stubZoneRepo{zone: zone}, nil)
+
+		got, err := cs.Capacity(context.Background(), "z")
+		require.NoError(t, err, "%s", zt)
+		assert.Equal(t, CapacityKindQuota, got.Kind, "%s must report quota, not node_pool", zt)
+		assert.Empty(t, got.Nodes, "%s must not report nodes", zt)
+		assert.NotEmpty(t, got.Note, "an unimplemented provider must say so rather than look empty")
+	}
+}
+
+// TestCapacityUnknownZoneType — an unrecognised provider says so instead of
+// silently presenting as one of the known models.
+func TestCapacityUnknownZoneType(t *testing.T) {
+	zone := &models.Zone{ID: "z", Name: "weird", Type: models.ZoneType("kubevirt")}
+	cs := NewClusterScheduler(&stubZoneRepo{zone: zone}, nil)
+
+	got, err := cs.Capacity(context.Background(), "z")
+	require.NoError(t, err)
+	assert.Equal(t, CapacityKindUnknown, got.Kind)
+	assert.Contains(t, got.Note, "kubevirt")
 }

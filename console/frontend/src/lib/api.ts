@@ -16,7 +16,7 @@ import type {
   QubeListResponse,
   Job,
   JobListResponse,
-  NodeListResponse,
+  ZoneCapacity,
   Operation,
   ListOptions,
   HealthResponse,
@@ -363,12 +363,16 @@ export async function listJobs(qubeId?: string, limit?: number): Promise<JobList
 
 
 /**
- * Reads live cluster capacity for a zone.
+ * Reads a zone's capacity, in whichever form its provider uses.
+ *
+ * Branch on the returned `kind`: a node pool exposes per-node free memory and
+ * warrants a node picker; an elastic provider exposes usage against quota and
+ * must NOT offer node selection, because the cloud chooses the machine.
  *
  * Returns 503 when the cluster is unreachable or the zone has no credential,
  * and 501 when no scheduler is configured — both are expected states, so
  * callers should degrade rather than treat them as errors.
  */
-export async function listZoneNodes(zoneId: string): Promise<NodeListResponse> {
-  return get<NodeListResponse>(`/zones/${zoneId}/nodes`);
+export async function getZoneCapacity(zoneId: string): Promise<ZoneCapacity> {
+  return get<ZoneCapacity>(`/zones/${zoneId}/capacity`);
 }

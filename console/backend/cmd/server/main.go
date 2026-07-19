@@ -189,7 +189,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	var runner *orchestrator.Runner
 	// One scheduler instance, shared by placement (qube service) and the
 	// capacity endpoint (zone handler).
-	clusterScheduler := service.NewClusterScheduler(
+	clusterScheduler := service.NewClusterScheduler(zoneRepo,
 		service.NewZoneCredentialResolver(zoneRepo, credentialRepo))
 
 	qubeSvcOpts := []service.QubeServiceOption{

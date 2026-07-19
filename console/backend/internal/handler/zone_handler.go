@@ -48,7 +48,7 @@ func (h *ZoneHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		zones.DELETE("/:id", h.Delete)
 		zones.POST("/:id/connect", h.Connect)
 		zones.POST("/:id/disconnect", h.Disconnect)
-		zones.GET("/:id/nodes", h.Nodes)
+		zones.GET("/:id/capacity", h.Capacity)
 	}
 }
 
@@ -143,27 +143,26 @@ func (h *ZoneHandler) Delete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "zone deleted"})
 }
 
-// Nodes returns live cluster capacity for a zone.
+// Capacity reports a zone's headroom in whichever form its provider uses.
 //
-// The UI uses this to show what automatic placement is choosing between, so
-// "auto" is an informed choice rather than a blind one.
-func (h *ZoneHandler) Nodes(c *gin.Context) {
+// The response carries a "kind" the UI branches on: a node pool exposes
+// per-node free memory and a node picker; an elastic provider exposes usage
+// against quota, and node selection is not offered at all because the cloud
+// chooses the machine.
+func (h *ZoneHandler) Capacity(c *gin.Context) {
 	if h.capacity == nil {
 		respondError(c, http.StatusNotImplemented,
-			errors.New("cluster capacity is unavailable: no scheduler configured"))
+			errors.New("capacity reporting is unavailable: no scheduler configured"))
 		return
 	}
-	nodes, err := h.capacity.Nodes(c.Request.Context(), c.Param("id"))
+	capacity, err := h.capacity.Capacity(c.Request.Context(), c.Param("id"))
 	if err != nil {
 		// A zone without credentials or an unreachable cluster is an expected
-		// state, not a server fault — the UI degrades to a plain text field.
+		// state, not a server fault — the UI degrades rather than erroring.
 		respondError(c, http.StatusServiceUnavailable, err)
 		return
 	}
-	if nodes == nil {
-		nodes = []service.NodeInfo{}
-	}
-	c.JSON(http.StatusOK, gin.H{"nodes": nodes, "count": len(nodes)})
+	c.JSON(http.StatusOK, capacity)
 }
 
 // Connect handles POST /zones/:id/connect.
