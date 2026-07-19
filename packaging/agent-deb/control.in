@@ -1,0 +1,40 @@
+# Template for the binary package control file. @VERSION@ and @INSTALLED_SIZE@
+# are substituted at build time and every '#' line is stripped, so comments here
+# never reach the built package.
+#
+# Depends deliberations:
+#
+#   systemd   — the package ships a unit and its postinst enables it. Without
+#               systemd the package installs a file nothing will ever read.
+#
+#   hostname  — /etc/qubes-rpc/qubesair.Ping falls back to `hostname` when
+#               QUBESAIR_REMOTE_NAME is unset. It is priority:required on Debian
+#               so it is present in practice, but it is not Essential, and the
+#               failure it causes shows up only when a probe is answered — long
+#               after install, looking like a transport fault.
+#
+#   qemu-guest-agent — deliberately NOT a dependency. It is a hypervisor
+#               concern, not an agent concern: terraform needs it to learn the
+#               VM's address, and cloud-init already installs it via the
+#               packages: stanza in RenderAgentUserData. Depending on it here
+#               would mean this package can only be installed on QEMU guests,
+#               and on anything else it would leave a permanently failing unit
+#               behind. Two owners of the same fact is worse than one.
+Package: qubes-air-agent
+Version: @VERSION@
+Architecture: amd64
+Maintainer: Qubes Air <slarlenesu@gmail.com>
+Section: admin
+Priority: optional
+Installed-Size: @INSTALLED_SIZE@
+Depends: systemd, hostname
+Homepage: https://github.com/slchris/qubes-air
+Description: Qubes Air RemoteVM agent
+ Gives a non-Qubes remote host qrexec semantics without Xen vchan, so that a
+ cloud or LAN VM can serve as a RemoteVM for a Qubes Air deployment.
+ .
+ The agent listens for the local relay over mutual TLS and executes the qrexec
+ services installed under /etc/qubes-rpc. Its certificates and its
+ /etc/qubes-air/agent.env are delivered separately by the console via
+ cloud-init; the unit is enabled on install but not started, because without
+ those files the agent will — correctly — refuse to run.

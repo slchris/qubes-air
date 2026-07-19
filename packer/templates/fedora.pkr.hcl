@@ -104,11 +104,19 @@ build {
     ]
   }
   
-  # 安装 Qubes Air Agent
-  provisioner "shell" {
-    script = "scripts/install-agent.sh"
-  }
-  
+  # Agent 不再烘焙进镜像 —— 这里曾经有一个 scripts/install-agent.sh 的 provisioner。
+  #
+  # 它把二进制装到 /opt/qubes-air/bin/, 并在 /etc/systemd/system/ 写自己的 unit。
+  # 现在 agent 由 packaging/agent-deb/ 构建成 .deb, 首次启动时从局域网 artifact
+  # store 安装, unit 随包落在 /lib/systemd/system/。
+  #
+  # 两者不能并存: /etc/systemd/system 的优先级高于 /lib/systemd/system, 旧 unit 会
+  # 静默盖掉打包的那个, 并继续指向 .deb 根本不安装的 /opt/qubes-air/bin —— 主机看
+  # 起来配置正确, 实际 exec 不到 agent。这正是这次改造要消灭的那类静默失败。
+  # 已经装过旧 unit 的镜像由 .deb 的 postinst 清理。
+  #
+  # 镜像里不需要为 agent 做任何准备。
+
   # 清理
   provisioner "shell" {
     inline = [

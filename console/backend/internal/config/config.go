@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -110,6 +111,61 @@ type OrchestratorConfig struct {
 	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
 	// Env: QUBES_AIR_AGENT_LISTEN.
 	AgentListen string `yaml:"agent_listen"`
+	// AgentPackageURL is where a booting qube fetches the agent .deb from, e.g.
+	// http://10.31.0.2/local/qubes-air/qubes-air-agent_0.1.0_amd64.deb.
+	//
+	// The agent is deliberately not baked into the VM image, so this URL is the
+	// only way the binary ever reaches a remote. Leave it unset and every new
+	// qube boots with no agent at all — the failure a real deployment already
+	// hit, where "systemctl enable --now qubes-air-agent" no-opped against a
+	// unit that was never installed.
+	// Env: QUBES_AIR_AGENT_PACKAGE_URL.
+	AgentPackageURL string `yaml:"agent_package_url"`
+	// AgentPackageSHA256 is the hex digest the downloaded package must match.
+	//
+	// This is not a corruption check, it is the ONLY integrity control in the
+	// delivery chain: the artifact store accepts unauthenticated uploads and
+	// serves them over plain HTTP, so anyone on the LAN can replace the .deb.
+	// The digest is trustworthy anyway because it travels in the cloud-init
+	// identity document, which reaches the guest over a path we control
+	// (console -> terraform SFTP -> Proxmox snippet -> cloud-init).
+	// Env: QUBES_AIR_AGENT_PACKAGE_SHA256.
+	AgentPackageSHA256 string `yaml:"agent_package_sha256"`
+	// AgentPackageVersion is the version this console expects to deliver.
+	// Advisory only — the digest is what is enforced — but it is what makes a
+	// guest log line and an audit trail name a specific build.
+	// Env: QUBES_AIR_AGENT_PACKAGE_VERSION.
+	AgentPackageVersion string `yaml:"agent_package_version"`
+	// AgentProbeIntervalSeconds is how often every running qube's agent is
+	// re-probed (default 60). Zero or negative DISABLES the periodic reconciler,
+	// which leaves agent health frozen at whatever the last probe found.
+	//
+	// The reconciler is what catches an agent that dies after provisioning —
+	// the package removed, the unit crash-looping, the certificate expired.
+	// Without it a qube that was healthy once reads healthy forever, which is
+	// the same false-green the whole agent-health feature exists to remove.
+	// Env: QUBES_AIR_AGENT_PROBE_INTERVAL_SECONDS.
+	AgentProbeIntervalSeconds int `yaml:"agent_probe_interval_seconds"`
+	// AgentProbeTimeoutSeconds bounds ONE probe end to end (default 10).
+	//
+	// It must stay well under the interval, and it exists because a qube that
+	// accepts TCP and then goes silent would otherwise hold the probe worker
+	// forever — this console has already been wedged once by an unbounded wait
+	// on infrastructure that never answered.
+	// Env: QUBES_AIR_AGENT_PROBE_TIMEOUT_SECONDS.
+	AgentProbeTimeoutSeconds int `yaml:"agent_probe_timeout_seconds"`
+	// AgentProbeSettleSeconds is how long after a successful provision or resume
+	// the console keeps retrying before calling the agent unreachable
+	// (default 300).
+	//
+	// A newly built qube CANNOT answer when terraform returns: cloud-init only
+	// starts downloading and installing the agent once the VM has reported its
+	// address. Probing once at job completion would therefore mark every healthy
+	// qube unreachable. The budget is bounded rather than infinite so that a
+	// genuinely broken agent still produces a verdict instead of sitting in
+	// "starting" forever, which would hide the failure just as effectively.
+	// Env: QUBES_AIR_AGENT_PROBE_SETTLE_SECONDS.
+	AgentProbeSettleSeconds int `yaml:"agent_probe_settle_seconds"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -264,6 +320,13 @@ func DefaultConfig() *Config {
 			// resume.
 			Enabled:         false,
 			TerraformBinary: "terraform",
+			// Agent probing defaults ON even with orchestration disabled: it
+			// reads infrastructure rather than changing it, and a console that
+			// only reports agent health when someone remembered to switch it on
+			// is a console that reports nothing on the day it matters.
+			AgentProbeIntervalSeconds: 60,
+			AgentProbeTimeoutSeconds:  10,
+			AgentProbeSettleSeconds:   300,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -374,6 +437,33 @@ func (c *Config) loadFromEnv() {
 	if listen := os.Getenv("QUBES_AIR_AGENT_LISTEN"); listen != "" {
 		c.Orchestrator.AgentListen = listen
 	}
+	if url := os.Getenv("QUBES_AIR_AGENT_PACKAGE_URL"); url != "" {
+		c.Orchestrator.AgentPackageURL = url
+	}
+	if sha := os.Getenv("QUBES_AIR_AGENT_PACKAGE_SHA256"); sha != "" {
+		c.Orchestrator.AgentPackageSHA256 = sha
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_PACKAGE_VERSION"); v != "" {
+		c.Orchestrator.AgentPackageVersion = v
+	}
+	// Parsed with Atoi and applied only on success, matching the transport
+	// timings below. A typo therefore keeps the default rather than silently
+	// resolving to 0, which for the interval would disable probing outright.
+	if v := os.Getenv("QUBES_AIR_AGENT_PROBE_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentProbeIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_PROBE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentProbeTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_PROBE_SETTLE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentProbeSettleSeconds = n
+		}
+	}
 
 	if enabled := os.Getenv("QUBES_AIR_TRANSPORT_ENABLED"); enabled != "" {
 		c.Transport.Enabled = strings.ToLower(enabled) == "true"
@@ -466,6 +556,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("orchestrator.enabled is true but orchestrator.terraform_dir is not set")
 	}
 
+	// A package URL without a digest would have every new qube install, as root,
+	// whatever the unauthenticated artifact store happened to be serving.
+	// Refusing at startup is the loud place to catch it: the renderer's own
+	// fallback is a qube that comes up with no agent, which is only discovered
+	// when something tries to reach it.
+	if err := validateAgentPackage(c.Orchestrator.AgentPackageURL, c.Orchestrator.AgentPackageSHA256); err != nil {
+		return err
+	}
+
 	// If the gRPC transport is enabled, the remote endpoint and mTLS material
 	// are mandatory — otherwise the outbound tunnel would fail at runtime.
 	if c.Transport.Enabled {
@@ -487,6 +586,43 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+// sha256Hex matches a bare 64-character hex digest, the only form sha256sum(1)
+// accepts in the guest's verification step.
+var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// validateAgentPackage checks the URL/digest pair before the console can start.
+//
+// Both halves are checked here rather than only at render time because a
+// mistyped digest produces a qube that downloads the right package, fails
+// verification and installs nothing — indistinguishable at a glance from a
+// network problem, and only visible on the guest's console.
+func validateAgentPackage(url, sha string) error {
+	if url == "" && sha == "" {
+		return nil
+	}
+	if url == "" {
+		return fmt.Errorf("orchestrator.agent_package_sha256 is set but orchestrator.agent_package_url is not")
+	}
+	if sha == "" {
+		return fmt.Errorf(
+			"orchestrator.agent_package_url is set but orchestrator.agent_package_sha256 is not: " +
+				"the artifact store is unauthenticated plain HTTP, so an unpinned package will not be installed")
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("orchestrator.agent_package_url must be an http(s) URL, got %q", url)
+	}
+	// The URL is interpolated into a shell script in the guest. It is quoted
+	// there, so only a quote character can escape it — but rejecting the whole
+	// class is cheaper than reasoning about it every time that script changes.
+	if strings.ContainsAny(url, "'\"`\\ \t\r\n") {
+		return fmt.Errorf("orchestrator.agent_package_url must not contain quotes or whitespace, got %q", url)
+	}
+	if !sha256Hex.MatchString(sha) {
+		return fmt.Errorf("orchestrator.agent_package_sha256 must be 64 hex characters, got %q", sha)
+	}
 	return nil
 }
 

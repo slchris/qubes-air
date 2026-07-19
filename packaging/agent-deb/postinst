@@ -1,0 +1,45 @@
+#!/bin/sh
+# qubes-air-agent postinst
+#
+# Enables the unit but never starts it. At install time the mTLS material has
+# usually not arrived yet — the console delivers it by cloud-init, and the agent
+# exits rather than run without it. Starting here would guarantee a failed unit
+# on every fresh install and train operators to ignore the one signal that
+# matters.
+set -e
+
+case "$1" in
+configure)
+    # /etc/systemd/system takes precedence over /lib/systemd/system, so a stale
+    # unit left by the retired packer/scripts/install-agent.sh would silently
+    # shadow the packaged one and keep pointing at /opt/qubes-air/bin, a path
+    # this package does not install. The result is a host that looks correctly
+    # configured and cannot exec its agent. Only the known superseded unit is
+    # removed — the grep is what keeps this from eating a genuine operator
+    # override that happens to share the name.
+    legacy_unit=/etc/systemd/system/qubes-air-agent.service
+    if [ -f "$legacy_unit" ] && grep -q '/opt/qubes-air/bin/qubes-air-agent' "$legacy_unit"; then
+        echo "qubes-air-agent: removing superseded unit $legacy_unit (it shadows the packaged one)" >&2
+        rm -f "$legacy_unit"
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload || true
+        systemctl enable qubes-air-agent.service || true
+
+        # try-restart, not restart: it replaces a running agent on upgrade and
+        # does nothing at all when the unit is stopped, so an install still
+        # cannot start an agent that has no certificates.
+        systemctl try-restart qubes-air-agent.service || true
+    fi
+    ;;
+
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+
+*)
+    echo "postinst called with unknown argument \`$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

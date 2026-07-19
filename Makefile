@@ -2,7 +2,7 @@
 #
 # 常用构建和开发命令
 
-.PHONY: help build clean dev test
+.PHONY: help build clean dev test agent-deb publish-agent-deb release-agent
 
 # 默认目标
 help:
@@ -14,6 +14,11 @@ help:
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
 	@echo "  clean          Clean build artifacts"
+	@echo ""
+	@echo "  agent-deb         构建 qubes-air-agent .deb (Docker 内交叉编译 amd64)"
+	@echo "  publish-agent-deb 上传 .deb 到 artifact store, 回读校验, 打印 console 配置"
+	@echo "  release-agent     agent-deb + publish-agent-deb 一条龙"
+	@echo ""
 	@echo "  tf-init        Initialize Terraform"
 	@echo "  tf-validate    Validate Terraform (init -backend=false + validate + fmt check)"
 	@echo "  tf-plan        Terraform plan"
@@ -31,6 +36,9 @@ build-backend:
 build-frontend:
 	@echo "Building Svelte frontend..."
 	cd console/frontend && npm install && npm run build
+
+# agent-deb 的定义在下面的"Agent 分发"一节, 和 publish/release 放在一起。
+# 它不进 build 目标 —— 需要 Docker, 而日常前后端开发不需要。
 
 # 开发
 dev:
@@ -51,6 +59,47 @@ clean:
 	rm -rf console/frontend/dist/
 	rm -rf console/frontend/node_modules/
 	rm -rf packer/output/
+	rm -rf dist/
+
+# ============================================================
+# Agent 分发: 构建 .deb -> 传到局域网 artifact store -> 拿到 console 配置
+#
+# 为什么 agent 不烤进镜像 (2026-07 的决定, 详见 docs/bootstrap-design.md §6):
+# 模板一旦固化 agent 版本, 每改一次 agent 就要重建镜像 + 重建所有 qube。
+# 现在改成开机从 artifact store 装, 版本由 **console** 按 qube 钉死 (URL + SHA256)。
+#
+# 用法:
+#   make agent-deb                     # 版本取自 git describe
+#   make agent-deb VERSION=1.2.3       # 显式版本
+#   make publish-agent-deb             # 发 dist/ 里那个 (多于一个时会让你指定)
+#   make publish-agent-deb DEB=dist/qubes-air-agent_1.2.3_amd64.deb
+#   make release-agent VERSION=1.2.3   # 两步连起来
+#
+# publish 打印的三行 (QUBES_AIR_AGENT_PACKAGE_URL / _SHA256 / _VERSION) 必须
+# **原样**进 console 配置: artifact store 无认证且走明文 HTTP, 那个 SHA256 是
+# 整条投递链路上唯一的完整性控制。
+# 只有配置行走 stdout, 所以可以直接: make publish-agent-deb >> console.env
+# ============================================================
+
+# 留空则由各脚本自己决定 (build 用 git describe, publish 自动找 dist/)。
+VERSION ?=
+DEB ?=
+
+# VERSION 必须显式写进 recipe 的环境: make 的命令行变量不会自动导出。
+# 少了这个前缀, `make agent-deb VERSION=1.2.3` 会被脚本当成没设值, 悄悄回退到
+# git describe —— 包名里的版本跟你要的不是一个, 而 console 钉的正是包名。
+agent-deb:
+	@echo "Building qubes-air-agent .deb (amd64)..."
+	VERSION=$(VERSION) scripts/build-agent-deb.sh
+
+publish-agent-deb:
+	scripts/publish-agent-deb.sh $(DEB)
+
+# 用 $(MAKE) 串行调用而不是写成依赖: 依赖在 make -j 下会并行, 而这两步
+# 有严格先后 —— 并行的话 publish 会去发上一次构建留在 dist/ 里的旧包。
+release-agent:
+	$(MAKE) agent-deb VERSION=$(VERSION)
+	$(MAKE) publish-agent-deb
 
 # Terraform / OpenTofu
 # TF_BIN 默认 tofu: 多机远程 backend 方案依赖 OpenTofu 的客户端 state 加密

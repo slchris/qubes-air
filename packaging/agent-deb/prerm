@@ -1,0 +1,28 @@
+#!/bin/sh
+# qubes-air-agent prerm
+#
+# Stop and disable while the unit file is still on disk. Doing it in postrm
+# instead means systemctl has to act on a unit it can no longer read, which
+# leaves the enable symlinks behind.
+set -e
+
+case "$1" in
+remove | deconfigure)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop qubes-air-agent.service || true
+        systemctl disable qubes-air-agent.service || true
+    fi
+    ;;
+
+# Not on upgrade: the new package's postinst decides whether a running agent
+# gets replaced, and stopping here would open a gap where the remote is
+# unreachable for the length of the unpack.
+upgrade | failed-upgrade) ;;
+
+*)
+    echo "prerm called with unknown argument \`$1'" >&2
+    exit 1
+    ;;
+esac
+
+exit 0

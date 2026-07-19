@@ -5,7 +5,9 @@
 // for why qrexec-client-vm cannot simply be installed there.
 //
 // It replaces the sleep-infinity placeholder that packer/scripts/install-agent.sh
-// has been shipping.
+// used to ship. That script is gone: the binary is no longer baked into the VM
+// image but packaged by packaging/agent-deb/ and installed at first boot, which
+// is also where the systemd unit now lives.
 //
 // Connection direction: this process LISTENS and the local relay dials in,
 // matching the existing transport (internal/transport/grpc: client.go is the

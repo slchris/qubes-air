@@ -188,3 +188,6 @@ console/backend/qubes-air-console
 
 # Console 渲染的 agent 身份文件 (含私钥)
 terraform/identities/
+
+# scripts/build-agent-deb.sh 的输出 (.deb 是构建产物, 分发走 artifact store)
+dist/

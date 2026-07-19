@@ -1,0 +1,89 @@
+[Unit]
+Description=Qubes Air RemoteVM agent
+Documentation=file:///usr/share/doc/qubes-air-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+# Deliberately NOT ordered After=cloud-final.service.
+#
+# It looks right — cloud-init writes the certificates on first boot, so waiting
+# for it seems to guarantee they exist. It deadlocks. The installer runs from
+# cloud-init's runcmd, which executes *inside* cloud-final.service, and it
+# starts this unit with a blocking `systemctl enable --now`. Ordering this unit
+# after cloud-final makes systemd queue the start behind a job that cannot
+# finish until the start returns. Not a graph cycle, so the cycle-breaker never
+# fires, and JobTimeoutSec is infinity for service units: the boot hangs forever.
+#
+# The hang is worse than a plain failure because it is invisible. qemu-guest-agent
+# is already up by then, so terraform gets its IP and reports success while
+# cloud-init sits at `running` and every diagnostic the installer would have
+# emitted is downstream of the block.
+#
+# The ordering is also unnecessary on the path that matters: cloud-init runs
+# write_files before runcmd, so the certificates are on disk before the installer
+# starts the unit. On later boots they are already there. network-online is the
+# only ordering this unit actually needs.
+
+# A missing certificate is a permanent condition, not a transient one: the agent
+# refuses to run without mTLS by design. Restart=on-failure plus a start limit
+# rides out a genuinely transient fault (a port still held by the previous
+# process) but gives up after 5 attempts and leaves the unit in `failed`, where
+# `systemctl --failed` reports it. Restart=always — which the retired packer
+# unit used — instead shows "activating (auto-restart)" forever: a broken host
+# that looks busy rather than broken, which is the exact failure mode this
+# packaging exists to eliminate.
+#
+# Recovering once the certificates arrive, if the limit was already hit:
+#   systemctl reset-failed qubes-air-agent && systemctl start qubes-air-agent
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# Applied BEFORE EnvironmentFile so the file wins where it sets a value, and a
+# partially rendered agent.env still yields a listenable address.
+Environment=QUBESAIR_LISTEN=0.0.0.0:8443
+
+# No leading '-' on purpose: if /etc/qubes-air/agent.env is absent the unit must
+# fail with "Failed to load environment files" rather than start with empty
+# flags and pick surprising defaults.
+EnvironmentFile=/etc/qubes-air/agent.env
+
+# The agent reads no environment variables at all — it takes flags only, and
+# --ca/--cert/--key are mandatory (cmd/qubes-air-agent/main.go). So QUBESAIR_*
+# has to be interpolated into the command line here, not exported to the process.
+#
+# The expansions are quoted because an unquoted empty ${VAR} is removed from the
+# argument list entirely: "--remote-name ${QUBESAIR_REMOTE_NAME} --ca /path"
+# would collapse to "--remote-name --ca /path" and the agent would take "--ca"
+# as its remote name. Quoted, an unset variable becomes an empty argument and
+# the agent's own hostname fallback handles it.
+ExecStart=/usr/bin/qubes-air-agent \
+    --listen "${QUBESAIR_LISTEN}" \
+    --remote-name "${QUBESAIR_REMOTE_NAME}" \
+    --service-dir /etc/qubes-rpc \
+    --ca /etc/qubes-air/ca.pem \
+    --cert /etc/qubes-air/agent.pem \
+    --key /etc/qubes-air/agent-key.pem
+
+Restart=on-failure
+RestartSec=5
+
+# root because the qrexec services under /etc/qubes-rpc inherit this context and
+# are expected to be able to answer questions about the host. The listen port is
+# above 1024, so the privilege is for the services, not for the socket.
+User=root
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+# 'full' rather than 'strict': strict makes the entire filesystem read-only for
+# every qrexec service this agent spawns, and those are operator-supplied
+# scripts whose needs this package cannot know. 'full' still protects /usr,
+# /boot and /efi, which is what stops a compromised service from replacing the
+# agent binary it is running under.
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

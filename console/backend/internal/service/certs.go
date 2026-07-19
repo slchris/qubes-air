@@ -42,6 +42,10 @@ type CertIssuer struct {
 	identityDir string
 	// agentListen is the address the agent binds on the remote.
 	agentListen string
+	// agentPkg pins the .deb that installs the agent binary on the remote.
+	// Unset means the rendered document has no package to install, and says so
+	// loudly in the guest rather than producing a qube with a dead unit.
+	agentPkg AgentPackage
 
 	// mu guards lazy CA initialization so two concurrent qube creations cannot
 	// each mint a CA and race to store it — which would leave agents trusting
@@ -58,8 +62,14 @@ type CredentialStore interface {
 }
 
 // NewCertIssuer builds an issuer over the credential store and registry.
-func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository, identityDir, agentListen string) *CertIssuer {
-	return &CertIssuer{creds: creds, certs: certs, identityDir: identityDir, agentListen: agentListen}
+func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository, identityDir, agentListen string, agentPkg AgentPackage) *CertIssuer {
+	return &CertIssuer{
+		creds:       creds,
+		certs:       certs,
+		identityDir: identityDir,
+		agentListen: agentListen,
+		agentPkg:    agentPkg,
+	}
 }
 
 // IdentityPath returns where a qube's rendered identity file lives, or "" when
@@ -107,7 +117,7 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 	// registered but has no way to reach the remote, which is exactly the state
 	// this whole chain existed to leave behind.
 	if c.identityDir != "" {
-		userData, err := RenderAgentUserData(qube.Name, bundle, c.agentListen)
+		userData, err := RenderAgentUserData(qube.Name, bundle, c.agentListen, c.agentPkg)
 		if err != nil {
 			return nil, fmt.Errorf("render identity for %q: %w", qube.Name, err)
 		}
