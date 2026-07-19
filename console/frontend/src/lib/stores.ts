@@ -21,6 +21,11 @@ interface QubeState {
   qubes: Qube[];
   loading: boolean;
   error: string | null;
+  // The most recent job id per qube, kept so the card can tail that job's
+  // terraform output and show its failure reason. The mutating calls return a
+  // job_id that was being discarded, which is why a 20-minute apply and a
+  // failure were both invisible.
+  jobs: Record<string, string>;
 }
 
 /**
@@ -106,7 +111,14 @@ function createQubeStore() {
     qubes: [],
     loading: false,
     error: null,
+    jobs: {},
   });
+
+  /** Records the job a mutating call kicked off, so the card can tail it. */
+  function noteJob(qubeId: string, jobId: string | undefined): void {
+    if (!jobId) return;
+    update(s => ({ ...s, jobs: { ...s.jobs, [qubeId]: jobId } }));
+  }
 
   /**
    * Qubes currently being polled, so overlapping operations do not stack
@@ -190,6 +202,7 @@ function createQubeStore() {
       // and settles minutes later, so start watching it immediately.
       const op = await api.createQube(data);
       update(s => ({ ...s, qubes: [...s.qubes, op.qube] }));
+      noteJob(op.qube.id, op.job_id);
       watch(op.qube.id);
       return op.qube;
     },
@@ -218,6 +231,9 @@ function createQubeStore() {
         qubes: s.qubes.map((q: Qube) =>
           q.id === id ? { ...q, status: 'deleting' as QubeStatus } : q),
       }));
+      // deleteQube returns no body (DELETE 204), so there is no job_id to note
+      // here; the card falls back to the latest job for this qube via
+      // GET /jobs?qube_id when it needs one.
       watch(id);
     },
 
@@ -227,6 +243,7 @@ function createQubeStore() {
         ...s,
         qubes: s.qubes.map((q: Qube) => q.id === id ? op.qube : q),
       }));
+      noteJob(id, op.job_id);
       watch(id);
       return op.qube;
     },
@@ -237,6 +254,7 @@ function createQubeStore() {
         ...s,
         qubes: s.qubes.map((q: Qube) => q.id === id ? op.qube : q),
       }));
+      noteJob(id, op.job_id);
       watch(id);
       return op.qube;
     },
@@ -246,7 +264,7 @@ function createQubeStore() {
     },
 
     reset(): void {
-      set({ qubes: [], loading: false, error: null });
+      set({ qubes: [], loading: false, error: null, jobs: {} });
     },
   };
 }

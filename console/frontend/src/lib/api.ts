@@ -353,6 +353,27 @@ export async function getJob(id: string): Promise<Job> {
   return get<Job>(`/jobs/${id}`);
 }
 
+// JobLogChunk is one incremental read of a job's terraform output.
+export interface JobLogChunk {
+  offset: number;
+  data: string;
+  running: boolean;
+  state?: string;
+  note?: string;
+}
+
+/**
+ * Reads a job's terraform output from `offset` onwards.
+ *
+ * Poll it with the offset the previous call returned to tail a running apply;
+ * `running` tells you whether to poll again. This exists because a provision
+ * runs for 15-25 minutes and, without it, the UI could show nothing for the
+ * whole time and then only the final error.
+ */
+export async function getJobLog(id: string, offset = 0): Promise<JobLogChunk> {
+  return get<JobLogChunk>(`/jobs/${id}/log?offset=${offset}`);
+}
+
 /**
  * Lists recent jobs, newest first. Pass qubeId to scope to one qube.
  *

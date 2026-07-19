@@ -10,11 +10,33 @@ export type ZoneType = 'proxmox' | 'gcp' | 'aws' | 'azure';
 // Zone status values
 export type ZoneStatus = 'connected' | 'disconnected';
 
+// Proxmox-specific zone configuration, mirroring backend models.ProxmoxZoneConfig.
+//
+// This sub-object was missing, which is why the Zones view could not be exposed:
+// the backend replaces a zone's config wholesale on update (zone_service.go), so
+// a save that omitted these fields erased the node, the template, and — worst —
+// the credential link, leaving a "connected" zone that can no longer reach the
+// cluster. Every field the backend returns is declared so a round-trip through
+// the edit form preserves it.
+export interface ProxmoxZoneConfig {
+  node?: string;
+  datastore_id?: string;
+  network_bridge?: string;
+  template_vm_id?: number;
+  template_node?: string;
+  ssh_public_keys?: string[];
+  // Reference into the encrypted credential store. Never the secret itself.
+  credential_id?: string;
+}
+
 // Zone configuration
 export interface ZoneConfig {
   endpoint: string;
   region?: string;
   project?: string;
+  // Present on proxmox zones. Carried through edits verbatim — see the note on
+  // ProxmoxZoneConfig for why dropping it is destructive.
+  proxmox?: ProxmoxZoneConfig;
 }
 
 // Zone entity matching backend models.Zone
@@ -102,7 +124,22 @@ export interface Qube {
   ip_address?: string;
   created_at: string;
   updated_at: string;
+  // Agent health, returned by the API and previously undeclared here, which is
+  // why the card could not show it. The distinction this carries is the whole
+  // point of the field: a qube can be "running" while its agent is unreachable,
+  // and the card was painting a green dot for exactly that case.
+  agent_health?: AgentHealth;
+  agent_last_probed_at?: string;
+  agent_last_healthy_at?: string;
+  // The reason the last probe failed. Empty when healthy.
+  agent_last_error?: string;
 }
+
+// Agent health as reported by the console's background prober.
+//   healthy    — last probe succeeded
+//   unhealthy  — last probe failed (see agent_last_error)
+//   unknown    — not probed yet, or probing disabled
+export type AgentHealth = 'healthy' | 'unhealthy' | 'unknown';
 
 // Request payload for creating a qube
 export interface QubeCreateRequest {

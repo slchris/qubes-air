@@ -2,7 +2,7 @@
   Qubes Air Console - Infrastructure List Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch } from '../lib/api';
+  import { apiFetch } from '../lib/api';
 
   interface InfraProvider {
     id: string;
@@ -80,8 +80,8 @@
 
     try {
       const url = editingId 
-        ? `${getApiBaseUrl()}/infrastructure/${editingId}`
-        : `${getApiBaseUrl()}/infrastructure`;
+        ? `/infrastructure/${editingId}`
+        : `/infrastructure`;
       const method = editingId ? 'PUT' : 'POST';
       
       const response = await apiFetch(url, {

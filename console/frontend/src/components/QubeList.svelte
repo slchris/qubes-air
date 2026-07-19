@@ -11,9 +11,22 @@
   import type { NodeInfo, CapacityKind, QuotaInfo } from '../lib/types';
   import { getZoneCapacity } from '../lib/api';
   import { ApiException } from '../lib/api';
+  import type { AgentHealth } from '../lib/types';
+  import JobLog from './JobLog.svelte';
+
+  // The agent-health label. "running + agent unhealthy" is the case worth
+  // spelling out — a green status dot for a qube whose agent cannot be reached
+  // is the failure this field exists to surface.
+  function agentLabel(h: AgentHealth | undefined): string {
+    switch (h) {
+      case 'healthy': return 'healthy';
+      case 'unhealthy': return 'unreachable';
+      default: return 'unknown';
+    }
+  }
 
   // Subscribe to stores
-  let qubeState = $state({ qubes: [] as Qube[], loading: false, error: null as string | null });
+  let qubeState = $state({ qubes: [] as Qube[], loading: false, error: null as string | null, jobs: {} as Record<string, string> });
   let zoneState = $state({ zones: [] as Zone[], loading: false, error: null as string | null });
   
   $effect(() => {
@@ -324,7 +337,7 @@
           <div class="qube-info">
             <div class="info-row">
               <span class="label">Zone:</span>
-              <span>{getZoneName(qube.zone_id)}</span>
+              <span>{getZoneName(qube.zone_id)}{#if qube.spec.node} · {qube.spec.node}{/if}</span>
             </div>
             <div class="info-row">
               <span class="label">Type:</span>
@@ -332,7 +345,7 @@
             </div>
             <div class="info-row">
               <span class="label">Spec:</span>
-              <span>{qube.spec.vcpu} vCPU, {qube.spec.memory}MB</span>
+              <span>{qube.spec.vcpu} vCPU, {qube.spec.memory}MB, {qube.spec.disk}G{#if qube.spec.data_disk_gb} +{qube.spec.data_disk_gb}G data{/if}</span>
             </div>
             {#if qube.ip_address}
               <div class="info-row">
@@ -340,7 +353,26 @@
                 <code>{qube.ip_address}</code>
               </div>
             {/if}
+            <div class="info-row">
+              <span class="label">Agent:</span>
+              <span class="agent {qube.agent_health ?? 'unknown'}" title={qube.agent_last_error || ''}>
+                {agentLabel(qube.agent_health)}
+              </span>
+            </div>
+            {#if qube.agent_health === 'unhealthy' && qube.agent_last_error}
+              <div class="info-row agent-err">
+                <span class="label"></span>
+                <span title={qube.agent_last_error}>{qube.agent_last_error}</span>
+              </div>
+            {/if}
           </div>
+
+          <!-- The provisioning/failure story. Shown while the qube is in a
+               transient state, or whenever we have a job id for it (so a
+               finished failure keeps its reason). -->
+          {#if qubeState.jobs[qube.id]}
+            <JobLog jobId={qubeState.jobs[qube.id]} active={isTransientStatus(qube.status)} />
+          {/if}
 
           <div class="qube-actions">
             {#if isTransientStatus(qube.status)}
@@ -565,6 +597,12 @@
   .qube-list {
     max-width: 1200px;
   }
+
+  .agent { font-weight: 500; }
+  .agent.healthy { color: #16a34a; }
+  .agent.unhealthy { color: #dc2626; }
+  .agent.unknown { color: #6b7280; }
+  .agent-err span { color: #b91c1c; font-size: 0.78rem; word-break: break-word; }
 
   .header {
     display: flex;

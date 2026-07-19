@@ -2,7 +2,7 @@
   Qubes Air Console - Monitoring View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch } from '../lib/api';
+  import { apiFetch } from '../lib/api';
 
   interface MetricPoint {
     timestamp: string;
@@ -30,6 +30,17 @@
   let alerts = $state<Alert[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  // The backend flags these numbers as placeholder and says what they actually
+  // describe. Dropping that was how "Disk Usage 0%" got shown as a measurement.
+  let placeholder = $state(false);
+  let note = $state<string | null>(null);
+
+  // A percentage to two places. The raw value is a float like 34.7182931, which
+  // is what the operator meant by "小数点后太多了". Clamped so a bad number
+  // cannot render a bar wider than its track.
+  function pct(v: number | undefined): string {
+    return (Math.max(0, Math.min(100, v ?? 0))).toFixed(2);
+  }
 
   async function loadMonitoring() {
     loading = true;
@@ -40,6 +51,8 @@
       const data = await response.json();
       metrics = data.metrics || null;
       alerts = data.alerts || [];
+      placeholder = data.placeholder === true;
+      note = data.note || null;
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error';
       metrics = null;
@@ -84,29 +97,37 @@
       <button onclick={loadMonitoring}>Retry</button>
     </div>
   {:else}
+    {#if placeholder}
+      <div class="placeholder-banner">
+        <strong>Placeholder metrics.</strong>
+        {note || 'These describe the console process, not the managed qubes or zones.'}
+        Per-node cluster capacity is real — see the Zones view.
+      </div>
+    {/if}
+
     <div class="metrics-grid">
       <div class="metric-card">
         <span class="metric-label">CPU Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {metrics?.cpuUsage ?? 0}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.cpuUsage)}%"></div>
         </div>
-        <span class="metric-value">{metrics?.cpuUsage ?? 0}%</span>
+        <span class="metric-value">{pct(metrics?.cpuUsage)}%</span>
       </div>
 
       <div class="metric-card">
         <span class="metric-label">Memory Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {metrics?.memoryUsage ?? 0}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.memoryUsage)}%"></div>
         </div>
-        <span class="metric-value">{metrics?.memoryUsage ?? 0}%</span>
+        <span class="metric-value">{pct(metrics?.memoryUsage)}%</span>
       </div>
 
       <div class="metric-card">
         <span class="metric-label">Disk Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {metrics?.diskUsage ?? 0}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.diskUsage)}%"></div>
         </div>
-        <span class="metric-value">{metrics?.diskUsage ?? 0}%</span>
+        <span class="metric-value">{pct(metrics?.diskUsage)}%</span>
       </div>
 
       <div class="metric-card">
@@ -144,6 +165,12 @@
 </div>
 
 <style>
+  .placeholder-banner {
+    margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: 4px;
+    border: 1px solid #d97706; background: #fffbeb; color: #7c2d12;
+    font-size: 0.85rem; line-height: 1.5;
+  }
+
   .monitoring-view {
     max-width: 1200px;
   }

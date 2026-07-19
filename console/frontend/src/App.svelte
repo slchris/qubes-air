@@ -15,13 +15,14 @@
   import BillingView from './components/BillingView.svelte'
   import MonitoringView from './components/MonitoringView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import ZonesView from './components/ZonesView.svelte'
   import LoginGate from './components/LoginGate.svelte'
   import { auth } from './lib/auth.svelte'
   
   // 从 URL hash 获取当前视图，支持页面刷新保持状态
   function getViewFromHash(): string {
     const hash = window.location.hash.slice(1); // 移除 #
-    const validViews = ['qubes', 'infrastructure', 'credentials', 'billing', 'monitoring', 'settings'];
+    const validViews = ['qubes', 'zones', 'infrastructure', 'credentials', 'billing', 'monitoring', 'settings'];
     return validViews.includes(hash) ? hash : 'qubes';
   }
 
@@ -70,6 +71,8 @@
     <main class="content">
       {#if currentView === 'qubes'}
         <QubeList />
+      {:else if currentView === 'zones'}
+        <ZonesView />
       {:else if currentView === 'infrastructure'}
         <InfraList />
       {:else if currentView === 'credentials'}

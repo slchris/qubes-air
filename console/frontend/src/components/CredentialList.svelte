@@ -2,12 +2,12 @@
   Qubes Air Console - Credentials List Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch } from '../lib/api';
+  import { apiFetch } from '../lib/api';
 
   interface Credential {
     id: string;
     name: string;
-    type: 'aws' | 'gcp' | 'azure' | 'ssh' | 'api_key' | 'other';
+    type: 'proxmox' | 'aws' | 'gcp' | 'azure' | 'ssh' | 'api_key' | 'other';
     description: string;
     lastUsed: string | null;
     createdAt: string;
@@ -29,6 +29,9 @@
   let formError = $state<string | null>(null);
 
   const credentialTypes = [
+    // Proxmox first: it is the provider this deployment actually uses, and its
+    // absence was why a PVE credential could not be created from the UI at all.
+    { value: 'proxmox', label: 'Proxmox' },
     { value: 'aws', label: 'AWS' },
     { value: 'gcp', label: 'Google Cloud' },
     { value: 'azure', label: 'Azure' },
@@ -89,9 +92,12 @@
     }
 
     try {
-      const url = editingId 
-        ? `${getApiBaseUrl()}/credentials/${editingId}`
-        : `${getApiBaseUrl()}/credentials`;
+      // A path relative to the API base. apiFetch prepends the base itself, so
+      // passing an absolute /api/v1/... here produced /api/v1/api/v1/... and a
+      // 404 on every create and edit.
+      const url = editingId
+        ? `/credentials/${editingId}`
+        : `/credentials`;
       const method = editingId ? 'PUT' : 'POST';
       
       const body: any = {
