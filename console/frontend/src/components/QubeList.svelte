@@ -7,7 +7,9 @@
   import { onMount } from 'svelte';
   import { qubeStore, zoneStore } from '../lib/stores';
   import type { Zone, Qube, QubeType, QubeCreateRequest } from '../lib/types';
-  import { isTransientStatus } from '../lib/types';
+  import { isTransientStatus, nodeCanFit, SCHEDULER_HEADROOM } from '../lib/types';
+  import type { NodeInfo } from '../lib/types';
+  import { listZoneNodes } from '../lib/api';
   import { ApiException } from '../lib/api';
 
   // Subscribe to stores
@@ -41,6 +43,47 @@
   // a per-qube template field existed here but the backend never consumed it.
   let formDataDisk = $state(20);
   let formNode = $state('');
+
+  /**
+   * Live cluster capacity for the selected zone.
+   *
+   * Shown so "automatic" is an informed choice. Offering a node field without
+   * capacity numbers asks the operator to guess, which is how everything ends
+   * up on whichever node happened to be the default.
+   */
+  let nodes = $state<NodeInfo[]>([]);
+  let nodesError = $state<string | null>(null);
+  let loadingNodes = $state(false);
+
+  /** Fetches capacity for a zone, degrading quietly when unavailable. */
+  async function loadNodes(zoneId: string): Promise<void> {
+    nodes = [];
+    nodesError = null;
+    if (!zoneId) return;
+    loadingNodes = true;
+    try {
+      const res = await listZoneNodes(zoneId);
+      nodes = res.nodes ?? [];
+    } catch (e) {
+      // 503 (unreachable / no credential) and 501 (no scheduler) are expected.
+      // The node field stays usable as free text.
+      nodesError = e instanceof ApiException ? e.message : 'Cluster capacity unavailable';
+    } finally {
+      loadingNodes = false;
+    }
+  }
+
+  /** The node automatic placement would choose for the current form values. */
+  let autoPick = $derived.by(() => {
+    const eligible = nodes.filter(n => nodeCanFit(n, formMemory));
+    if (eligible.length === 0) return null;
+    return eligible.reduce((best, n) =>
+      n.mem_free_bytes > best.mem_free_bytes ? n : best);
+  });
+
+  function formatGiB(bytes: number): string {
+    return (bytes / 1024 ** 3).toFixed(1);
+  }
 
   const qubeTypes: QubeType[] = ['app', 'work', 'dev', 'gpu', 'disp', 'sys'];
 
@@ -95,6 +138,7 @@
   function resetForm(): void {
     formName = '';
     formZoneId = connectedZonesList[0]?.id ?? '';
+    void loadNodes(formZoneId);
     formType = 'work';
     formVcpu = 2;
     formMemory = 2048;
@@ -339,7 +383,7 @@
 
         <div class="form-group">
           <label for="zone">Zone (Optional)</label>
-          <select id="zone" bind:value={formZoneId}>
+          <select id="zone" bind:value={formZoneId} onchange={() => void loadNodes(formZoneId)}>
             <option value="">-- No Zone --</option>
             {#each connectedZonesList as zone}
               <option value={zone.id}>{zone.name} ({zone.type})</option>
@@ -382,11 +426,33 @@
             </small>
           </div>
           <div class="form-group">
-            <label for="node">Node (optional)</label>
-            <input id="node" type="text" bind:value={formNode} placeholder="zone default" />
-            <small class="field-hint">
-              Pin to a cluster node. Only safe to leave blank on shared storage.
-            </small>
+            <label for="node">Node</label>
+            <select id="node" bind:value={formNode}>
+              <option value="">
+                Automatic{autoPick ? ` — would pick ${autoPick.name}` : ''}
+              </option>
+              {#each nodes as node}
+                <option value={node.name} disabled={!nodeCanFit(node, formMemory)}>
+                  {node.name} — {formatGiB(node.mem_free_bytes)} GiB free
+                  {#if !node.online}(offline){:else if !nodeCanFit(node, formMemory)}(insufficient){/if}
+                </option>
+              {/each}
+            </select>
+            {#if loadingNodes}
+              <small class="field-hint">Reading cluster capacity…</small>
+            {:else if nodesError}
+              <small class="field-hint">
+                Capacity unavailable ({nodesError}). Leave blank to use the zone
+                default, or type a node name.
+              </small>
+              <input type="text" bind:value={formNode} placeholder="zone default" />
+            {:else if nodes.length > 0}
+              <small class="field-hint">
+                Automatic picks the node with the most free memory, keeping
+                {Math.round(SCHEDULER_HEADROOM * 100)}% of each node in reserve —
+                a node that looks free enough can still be refused.
+              </small>
+            {/if}
           </div>
         </div>
 

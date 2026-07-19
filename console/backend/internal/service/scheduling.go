@@ -77,6 +77,49 @@ func parseProxmoxSecret(secret string) scheduler.Credentials {
 	return scheduler.Credentials{}
 }
 
+// NodeInfo is a node's capacity as reported to the UI, plus whether the
+// scheduler would currently consider it.
+type NodeInfo struct {
+	Name          string  `json:"name"`
+	Online        bool    `json:"online"`
+	MaxCPU        int     `json:"max_cpu"`
+	CPUUsage      float64 `json:"cpu_usage"`
+	MemUsedBytes  int64   `json:"mem_used_bytes"`
+	MemTotalBytes int64   `json:"mem_total_bytes"`
+	MemFreeBytes  int64   `json:"mem_free_bytes"`
+}
+
+// CapacityReader exposes cluster capacity for display.
+type CapacityReader interface {
+	Nodes(ctx context.Context, zoneID string) ([]NodeInfo, error)
+}
+
+// Nodes returns live per-node capacity for a zone.
+//
+// This exists so the UI can show what "automatic" is choosing between. Offering
+// a node picker without capacity numbers asks the operator to guess, which is
+// how a cluster ends up with everything piled onto whichever node was
+// hardcoded first.
+func (c *ClusterScheduler) Nodes(ctx context.Context, zoneID string) ([]NodeInfo, error) {
+	creds, err := c.resolve(ctx, zoneID)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := scheduler.NewProxmoxProvider(creds).Nodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read cluster capacity: %w", err)
+	}
+	out := make([]NodeInfo, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, NodeInfo{
+			Name: n.Name, Online: n.Online, MaxCPU: n.MaxCPU, CPUUsage: n.CPUUsage,
+			MemUsedBytes: n.MemUsedBytes, MemTotalBytes: n.MemTotalBytes,
+			MemFreeBytes: n.FreeMemBytes(),
+		})
+	}
+	return out, nil
+}
+
 // PlacementDecider chooses the node a qube should run on.
 type PlacementDecider interface {
 	Place(ctx context.Context, zoneID string, req scheduler.Requirements) (*scheduler.Placement, error)

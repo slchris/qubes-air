@@ -216,3 +216,40 @@ export interface Operation {
 export function isJobFinished(job: Job): boolean {
   return job.state === 'succeeded' || job.state === 'failed';
 }
+
+
+// ============================================================================
+// Cluster capacity
+// ============================================================================
+
+/** One cluster node's live capacity. */
+export interface NodeInfo {
+  name: string;
+  online: boolean;
+  max_cpu: number;
+  /** Current load as a fraction (0..1). */
+  cpu_usage: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+  mem_free_bytes: number;
+}
+
+/** Response from GET /zones/:id/nodes. */
+export interface NodeListResponse {
+  nodes: NodeInfo[];
+  count: number;
+}
+
+/**
+ * Fraction of a node's memory the scheduler keeps unused. Mirrors the backend
+ * so the UI can show the same eligibility the scheduler will apply, rather than
+ * a raw free-memory figure that would suggest a node fits when it does not.
+ */
+export const SCHEDULER_HEADROOM = 0.15;
+
+/** Reports whether a node could take a guest of the given size. */
+export function nodeCanFit(node: NodeInfo, memoryMB: number): boolean {
+  if (!node.online) return false;
+  const reserve = node.mem_total_bytes * SCHEDULER_HEADROOM;
+  return node.mem_free_bytes - reserve >= memoryMB * 1024 * 1024;
+}

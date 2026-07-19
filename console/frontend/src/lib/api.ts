@@ -16,6 +16,7 @@ import type {
   QubeListResponse,
   Job,
   JobListResponse,
+  NodeListResponse,
   Operation,
   ListOptions,
   HealthResponse,
@@ -358,4 +359,16 @@ export async function listJobs(qubeId?: string, limit?: number): Promise<JobList
   if (limit) params.set('limit', String(limit));
   const query = params.toString();
   return get<JobListResponse>(`/jobs${query ? `?${query}` : ''}`);
+}
+
+
+/**
+ * Reads live cluster capacity for a zone.
+ *
+ * Returns 503 when the cluster is unreachable or the zone has no credential,
+ * and 501 when no scheduler is configured — both are expected states, so
+ * callers should degrade rather than treat them as errors.
+ */
+export async function listZoneNodes(zoneId: string): Promise<NodeListResponse> {
+  return get<NodeListResponse>(`/zones/${zoneId}/nodes`);
 }

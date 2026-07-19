@@ -187,6 +187,11 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// back to running terraform inline, which cannot work for real applies: they
 	// take minutes against a 15s server write deadline.
 	var runner *orchestrator.Runner
+	// One scheduler instance, shared by placement (qube service) and the
+	// capacity endpoint (zone handler).
+	clusterScheduler := service.NewClusterScheduler(
+		service.NewZoneCredentialResolver(zoneRepo, credentialRepo))
+
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
@@ -194,8 +199,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		// encrypted credential store via the zone's credential_id — never from
 		// the environment, so they can be rotated, scoped and audited in one
 		// place rather than living in a process's env.
-		service.WithPlacementDecider(service.NewClusterScheduler(
-			service.NewZoneCredentialResolver(zoneRepo, credentialRepo))),
+		service.WithPlacementDecider(clusterScheduler),
 	}
 
 	jobRepo := repository.NewJobRepository(db)
@@ -237,7 +241,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	return &Dependencies{
 		db:                db,
-		zoneHandler:       handler.NewZoneHandler(zoneSvc),
+		zoneHandler:       handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
 		qubeHandler:       handler.NewQubeHandler(qubeSvc),
 		infraHandler:      handler.NewInfraHandler(infraSvc),
 		credentialHandler: handler.NewCredentialHandler(credentialSvc),

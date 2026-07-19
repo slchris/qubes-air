@@ -14,11 +14,27 @@ import (
 // ZoneHandler handles zone-related HTTP requests.
 type ZoneHandler struct {
 	zoneSvc service.ZoneService
+	// capacity reads live cluster capacity. Nil when no scheduler is
+	// configured, in which case the nodes endpoint reports 501 and the UI falls
+	// back to a free-text node field.
+	capacity service.CapacityReader
+}
+
+// ZoneHandlerOption customises a ZoneHandler.
+type ZoneHandlerOption func(*ZoneHandler)
+
+// WithCapacityReader enables the cluster capacity endpoint.
+func WithCapacityReader(r service.CapacityReader) ZoneHandlerOption {
+	return func(h *ZoneHandler) { h.capacity = r }
 }
 
 // NewZoneHandler creates a new ZoneHandler.
-func NewZoneHandler(zoneSvc service.ZoneService) *ZoneHandler {
-	return &ZoneHandler{zoneSvc: zoneSvc}
+func NewZoneHandler(zoneSvc service.ZoneService, opts ...ZoneHandlerOption) *ZoneHandler {
+	h := &ZoneHandler{zoneSvc: zoneSvc}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers zone routes on the router group.
@@ -32,6 +48,7 @@ func (h *ZoneHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		zones.DELETE("/:id", h.Delete)
 		zones.POST("/:id/connect", h.Connect)
 		zones.POST("/:id/disconnect", h.Disconnect)
+		zones.GET("/:id/nodes", h.Nodes)
 	}
 }
 
@@ -124,6 +141,29 @@ func (h *ZoneHandler) Delete(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "zone deleted"})
+}
+
+// Nodes returns live cluster capacity for a zone.
+//
+// The UI uses this to show what automatic placement is choosing between, so
+// "auto" is an informed choice rather than a blind one.
+func (h *ZoneHandler) Nodes(c *gin.Context) {
+	if h.capacity == nil {
+		respondError(c, http.StatusNotImplemented,
+			errors.New("cluster capacity is unavailable: no scheduler configured"))
+		return
+	}
+	nodes, err := h.capacity.Nodes(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		// A zone without credentials or an unreachable cluster is an expected
+		// state, not a server fault — the UI degrades to a plain text field.
+		respondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
+	if nodes == nil {
+		nodes = []service.NodeInfo{}
+	}
+	c.JSON(http.StatusOK, gin.H{"nodes": nodes, "count": len(nodes)})
 }
 
 // Connect handles POST /zones/:id/connect.
