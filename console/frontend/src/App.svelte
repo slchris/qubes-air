@@ -15,6 +15,8 @@
   import BillingView from './components/BillingView.svelte'
   import MonitoringView from './components/MonitoringView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import LoginGate from './components/LoginGate.svelte'
+  import { auth } from './lib/auth.svelte'
   
   // 从 URL hash 获取当前视图，支持页面刷新保持状态
   function getViewFromHash(): string {
@@ -46,9 +48,17 @@
   }
 </script>
 
+{#if auth.required}
+  <!--
+    The gate replaces the whole shell rather than sitting inside it. Rendering
+    the sidebar and views behind it would mount every view, fire every request,
+    and produce a screen of failures next to the one control that fixes them.
+  -->
+  <LoginGate />
+{:else}
 <div class="app">
   <Header onMenuClick={toggleSidebar} />
-  
+
   <div class="main">
     <!-- 移动端遮罩层 -->
     {#if sidebarOpen}
@@ -79,21 +89,31 @@
     </main>
   </div>
 </div>
+{/if}
 
 <style>
   .app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    /* dvh, not vh: on mobile browsers vh counts the area behind the collapsing
+       address bar, so a 100vh shell is taller than what is actually visible and
+       the bottom of the page cannot be reached. */
+    height: 100dvh;
     background: var(--bg-color, #f5f5f5);
     color: var(--text-color, #1a1a1a);
   }
-  
+
   .main {
     display: flex;
     flex: 1;
     overflow: hidden;
     position: relative;
+    /* A flex item's default min-height is auto, i.e. "never shrink below your
+       content". Without this the row refuses to shrink, .content's overflow-y
+       never engages, and the excess is clipped by the overflow: hidden above
+       with no way to scroll to it — which is exactly what zooming in produced,
+       since zoom shrinks the viewport while the content keeps its size. */
+    min-height: 0;
   }
   
   .content {

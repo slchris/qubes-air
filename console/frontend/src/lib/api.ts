@@ -5,6 +5,9 @@
  * All functions have single responsibility and minimal cyclomatic complexity.
  */
 
+import { auth } from './auth.svelte';
+import { getApiToken as readApiToken, writeApiToken } from './token';
+
 import type {
   Zone,
   ZoneCreateRequest,
@@ -42,35 +45,19 @@ export function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl();
 
 /**
- * localStorage key holding the API bearer token.
- *
- * The backend accepts a single static token (see middleware.Auth). When it is
- * configured server-side, EVERY /api/v1 request must carry it — without this
- * the whole console 401s the moment an operator secures their deployment.
+ * Token storage lives in ./token so this module and the auth gate can both use
+ * it without importing each other. Re-exported here because every existing
+ * caller imports it from the API module.
  */
-const AUTH_TOKEN_KEY = 'qubesair.apiToken';
-
-/** Returns the stored API token, or null when none is set. */
-export function getApiToken(): string | null {
-  try {
-    return localStorage.getItem(AUTH_TOKEN_KEY);
-  } catch {
-    // localStorage can throw in private-browsing or sandboxed contexts.
-    return null;
-  }
-}
+export { getApiToken } from './token';
 
 /** Stores the API token, or clears it when given an empty value. */
 export function setApiToken(token: string): void {
-  try {
-    if (token) {
-      localStorage.setItem(AUTH_TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(AUTH_TOKEN_KEY);
-    }
-  } catch {
-    // Non-fatal: the request layer simply keeps sending unauthenticated calls.
-  }
+  writeApiToken(token);
+  // Notified here rather than at each call site: a caller that saves a token
+  // and forgets to clear the rejected flag leaves the operator staring at the
+  // gate with a correct token already entered.
+  auth.tokenChanged();
 }
 
 /**
@@ -85,7 +72,7 @@ function buildHeaders(hasBody: boolean): HeadersInit {
   if (hasBody) {
     headers['Content-Type'] = 'application/json';
   }
-  const token = getApiToken();
+  const token = readApiToken();
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
@@ -129,6 +116,7 @@ function buildQueryString(options?: ListOptions): string {
  */
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
+    noteAuthFailure(response);
     const error = await parseErrorResponse(response);
     throw new ApiException(
       response.status,
@@ -138,6 +126,18 @@ async function handleResponse<T>(response: Response): Promise<T> {
     );
   }
   return response.json() as Promise<T>;
+}
+
+/**
+ * Raises the auth gate when the server rejects a request.
+ *
+ * The exception is still thrown afterwards: callers that already handle their
+ * own errors keep working, and the gate is what changes what the operator
+ * sees.
+ */
+function noteAuthFailure(response: Response): void {
+  if (response.status !== 401) return;
+  auth.markRejected();
 }
 
 /**
@@ -161,10 +161,15 @@ async function parseErrorResponse(response: Response): Promise<ApiError> {
  */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const hasBody = init?.body !== undefined;
-  return fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: { ...buildHeaders(hasBody), ...(init?.headers ?? {}) },
   });
+  // Callers inspect response.ok themselves, so the gate has to be raised here
+  // too — otherwise a 401 from one of these paths shows up as that view's own
+  // error and the operator is never told to enter a token.
+  noteAuthFailure(response);
+  return response;
 }
 
 /**
@@ -200,6 +205,7 @@ async function put<T>(path: string, body: unknown): Promise<T> {
 async function del(path: string): Promise<void> {
   const response = await request<void>('DELETE', path);
   if (!response.ok) {
+    noteAuthFailure(response);
     const error = await parseErrorResponse(response);
     throw new ApiException(
       response.status,
