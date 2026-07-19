@@ -100,6 +100,63 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	// Additive column migrations. These run after the CREATE TABLE IF NOT
+	// EXISTS statements above so they also upgrade databases created by an
+	// earlier schema version. Each is idempotent (skipped if the column
+	// already exists), so existing rows and data are never destroyed.
+	if err := d.addColumnIfMissing("credentials", "key_version", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// addColumnIfMissing adds a column to a table only if it does not already
+// exist, making the migration safe to run repeatedly on existing databases.
+//
+// SQLite has no "ALTER TABLE ... ADD COLUMN IF NOT EXISTS", so the column set is
+// inspected via PRAGMA table_info first. The ADD COLUMN definition MUST include
+// a non-NULL DEFAULT (as callers pass) so that pre-existing rows receive a
+// deterministic value — for key_version this backfills legacy rows to version 1,
+// which is exactly the key that originally encrypted them.
+func (d *DB) addColumnIfMissing(table, column, definition string) error {
+	// #nosec G202 -- table/column/definition are compile-time constants from
+	// this package, never user input; PRAGMA cannot be parameterized.
+	rows, err := d.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspecting %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	exists := false
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notNull    int
+			dfltValue  sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &primaryKey); err != nil {
+			return fmt.Errorf("scanning table_info for %s: %w", table, err)
+		}
+		if name == column {
+			exists = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	// #nosec G202 -- identifiers are constants from this package, not user input.
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
+	if _, err := d.db.Exec(stmt); err != nil {
+		return fmt.Errorf("adding column %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -140,6 +197,11 @@ CREATE TABLE IF NOT EXISTS infrastructure (
 	updated_at DATETIME NOT NULL
 )`
 
+// createCredentialsTable defines the schema for freshly created databases.
+// key_version records which encryption key version encrypted encrypted_data so
+// the key can be rotated (see internal/keyring). Existing databases created
+// before key_version existed are upgraded by addColumnIfMissing in migrate(),
+// which backfills key_version=1 for legacy rows.
 const createCredentialsTable = `
 CREATE TABLE IF NOT EXISTS credentials (
 	id TEXT PRIMARY KEY,
@@ -147,6 +209,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 	type TEXT NOT NULL,
 	description TEXT DEFAULT '',
 	encrypted_data TEXT NOT NULL,
+	key_version INTEGER NOT NULL DEFAULT 1,
 	last_used DATETIME,
 	created_at DATETIME NOT NULL,
 	updated_at DATETIME NOT NULL

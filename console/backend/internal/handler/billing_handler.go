@@ -40,9 +40,25 @@ type UsageItem struct {
 	Cost    float64 `json:"cost"`
 }
 
+// placeholderNote is returned alongside billing data to make it explicit that
+// the figures are NOT real. This is deliberate honesty: rather than silently
+// returning 0.00 (which reads like "you owe nothing"), callers get a machine-
+// and human-readable signal that a real cost source is not wired up yet.
+//
+// A truthful implementation would estimate cost from each qube's spec (vCPU/
+// memory/disk from tfvars) multiplied by its running duration, or read actual
+// invoices from the cloud provider's billing API. See TODO below.
+const placeholderNote = "PLACEHOLDER: billing is not yet integrated with a cost source. " +
+	"Values are not real. Wire up per-qube spec-based estimation or a provider billing API."
+
 // GetSummary returns billing summary.
+//
+// TODO(billing): replace placeholders with a real estimate. The console already
+// knows each qube's spec (vCPU/memory/disk) and its running/suspended status;
+// a spec-rate table plus running duration would give an honest estimate without
+// depending on an external billing system. For invoiced totals, integrate the
+// cloud provider billing API per zone.
 func (h *BillingHandler) GetSummary(c *gin.Context) {
-	// In production, this would fetch from a billing service
 	summary := BillingSummary{
 		CurrentMonth:   0.00,
 		LastMonth:      0.00,
@@ -53,8 +69,10 @@ func (h *BillingHandler) GetSummary(c *gin.Context) {
 	usage := []UsageItem{}
 
 	c.JSON(http.StatusOK, gin.H{
-		"summary": summary,
-		"usage":   usage,
+		"summary":     summary,
+		"usage":       usage,
+		"placeholder": true,
+		"note":        placeholderNote,
 	})
 }
 
@@ -63,7 +81,9 @@ func (h *BillingHandler) GetUsage(c *gin.Context) {
 	usage := []UsageItem{}
 
 	c.JSON(http.StatusOK, gin.H{
-		"usage": usage,
+		"usage":       usage,
+		"placeholder": true,
+		"note":        placeholderNote,
 	})
 }
 

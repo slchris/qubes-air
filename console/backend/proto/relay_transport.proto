@@ -1,0 +1,108 @@
+// relay_transport.proto
+// =====================================================================
+// Qubes Air 跨机传输：本地 sys-relay ↔ 远端 Remote-Relay 的 gRPC 双向流。
+//
+// 【架构】阶段 T（见 docs/roadmap-to-production.md、docs/grpc-transport-design.md）
+//   - 本地 relay 作为 gRPC 客户端【主动出站】建连到远端 Remote-Relay 的 server，
+//     建立一条长连接【双向流】(Tunnel)。零入站：远端不需要任何入站端口，
+//     家庭 NAT 后可用（relay 只出站、不监听）。
+//   - 一条 Tunnel 上用 request_id 多路复用多个 qrexec 调用（正向 + 反向回程共用）。
+//   - 认证：mTLS（客户端证书 + 服务端证书），证书/私钥存 vault-cloud，
+//     用时经 qrexec ask 下发（替代原 relay SSH 私钥）。[TODO 实现]
+//
+// 【安全模型不变】两侧 dom0 各校验一次：
+//   - 正向：本地 dom0 policy A/B 已放行并改写后，请求才进入本 Tunnel；
+//     远端 Remote-Relay 收到后经【远端 dom0/policy 再校验】才交 qrexec-client-vm。
+//   - 反向（远端→本地，如取 vault 凭据）：帧经 Tunnel 回到本地 relay，
+//     必须再过【本地 dom0 policy C：ask】才执行。Relay 不得直达 dom0。
+//   → 传输层只搬运帧，不做授权决策；授权始终在两侧 dom0。
+// =====================================================================
+
+syntax = "proto3";
+
+package qubesair.transport.v1;
+
+option go_package = "github.com/slchris/qubes-air/console/internal/transport/relaypb;relaypb";
+
+// RelayTransport：本地 relay（client）与远端 Remote-Relay（server）之间的传输服务。
+service RelayTransport {
+  // Tunnel：一条长连接双向流。client（本地 relay）主动出站建立。
+  // 双向：正向 qrexec 调用与反向回程帧都在这一条流上，用 request_id 区分与复用。
+  rpc Tunnel(stream Frame) returns (stream Frame);
+}
+
+// Frame：Tunnel 上的一个帧。oneof 区分帧类型。
+// 一次 qrexec 调用 = 一个 RequestHeader + 0..N 个 Data(chunk) + 一个 EndOfStream，
+// 出错则以 CallError 收尾。反向回程调用同理，方向由 RequestHeader.direction 标明。
+message Frame {
+  // request_id：同一 Tunnel 内唯一，串起一次调用的所有帧（含反向回程）。
+  string request_id = 1;
+
+  oneof kind {
+    Handshake     handshake      = 2;  // 建流后首帧，交换身份/能力
+    RequestHeader request_header = 3;  // 一次 qrexec 调用的头
+    DataChunk     data           = 4;  // 请求/响应的 payload 分片（可多帧）
+    EndOfStream   eos            = 5;  // 某方向数据结束
+    CallError     error          = 6;  // 调用级错误（不影响整条 Tunnel）
+    KeepAlive     keep_alive     = 7;  // 心跳保活
+  }
+}
+
+// Handshake：建流后 client→server（及 server→client 回应）首帧。
+// 承载协议版本与 relay 身份（remote_name 对齐 Qubes RemoteVM 的 remote_name 属性）。
+message Handshake {
+  string protocol_version = 1;   // 例 "v1"
+  string relay_name       = 2;   // 本地 relay 标识（sys-relay-<zone>）
+  string remote_name      = 3;   // 目标远端标识（对齐 RemoteVM remote_name）
+  // 认证在传输层（mTLS）完成，此处仅带非机密的元数据，不放任何密钥。
+}
+
+// Direction：调用发起方向。决定该 request_id 属于正向还是反向回程，
+// 以及落到远端后要再过哪一侧 dom0 policy。
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  // 正向：本地 → 远端。本地 dom0 已校验；远端 dom0/policy 再校验后执行。
+  LOCAL_TO_REMOTE = 1;
+  // 反向回程：远端 → 本地（如远端取本地 vault 凭据）。
+  // 回到本地必须过本地 dom0 policy C（ask）。
+  REMOTE_TO_LOCAL = 2;
+}
+
+// RequestHeader：一次 qrexec 调用的头。
+message RequestHeader {
+  Direction direction    = 1;
+  // qrexec_service：qrexec 服务名（如 qubesair.SomeService、qubes.Gpg）。
+  string    qrexec_service = 2;
+  // source_qube / target_qube：调用的源/目标 qube 名（用于日志与远端 policy 匹配，
+  // 【非】授权凭据——授权由两侧 dom0 独立决定）。
+  string    source_qube  = 3;
+  string    target_qube  = 4;
+  // deadline_unix_ms：可选超时（0 表示不设）。
+  int64     deadline_unix_ms = 5;
+}
+
+// DataChunk：请求或响应的一段 payload。同一 request_id 可多帧，按序拼接。
+message DataChunk {
+  // stream_id：区分同一调用内的子流。约定：
+  //   0 = 请求体（发起方→执行方），1 = 响应体（执行方→发起方），2 = stderr（可选）。
+  uint32 stream_id = 1;
+  bytes  payload   = 2;
+}
+
+// EndOfStream：某个 stream_id 的数据结束。
+message EndOfStream {
+  uint32 stream_id = 1;
+}
+
+// CallError：调用级错误（该 request_id 失败，Tunnel 仍存活）。
+message CallError {
+  // code：稳定错误码（DENIED=远端 policy 拒绝、TIMEOUT、UNAVAILABLE、INTERNAL…）。
+  string code    = 1;
+  string message = 2;
+}
+
+// KeepAlive：心跳。client 周期发送，server 回应；用于探活与保持 NAT 映射。
+// 断线由 client 侧检测并重连（替代 autossh 保活角色）。
+message KeepAlive {
+  int64 unix_ms = 1;   // 发送方时间戳
+}

@@ -1,7 +1,15 @@
-// Qubes Air Console - qrexec Client
+// Package qrexec is a thin, injectable wrapper around Qubes qrexec: it shells
+// out to `qrexec-client-vm <target> <service>`, feeding stdin and returning
+// stdout. Argument allow-listing prevents command injection.
 //
-// 通过 qrexec 与 sys-remote 通信
-
+// This is the low-level primitive for cross-qube calls. It performs NO
+// authorization — that lives in dom0 policy. Callers use it AFTER dom0 has
+// authorized the call (e.g. the gRPC transport's remote-side QrexecInvoker runs
+// a forward call post remote-dom0 re-check; the reverse handler runs a call
+// that the local dom0 policy C has just ask-confirmed).
+//
+// The exec step is behind the Runner interface so tests can capture the call
+// without a real qrexec-client-vm (mirrors the orchestrator terraform runner).
 package qrexec
 
 import (
@@ -12,84 +20,92 @@ import (
 	"time"
 )
 
-// Client qrexec 客户端
-type Client struct {
-	timeout time.Duration
+// Runner executes a single qrexec call and returns its stdout. The default
+// implementation shells out to qrexec-client-vm; tests inject a fake.
+type Runner interface {
+	Run(ctx context.Context, target, service string, input []byte) ([]byte, error)
 }
 
-// NewClient 创建新的 qrexec 客户端
-func NewClient() *Client {
-	return &Client{
-		timeout: 30 * time.Second,
+// Client calls qrexec services with a timeout and argument validation.
+type Client struct {
+	timeout time.Duration
+	runner  Runner
+}
+
+// Option configures a Client.
+type Option func(*Client)
+
+// WithTimeout overrides the per-call timeout (default 30s).
+func WithTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.timeout = d
+		}
 	}
 }
 
-// validQrexecArg checks that a qrexec argument contains only safe characters.
-func validQrexecArg(arg string) bool {
+// WithRunner injects a custom Runner (tests, or an alternate transport).
+func WithRunner(r Runner) Option {
+	return func(c *Client) {
+		if r != nil {
+			c.runner = r
+		}
+	}
+}
+
+// NewClient creates a qrexec client. By default it uses the real
+// qrexec-client-vm runner and a 30s timeout.
+func NewClient(opts ...Option) *Client {
+	c := &Client{timeout: 30 * time.Second, runner: execRunner{}}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+// ValidArg reports whether an argument is a safe qrexec target/service token.
+// Allow-list: [A-Za-z0-9._+-], non-empty. Prevents command injection.
+func ValidArg(arg string) bool {
 	for _, r := range arg {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '+') {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' || r == '+') {
 			return false
 		}
 	}
 	return len(arg) > 0
 }
 
-// Call 调用 qrexec 服务
+// Call invokes a qrexec service: `qrexec-client-vm <target> <service>` with
+// input on stdin, returning stdout. target and service are validated first.
+//
+// Call does NOT authorize — dom0 policy does. Invoke it only for calls dom0 has
+// already authorized.
 func (c *Client) Call(ctx context.Context, target, service string, input []byte) ([]byte, error) {
-	// Validate arguments to prevent command injection
-	if !validQrexecArg(target) {
+	if !ValidArg(target) {
 		return nil, fmt.Errorf("invalid qrexec target: %q", target)
 	}
-	if !validQrexecArg(service) {
+	if !ValidArg(service) {
 		return nil, fmt.Errorf("invalid qrexec service: %q", service)
 	}
-
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	return c.runner.Run(ctx, target, service, input)
+}
 
-	// 构建命令: qrexec-client-vm <target> <service>
-	cmd := exec.CommandContext(ctx, "qrexec-client-vm", target, service) // #nosec G204 -- args are validated above
+// execRunner is the production Runner: it shells out to qrexec-client-vm.
+type execRunner struct{}
 
-	// 设置输入
+func (execRunner) Run(ctx context.Context, target, service string, input []byte) ([]byte, error) {
+	// Args are validated by Client.Call before reaching here.
+	cmd := exec.CommandContext(ctx, "qrexec-client-vm", target, service) // #nosec G204 -- validated args
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
 	}
-
-	// 捕获输出
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-
-	// 执行
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("qrexec call failed: %v, stderr: %s", err, stderr.String())
 	}
-
 	return stdout.Bytes(), nil
-}
-
-// RemoteExec 在远程 Zone 执行命令
-func (c *Client) RemoteExec(ctx context.Context, sysRemote, command string) ([]byte, error) {
-	return c.Call(ctx, sysRemote, "qubes-air.Remote", []byte(command))
-}
-
-// GetStatus 获取 sys-remote 状态
-func (c *Client) GetStatus(ctx context.Context, sysRemote string) (*SysRemoteStatus, error) {
-	output, err := c.Call(ctx, sysRemote, "qubes-air.Status", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// 解析状态 (简化版)
-	return &SysRemoteStatus{
-		Connected: true,
-		RawOutput: string(output),
-	}, nil
-}
-
-// SysRemoteStatus sys-remote 状态
-type SysRemoteStatus struct {
-	Connected bool   `json:"connected"`
-	VPNStatus string `json:"vpn_status"`
-	RawOutput string `json:"raw_output"`
 }
