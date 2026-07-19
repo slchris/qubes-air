@@ -178,6 +178,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		return nil, err
 	}
 	credentialRepo := repository.NewCredentialRepository(db, kr)
+	agentCertRepo := repository.NewAgentCertRepository(db)
 	// The snapshot makes the database the source of truth for which qubes
 	// exist: the executor renders it to the generated var-file before every
 	// terraform invocation, and refuses to act on a qube missing from it.
@@ -206,6 +207,9 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		// the environment, so they can be rotated, scoped and audited in one
 		// place rather than living in a process's env.
 		service.WithPlacementDecider(clusterScheduler),
+		// Mint each agent's client certificate at qube creation. The CA lives in
+		// the credential store and is created on first use.
+		service.WithCertIssuer(service.NewCertIssuer(credentialRepo, agentCertRepo)),
 	}
 
 	jobRepo := repository.NewJobRepository(db)
@@ -248,7 +252,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	return &Dependencies{
 		db:                db,
 		zoneHandler:       handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
-		qubeHandler:       handler.NewQubeHandler(qubeSvc),
+		qubeHandler:       handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
 		infraHandler:      handler.NewInfraHandler(infraSvc),
 		credentialHandler: handler.NewCredentialHandler(credentialSvc),
 		billingHandler:    handler.NewBillingHandler(),

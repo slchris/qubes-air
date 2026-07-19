@@ -77,6 +77,10 @@ type QubeServiceImpl struct {
 	// gRPC tunnel. Never nil: defaults to NoopTransport (CheckReachable then
 	// fails loudly with "no transport configured").
 	transport transport.Transport
+	// issuer mints and registers the agent's client certificate. Nil disables
+	// issuance, in which case a qube is created without an agent identity and
+	// its agent cannot authenticate.
+	issuer *CertIssuer
 	// placer chooses which cluster node a qube runs on. Nil disables automatic
 	// scheduling, in which case placement falls back to the zone default.
 	placer PlacementDecider
@@ -112,6 +116,11 @@ func WithExecutor(exec orchestrator.Executor) QubeServiceOption {
 			s.executor = exec
 		}
 	}
+}
+
+// WithCertIssuer enables agent certificate issuance at qube creation.
+func WithCertIssuer(i *CertIssuer) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.issuer = i }
 }
 
 // WithPlacementDecider enables automatic node selection. Without it a qube is
@@ -196,6 +205,19 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 
 	if err := s.qubeRepo.Create(ctx, qube); err != nil {
 		return nil, err
+	}
+
+	// Mint the agent's identity now, while the qube row exists to own it and
+	// before any infrastructure is built. Issuing later would mean a running
+	// remote with no way to authenticate; issuing earlier would leave a
+	// registered certificate with no qube to revoke it against.
+	if s.issuer != nil {
+		if _, err := s.issuer.IssueFor(ctx, qube); err != nil {
+			// The qube row is left in place deliberately: it already exists, and
+			// deleting it here would race the caller's own view. A qube without a
+			// certificate is visible and retryable; a half-deleted one is not.
+			return nil, fmt.Errorf("%w: issue agent certificate: %v", ErrOrchestration, err)
+		}
 	}
 
 	return s.claimAndEnqueue(ctx, qube,
@@ -364,6 +386,9 @@ func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 		return nil // already released; releasing again is a no-op
 	}
 
+	// NOTE: certificates are deliberately NOT revoked here. Release keeps the
+	// data disk and the qube can be resumed, which would need the same identity
+	// again. Revocation belongs with a purge, when the qube genuinely goes away.
 	_, err = s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{
 			models.QubeStatusRunning, models.QubeStatusStopped,

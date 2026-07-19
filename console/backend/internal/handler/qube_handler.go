@@ -15,11 +15,25 @@ import (
 // QubeHandler handles qube-related HTTP requests.
 type QubeHandler struct {
 	qubeSvc service.QubeService
+	// certs exposes issued agent certificates (metadata only).
+	certs *repository.AgentCertRepository
 }
 
 // NewQubeHandler creates a new QubeHandler.
-func NewQubeHandler(qubeSvc service.QubeService) *QubeHandler {
-	return &QubeHandler{qubeSvc: qubeSvc}
+// QubeHandlerOption customises a QubeHandler.
+type QubeHandlerOption func(*QubeHandler)
+
+// WithCertRepository enables the per-qube certificate listing endpoint.
+func WithCertRepository(r *repository.AgentCertRepository) QubeHandlerOption {
+	return func(h *QubeHandler) { h.certs = r }
+}
+
+func NewQubeHandler(qubeSvc service.QubeService, opts ...QubeHandlerOption) *QubeHandler {
+	h := &QubeHandler{qubeSvc: qubeSvc}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers qube routes on the router group.
@@ -34,6 +48,7 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		qubes.POST("/:id/start", h.Start)
 		qubes.POST("/:id/stop", h.Stop)
 		qubes.GET("/:id/reachable", h.CheckReachable)
+		qubes.GET("/:id/certs", h.ListCerts)
 	}
 }
 
@@ -183,6 +198,28 @@ func (h *QubeHandler) CheckReachable(c *gin.Context) {
 }
 
 // handleQubeError maps service errors to HTTP responses.
+// ListCerts returns the certificates issued to a qube's agent.
+//
+// Deliberately metadata only — fingerprint, validity, revocation state. The
+// private key is returned exactly once, when the certificate is issued, and is
+// never retrievable afterwards: an endpoint that hands out agent keys on demand
+// would make every reader of this API able to impersonate any agent.
+func (h *QubeHandler) ListCerts(c *gin.Context) {
+	if h.certs == nil {
+		respondError(c, http.StatusNotImplemented, errors.New("certificate issuance is not configured"))
+		return
+	}
+	certs, err := h.certs.ListByQube(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		respondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if certs == nil {
+		certs = []*repository.AgentCert{}
+	}
+	c.JSON(http.StatusOK, gin.H{"certs": certs, "count": len(certs)})
+}
+
 // respondOperation writes an async operation result. The Location header points
 // at the job so a client can poll without having to know how to build the URL.
 func respondOperation(c *gin.Context, status int, op *service.Operation) {
