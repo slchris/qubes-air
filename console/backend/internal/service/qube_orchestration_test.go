@@ -46,7 +46,12 @@ func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor) (Zon
 // tests (maps to a terraform -target address).
 const orchTestQubeName = "web01"
 
-func createQubeForOrch(t *testing.T, zoneSvc ZoneService, qubeSvc QubeService) *models.Qube {
+// createQubeForOrch creates a qube and leaves it SUSPENDED, ready to be started.
+//
+// Create now provisions, so it lands on running with a provision call recorded.
+// The tests below assert on exactly one executor call, so the fixture suspends
+// the qube and clears the recording to give them a clean slate.
+func createQubeForOrch(t *testing.T, zoneSvc ZoneService, qubeSvc QubeService, fake *orchestrator.FakeExecutor) *models.Qube {
 	t.Helper()
 	ctx := context.Background()
 
@@ -58,13 +63,19 @@ func createQubeForOrch(t *testing.T, zoneSvc ZoneService, qubeSvc QubeService) *
 	_, err = zoneSvc.Connect(ctx, zone.ID)
 	require.NoError(t, err)
 
-	qube, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+	qubeOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 		Name:   orchTestQubeName,
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
-	return qube
+
+	stopped, err := qubeSvc.Stop(context.Background(), qubeOp.Qube.ID)
+	require.NoError(t, err)
+	if fake != nil {
+		fake.Reset()
+	}
+	return stopped.Qube
 }
 
 // Start must call the executor's Resume, and only then flip DB status. We assert
@@ -75,11 +86,11 @@ func TestStart_CallsResumeThenUpdatesStatus(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc, fake)
 
-	got, err := qubeSvc.Start(ctx, qube.ID)
+	gotOp, err := qubeSvc.Start(ctx, qube.ID)
 	require.NoError(t, err)
-	assert.Equal(t, models.QubeStatusRunning, got.Status)
+	assert.Equal(t, models.QubeStatusRunning, gotOp.Qube.Status)
 
 	calls := fake.Calls()
 	require.Len(t, calls, 1)
@@ -87,8 +98,10 @@ func TestStart_CallsResumeThenUpdatesStatus(t *testing.T) {
 	assert.Equal(t, orchTestQubeName, calls[0].Qube)
 }
 
-// When the executor's Resume fails, the DB status must NOT change (still
-// stopped) — we never report running for a qube the infra did not bring up.
+// When the executor's Resume fails, the qube must NOT be reported running — we
+// never claim a qube is up that the infrastructure did not bring up. It lands on
+// "error" rather than silently reverting, so the failure is visible; error is a
+// valid source status for a retry.
 func TestStart_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	fake := orchestrator.NewFakeExecutor()
 	fake.FailOn[orchestrator.ActionResume] = errors.New("terraform apply failed")
@@ -97,7 +110,7 @@ func TestStart_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc, fake)
 
 	_, err := qubeSvc.Start(ctx, qube.ID)
 	require.Error(t, err)
@@ -106,8 +119,10 @@ func TestStart_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	// Status must be unchanged (still the initial Stopped from Create).
 	after, err := qubeSvc.GetByID(ctx, qube.ID)
 	require.NoError(t, err)
-	assert.Equal(t, models.QubeStatusStopped, after.Status,
-		"status must not flip to running when resume fails")
+	assert.NotEqual(t, models.QubeStatusRunning, after.Status,
+		"must never report running when resume failed")
+	assert.Equal(t, models.QubeStatusError, after.Status,
+		"a failed resume surfaces as error, which is a valid source status for a retry")
 }
 
 // Stop must call the executor's Suspend, then set status to Suspended.
@@ -117,16 +132,16 @@ func TestStop_CallsSuspendThenUpdatesStatus(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc, fake)
 
 	// Bring it up first.
 	_, err := qubeSvc.Start(ctx, qube.ID)
 	require.NoError(t, err)
 	fake.Reset()
 
-	got, err := qubeSvc.Stop(ctx, qube.ID)
+	gotOp, err := qubeSvc.Stop(ctx, qube.ID)
 	require.NoError(t, err)
-	assert.Equal(t, models.QubeStatusSuspended, got.Status)
+	assert.Equal(t, models.QubeStatusSuspended, gotOp.Qube.Status)
 
 	calls := fake.Calls()
 	require.Len(t, calls, 1)
@@ -141,7 +156,7 @@ func TestStop_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc, fake)
 	_, err := qubeSvc.Start(ctx, qube.ID)
 	require.NoError(t, err)
 
@@ -154,8 +169,9 @@ func TestStop_ExecutorFailure_StatusUnchanged(t *testing.T) {
 
 	after, err := qubeSvc.GetByID(ctx, qube.ID)
 	require.NoError(t, err)
-	assert.Equal(t, models.QubeStatusRunning, after.Status,
-		"status must not flip to suspended when suspend fails")
+	assert.NotEqual(t, models.QubeStatusSuspended, after.Status,
+		"must never report suspended when suspend failed — the compute instance may still be running and billing")
+	assert.Equal(t, models.QubeStatusError, after.Status)
 }
 
 // A precondition failure (zone disconnected) must be caught BEFORE the executor
@@ -166,7 +182,7 @@ func TestStart_ZoneDisconnected_ExecutorNotCalled(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc, fake)
 
 	// Disconnect the zone.
 	_, err := zoneSvc.Disconnect(ctx, qube.ZoneID)
@@ -180,23 +196,21 @@ func TestStart_ZoneDisconnected_ExecutorNotCalled(t *testing.T) {
 
 // The default NoopExecutor path (no WithExecutor) still works and rejects unsafe
 // qube names consistently, without touching any infrastructure.
-func TestDefaultNoopExecutor_RejectsUnsafeName(t *testing.T) {
+func TestCreate_RejectsUnsafeName(t *testing.T) {
 	zoneSvc, qubeSvc, cleanup := setupQubeTestServices(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	zone := createConnectedZone(t, zoneSvc)
 
-	// Create with a display-style name containing a space; Create does not
-	// validate against terraform rules, but Start/Stop go through the executor.
-	qube, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-		Name:   "Unsafe Name",
+	// A display-style name with a space is not a valid terraform map key or
+	// -target address. Create now rejects it up front rather than accepting a
+	// qube that could never be started.
+	_, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   "Unsafe Name", // deliberately invalid: spaces are not allowed
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
-	require.NoError(t, err)
-
-	_, err = qubeSvc.Start(ctx, qube.ID)
-	require.Error(t, err, "start must fail because the name is not terraform-safe")
-	assert.ErrorIs(t, err, ErrOrchestration)
+	require.Error(t, err, "create must reject a name that is not terraform-safe")
+	assert.ErrorIs(t, err, ErrInvalidQubeName)
 }

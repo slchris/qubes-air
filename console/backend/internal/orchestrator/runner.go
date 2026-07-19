@@ -20,6 +20,12 @@ const (
 	ActionResume    Action = "resume"
 	ActionSuspend   Action = "suspend"
 	ActionDestroy   Action = "destroy"
+	// ActionRelease performs the same terraform work as ActionSuspend — destroy
+	// the compute VM, keep the data disk — but records a different intent: the
+	// user deleted the qube rather than parking it. They are distinguished so
+	// job history reads truthfully and so the completion hook can land the qube
+	// on "released" rather than "suspended".
+	ActionRelease Action = "release"
 )
 
 // JobState is the lifecycle of a single terraform invocation.
@@ -216,7 +222,7 @@ func (r *Runner) run(job *Job) {
 		err = r.exec.Provision(ctx, job.QubeName)
 	case ActionResume:
 		err = r.exec.Resume(ctx, job.QubeName)
-	case ActionSuspend:
+	case ActionSuspend, ActionRelease:
 		err = r.exec.Suspend(ctx, job.QubeName)
 	case ActionDestroy:
 		err = r.exec.Destroy(ctx, job.QubeName)

@@ -22,6 +22,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/middleware"
+	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
@@ -32,6 +33,11 @@ import (
 const (
 	appName    = "qubes-air-console"
 	appVersion = "0.1.0"
+
+	// orchestratorShutdownGrace is how long a terraform job may finish during
+	// shutdown. A real apply takes minutes; cutting one short is what leaves
+	// infrastructure that terraform has no record of.
+	orchestratorShutdownGrace = 10 * time.Minute
 )
 
 func main() {
@@ -121,10 +127,19 @@ type Dependencies struct {
 	// Held here so it stays a live, injectable dependency; a service will consume
 	// it in the next stage-T wiring step.
 	transport transport.Transport
+	// runner serializes terraform work onto one goroutine. Nil when
+	// orchestration is disabled, in which case the service runs inline.
+	runner *orchestrator.Runner
 }
 
 // Close releases all resources.
 func (d *Dependencies) Close() {
+	// Drain orchestration before the database goes away: the completion hook
+	// writes a qube's terminal status, and terraform gets a signal (not a kill)
+	// so it can persist state rather than stranding VMs and disks.
+	if d.runner != nil {
+		d.runner.Shutdown(orchestratorShutdownGrace)
+	}
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -150,9 +165,32 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
-	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo,
-		service.WithExecutor(buildExecutor(cfg.Orchestrator)),
-		service.WithTransport(xport))
+	exec := buildExecutor(cfg.Orchestrator)
+
+	// The runner turns orchestration asynchronous. Without it the service falls
+	// back to running terraform inline, which cannot work for real applies: they
+	// take minutes against a 15s server write deadline.
+	var runner *orchestrator.Runner
+	qubeSvcOpts := []service.QubeServiceOption{
+		service.WithExecutor(exec),
+		service.WithTransport(xport),
+	}
+	if cfg.Orchestrator.Enabled {
+		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
+			Executor: exec,
+			Store:    orchestrator.NewMemoryJobStore(),
+			OnDone:   makeCompletionHook(qubeRepo),
+		})
+		runner.Start()
+		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
+	}
+
+	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, qubeSvcOpts...)
+
+	// A qube left in a transient status belongs to a job that died with a
+	// previous process — the queue is in memory, so nothing will ever finish it.
+	// Without this they stay "busy" forever and every later operation is refused.
+	reconcileStrandedQubes(context.Background(), qubeRepo)
 
 	// Infrastructure repository and service
 	infraRepo := repository.NewInfraRepository(db)
@@ -183,7 +221,54 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		transport:         xport,
+		runner:            runner,
 	}, nil
+}
+
+// makeCompletionHook returns the callback that records a job's outcome on the
+// qube. It is the only writer of a terminal status once operations are
+// asynchronous: nothing else is still around when terraform finishes.
+func makeCompletionHook(qubeRepo repository.QubeRepository) orchestrator.Completion {
+	return func(ctx context.Context, j *orchestrator.Job) {
+		status := models.QubeStatusError
+		if j.State == orchestrator.JobSucceeded {
+			switch j.Action {
+			case orchestrator.ActionProvision, orchestrator.ActionResume:
+				status = models.QubeStatusRunning
+			case orchestrator.ActionSuspend:
+				status = models.QubeStatusSuspended
+			case orchestrator.ActionRelease, orchestrator.ActionDestroy:
+				status = models.QubeStatusReleased
+			}
+		}
+		if err := qubeRepo.UpdateStatus(ctx, j.QubeID, status); err != nil {
+			log.Printf("orchestrator: job %s finished (%s) but recording status %q failed: %v",
+				j.ID, j.State, status, err)
+		}
+	}
+}
+
+// reconcileStrandedQubes clears transient statuses left behind by a process
+// that died mid-operation. The real infrastructure state is unknown at this
+// point, so they are marked error rather than guessed at — error is a valid
+// source status, so the operator can simply retry.
+func reconcileStrandedQubes(ctx context.Context, qubeRepo repository.QubeRepository) {
+	transient := []models.QubeStatus{
+		models.QubeStatusCreating, models.QubeStatusResuming,
+		models.QubeStatusSuspending, models.QubeStatusDeleting,
+	}
+	stranded, err := qubeRepo.ListByStatus(ctx, transient)
+	if err != nil {
+		log.Printf("orchestrator: could not scan for stranded qubes: %v", err)
+		return
+	}
+	for _, q := range stranded {
+		log.Printf("orchestrator: qube %q was left in %q by a previous process; marking error for retry",
+			q.Name, q.Status)
+		if err := qubeRepo.UpdateStatus(ctx, q.ID, models.QubeStatusError); err != nil {
+			log.Printf("orchestrator: reconciling qube %q failed: %v", q.Name, err)
+		}
+	}
 }
 
 // buildExecutor selects the orchestration executor from configuration. When

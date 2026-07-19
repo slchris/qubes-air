@@ -64,16 +64,18 @@ func TestQubeService_Create(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Test Qube",
+		Name:   "test-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
 
-	qube, err := qubeSvc.Create(ctx, req)
+	qubeOp, err := qubeSvc.Create(ctx, req)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, qube.ID)
-	assert.Equal(t, req.Name, qube.Name)
-	assert.Equal(t, models.QubeStatusStopped, qube.Status)
+	assert.NotEmpty(t, qubeOp.Qube.ID)
+	assert.Equal(t, req.Name, qubeOp.Qube.Name)
+	// Create now provisions: with the default Noop executor the inline run
+	// succeeds immediately, so the qube settles on running rather than stopped.
+	assert.Equal(t, models.QubeStatusRunning, qubeOp.Qube.Status)
 }
 
 func TestQubeService_Create_WithDefaultSpecs(t *testing.T) {
@@ -84,15 +86,15 @@ func TestQubeService_Create_WithDefaultSpecs(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Default Spec Qube",
+		Name:   "default-spec-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
 
-	qube, err := qubeSvc.Create(ctx, req)
+	qubeOp, err := qubeSvc.Create(ctx, req)
 	assert.NoError(t, err)
-	assert.Greater(t, qube.Spec.VCPU, 0)
-	assert.Greater(t, qube.Spec.Memory, 0)
+	assert.Greater(t, qubeOp.Qube.Spec.VCPU, 0)
+	assert.Greater(t, qubeOp.Qube.Spec.Memory, 0)
 }
 
 func TestQubeService_Create_InvalidZone(t *testing.T) {
@@ -102,7 +104,7 @@ func TestQubeService_Create_InvalidZone(t *testing.T) {
 	ctx := context.Background()
 
 	req := &models.QubeCreateRequest{
-		Name:   "Invalid Zone Qube",
+		Name:   "invalid-zone-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: "nonexistent-zone",
 	}
@@ -138,16 +140,16 @@ func TestQubeService_GetByID(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Get Qube",
+		Name:   "get-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, req)
+	createdOp, err := qubeSvc.Create(ctx, req)
 	require.NoError(t, err)
 
-	qube, err := qubeSvc.GetByID(ctx, created.ID)
+	qube, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
-	assert.Equal(t, created.ID, qube.ID)
+	assert.Equal(t, createdOp.Qube.ID, qube.ID)
 }
 
 func TestQubeService_GetByID_NotFound(t *testing.T) {
@@ -170,7 +172,7 @@ func TestQubeService_List(t *testing.T) {
 
 	for i := range 3 {
 		req := &models.QubeCreateRequest{
-			Name:   "Qube " + string(rune('A'+i)),
+			Name:   "qube-" + string(rune('a'+i)),
 			Type:   models.QubeTypeApp,
 			ZoneID: zone.ID,
 		}
@@ -195,14 +197,14 @@ func TestQubeService_Update(t *testing.T) {
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, createReq)
+	createdOp, err := qubeSvc.Create(ctx, createReq)
 	require.NoError(t, err)
 
 	newName := "Updated"
 	updateReq := &models.QubeUpdateRequest{
 		Name: &newName,
 	}
-	updated, err := qubeSvc.Update(ctx, created.ID, updateReq)
+	updated, err := qubeSvc.Update(ctx, createdOp.Qube.ID, updateReq)
 	assert.NoError(t, err)
 	assert.Equal(t, "Updated", updated.Name)
 }
@@ -215,18 +217,24 @@ func TestQubeService_Delete(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "To Delete",
+		Name:   "to-delete",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, req)
+	createdOp, err := qubeSvc.Create(ctx, req)
 	require.NoError(t, err)
 
-	err = qubeSvc.Delete(ctx, created.ID)
+	err = qubeSvc.Delete(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
 
-	_, err = qubeSvc.GetByID(ctx, created.ID)
-	assert.ErrorIs(t, err, ErrQubeNotFound)
+	// Delete RELEASES rather than destroys: the compute instance goes away but
+	// the data disk, and the row describing it, are kept. The row must survive —
+	// it is what keeps the qube in the rendered terraform variables, and dropping
+	// it while the prevent_destroy storage VM is still in state would wedge every
+	// subsequent apply for every qube.
+	after, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)
+	require.NoError(t, err, "a released qube must still exist")
+	assert.Equal(t, models.QubeStatusReleased, after.Status)
 }
 
 func TestQubeService_Start(t *testing.T) {
@@ -242,12 +250,17 @@ func TestQubeService_Start(t *testing.T) {
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, req)
+	createdOp, err := qubeSvc.Create(ctx, req)
 	require.NoError(t, err)
 
-	qube, err := qubeSvc.Start(ctx, created.ID)
-	assert.NoError(t, err)
-	assert.Equal(t, models.QubeStatusRunning, qube.Status)
+	// Create now provisions, so the qube is already running. Starting a running
+	// qube is refused — suspend it first to get a startable state.
+	_, err = qubeSvc.Stop(ctx, createdOp.Qube.ID)
+	require.NoError(t, err)
+
+	qubeOp, err := qubeSvc.Start(ctx, createdOp.Qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, models.QubeStatusRunning, qubeOp.Qube.Status)
 }
 
 func TestQubeService_Stop(t *testing.T) {
@@ -262,16 +275,16 @@ func TestQubeService_Stop(t *testing.T) {
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, req)
+	// Create already leaves the qube running — no explicit Start needed.
+	createdOp, err := qubeSvc.Create(ctx, req)
 	require.NoError(t, err)
-	_, err = qubeSvc.Start(ctx, created.ID)
-	require.NoError(t, err)
+	require.Equal(t, models.QubeStatusRunning, createdOp.Qube.Status)
 
-	// Stop now suspends (releases compute, keeps data), so the recorded status
-	// is Suspended rather than Stopped.
-	qube, err := qubeSvc.Stop(ctx, created.ID)
+	// Stop suspends (releases compute, keeps the data disk), so the recorded
+	// status is Suspended rather than Stopped.
+	qubeOp, err := qubeSvc.Stop(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
-	assert.Equal(t, models.QubeStatusSuspended, qube.Status)
+	assert.Equal(t, models.QubeStatusSuspended, qubeOp.Qube.Status)
 }
 
 func TestQubeService_Start_ZoneDisconnected(t *testing.T) {
@@ -286,13 +299,13 @@ func TestQubeService_Start_ZoneDisconnected(t *testing.T) {
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
-	created, err := qubeSvc.Create(ctx, req)
+	createdOp, err := qubeSvc.Create(ctx, req)
 	require.NoError(t, err)
 
 	_, err = zoneSvc.Disconnect(ctx, zone.ID)
 	require.NoError(t, err)
 
-	_, err = qubeSvc.Start(ctx, created.ID)
+	_, err = qubeSvc.Start(ctx, createdOp.Qube.ID)
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrZoneDisconnected)
 }

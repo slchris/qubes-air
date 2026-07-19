@@ -75,7 +75,7 @@ func TestQubeHandler_Create(t *testing.T) {
 	zone := createTestZoneForHandler(t, zoneSvc)
 
 	reqBody := models.QubeCreateRequest{
-		Name:   "Test Qube",
+		Name:   "test-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
@@ -88,11 +88,16 @@ func TestQubeHandler_Create(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, w.Code)
 
-	var qube models.Qube
-	err := json.Unmarshal(w.Body.Bytes(), &qube)
+	// The response is an operation envelope, not a bare qube: provisioning runs
+	// asynchronously and the caller needs the job id to poll for the outcome.
+	var op struct {
+		Qube  models.Qube `json:"qube"`
+		JobID string      `json:"job_id"`
+	}
+	err := json.Unmarshal(w.Body.Bytes(), &op)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, qube.ID)
-	assert.Equal(t, reqBody.Name, qube.Name)
+	assert.NotEmpty(t, op.Qube.ID)
+	assert.Equal(t, reqBody.Name, op.Qube.Name)
 }
 
 func TestQubeHandler_Create_InvalidZone(t *testing.T) {
@@ -100,7 +105,7 @@ func TestQubeHandler_Create_InvalidZone(t *testing.T) {
 	defer cleanup()
 
 	reqBody := models.QubeCreateRequest{
-		Name:   "Test Qube",
+		Name:   "test-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: "nonexistent-zone",
 	}
@@ -121,15 +126,15 @@ func TestQubeHandler_GetByID(t *testing.T) {
 	ctx := context.Background()
 	zone := createTestZoneForHandler(t, zoneSvc)
 
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-		Name:   "Get Qube",
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   "get-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/api/v1/qubes/"+created.ID, nil)
+	req, _ := http.NewRequest("GET", "/api/v1/qubes/"+createdOp.Qube.ID, nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -137,7 +142,7 @@ func TestQubeHandler_GetByID(t *testing.T) {
 	var qube models.Qube
 	err = json.Unmarshal(w.Body.Bytes(), &qube)
 	assert.NoError(t, err)
-	assert.Equal(t, created.ID, qube.ID)
+	assert.Equal(t, createdOp.Qube.ID, qube.ID)
 }
 
 func TestQubeHandler_GetByID_NotFound(t *testing.T) {
@@ -160,7 +165,7 @@ func TestQubeHandler_List(t *testing.T) {
 
 	for i := range 3 {
 		_, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-			Name:   "Qube " + string(rune('A'+i)),
+			Name:   "qube-" + string(rune('a'+i)),
 			Type:   models.QubeTypeApp,
 			ZoneID: zone.ID,
 		})
@@ -189,24 +194,27 @@ func TestQubeHandler_Delete(t *testing.T) {
 	ctx := context.Background()
 	zone := createTestZoneForHandler(t, zoneSvc)
 
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-		Name:   "To Delete",
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   "to-delete",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("DELETE", "/api/v1/qubes/"+created.ID, nil)
+	req, _ := http.NewRequest("DELETE", "/api/v1/qubes/"+createdOp.Qube.ID, nil)
+	router.ServeHTTP(w, req)
+
+	// 202: the release was queued, not completed.
+	assert.Equal(t, http.StatusAccepted, w.Code)
+
+	// The qube still exists — DELETE releases compute and keeps the data disk.
+	// It must remain in the terraform variable map until the disk is purged.
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/v1/qubes/"+createdOp.Qube.ID, nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-
-	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("GET", "/api/v1/qubes/"+created.ID, nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestQubeHandler_Start(t *testing.T) {
@@ -216,20 +224,26 @@ func TestQubeHandler_Start(t *testing.T) {
 	ctx := context.Background()
 	zone := createTestZoneForHandler(t, zoneSvc)
 
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 		Name:   "start-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
 
+	// Create provisions, so the qube is already running; suspend it to get a
+	// startable state. Starting a running qube is a 409 by design.
+	_, err = qubeSvc.Stop(ctx, createdOp.Qube.ID)
+	require.NoError(t, err)
+
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+created.ID+"/start", nil)
+	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+createdOp.Qube.ID+"/start", nil)
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	// 202: the terraform apply is queued, not done.
+	assert.Equal(t, http.StatusAccepted, w.Code)
 
-	qube, err := qubeSvc.GetByID(ctx, created.ID)
+	qube, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, models.QubeStatusRunning, qube.Status)
 }
@@ -241,22 +255,22 @@ func TestQubeHandler_Stop(t *testing.T) {
 	ctx := context.Background()
 	zone := createTestZoneForHandler(t, zoneSvc)
 
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 		Name:   "stop-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
-	_, err = qubeSvc.Start(ctx, created.ID)
-	require.NoError(t, err)
+	// Create already leaves the qube running, ready to be stopped.
+	require.Equal(t, models.QubeStatusRunning, createdOp.Qube.Status)
 
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+created.ID+"/stop", nil)
+	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+createdOp.Qube.ID+"/stop", nil)
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusAccepted, w.Code)
 
-	qube, err := qubeSvc.GetByID(ctx, created.ID)
+	qube, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
 	// Stop suspends: compute released, data retained.
 	assert.Equal(t, models.QubeStatusSuspended, qube.Status)

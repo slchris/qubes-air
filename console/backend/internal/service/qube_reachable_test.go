@@ -35,7 +35,7 @@ func setupWithTransport(t *testing.T, xport transport.Transport) (QubeService, s
 
 	ctx := context.Background()
 	zone := createConnectedZone(t, zoneSvc)
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 		Name:   "reach-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
@@ -46,7 +46,7 @@ func setupWithTransport(t *testing.T, xport transport.Transport) (QubeService, s
 		db.Close()
 		os.Remove(tmpFile.Name())
 	}
-	return qubeSvc, created.ID, cleanup
+	return qubeSvc, createdOp.Qube.ID, cleanup
 }
 
 func TestCheckReachable_OK(t *testing.T) {
@@ -91,14 +91,14 @@ func TestCheckReachable_NoTransportConfigured(t *testing.T) {
 
 	ctx := context.Background()
 	zone := createConnectedZone(t, zoneSvc)
-	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 		Name:   "noop-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
 	require.NoError(t, err)
 
-	_, err = qubeSvc.CheckReachable(ctx, created.ID)
+	_, err = qubeSvc.CheckReachable(ctx, createdOp.Qube.ID)
 	assert.ErrorIs(t, err, ErrUnreachable)
 }
 

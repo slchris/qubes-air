@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
 )
@@ -90,13 +91,15 @@ func (h *QubeHandler) Create(c *gin.Context) {
 		return
 	}
 
-	qube, err := h.qubeSvc.Create(c.Request.Context(), &req)
+	op, err := h.qubeSvc.Create(c.Request.Context(), &req)
 	if err != nil {
 		handleQubeError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusCreated, qube)
+	// 201 with the row, but the infrastructure is not up yet: provisioning runs
+	// on a background worker and takes minutes. Poll the job for the outcome.
+	respondOperation(c, http.StatusCreated, op)
 }
 
 // Update handles PUT /qubes/:id.
@@ -127,33 +130,41 @@ func (h *QubeHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "qube deleted"})
+	// Released, not destroyed: the compute VM goes away and the data disk stays.
+	// Discarding the disk is a separate, explicitly confirmed action.
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "qube released: compute is being destroyed, the data disk is retained",
+	})
 }
 
 // Start handles POST /qubes/:id/start.
 func (h *QubeHandler) Start(c *gin.Context) {
 	id := c.Param("id")
 
-	qube, err := h.qubeSvc.Start(c.Request.Context(), id)
+	op, err := h.qubeSvc.Start(c.Request.Context(), id)
 	if err != nil {
 		handleQubeError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, qube)
+	// 202: the terraform apply has been queued, not performed. The qube is in a
+	// transient status and settles when the job completes.
+	respondOperation(c, http.StatusAccepted, op)
 }
 
 // Stop handles POST /qubes/:id/stop.
 func (h *QubeHandler) Stop(c *gin.Context) {
 	id := c.Param("id")
 
-	qube, err := h.qubeSvc.Stop(c.Request.Context(), id)
+	op, err := h.qubeSvc.Stop(c.Request.Context(), id)
 	if err != nil {
 		handleQubeError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, qube)
+	// 202: the terraform apply has been queued, not performed. The qube is in a
+	// transient status and settles when the job completes.
+	respondOperation(c, http.StatusAccepted, op)
 }
 
 // CheckReachable handles GET /qubes/:id/reachable. It probes the remote qube
@@ -172,8 +183,28 @@ func (h *QubeHandler) CheckReachable(c *gin.Context) {
 }
 
 // handleQubeError maps service errors to HTTP responses.
+// respondOperation writes an async operation result. The Location header points
+// at the job so a client can poll without having to know how to build the URL.
+func respondOperation(c *gin.Context, status int, op *service.Operation) {
+	if op == nil {
+		c.JSON(status, gin.H{})
+		return
+	}
+	body := gin.H{"qube": op.Qube}
+	if op.JobID != "" {
+		body["job_id"] = op.JobID
+		c.Header("Location", "/api/v1/jobs/"+op.JobID)
+	}
+	c.JSON(status, body)
+}
+
 func handleQubeError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, repository.ErrTransitionConflict):
+		// An operation is already in flight for this qube.
+		respondError(c, http.StatusConflict, err)
+	case errors.Is(err, orchestrator.ErrQueueFull):
+		respondError(c, http.StatusTooManyRequests, err)
 	case errors.Is(err, service.ErrQubeNotFound):
 		respondError(c, http.StatusNotFound, err)
 	case errors.Is(err, service.ErrZoneNotFound):
@@ -182,6 +213,8 @@ func handleQubeError(c *gin.Context, err error) {
 		respondError(c, http.StatusConflict, err)
 	case errors.Is(err, service.ErrZoneDisconnected):
 		respondError(c, http.StatusPreconditionFailed, err)
+	case errors.Is(err, service.ErrInvalidQubeName):
+		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrInvalidQubeType):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrUnreachable):

@@ -25,6 +25,11 @@ var (
 	// infrastructure action (terraform suspend/resume). When this is returned
 	// the DB status is left unchanged.
 	ErrOrchestration = errors.New("orchestration action failed")
+
+	// ErrInvalidQubeName means the name cannot be used as a terraform map key
+	// or -target address: only alphanumerics, '-', '_' and '.', starting with
+	// an alphanumeric, at most 64 characters.
+	ErrInvalidQubeName = errors.New("invalid qube name")
 	// ErrUnreachable wraps a failure to reach a remote qube over the gRPC
 	// transport (cross-machine qrexec). The health-check call did not complete.
 	ErrUnreachable = errors.New("remote qube unreachable")
@@ -37,13 +42,18 @@ const pingService = "qubesair.Ping"
 
 // QubeService defines qube business logic operations.
 type QubeService interface { //nolint:dupl
-	Create(ctx context.Context, req *models.QubeCreateRequest) (*models.Qube, error)
+	// Create records the qube and enqueues a provision job. The infrastructure
+	// does not exist when this returns — poll the job.
+	Create(ctx context.Context, req *models.QubeCreateRequest) (*Operation, error)
 	GetByID(ctx context.Context, id string) (*models.Qube, error)
 	List(ctx context.Context, opts repository.QubeListOptions) ([]*models.Qube, error)
 	Update(ctx context.Context, id string, req *models.QubeUpdateRequest) (*models.Qube, error)
 	Delete(ctx context.Context, id string) error
-	Start(ctx context.Context, id string) (*models.Qube, error)
-	Stop(ctx context.Context, id string) (*models.Qube, error)
+	// Start and Stop are asynchronous: they claim the qube into a transient
+	// status, enqueue a terraform job and return immediately. A real apply takes
+	// minutes, far beyond any HTTP write deadline.
+	Start(ctx context.Context, id string) (*Operation, error)
+	Stop(ctx context.Context, id string) (*Operation, error)
 	// CheckReachable probes a remote qube over the gRPC transport (cross-machine
 	// qrexec health check). Returns the probe response on success.
 	CheckReachable(ctx context.Context, id string) (string, error)
@@ -61,6 +71,23 @@ type QubeServiceImpl struct {
 	// gRPC tunnel. Never nil: defaults to NoopTransport (CheckReachable then
 	// fails loudly with "no transport configured").
 	transport transport.Transport
+	// submitter queues terraform work. When nil the service runs the executor
+	// inline, which preserves the previous synchronous behaviour for tests and
+	// for deployments with no orchestration configured.
+	submitter JobSubmitter
+}
+
+// JobSubmitter queues an infrastructure operation and returns the job that will
+// carry it out. Implemented by orchestrator.Runner.
+type JobSubmitter interface {
+	Submit(ctx context.Context, qubeID, qubeName string, action orchestrator.Action) (*orchestrator.Job, error)
+}
+
+// Operation is what a mutating qube endpoint returns: the qube as it stands now
+// (already in a transient status) plus the id of the job doing the real work.
+type Operation struct {
+	Qube  *models.Qube `json:"qube"`
+	JobID string       `json:"job_id,omitempty"`
 }
 
 // QubeServiceOption customizes a QubeService at construction. Options keep
@@ -76,6 +103,13 @@ func WithExecutor(exec orchestrator.Executor) QubeServiceOption {
 			s.executor = exec
 		}
 	}
+}
+
+// WithJobSubmitter makes orchestration asynchronous by queueing work instead of
+// running it inline. Without it the service falls back to running the executor
+// synchronously, which keeps tests and unconfigured deployments working.
+func WithJobSubmitter(js JobSubmitter) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.submitter = js }
 }
 
 // WithTransport injects the cross-machine gRPC transport used by CheckReachable.
@@ -107,20 +141,29 @@ func NewQubeService(
 	return s
 }
 
-// Create creates a new qube.
-func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequest) (*models.Qube, error) {
+// Create records the qube and provisions it.
+//
+// Until now this only wrote a database row: the UI reported a qube that had no
+// VM behind it. The row is still written first — it is what the tfvars renderer
+// reads, so terraform cannot learn about the qube until it exists — and the
+// provision job is then queued against it.
+func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequest) (*Operation, error) {
 	if err := s.validateQubeCreateRequest(ctx, req); err != nil {
 		return nil, err
 	}
 
 	qube := buildNewQube(req)
 	applyDefaultSpec(qube)
+	// Start in pending so the claim below has a defined source status.
+	qube.Status = models.QubeStatusPending
 
 	if err := s.qubeRepo.Create(ctx, qube); err != nil {
 		return nil, err
 	}
 
-	return qube, nil
+	return s.claimAndEnqueue(ctx, qube,
+		[]models.QubeStatus{models.QubeStatusPending},
+		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError)
 }
 
 // validateQubeCreateRequest validates qube creation request.
@@ -131,6 +174,14 @@ func (s *QubeServiceImpl) validateQubeCreateRequest(ctx context.Context, req *mo
 
 	if !req.Type.IsValid() {
 		return ErrInvalidQubeType
+	}
+
+	// The name becomes a terraform map key and a -target address, so it must be
+	// safe there. Rejecting it here turns what used to be a confusing failure at
+	// first Start (or, before Create provisioned anything, a qube that could
+	// never be started at all) into an immediate, actionable 400.
+	if !orchestrator.ValidQubeName(req.Name) {
+		return fmt.Errorf("%w: %q", ErrInvalidQubeName, req.Name)
 	}
 
 	// Zone is optional - only validate if provided
@@ -254,17 +305,36 @@ func applyQubeUpdates(qube *models.Qube, req *models.QubeUpdateRequest) {
 }
 
 // Delete removes a qube.
+// Delete releases a qube: terraform destroys the compute instance while the
+// data disk, and the storage-holder VM that owns it, are retained.
+//
+// This is deliberately not a teardown, and the database row is deliberately
+// kept. The storage holder carries lifecycle.prevent_destroy, so destroying it
+// is a plan-time error rather than something a DELETE can perform; and dropping
+// the qube from the rendered terraform variables while its storage VM is still
+// in state does not bypass that guard — it wedges every subsequent apply, for
+// every qube. Discarding the data is therefore a separate, explicitly confirmed
+// action, and until then the qube must keep being rendered.
+//
+// Unlike before, this no longer requires the qube to be stopped: releasing a
+// running qube is exactly the operation that stops it.
 func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 	qube, err := s.qubeRepo.GetByID(ctx, id)
 	if err != nil {
 		return ErrQubeNotFound
 	}
-
-	if qube.Status == models.QubeStatusRunning {
-		return ErrQubeNotStopped
+	if qube.Status == models.QubeStatusReleased {
+		return nil // already released; releasing again is a no-op
 	}
 
-	return s.qubeRepo.Delete(ctx, id)
+	_, err = s.claimAndEnqueue(ctx, qube,
+		[]models.QubeStatus{
+			models.QubeStatusRunning, models.QubeStatusStopped,
+			models.QubeStatusSuspended, models.QubeStatusPending,
+			models.QubeStatusError,
+		},
+		models.QubeStatusDeleting, orchestrator.ActionRelease, qube.Status)
+	return err
 }
 
 // Start starts (resumes) a qube.
@@ -274,27 +344,118 @@ func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 // status flipped to running. If orchestration fails the DB status is left
 // untouched and an error is returned — we never report "running" for a qube the
 // infrastructure did not actually bring up.
-func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*models.Qube, error) {
+// claimAndEnqueue moves the qube into a transient status and queues the work.
+//
+// The claim comes first and is atomic: it both validates that the operation
+// makes sense from the current status and reserves the qube, so a double click
+// cannot enqueue two multi-minute applies. If queueing then fails we roll the
+// status back, otherwise the qube would be stuck "busy" with nothing running.
+func (s *QubeServiceImpl) claimAndEnqueue(
+	ctx context.Context,
+	qube *models.Qube,
+	from []models.QubeStatus,
+	to models.QubeStatus,
+	action orchestrator.Action,
+	revertTo models.QubeStatus,
+) (*Operation, error) {
+	if err := s.qubeRepo.ClaimTransition(ctx, qube.ID, from, to); err != nil {
+		return nil, err
+	}
+
+	// No submitter configured: run inline and settle the status here. This keeps
+	// the console usable (and tests synchronous) without an orchestration queue.
+	if s.submitter == nil {
+		if err := s.runInline(ctx, qube, action); err != nil {
+			_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, models.QubeStatusError)
+			return nil, fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err)
+		}
+		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
+			return nil, err
+		}
+		updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
+		if err != nil {
+			return nil, err
+		}
+		return &Operation{Qube: updated}, nil
+	}
+
+	job, err := s.submitter.Submit(ctx, qube.ID, qube.Name, action)
+	if err != nil {
+		// Nothing is running, so release the claim rather than leaving the qube
+		// pinned in a transient status forever.
+		_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, revertTo)
+		return nil, fmt.Errorf("%w: enqueue %s %q: %v", ErrOrchestration, action, qube.Name, err)
+	}
+
+	updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &Operation{Qube: updated, JobID: job.ID}, nil
+}
+
+// runInline performs the action synchronously (no queue configured).
+func (s *QubeServiceImpl) runInline(ctx context.Context, qube *models.Qube, action orchestrator.Action) error {
+	switch action {
+	case orchestrator.ActionResume:
+		return s.executor.Resume(ctx, qube.Name)
+	case orchestrator.ActionSuspend, orchestrator.ActionRelease:
+		return s.executor.Suspend(ctx, qube.Name)
+	case orchestrator.ActionProvision:
+		return s.executor.Provision(ctx, qube.Name)
+	case orchestrator.ActionDestroy:
+		return s.executor.Destroy(ctx, qube.Name)
+	default:
+		return fmt.Errorf("unknown action %q", action)
+	}
+}
+
+// terminalStatusFor maps an action to the status a successful run lands on.
+func terminalStatusFor(action orchestrator.Action) models.QubeStatus {
+	switch action {
+	case orchestrator.ActionResume, orchestrator.ActionProvision:
+		return models.QubeStatusRunning
+	case orchestrator.ActionSuspend:
+		return models.QubeStatusSuspended
+	case orchestrator.ActionRelease:
+		return models.QubeStatusReleased
+	case orchestrator.ActionDestroy:
+		return models.QubeStatusReleased
+	default:
+		return models.QubeStatusError
+	}
+}
+
+// Start resumes a qube: terraform rebuilds the compute VM and re-attaches the
+// existing data disk. It does not wait — that takes minutes on a real cluster.
+// The qube goes to "resuming" immediately and reaches "running" or "error" when
+// the job finishes; poll the returned job id.
+func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*Operation, error) {
 	qube, err := s.qubeRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, ErrQubeNotFound
 	}
-
 	if err := s.verifyZoneConnected(ctx, qube.ZoneID); err != nil {
 		return nil, err
 	}
+	return s.claimAndEnqueue(ctx, qube,
+		[]models.QubeStatus{
+			models.QubeStatusStopped, models.QubeStatusSuspended,
+			models.QubeStatusReleased, models.QubeStatusError,
+		},
+		models.QubeStatusResuming, orchestrator.ActionResume, qube.Status)
+}
 
-	// 1) Trigger the real infrastructure action first.
-	if err := s.executor.Resume(ctx, qube.Name); err != nil {
-		return nil, fmt.Errorf("%w: resume %q: %v", ErrOrchestration, qube.Name, err)
+// Stop suspends a qube: terraform destroys the compute VM and keeps the data
+// disk. Asynchronous, same contract as Start.
+func (s *QubeServiceImpl) Stop(ctx context.Context, id string) (*Operation, error) {
+	qube, err := s.qubeRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, ErrQubeNotFound
 	}
-
-	// 2) Only after resume succeeds do we record the new state.
-	if err := s.qubeRepo.UpdateStatus(ctx, id, models.QubeStatusRunning); err != nil {
-		return nil, err
-	}
-
-	return s.qubeRepo.GetByID(ctx, id)
+	return s.claimAndEnqueue(ctx, qube,
+		[]models.QubeStatus{models.QubeStatusRunning, models.QubeStatusError},
+		models.QubeStatusSuspending, orchestrator.ActionSuspend, qube.Status)
 }
 
 // verifyZoneConnected checks if the zone is connected.
@@ -319,24 +480,6 @@ func (s *QubeServiceImpl) verifyZoneConnected(ctx context.Context, zoneID string
 // distinct from Stopped — to reflect that compute was released but data is
 // preserved and the qube can be resumed. If orchestration fails the DB status is
 // left unchanged.
-func (s *QubeServiceImpl) Stop(ctx context.Context, id string) (*models.Qube, error) {
-	qube, err := s.qubeRepo.GetByID(ctx, id)
-	if err != nil {
-		return nil, ErrQubeNotFound
-	}
-
-	// 1) Trigger the real infrastructure action first.
-	if err := s.executor.Suspend(ctx, qube.Name); err != nil {
-		return nil, fmt.Errorf("%w: suspend %q: %v", ErrOrchestration, qube.Name, err)
-	}
-
-	// 2) Only after suspend succeeds do we record the new state.
-	if err := s.qubeRepo.UpdateStatus(ctx, id, models.QubeStatusSuspended); err != nil {
-		return nil, err
-	}
-
-	return s.qubeRepo.GetByID(ctx, id)
-}
 
 // CheckReachable probes a remote qube's reachability over the gRPC transport: it
 // forwards a qrexec health-check call (qubesair.Ping) to the qube's name across
