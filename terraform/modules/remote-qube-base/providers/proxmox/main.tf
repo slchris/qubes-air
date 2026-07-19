@@ -216,6 +216,15 @@ resource "proxmox_virtual_environment_vm" "compute" {
   lifecycle {
     ignore_changes = [
       network_device, # MAC 由 Proxmox 分配, 忽略以免每次 plan 抖动
+
+      # node_name: 计算实例实际所在节点可能被 terraform 之外的力量改变 ——
+      # Proxmox HA 故障转移、运维手动迁移、或 CRS 重平衡。共享存储(Ceph)让这些
+      # 都是合法且无损的操作。若不忽略, 下一次 apply 会认为"位置漂移了"并把 VM
+      # 迁回原节点 —— 而这恰恰会撤销 HA 刚做的救援。
+      #
+      # 注意语义: 这意味着**初始放置**由调度器决定并写进 tfvars, 之后的移动交给
+      # 集群自己管。要强制换节点, 改 tfvars 后需显式 taint/replace。
+      node_name,
     ]
   }
 }

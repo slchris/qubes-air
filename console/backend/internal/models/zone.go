@@ -59,6 +59,14 @@ type ProxmoxZoneConfig struct {
 	// SSHPublicKeys are injected by cloud-init. PUBLIC keys only — a private
 	// key must never reach this struct, which is persisted and API-visible.
 	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`
+	// CredentialID references an entry in the encrypted credential store
+	// holding this cluster's API token (or username/password).
+	//
+	// The secret is deliberately NOT stored here: ZoneConfig is returned by the
+	// zones API in cleartext. Keeping only the reference means the secret can be
+	// rotated and audited in one place, and never leaves the credential store
+	// except to the components that must call the cluster.
+	CredentialID string `json:"credential_id,omitempty"`
 }
 
 type ZoneConfig struct {

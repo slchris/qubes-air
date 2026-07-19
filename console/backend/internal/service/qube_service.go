@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -30,6 +31,11 @@ var (
 	// or -target address: only alphanumerics, '-', '_' and '.', starting with
 	// an alphanumeric, at most 64 characters.
 	ErrInvalidQubeName = errors.New("invalid qube name")
+
+	// ErrPlacement means no cluster node could take the qube. This is a hard
+	// failure by design: Proxmox would accept an overcommitted placement and let
+	// the node thrash instead.
+	ErrPlacement = errors.New("no node available for this qube")
 	// ErrUnreachable wraps a failure to reach a remote qube over the gRPC
 	// transport (cross-machine qrexec). The health-check call did not complete.
 	ErrUnreachable = errors.New("remote qube unreachable")
@@ -71,6 +77,9 @@ type QubeServiceImpl struct {
 	// gRPC tunnel. Never nil: defaults to NoopTransport (CheckReachable then
 	// fails loudly with "no transport configured").
 	transport transport.Transport
+	// placer chooses which cluster node a qube runs on. Nil disables automatic
+	// scheduling, in which case placement falls back to the zone default.
+	placer PlacementDecider
 	// submitter queues terraform work. When nil the service runs the executor
 	// inline, which preserves the previous synchronous behaviour for tests and
 	// for deployments with no orchestration configured.
@@ -103,6 +112,12 @@ func WithExecutor(exec orchestrator.Executor) QubeServiceOption {
 			s.executor = exec
 		}
 	}
+}
+
+// WithPlacementDecider enables automatic node selection. Without it a qube is
+// placed on the zone's default node.
+func WithPlacementDecider(p PlacementDecider) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.placer = p }
 }
 
 // WithJobSubmitter makes orchestration asynchronous by queueing work instead of
@@ -156,6 +171,28 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 	applyDefaultSpec(qube)
 	// Start in pending so the claim below has a defined source status.
 	qube.Status = models.QubeStatusPending
+
+	// Resolve placement BEFORE writing the row, and persist the concrete node.
+	// Recomputing it on every apply would let a qube drift between nodes as
+	// cluster load changes, which terraform would see as a reason to rebuild the
+	// VM. Deciding once and recording the answer also makes "why is it here?"
+	// answerable later.
+	if req.ZoneID != "" {
+		zone, err := s.zoneRepo.GetByID(ctx, req.ZoneID)
+		if err != nil {
+			return nil, ErrZoneNotFound
+		}
+		node, reason, err := s.resolvePlacement(ctx, qube, zone)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrPlacement, err)
+		}
+		qube.Spec.Node = node
+		if node != "" {
+			log.Printf("scheduler: placing qube %q on node %q (%s)", qube.Name, node, reason)
+		} else {
+			log.Printf("scheduler: qube %q has no node yet (%s)", qube.Name, reason)
+		}
+	}
 
 	if err := s.qubeRepo.Create(ctx, qube); err != nil {
 		return nil, err

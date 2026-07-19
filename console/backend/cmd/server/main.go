@@ -167,6 +167,17 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+
+	// The keyring is validated in cfg.Validate() at load time, so a
+	// misconfigured key fails startup rather than silently falling back to the
+	// insecure default. It supports multiple key versions for rotation
+	// (see cmd/rotate-key). Built here because the scheduler needs the
+	// credential store to reach the cluster.
+	kr, err := cfg.Keyring()
+	if err != nil {
+		return nil, err
+	}
+	credentialRepo := repository.NewCredentialRepository(db, kr)
 	// The snapshot makes the database the source of truth for which qubes
 	// exist: the executor renders it to the generated var-file before every
 	// terraform invocation, and refuses to act on a qube missing from it.
@@ -179,7 +190,14 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
+		// Automatic node selection. Cluster credentials are resolved from the
+		// encrypted credential store via the zone's credential_id — never from
+		// the environment, so they can be rotated, scoped and audited in one
+		// place rather than living in a process's env.
+		service.WithPlacementDecider(service.NewClusterScheduler(
+			service.NewZoneCredentialResolver(zoneRepo, credentialRepo))),
 	}
+
 	jobRepo := repository.NewJobRepository(db)
 	if cfg.Orchestrator.Enabled {
 		// Jobs are persisted, not held in memory: they are the audit record of
@@ -211,15 +229,6 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	infraRepo := repository.NewInfraRepository(db)
 	infraSvc := service.NewInfraService(infraRepo)
 
-	// Credential repository and service. The keyring is validated in
-	// cfg.Validate() at load time, so a misconfigured key fails startup rather
-	// than silently falling back to the insecure default. The keyring supports
-	// multiple key versions for rotation (see cmd/rotate-key).
-	kr, err := cfg.Keyring()
-	if err != nil {
-		return nil, err
-	}
-	credentialRepo := repository.NewCredentialRepository(db, kr)
 	credentialSvc := service.NewCredentialService(credentialRepo)
 
 	// Settings repository and service
