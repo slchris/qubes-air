@@ -9,28 +9,58 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"time"
+
+	"github.com/slchris/qubes-air/console/internal/repository"
 	"sync"
 
 	"github.com/slchris/qubes-air/console/internal/transport"
 	pb "github.com/slchris/qubes-air/console/internal/transport/relaypb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 )
 
 // ServerConfig configures the remote-side server.
 type ServerConfig struct {
 	Listen string      // host:port to listen on (remote side)
 	TLS    *tls.Config // mTLS: server cert + require+verify client cert (relay identity)
+	// CertRegistry authorizes client certificates and is what makes revocation
+	// possible. Without it a CA-signed certificate is valid forever.
+	CertRegistry CertRegistry
+	// ReauthorizeInterval re-checks the peer's certificate on a live tunnel
+	// (default reauthorizeInterval). Handshake-time checks alone are not
+	// enough: these streams are long-lived, so a revoked agent would keep an
+	// established connection indefinitely.
+	ReauthorizeInterval time.Duration
 }
 
-// QrexecInvoker runs a qrexec call locally on the remote host AFTER the remote
-// dom0/policy has re-checked it. The concrete impl shells out to
-// `qrexec-client-vm <target> <service>` (mirror internal/qrexec Client.Call),
-// with its own name allow-listing.
+// CertRegistry authorizes client certificates by fingerprint.
+// Implemented by repository.AgentCertRepository.
+type CertRegistry interface {
+	Authorize(ctx context.Context, fingerprint string) (*repository.AgentCert, error)
+	TouchLastSeen(ctx context.Context, fingerprint string) error
+}
+
+// reauthorizeInterval is how often a live tunnel re-checks its peer certificate
+// against the registry.
+//
+// This bounds how long a revoked agent keeps an already-open connection. One
+// minute trades a small amount of database traffic for a revocation that
+// actually takes effect while someone is watching.
+const reauthorizeInterval = time.Minute
+
+// QrexecInvoker runs a qrexec call locally on the remote host.
+//
+// NOTE: an earlier comment here said calls arrive "AFTER the remote dom0/policy
+// has re-checked it". A non-Qubes remote has no dom0 (see
+// docs/remote-agent-design.md); the implementation's own name allow-listing is
+// defence in depth, not an authorization boundary.
 type QrexecInvoker interface {
 	Invoke(ctx context.Context, target, service string, in []byte) ([]byte, error)
 }
@@ -60,6 +90,77 @@ func NewServerWithQrexec(cfg ServerConfig) *Server {
 	return NewServer(cfg, NewQrexecInvoker())
 }
 
+// verifyRegisteredPeer authorizes a client certificate against the registry.
+//
+// Runs after the standard chain verification, so the certificate is already
+// known to be CA-signed and in date; this adds "and we still permit it".
+func (s *Server) verifyRegisteredPeer(rawCerts [][]byte, chains [][]*x509.Certificate) error {
+	if len(chains) == 0 || len(chains[0]) == 0 {
+		return fmt.Errorf("no verified certificate chain")
+	}
+	leaf := chains[0][0]
+	fp := repository.Fingerprint(leaf)
+
+	cert, err := s.cfg.CertRegistry.Authorize(context.Background(), fp)
+	if err != nil {
+		// Log the distinct cases: an unregistered certificate that nonetheless
+		// carries a valid CA signature is a very different event from an
+		// ordinary revocation, and collapsing them would hide the first among
+		// the second.
+		log.Printf("grpc server: rejecting client cert %s (CN=%q): %v",
+			fp[:16], leaf.Subject.CommonName, err)
+		return err
+	}
+	if err := s.cfg.CertRegistry.TouchLastSeen(context.Background(), fp); err != nil {
+		// Non-fatal: this is operational visibility, not authorization.
+		log.Printf("grpc server: could not record last-seen for %s: %v", fp[:16], err)
+	}
+	log.Printf("grpc server: accepted client cert %s (CN=%q, qube=%s)",
+		fp[:16], leaf.Subject.CommonName, cert.QubeID)
+	return nil
+}
+
+// peerFingerprint extracts the connected peer's certificate fingerprint.
+func peerFingerprint(ctx context.Context) (string, bool) {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return "", false
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.VerifiedChains) == 0 || len(tlsInfo.State.VerifiedChains[0]) == 0 {
+		return "", false
+	}
+	return repository.Fingerprint(tlsInfo.State.VerifiedChains[0][0]), true
+}
+
+// reauthorizeLoop tears down the tunnel once its certificate stops being
+// authorized. It exits when the tunnel does.
+func (s *Server) reauthorizeLoop(ctx context.Context, cancel context.CancelFunc, fingerprint string) {
+	interval := s.cfg.ReauthorizeInterval
+	if interval <= 0 {
+		interval = reauthorizeInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.cfg.CertRegistry.Authorize(ctx, fingerprint); err != nil {
+				if ctx.Err() != nil {
+					return // tunnel already closing
+				}
+				log.Printf("grpc server: closing tunnel, cert %s no longer authorized: %v",
+					fingerprint[:16], err)
+				cancel()
+				return
+			}
+		}
+	}
+}
+
 // Serve starts the gRPC server with mTLS and blocks until it stops. When ctx is
 // cancelled the server is gracefully stopped and Serve returns nil.
 func (s *Server) Serve(ctx context.Context) error {
@@ -67,9 +168,23 @@ func (s *Server) Serve(ctx context.Context) error {
 		return fmt.Errorf("grpc server: nil TLS config (mTLS is required)")
 	}
 	// Require and verify the client certificate (relay identity). mTLS proves
-	// *who* connected; it is NOT authorization — that stays in the two dom0s.
+	// *who* connected; it is NOT authorization for a given call — that stays in
+	// the local dom0 policy.
 	if s.cfg.TLS.ClientAuth == tls.NoClientCert {
 		s.cfg.TLS.ClientAuth = tls.RequireAndVerifyClientCert
+	}
+
+	// A CA signature alone grants PERMANENT access — there is no way to take it
+	// back without a revocation mechanism. Checking the certificate against a
+	// registry we own closes that: revocation is a row update this callback
+	// reads on the next handshake, with no CRL to publish and no fetch that can
+	// silently fail. Without a registry configured, any CA-signed certificate is
+	// accepted forever, which is worth saying out loud.
+	if s.cfg.CertRegistry != nil {
+		s.cfg.TLS.VerifyPeerCertificate = s.verifyRegisteredPeer
+	} else {
+		log.Printf("grpc server: WARNING no certificate registry configured — " +
+			"any CA-signed client certificate is accepted and CANNOT be revoked")
 	}
 
 	lis, err := net.Listen("tcp", s.cfg.Listen)
@@ -123,7 +238,21 @@ func (s *Server) Stop() {
 // local relay; their authorization is the LOCAL dom0 policy C (ask), enforced
 // on the client side — this handler must not let them skip that.
 func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) error {
-	ctx := stream.Context()
+	ctx, cancelTunnel := context.WithCancel(stream.Context())
+	defer cancelTunnel()
+
+	// Re-authorize the peer certificate periodically for as long as the tunnel
+	// lives.
+	//
+	// Checking only at handshake would let a revoked agent keep an established
+	// connection indefinitely — and these tunnels are deliberately long-lived,
+	// so "indefinitely" means until someone notices. Revocation has to reach a
+	// connection that is already open, or it is not revocation.
+	if s.cfg.CertRegistry != nil {
+		if fp, ok := peerFingerprint(stream.Context()); ok {
+			go s.reauthorizeLoop(ctx, cancelTunnel, fp)
+		}
+	}
 
 	// Send is not concurrent-safe; serialize all sends through this mutex so
 	// per-request goroutines can reply independently.

@@ -93,6 +93,7 @@ func (d *DB) migrate() error {
 		createCredentialsTable,
 		createSettingsTable,
 		createJobsTable,
+		createAgentCertsTable,
 	}
 
 	for _, m := range migrations {
@@ -225,6 +226,32 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_qube_id ON jobs(qube_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_enqueued_at ON jobs(enqueued_at DESC);
 CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state)`
+
+// createAgentCertsTable is the registry of client certificates allowed to
+// connect, and the mechanism by which one is revoked.
+//
+// Why a fingerprint allowlist rather than a CRL or OCSP: the party verifying the
+// certificate IS the party that issued it and IS the party that owns this
+// database. A CRL would mean publishing a list, distributing it, and hoping the
+// verifier fetched a fresh copy — and a CRL nobody actually checks provides zero
+// security. Here revocation is a row update the verifier reads on the next
+// handshake, with no distribution step that can silently fail.
+//
+// fingerprint is the SHA-256 of the certificate DER, which is what the TLS stack
+// hands us at verification time.
+const createAgentCertsTable = `
+CREATE TABLE IF NOT EXISTS agent_certs (
+	fingerprint TEXT PRIMARY KEY,
+	qube_id     TEXT NOT NULL,
+	subject_cn  TEXT NOT NULL,
+	issued_at   DATETIME NOT NULL,
+	expires_at  DATETIME,
+	revoked_at  DATETIME,
+	revoked_reason TEXT DEFAULT '',
+	last_seen_at   DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_agent_certs_qube_id ON agent_certs(qube_id);
+CREATE INDEX IF NOT EXISTS idx_agent_certs_revoked ON agent_certs(revoked_at)`
 
 const createCredentialsTable = `
 CREATE TABLE IF NOT EXISTS credentials (
