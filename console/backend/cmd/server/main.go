@@ -123,6 +123,8 @@ type Dependencies struct {
 	billingHandler    *handler.BillingHandler
 	monitoringHandler *handler.MonitoringHandler
 	settingsHandler   *handler.SettingsHandler
+	// jobHandler serves the orchestration audit trail.
+	jobHandler *handler.JobHandler
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
 	// Held here so it stays a live, injectable dependency; a service will consume
 	// it in the next stage-T wiring step.
@@ -175,10 +177,20 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
 	}
+	jobRepo := repository.NewJobRepository(db)
 	if cfg.Orchestrator.Enabled {
+		// Jobs are persisted, not held in memory: they are the audit record of
+		// every infrastructure change this console made.
+		if n, err := jobRepo.FailUnfinished(context.Background(),
+			"console restarted while this job was in flight; outcome unknown"); err != nil {
+			log.Printf("orchestrator: could not reconcile unfinished jobs: %v", err)
+		} else if n > 0 {
+			log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
+		}
+
 		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
 			Executor: exec,
-			Store:    orchestrator.NewMemoryJobStore(),
+			Store:    jobRepo,
 			OnDone:   makeCompletionHook(qubeRepo),
 		})
 		runner.Start()
@@ -220,6 +232,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		billingHandler:    handler.NewBillingHandler(),
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
+		jobHandler:        handler.NewJobHandler(jobRepo),
 		transport:         xport,
 		runner:            runner,
 	}, nil
@@ -410,6 +423,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	deps.qubeHandler.RegisterRoutes(v1)
 	deps.infraHandler.RegisterRoutes(v1)
 	deps.credentialHandler.RegisterRoutes(v1)
+	deps.jobHandler.RegisterRoutes(v1)
 	deps.billingHandler.RegisterRoutes(v1)
 	deps.monitoringHandler.RegisterRoutes(v1)
 	deps.settingsHandler.RegisterRoutes(v1)

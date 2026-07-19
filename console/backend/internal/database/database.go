@@ -92,6 +92,7 @@ func (d *DB) migrate() error {
 		createInfrastructureTable,
 		createCredentialsTable,
 		createSettingsTable,
+		createJobsTable,
 	}
 
 	for _, m := range migrations {
@@ -202,6 +203,29 @@ CREATE TABLE IF NOT EXISTS infrastructure (
 // the key can be rotated (see internal/keyring). Existing databases created
 // before key_version existed are upgraded by addColumnIfMissing in migrate(),
 // which backfills key_version=1 for legacy rows.
+// createJobsTable records every orchestration job.
+//
+// Jobs are kept as an AUDIT TRAIL, not merely as poll targets: they are the
+// record of who asked the system to change infrastructure and what terraform
+// reported back. Rows are therefore never updated destructively beyond their
+// own lifecycle, and never deleted when the qube they reference is released —
+// hence no foreign key onto qubes, which would cascade or block.
+const createJobsTable = `
+CREATE TABLE IF NOT EXISTS jobs (
+	id TEXT PRIMARY KEY,
+	qube_id TEXT NOT NULL,
+	qube_name TEXT NOT NULL,
+	action TEXT NOT NULL,
+	state TEXT NOT NULL,
+	error TEXT DEFAULT '',
+	enqueued_at DATETIME NOT NULL,
+	started_at DATETIME,
+	finished_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_qube_id ON jobs(qube_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_enqueued_at ON jobs(enqueued_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state)`
+
 const createCredentialsTable = `
 CREATE TABLE IF NOT EXISTS credentials (
 	id TEXT PRIMARY KEY,
