@@ -58,6 +58,19 @@ variable "network_bridge" {
   default = "vmbr0"
 }
 
+variable "agent_user_data_file" {
+  description = <<-EOT
+    本地路径, 指向 Console 渲染出的 cloud-init user-data (内含该 agent 的 mTLS 身份)。
+    留空则不投递身份 —— agent 将无法认证。
+
+    刻意传**路径**而非内容: bpg 的 source_file 只把卷 ID、文件名、大小写进 state,
+    内容不进 state。若改用 source_raw 传内容, 私钥会明文落进 state ——
+    而 main.tf 开头的红线是「私钥绝不写进 state」。
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "ssh_public_keys" {
   description = "cloud-init 注入的 SSH **公钥** 列表 (绝不含私钥; 私钥留在控制端 dom0)"
   type        = list(string)
@@ -116,6 +129,28 @@ resource "proxmox_virtual_environment_vm" "storage" {
     ignore_changes = [
       started, # 手动开关机不触发 terraform 重建
     ]
+  }
+}
+
+# ============================================
+# 1b) agent 身份 snippet
+#
+# 上传 Console 渲染的 cloud-init user-data, 内含该 agent 的证书与私钥。
+# 走 SFTP (bpg 对 snippets 的唯一上传方式), 因此 provider 的 ssh 块必须能连到节点。
+#
+# 与 compute 同生命周期: compute 被销毁 (suspend) 时这个文件也随之删除, 下次 resume
+# 重新上传。这是刻意的 —— 一台不存在的 compute 不该在节点上留着自己的私钥。
+# ============================================
+
+resource "proxmox_virtual_environment_file" "agent_identity" {
+  count = var.compute_running && var.agent_user_data_file != "" ? 1 : 0
+
+  content_type = "snippets"
+  datastore_id = "local" # snippets 需要文件系统型存储; RBD 只支持 images
+  node_name    = var.node_name
+
+  source_file {
+    path = var.agent_user_data_file
   }
 }
 
@@ -189,9 +224,14 @@ resource "proxmox_virtual_environment_vm" "compute" {
     model  = "virtio"
   }
 
-  # cloud-init: 只注入公钥, 不经手私钥。
+  # cloud-init
   initialization {
     datastore_id = var.datastore_id
+
+    # agent 身份 (证书 + 私钥) 经 user_data 投递。仅传卷 ID, 内容不进 state。
+    user_data_file_id = length(proxmox_virtual_environment_file.agent_identity) > 0 ? (
+      proxmox_virtual_environment_file.agent_identity[0].id
+    ) : null
 
     ip_config {
       ipv4 {

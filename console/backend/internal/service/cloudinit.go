@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/pki"
@@ -93,4 +95,64 @@ func SnippetVolumeID(datastore, qubeName string) string {
 // SnippetFileName is the on-disk name matching SnippetVolumeID.
 func SnippetFileName(qubeName string) string {
 	return fmt.Sprintf("qubes-air-%s.yaml", qubeName)
+}
+
+// WriteAgentUserData persists rendered user-data where terraform can upload it.
+//
+// The file is written to disk rather than passed through tfvars because
+// terraform's source_file records only the path, size and volume id in state,
+// while source_raw would put the content there — and the content is a private
+// key. This repository's state design forbids credentials entering state at all
+// (see terraform/main.tf), so the choice is load-bearing, not stylistic.
+//
+// Mode 0600: this file holds an agent's private key for as long as it sits on
+// the console's disk.
+func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("no directory configured for agent identity files")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create identity dir: %w", err)
+	}
+	path := filepath.Join(dir, SnippetFileName(qubeName))
+
+	// Write via a temp file and rename so terraform can never read a partially
+	// written identity — half a private key is not a recoverable error, it is a
+	// VM that boots and cannot authenticate.
+	tmp, err := os.CreateTemp(dir, ".identity-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("create temp identity: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+
+	if _, err := tmp.WriteString(userData); err != nil {
+		_ = tmp.Close()
+		return "", fmt.Errorf("write identity: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close identity: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return "", fmt.Errorf("chmod identity: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return "", fmt.Errorf("place identity: %w", err)
+	}
+	return path, nil
+}
+
+// RemoveAgentUserData deletes a qube's identity file from the console.
+//
+// Called when a qube is purged. The copy on the Proxmox node is removed by
+// terraform along with the compute VM; this removes the console's own.
+func RemoveAgentUserData(dir, qubeName string) error {
+	if dir == "" {
+		return nil
+	}
+	err := os.Remove(filepath.Join(dir, SnippetFileName(qubeName)))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }

@@ -185,3 +185,6 @@ console/backend/grpc-smoke
 console/backend/relay-client
 console/backend/rotate-key
 console/backend/qubes-air-console
+
+# Console 渲染的 agent 身份文件 (含私钥)
+terraform/identities/

@@ -62,11 +62,12 @@ variable "qube_config" {
     gpu_count    = optional(number)
 
     # ---- Proxmox 特定 ----
-    node_name       = optional(string) # Proxmox 节点名; 留空则用 var.proxmox_default_node
-    template_vm_id  = optional(number) # 用于 clone 的模板 VM ID
-    datastore_id    = optional(string, "local-lvm")
-    network_bridge  = optional(string, "vmbr0")
-    ssh_public_keys = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
+    node_name            = optional(string) # Proxmox 节点名; 留空则用 var.proxmox_default_node
+    template_vm_id       = optional(number) # 用于 clone 的模板 VM ID
+    datastore_id         = optional(string, "local-lvm")
+    network_bridge       = optional(string, "vmbr0")
+    ssh_public_keys      = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
+    agent_user_data_file = optional(string, "")       # agent 身份 user-data 的本地路径
   })
 }
 
@@ -135,12 +136,13 @@ module "proxmox" {
   os_disk_gb      = local.final_config.disk
   data_disk_gb    = local.final_config.data_disk_gb
 
-  node_name       = coalesce(var.qube_config.node_name, var.proxmox_default_node)
-  template_vm_id  = var.qube_config.template_vm_id
-  datastore_id    = var.qube_config.datastore_id
-  network_bridge  = var.qube_config.network_bridge
-  ssh_public_keys = var.qube_config.ssh_public_keys
-  qube_type       = var.qube_config.type
+  node_name            = coalesce(var.qube_config.node_name, var.proxmox_default_node)
+  template_vm_id       = var.qube_config.template_vm_id
+  datastore_id         = var.qube_config.datastore_id
+  network_bridge       = var.qube_config.network_bridge
+  ssh_public_keys      = var.qube_config.ssh_public_keys
+  agent_user_data_file = var.qube_config.agent_user_data_file
+  qube_type            = var.qube_config.type
 }
 
 module "gcp" {

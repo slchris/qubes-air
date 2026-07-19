@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,12 @@ const (
 type CertIssuer struct {
 	creds CredentialStore
 	certs *repository.AgentCertRepository
+	// identityDir is where rendered cloud-init identity files are written for
+	// terraform to upload. Empty disables delivery: certificates are still
+	// issued and registered, but never reach the remote.
+	identityDir string
+	// agentListen is the address the agent binds on the remote.
+	agentListen string
 
 	// mu guards lazy CA initialization so two concurrent qube creations cannot
 	// each mint a CA and race to store it — which would leave agents trusting
@@ -51,8 +58,17 @@ type CredentialStore interface {
 }
 
 // NewCertIssuer builds an issuer over the credential store and registry.
-func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository) *CertIssuer {
-	return &CertIssuer{creds: creds, certs: certs}
+func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository, identityDir, agentListen string) *CertIssuer {
+	return &CertIssuer{creds: creds, certs: certs, identityDir: identityDir, agentListen: agentListen}
+}
+
+// IdentityPath returns where a qube's rendered identity file lives, or "" when
+// delivery is not configured.
+func (c *CertIssuer) IdentityPath(qubeName string) string {
+	if c.identityDir == "" {
+		return ""
+	}
+	return filepath.Join(c.identityDir, SnippetFileName(qubeName))
 }
 
 // IssueFor mints a client certificate for a qube's agent and registers it.
@@ -85,6 +101,21 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 		// Registration failed, so this certificate can never be authorized.
 		// Returning it would hand out a credential that silently does not work.
 		return nil, fmt.Errorf("register certificate for %q: %w", qube.Name, err)
+	}
+
+	// Render and persist the delivery document. Without this the certificate is
+	// registered but has no way to reach the remote, which is exactly the state
+	// this whole chain existed to leave behind.
+	if c.identityDir != "" {
+		userData, err := RenderAgentUserData(qube.Name, bundle, c.agentListen)
+		if err != nil {
+			return nil, fmt.Errorf("render identity for %q: %w", qube.Name, err)
+		}
+		path, err := WriteAgentUserData(c.identityDir, qube.Name, userData)
+		if err != nil {
+			return nil, fmt.Errorf("persist identity for %q: %w", qube.Name, err)
+		}
+		log.Printf("pki: wrote agent identity for %q to %s", qube.Name, path)
 	}
 
 	log.Printf("pki: issued certificate %s for qube %q (expires %s)",

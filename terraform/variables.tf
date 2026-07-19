@@ -128,6 +128,9 @@ variable "remote_qubes" {
     datastore_id    = optional(string, "local-lvm")
     network_bridge  = optional(string, "vmbr0")
     ssh_public_keys = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
+    # agent_user_data_file: Console 渲染的 cloud-init user-data 的本地路径,
+    # 内含该 agent 的 mTLS 身份。传路径而非内容, 使私钥不进 state。
+    agent_user_data_file = optional(string, "")
   }))
   default = {}
 }

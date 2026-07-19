@@ -8,6 +8,11 @@ import (
 	"github.com/slchris/qubes-air/console/internal/repository"
 )
 
+// IdentityLocator reports where a qube's rendered agent identity file lives.
+type IdentityLocator interface {
+	IdentityPath(qubeName string) string
+}
+
 // zoneNameForProvider maps a zone type onto the terraform zone key that
 // main.tf's zone_provider lookup understands.
 //
@@ -27,7 +32,7 @@ var zoneNameForProvider = map[models.ZoneType]string{
 // Every rendered entry corresponds to a row; every row that still owns
 // infrastructure is rendered. Those two halves are what keep terraform's view
 // and the console's view from drifting apart.
-func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository) func(context.Context) (map[string]any, error) {
+func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.ZoneRepository, identity IdentityLocator) func(context.Context) (map[string]any, error) {
 	return func(ctx context.Context) (map[string]any, error) {
 		opts := repository.DefaultQubeListOptions()
 		opts.Limit = 10000 // effectively unbounded: a partial map would destroy qubes
@@ -54,6 +59,15 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 			entry, err := renderQube(q, zone)
 			if err != nil {
 				return nil, fmt.Errorf("qube %q: %w", q.Name, err)
+			}
+			// Point terraform at the identity file, if one was rendered. The
+			// PATH is passed, never the content: terraform's source_file keeps
+			// only the path and volume id in state, while inlining the content
+			// would put a private key there in plaintext.
+			if identity != nil {
+				if path := identity.IdentityPath(q.Name); path != "" {
+					entry["agent_user_data_file"] = path
+				}
 			}
 			out[q.Name] = entry
 		}

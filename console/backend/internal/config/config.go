@@ -98,6 +98,18 @@ type OrchestratorConfig struct {
 	// console's view of which qubes exist.
 	// Env: QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE.
 	GeneratedVarFile string `yaml:"generated_var_file"`
+	// AgentIdentityDir holds the rendered cloud-init documents that deliver
+	// each agent's mTLS identity. They contain PRIVATE KEYS, so the directory
+	// is created 0700 and the files 0600.
+	//
+	// Terraform is given the PATH of a file, never its content: source_file
+	// records only the path and volume id in state, while inlining the content
+	// would put a private key into state in plaintext.
+	// Env: QUBES_AIR_AGENT_IDENTITY_DIR.
+	AgentIdentityDir string `yaml:"agent_identity_dir"`
+	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
+	// Env: QUBES_AIR_AGENT_LISTEN.
+	AgentListen string `yaml:"agent_listen"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -355,6 +367,12 @@ func (c *Config) loadFromEnv() {
 	}
 	if genVarFile := os.Getenv("QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE"); genVarFile != "" {
 		c.Orchestrator.GeneratedVarFile = genVarFile
+	}
+	if dir := os.Getenv("QUBES_AIR_AGENT_IDENTITY_DIR"); dir != "" {
+		c.Orchestrator.AgentIdentityDir = dir
+	}
+	if listen := os.Getenv("QUBES_AIR_AGENT_LISTEN"); listen != "" {
+		c.Orchestrator.AgentListen = listen
 	}
 
 	if enabled := os.Getenv("QUBES_AIR_TRANSPORT_ENABLED"); enabled != "" {

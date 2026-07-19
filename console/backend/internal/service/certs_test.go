@@ -85,7 +85,7 @@ func issuerFixture(t *testing.T) (*CertIssuer, *repository.AgentCertRepository, 
 	t.Helper()
 	certs := repository.NewAgentCertRepository(certTestDB(t))
 	store := newMemCredStore()
-	return NewCertIssuer(store, certs), certs, store
+	return NewCertIssuer(store, certs, t.TempDir(), "0.0.0.0:8443"), certs, store
 }
 
 func testQube(name string) *models.Qube {
@@ -155,11 +155,11 @@ func TestCASurvivesRestart(t *testing.T) {
 	store := newMemCredStore()
 	ctx := context.Background()
 
-	first, err := NewCertIssuer(store, certs).IssueFor(ctx, testQube("alpha"))
+	first, err := NewCertIssuer(store, certs, t.TempDir(), "0.0.0.0:8443").IssueFor(ctx, testQube("alpha"))
 	require.NoError(t, err)
 
 	// A completely new issuer, as after a process restart.
-	second, err := NewCertIssuer(store, certs).IssueFor(ctx, testQube("beta"))
+	second, err := NewCertIssuer(store, certs, t.TempDir(), "0.0.0.0:8443").IssueFor(ctx, testQube("beta"))
 	require.NoError(t, err)
 
 	assert.Equal(t, first.CAPEM, second.CAPEM,
@@ -180,7 +180,7 @@ func TestHalfPresentCARefuses(t *testing.T) {
 	delete(store.creds, caKeyCredentialName)
 	delete(store.secrets, caKeyCredentialName)
 
-	fresh := NewCertIssuer(store, repository.NewAgentCertRepository(certTestDB(t)))
+	fresh := NewCertIssuer(store, repository.NewAgentCertRepository(certTestDB(t)), t.TempDir(), "0.0.0.0:8443")
 	_, err = fresh.IssueFor(ctx, testQube("beta"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "half-present",
@@ -193,7 +193,7 @@ func TestHalfPresentCARefuses(t *testing.T) {
 func TestRegistrationFailureYieldsNoBundle(t *testing.T) {
 	store := newMemCredStore()
 	// A closed database makes Register fail the way an unavailable one would.
-	issuer := NewCertIssuer(store, repository.NewAgentCertRepository(closedDB(t)))
+	issuer := NewCertIssuer(store, repository.NewAgentCertRepository(closedDB(t)), t.TempDir(), "0.0.0.0:8443")
 
 	bundle, err := issuer.IssueFor(context.Background(), testQube("dev-work"))
 	require.Error(t, err, "issuance must fail when registration does")

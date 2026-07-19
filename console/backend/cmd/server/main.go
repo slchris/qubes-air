@@ -186,8 +186,11 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// too, injected into the subprocess environment. They are deliberately NOT
 	// passed as terraform variables: a variable's value is written to state in
 	// plaintext, which the state design forbids for long-lived credentials.
+	certIssuer := service.NewCertIssuer(credentialRepo, agentCertRepo,
+		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen)
+
 	exec := buildExecutor(cfg.Orchestrator,
-		service.NewQubeSnapshot(qubeRepo, zoneRepo),
+		service.NewQubeSnapshot(qubeRepo, zoneRepo, certIssuer),
 		service.NewTerraformEnvFunc(zoneRepo, credentialRepo))
 
 	// The runner turns orchestration asynchronous. Without it the service falls
@@ -209,7 +212,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		service.WithPlacementDecider(clusterScheduler),
 		// Mint each agent's client certificate at qube creation. The CA lives in
 		// the credential store and is created on first use.
-		service.WithCertIssuer(service.NewCertIssuer(credentialRepo, agentCertRepo)),
+		service.WithCertIssuer(certIssuer),
 	}
 
 	jobRepo := repository.NewJobRepository(db)
