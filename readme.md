@@ -8,13 +8,13 @@
 
 ## 项目状态（Project Status）
 
-**当前阶段：可运行骨架 + 已成形的安全架构，端到端链路待真机验证（Working Skeleton）。** 项目已按一轮深度设计评审重构：放弃了原来的自造隧道方案，转向官方 **RemoteVM**；控制台、Terraform、凭据与编排在**代码层面已打通并有测试**，但因缺真实 Qubes/云环境，**尚未在真机上跑通端到端**。请在使用前了解以下现状。
+**当前阶段：provision 链路已在真机跑通；跨机 qrexec 与 gRPC 传输仍待验证。** 项目已按一轮深度设计评审重构：放弃了原来的自造隧道方案，转向官方 **RemoteVM**。**2026-07 在真实 Qubes R4.3 + Proxmox「infra」集群上跑通了完整 provision 闭环**：从控制台 Web UI 建机 → Terraform apply → PVE 克隆模板 901（compute/storage 分离）→ cloud-init 从局域网 artifact store 装 agent → 控制台经 mTLS 探活确认 `agent_health: healthy`。控制台自身也部署在专属 `qubesair-console` qube 上，经 `qvm-connect-tcp` 访问。**仍未验证**的是 provision 之后的那一段——把远端机器注册成 dom0 认识的 RemoteVM、跨机 qrexec 调用、以及目标 gRPC 传输（都尚未实现或未上真机）。请在使用前了解以下现状。
 
 ### 现在能做什么（代码层面已实现且有测试/校验）
 
-- [已实现] **管理控制台**：Go(Gin) 后端 + Svelte 5 前端。`/api/v1` 有 **Bearer 认证**（constant-time 比较）、CORS 已收敛、坏密钥 fail-fast。分层清晰，单测 + CI 通过。
-- [已实现] **存算分离 Terraform**：`terraform/` 用真实 resource 实现 compute/storage 拆分——`compute_running` 开关切换"释放计算/重建挂回数据盘"，数据盘 `prevent_destroy`。Proxmox 为真实可 apply 实现，GCP/AWS 为接口对齐骨架。`terraform validate` 通过。（见 [docs/terraform-state.md](docs/terraform-state.md)）
-- [已实现] **控制台接真实动作**：`Qube.Start/Stop` 触发 Terraform 的 Resume/Suspend（**先落地再改状态**），经可注入 executor + qubeName 白名单防注入。
+- [真机验证] **管理控制台**：Go(Gin) 后端 + Svelte 5 前端。`/api/v1` 有 **Bearer 认证**（constant-time 比较）、CORS 已收敛、坏密钥 fail-fast。**已部署在专属 `qubesair-console` qube 上并跑通**：Web UI 经 `qvm-connect-tcp` 访问、无 token 时进登录门、Zones/Qubes 视图读真实集群数据、**provision 期间 terraform 日志实时滚动**（`GET /jobs/:id/log` 增量拉取）。前端资源与二进制均从局域网 artifact store 下发、按 SHA256 钉版。
+- [真机验证] **存算分离 Terraform**：`terraform/` 用真实 resource 实现 compute/storage 拆分——`compute_running` 开关切换"释放计算/重建挂回数据盘"，数据盘 `prevent_destroy`。**Proxmox 已真机 apply**：模板 901 克隆到目标节点、storage VM 常关机、cloud-init snippet 经 SSH 上传节点（`/var/lib/vz/snippets/`）。GCP/AWS 仍为接口对齐骨架。（见 [docs/terraform-state.md](docs/terraform-state.md)）
+- [真机验证] **控制台接真实动作**：`Qube.Start/Stop` 触发 Terraform 的 Resume/Suspend（**先落地再改状态**），经可注入 executor + qubeName 白名单防注入。**已在真机上从 UI 建机、observe job、看到 healthy agent。**
 - [部分实现] **RemoteVM + 零入站传输**：dom0 侧 RemoteVM 创建、**修正后的 qrexec policy**（方向正确、Relay 不得直达 dom0、破坏性操作 `ask`）已实现，配置用 bind-dirs 持久化。
   - **传输层现状**：现有骨架用 `qubesair.SSHProxy` transport（autossh 出站 + `ssh -R` 反向调用），可作过渡参考。（见 [docs/runbook-remotevm.md](docs/runbook-remotevm.md)）
   - [TODO] **目标传输已改为 gRPC 双向流**：本地 relay 作为 gRPC 客户端**主动出站**建连到远端，建立**长连接双向流**，qrexec 请求转发与反向回程都复用同一条流（零入站、只出站）。gRPC 传输**尚未实现**，落地路线见 [docs/roadmap-to-production.md](docs/roadmap-to-production.md)。
@@ -24,10 +24,10 @@
 
 ### 现在还不能做什么 / 需要真机验证（重要）
 
-- [待真机验证] **尚未在真实 Qubes R4.3 + Proxmox/云上跑通端到端。** 全部 Qubes/Terraform 侧逻辑靠单测、`bash -n`、`terraform validate` 与官方文档核对保证，**未执行过真实 `apply` / qrexec 调用**。
-- [待真机验证] **RemoteVM 的 `qvm-create` 确切用法、dom0 改写后看到的调用来源**需 R4.3 实机确认（文档内已逐项标注 `待真机确认`）。
-- [待真机验证] **Proxmox `path_in_datastore` 是 experimental**：首测前须按 runbook 验证挂载语义、确保 storage VM 常关机。
-- [待真机验证] **GCP/AWS 的 compute/storage 为骨架 TODO**（接口已对齐，未实现真实资源）。
+- [已真机跑通] ~~尚未在真实 Qubes R4.3 + Proxmox 上跑通端到端~~ —— **provision 段已跑通**（见上）。真实 `apply` 已执行；**跨机 qrexec 调用仍未验证**（见下一条）。
+- [待真机验证] **RemoteVM 注册 + 跨机 qrexec 是缺口的下一段。** provision 只是把机器建出来；要让它"像本地 qube"用，还需 `qvm-create --class RemoteVM` 把它注册进 dom0、设 `relayvm`/`transport_rpc`/`remote_name`，再从**本地 qube**（不是 dom0）发 `qrexec-client-vm`。这一段尚未打通，能做什么/不能做什么见 [docs/remotevm-alignment.md §5.5](docs/remotevm-alignment.md)（源码级结论：文件复制/Split-GPG 原生工作，剪贴板与图形界面架构上不可能）。
+- [待真机验证] **GCP/AWS 的 compute/storage 为骨架 TODO**（接口已对齐，未实现真实资源）。Proxmox 已真机验证。
+- [待真机验证] **gRPC 双向流传输尚未实现**（目标传输，SSHProxy 骨架作过渡参考）。
 - [已移除] **`salt/qubes-air/` 整个骨架已退役**（sys-remote + WireGuard 网关方向错误、states 断链；RemoteVM 的 autossh/`ssh -R` 骨架被 gRPC 传输取代）。Qubes 侧 states 的单一来源是 **qubes-salt-config** 仓库的 `salt/mgmt/`；退役说明与新旧对照表见 [salt/qubes-air/README.md](salt/qubes-air/README.md)。
 - [部分实现] **监控 / 账单仍为占位**：已显式标注 `placeholder`，未接真实成本源。
 
@@ -35,9 +35,12 @@
 
 已完成：API 认证 + 弱密钥 fail-fast + CORS 收敛；存算分离 Terraform；RemoteVM 创建 + 修正 qrexec policy + 零入站传输骨架（SSHProxy）；凭据 vault + 密钥轮换；控制台接真实 Suspend/Resume；多机加密 state backend。
 
+**已真机跑通（2026-07，Proxmox「infra」集群）**：控制台部署在专属 `qubesair-console` qube；从 Web UI 建机 → Terraform apply → PVE 克隆 → cloud-init 装 agent → mTLS 探活 `healthy`，全链路可见（provision 日志实时）、可查（失败带 terraform 错误）。过程中修掉 ~10 个"报告成功、后面才炸"型真机 bug（`/usr/local` 对 AppVM 不可见、`coalesce(x,"")` 必失败、cloud-init snippet 必须 SSH 上传节点等）。
+
+[TODO] **RemoteVM 注册 + 跨机 qrexec**（provision 之后的下一段，让远端机器"像本地 qube"用）。
 [TODO] 传输层从 SSHProxy 骨架切换到 **gRPC 双向流**（目标传输，尚未实现）。
 
-下一步：**打通第一条真机端到端链路**（建议 Proxmox：按 [docs/runbook-remotevm.md](docs/runbook-remotevm.md) 验证上述 `待真机确认` 项）→ 补齐 GCP/AWS 真实资源 → 前端支持发送 Bearer token。详见文末[路线图](#路线图)。
+下一步：**打通 RemoteVM 注册通道**（B 方案：console 经受限 qrexec 把机器注册进 dom0，见 [docs/remotevm-alignment.md](docs/remotevm-alignment.md)）→ 补齐 GCP/AWS 真实资源 → 图形访问经 `qubes.ConnectTCP` 隧道 VNC/RDP。详见文末[路线图](#路线图)。
 
 ---
 
