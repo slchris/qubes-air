@@ -51,7 +51,7 @@ gosec-results.sarif
 *.tsbuildinfo
 
 # -----------------------------------------------
-# Terraform
+# Terraform / OpenTofu
 # -----------------------------------------------
 *.tfstate
 *.tfstate.*
@@ -60,7 +60,12 @@ gosec-results.sarif
 .terraform.lock.hcl
 *.tfvars
 !*.tfvars.example
-!environments/*.tfvars
+# 注: gitignore 不支持行尾注释, 且带斜杠的模式锚定仓库根 ——
+# 原来的 `!environments/*.tfvars` 匹配的是 <root>/environments/, 而真实路径是
+# terraform/environments/, 所以示例配置一直被静默忽略、从未进过 git。
+!terraform/environments/*.tfvars
+# 真实环境配置含集群地址与公钥, 仍然排除。
+terraform/environments/infra.tfvars
 crash.log
 crash.*.log
 override.tf
@@ -69,6 +74,13 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+# Remote backend / state encryption config: contains env-specific values
+# (bucket/endpoint) and must never carry the passphrase — keep out of git.
+# Commit only the *.example templates.
+backend.tf
+encryption.tf
+# OpenTofu encrypted state fallback / plan files
+*.tfplan
 
 # -----------------------------------------------
 # Packer
@@ -163,3 +175,13 @@ gitleaks-report.json
 .env.*.local
 *.local
 .cache/
+
+# Console 渲染的 terraform 变量文件 (由数据库生成, 不是手写配置)
+terraform/generated/
+
+# Go 编译产物 (cmd/<name> 构建到 backend 根目录时会裸露在工作区)
+console/backend/grpc-server
+console/backend/grpc-smoke
+console/backend/relay-client
+console/backend/rotate-key
+console/backend/qubes-air-console
