@@ -236,3 +236,54 @@ func TestKeyAssertionIndependentOfRendering(t *testing.T) {
 		t.Errorf("terraform must not run, ran: %v", lastCall(rr))
 	}
 }
+
+// TestEnvFuncSuppliesCredentials — credentials reach terraform through the
+// subprocess environment. They must NOT travel as terraform variables: a
+// variable's value is written into state in plaintext, and long-lived
+// credentials are forbidden from entering state.
+func TestEnvFuncSuppliesCredentials(t *testing.T) {
+	rr := &recordingRunner{}
+	ex := tfExecutorIn(t, rr,
+		WithQubeSnapshot(func(context.Context) (map[string]any, error) {
+			return map[string]any{"dev-work": map[string]any{}}, nil
+		}),
+		WithEnvFunc(func(context.Context) ([]string, error) {
+			return []string{"PROXMOX_VE_ENDPOINT=https://pve", "PROXMOX_VE_API_TOKEN=u@pve!t=s"}, nil
+		}),
+	)
+	if err := ex.Resume(context.Background(), "dev-work"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	joined := strings.Join(rr.env, " ")
+	if !strings.Contains(joined, "PROXMOX_VE_API_TOKEN=") {
+		t.Errorf("credentials must reach the process environment, got %v", rr.env)
+	}
+	// The same secret must not appear anywhere on the command line, where it
+	// would show up in process listings and in error messages.
+	for _, a := range lastCall(rr) {
+		if strings.Contains(a, "u@pve!t=s") {
+			t.Errorf("secret leaked into argv: %q", a)
+		}
+	}
+}
+
+// TestEnvFuncErrorAbortsRun — if credentials cannot be resolved we must not run
+// terraform anyway, which would authenticate as whatever the parent environment
+// happens to hold.
+func TestEnvFuncErrorAbortsRun(t *testing.T) {
+	rr := &recordingRunner{}
+	sentinel := errors.New("vault sealed")
+	ex := tfExecutorIn(t, rr,
+		WithQubeSnapshot(func(context.Context) (map[string]any, error) {
+			return map[string]any{"dev-work": map[string]any{}}, nil
+		}),
+		WithEnvFunc(func(context.Context) ([]string, error) { return nil, sentinel }),
+	)
+	if err := ex.Resume(context.Background(), "dev-work"); !errors.Is(err, sentinel) {
+		t.Errorf("want the resolver error to propagate, got %v", err)
+	}
+	if lastCall(rr) != nil {
+		t.Errorf("terraform must not run without credentials, ran: %v", lastCall(rr))
+	}
+}

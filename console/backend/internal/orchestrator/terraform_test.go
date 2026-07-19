@@ -12,13 +12,15 @@ import (
 // without spawning terraform. It returns a canned stdout.
 type recordingRunner struct {
 	calls   [][]string
+	env     []string
 	workDir string
 	stdout  string
 	err     error
 }
 
-func (r *recordingRunner) run(_ context.Context, workDir, name string, args []string) (string, error) {
+func (r *recordingRunner) run(_ context.Context, workDir, name string, args, env []string) (string, error) {
 	r.workDir = workDir
+	r.env = env
 	// Store binary + args together so tests can assert the full command line.
 	r.calls = append(r.calls, append([]string{name}, args...))
 	return r.stdout, r.err

@@ -85,18 +85,28 @@ func (e *ErrInvalidQubeName) Error() string {
 // runner executes a prepared command and returns combined stdout. It is a seam
 // so tests can capture the exact argv without spawning terraform.
 type runner interface {
-	run(ctx context.Context, workDir, name string, args []string) (string, error)
+	run(ctx context.Context, workDir, name string, args, env []string) (string, error)
 }
 
 // execRunner is the production runner: it really invokes the binary via
 // exec.CommandContext (no shell involved).
 type execRunner struct{}
 
-func (execRunner) run(ctx context.Context, workDir, name string, args []string) (string, error) {
+func (execRunner) run(ctx context.Context, workDir, name string, args, env []string) (string, error) {
 	// #nosec G204 -- name is a fixed configured binary; every element of args is
 	// either a constant or a value validated by ValidQubeName. No shell is used.
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
+
+	// Credentials reach terraform as environment variables of THIS subprocess
+	// rather than as terraform variables. That is not a stylistic choice: a
+	// value passed as a terraform variable is recorded in state in plaintext,
+	// and this repository's state design forbids long-lived credentials ever
+	// entering state. Appending to the parent environment (rather than
+	// replacing it) keeps PATH, HOME and the terraform plugin cache intact.
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 
 	// exec.CommandContext's default Cancel is Process.Kill() — SIGKILL, which
 	// terraform cannot catch. That is not merely an abrupt stop: terraform would
@@ -155,6 +165,12 @@ type TerraformExecutor struct {
 	// is rendered to GeneratedVarFile before each invocation, making the
 	// database the single source of truth for which qubes exist.
 	Snapshot QubeSnapshotFunc
+	// EnvFunc supplies extra environment variables for the terraform process,
+	// typically provider credentials resolved from the encrypted credential
+	// store. Returning an error aborts the invocation rather than letting
+	// terraform run unauthenticated against whatever the parent environment
+	// happens to hold.
+	EnvFunc EnvFunc
 
 	// mu serializes render+exec. Both the generated var-file and the terraform
 	// state are shared mutable state; without this two concurrent requests can
@@ -174,6 +190,12 @@ type TerraformExecutor struct {
 // name. It is the seam between the console's database and terraform's view of
 // which qubes should exist.
 type QubeSnapshotFunc func(ctx context.Context) (map[string]any, error)
+
+// EnvFunc returns extra "KEY=value" entries for the terraform process.
+//
+// Values are secrets. They are never logged, never written to a file, and never
+// passed as terraform variables — only handed to the child process.
+type EnvFunc func(ctx context.Context) ([]string, error)
 
 // TerraformOption configures a TerraformExecutor.
 type TerraformOption func(*TerraformExecutor)
@@ -198,6 +220,11 @@ func WithGeneratedVarFile(path string) TerraformOption {
 // qubes should exist. Without it the generated var-file is never refreshed.
 func WithQubeSnapshot(fn QubeSnapshotFunc) TerraformOption {
 	return func(t *TerraformExecutor) { t.Snapshot = fn }
+}
+
+// WithEnvFunc supplies provider credentials to the terraform process.
+func WithEnvFunc(fn EnvFunc) TerraformOption {
+	return func(t *TerraformExecutor) { t.EnvFunc = fn }
 }
 
 // WithTimeout overrides the per-invocation timeout.
@@ -365,7 +392,18 @@ func (t *TerraformExecutor) exec(ctx context.Context, qubeName string, requireKe
 		defer cancel()
 	}
 
-	return t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs())
+	var env []string
+	if t.EnvFunc != nil {
+		var err error
+		if env, err = t.EnvFunc(ctx); err != nil {
+			// Fail rather than fall through to whatever the parent environment
+			// holds: silently running with stale or absent credentials is how a
+			// deployment ends up authenticating as something unexpected.
+			return "", fmt.Errorf("terraform executor: resolve credentials: %w", err)
+		}
+	}
+
+	return t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs(), env)
 }
 
 // Suspend destroys the qube's compute instance while keeping the data disk,

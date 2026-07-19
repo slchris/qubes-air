@@ -181,7 +181,13 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// The snapshot makes the database the source of truth for which qubes
 	// exist: the executor renders it to the generated var-file before every
 	// terraform invocation, and refuses to act on a qube missing from it.
-	exec := buildExecutor(cfg.Orchestrator, service.NewQubeSnapshot(qubeRepo, zoneRepo))
+	// Terraform's provider credentials come from the encrypted credential store
+	// too, injected into the subprocess environment. They are deliberately NOT
+	// passed as terraform variables: a variable's value is written to state in
+	// plaintext, which the state design forbids for long-lived credentials.
+	exec := buildExecutor(cfg.Orchestrator,
+		service.NewQubeSnapshot(qubeRepo, zoneRepo),
+		service.NewTerraformEnvFunc(zoneRepo, credentialRepo))
 
 	// The runner turns orchestration asynchronous. Without it the service falls
 	// back to running terraform inline, which cannot work for real applies: they
@@ -305,7 +311,11 @@ func reconcileStrandedQubes(ctx context.Context, qubeRepo repository.QubeReposit
 // start/stop only update the DB status — preserving behaviour on machines
 // without terraform/cloud access. When enabled, a real TerraformExecutor drives
 // compute/storage separation.
-func buildExecutor(cfg config.OrchestratorConfig, snapshot orchestrator.QubeSnapshotFunc) orchestrator.Executor {
+func buildExecutor(
+	cfg config.OrchestratorConfig,
+	snapshot orchestrator.QubeSnapshotFunc,
+	envFn orchestrator.EnvFunc,
+) orchestrator.Executor {
 	if !cfg.Enabled {
 		log.Printf("Orchestrator: DISABLED (start/stop only update DB status; " +
 			"set orchestrator.enabled=true and orchestrator.terraform_dir to drive terraform)")
@@ -324,6 +334,9 @@ func buildExecutor(cfg config.OrchestratorConfig, snapshot orchestrator.QubeSnap
 	}
 	if snapshot != nil {
 		opts = append(opts, orchestrator.WithQubeSnapshot(snapshot))
+	}
+	if envFn != nil {
+		opts = append(opts, orchestrator.WithEnvFunc(envFn))
 	}
 	log.Printf("Orchestrator: ENABLED (terraform_dir=%s, binary=%s, var_file=%s, generated_var_file=%s)",
 		cfg.TerraformDir, cfg.TerraformBinary, cfg.VarFile, cfg.GeneratedVarFile)
