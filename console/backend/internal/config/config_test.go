@@ -68,6 +68,22 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "orchestrator enabled without terraform dir",
+			modify: func(c *Config) {
+				c.Orchestrator.Enabled = true
+				c.Orchestrator.TerraformDir = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "orchestrator enabled with terraform dir",
+			modify: func(c *Config) {
+				c.Orchestrator.Enabled = true
+				c.Orchestrator.TerraformDir = "/tf"
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -193,6 +209,53 @@ func TestConfig_ValidateRejectsBadEncryptionKey(t *testing.T) {
 
 	cfg.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
 	assert.NoError(t, cfg.Validate())
+}
+
+func TestConfig_Keyring_SingleKey(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+
+	kr, err := cfg.Keyring()
+	require.NoError(t, err)
+	assert.Equal(t, 1, kr.PrimaryVersion())
+	assert.False(t, cfg.UsesDevEncryptionKey())
+}
+
+func TestConfig_Keyring_DevFallback(t *testing.T) {
+	cfg := DefaultConfig() // no key set
+	kr, err := cfg.Keyring()
+	require.NoError(t, err)
+	assert.Equal(t, 1, kr.PrimaryVersion())
+	assert.True(t, cfg.UsesDevEncryptionKey())
+}
+
+func TestConfig_Keyring_MultiVersion(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.EncryptionKeys = "v1:0123456789abcdef0123456789abcdef,v2:fedcba9876543210fedcba9876543210"
+
+	kr, err := cfg.Keyring()
+	require.NoError(t, err)
+	assert.Equal(t, 2, kr.PrimaryVersion(), "highest version is primary")
+	assert.Equal(t, []int{1, 2}, kr.Versions())
+	// Multi-version spec is never the dev key.
+	assert.False(t, cfg.UsesDevEncryptionKey())
+}
+
+func TestConfig_Validate_RejectsBadKeyring(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Security.EncryptionKeys = "v1:short"
+	assert.Error(t, cfg.Validate())
+}
+
+func TestConfig_LoadFromEnv_MultiVersionKeys(t *testing.T) {
+	t.Setenv("QUBES_AIR_ENCRYPTION_KEYS",
+		"v1:0123456789abcdef0123456789abcdef,v2:fedcba9876543210fedcba9876543210")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	kr, err := cfg.Keyring()
+	require.NoError(t, err)
+	assert.Equal(t, 2, kr.PrimaryVersion())
 }
 
 func TestConfig_IsAuthEnabled(t *testing.T) {

@@ -14,13 +14,19 @@ import (
 	"syscall"
 	"time"
 
+	"crypto/tls"
+	"crypto/x509"
+
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/middleware"
+	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
+	"github.com/slchris/qubes-air/console/internal/transport"
+	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
 
 const (
@@ -111,6 +117,10 @@ type Dependencies struct {
 	billingHandler    *handler.BillingHandler
 	monitoringHandler *handler.MonitoringHandler
 	settingsHandler   *handler.SettingsHandler
+	// transport is the cross-machine gRPC transport (NoopTransport by default).
+	// Held here so it stays a live, injectable dependency; a service will consume
+	// it in the next stage-T wiring step.
+	transport transport.Transport
 }
 
 // Close releases all resources.
@@ -132,24 +142,31 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		return nil, err
 	}
 
+	// Cross-machine gRPC transport (NoopTransport by default). Built once and
+	// shared: consumed by QubeService.CheckReachable and held on Dependencies.
+	xport := buildTransport(context.Background(), cfg.Transport)
+
 	// Zone and Qube repositories and services
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
-	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo)
+	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo,
+		service.WithExecutor(buildExecutor(cfg.Orchestrator)),
+		service.WithTransport(xport))
 
 	// Infrastructure repository and service
 	infraRepo := repository.NewInfraRepository(db)
 	infraSvc := service.NewInfraService(infraRepo)
 
-	// Credential repository and service. The key is validated in cfg.Validate()
-	// at load time, so a misconfigured key fails startup rather than silently
-	// falling back to the insecure default.
-	encryptionKey, err := cfg.EncryptionKeyBytes()
+	// Credential repository and service. The keyring is validated in
+	// cfg.Validate() at load time, so a misconfigured key fails startup rather
+	// than silently falling back to the insecure default. The keyring supports
+	// multiple key versions for rotation (see cmd/rotate-key).
+	kr, err := cfg.Keyring()
 	if err != nil {
 		return nil, err
 	}
-	credentialRepo := repository.NewCredentialRepository(db, encryptionKey)
+	credentialRepo := repository.NewCredentialRepository(db, kr)
 	credentialSvc := service.NewCredentialService(credentialRepo)
 
 	// Settings repository and service
@@ -165,7 +182,126 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		billingHandler:    handler.NewBillingHandler(),
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
+		transport:         xport,
 	}, nil
+}
+
+// buildExecutor selects the orchestration executor from configuration. When
+// orchestration is disabled (the default), a NoopExecutor is returned so that
+// start/stop only update the DB status — preserving behaviour on machines
+// without terraform/cloud access. When enabled, a real TerraformExecutor drives
+// compute/storage separation.
+func buildExecutor(cfg config.OrchestratorConfig) orchestrator.Executor {
+	if !cfg.Enabled {
+		log.Printf("Orchestrator: DISABLED (start/stop only update DB status; " +
+			"set orchestrator.enabled=true and orchestrator.terraform_dir to drive terraform)")
+		return orchestrator.NewNoopExecutor()
+	}
+
+	opts := []orchestrator.TerraformOption{}
+	if cfg.TerraformBinary != "" {
+		opts = append(opts, orchestrator.WithBinary(cfg.TerraformBinary))
+	}
+	if cfg.VarFile != "" {
+		opts = append(opts, orchestrator.WithVarFile(cfg.VarFile))
+	}
+	if cfg.GeneratedVarFile != "" {
+		opts = append(opts, orchestrator.WithGeneratedVarFile(cfg.GeneratedVarFile))
+	}
+	log.Printf("Orchestrator: ENABLED (terraform_dir=%s, binary=%s, var_file=%s, generated_var_file=%s)",
+		cfg.TerraformDir, cfg.TerraformBinary, cfg.VarFile, cfg.GeneratedVarFile)
+	// NOTE: WithQubeSnapshot is not wired yet. Until it is, the generated
+	// var-file is never refreshed from the database and the console cannot
+	// create qubes terraform knows about — see the Create/Delete wiring work.
+	return orchestrator.NewTerraformExecutor(cfg.TerraformDir, opts...)
+}
+
+// buildTransport wires the cross-machine gRPC transport. Disabled by default it
+// returns a NoopTransport. When enabled it obtains mTLS material (from vault via
+// qrexec, or from files), wires the reverse handler (routes remote→local calls
+// to the local dom0, policy C: ask), starts the outbound dial loop, and returns
+// the gRPC client (a transport.Transport).
+//
+// The returned Transport is a first-class injectable dependency; a service will
+// consume it for cross-machine qrexec in the next wiring step (design §6).
+func buildTransport(ctx context.Context, cfg config.TransportConfig) transport.Transport {
+	if !cfg.Enabled {
+		log.Printf("Transport: DISABLED (no gRPC transport; set transport.enabled=true, " +
+			"transport.remote_endpoint and mTLS material to drive cross-machine qrexec)")
+		return transport.NoopTransport{}
+	}
+
+	tlsCfg, err := obtainClientMTLS(ctx, cfg)
+	if err != nil {
+		log.Printf("Transport: mTLS setup failed (%v); falling back to NoopTransport", err)
+		return transport.NoopTransport{}
+	}
+
+	// Reverse handler: deliver remote→local calls to the configured local target
+	// (e.g. vault-cloud), gated by local dom0 policy C (ask). nil disables reverse.
+	reverse := transportgrpc.NewReverseHandler(transportgrpc.ReverseConfig{
+		LocalTarget: cfg.ReverseLocalTarget,
+	})
+
+	client := transportgrpc.NewClient(transportgrpc.ClientConfig{
+		RemoteEndpoint: cfg.RemoteEndpoint,
+		RelayName:      cfg.RelayName,
+		RemoteName:     cfg.RemoteName,
+		KeepAlive:      time.Duration(cfg.KeepAliveSeconds) * time.Second,
+		ReconnectMin:   time.Duration(cfg.ReconnectMinSeconds) * time.Second,
+		ReconnectMax:   time.Duration(cfg.ReconnectMaxSeconds) * time.Second,
+		TLS:            tlsCfg,
+	}, reverse)
+
+	go func() {
+		if err := client.Start(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("Transport: gRPC client stopped: %v", err)
+		}
+	}()
+	log.Printf("Transport: ENABLED (gRPC → %s, relay=%s, remote=%s, reverse_target=%q)",
+		cfg.RemoteEndpoint, cfg.RelayName, cfg.RemoteName, cfg.ReverseLocalTarget)
+	return client
+}
+
+// obtainClientMTLS gets the client TLS config either from vault-cloud (via
+// qrexec ask, in memory) when VaultCerts is set, or from the configured files.
+func obtainClientMTLS(ctx context.Context, cfg config.TransportConfig) (*tls.Config, error) {
+	if cfg.VaultCerts {
+		return transportgrpc.FetchClientMTLS(ctx, transportgrpc.VaultCertConfig{
+			VaultQube:  cfg.VaultQube,
+			CertName:   cfg.VaultCertName,
+			KeyName:    cfg.VaultKeyName,
+			CAName:     cfg.VaultCAName,
+			ServerName: cfg.RemoteName,
+		})
+	}
+	return loadClientMTLS(cfg)
+}
+
+// loadClientMTLS builds the client TLS config from the configured cert/key/CA
+// file paths (provisioned from vault-cloud via qrexec ask; this only reads the
+// paths). CAFile is optional — if empty, the system roots are used.
+func loadClientMTLS(cfg config.TransportConfig) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load client cert/key: %w", err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	if cfg.CAFile != "" {
+		pem, err := os.ReadFile(cfg.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("CA file %q has no valid certificates", cfg.CAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return tlsCfg, nil
 }
 
 // setupRouter creates and configures the Gin router.
@@ -265,7 +401,7 @@ func healthHandler(db *database.DB) gin.HandlerFunc {
 }
 
 // statusHandler returns system status information.
-func statusHandler(db *database.DB) gin.HandlerFunc {
+func statusHandler(_ *database.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"version": appVersion,

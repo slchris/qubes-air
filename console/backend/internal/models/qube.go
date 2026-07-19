@@ -48,13 +48,20 @@ const (
 	QubeStatusCreating QubeStatus = "creating"
 	QubeStatusRunning  QubeStatus = "running"
 	QubeStatusStopped  QubeStatus = "stopped"
-	QubeStatusError    QubeStatus = "error"
+	// QubeStatusSuspended means the compute instance has been released
+	// (destroyed) to save cost while the persistent data disk is retained. It
+	// is distinct from Stopped: a suspended qube can be resumed by rebuilding
+	// compute and re-attaching the same disk. See the orchestrator package and
+	// the terraform compute/storage separation (compute_running).
+	QubeStatusSuspended QubeStatus = "suspended"
+	QubeStatusError     QubeStatus = "error"
 )
 
 // IsValid checks if the qube status is valid.
 func (s QubeStatus) IsValid() bool {
 	switch s {
-	case QubeStatusPending, QubeStatusCreating, QubeStatusRunning, QubeStatusStopped, QubeStatusError:
+	case QubeStatusPending, QubeStatusCreating, QubeStatusRunning,
+		QubeStatusStopped, QubeStatusSuspended, QubeStatusError:
 		return true
 	default:
 		return false

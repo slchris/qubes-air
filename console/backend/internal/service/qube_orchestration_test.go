@@ -1,0 +1,202 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+
+	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/orchestrator"
+	"github.com/slchris/qubes-air/console/internal/repository"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// setupQubeServiceWithExecutor builds a QubeService wired to the given executor,
+// backed by a real (temp) SQLite DB so status transitions are observable.
+func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor) (ZoneService, QubeService, func()) {
+	t.Helper()
+
+	tmpFile, err := os.CreateTemp("", "qube-orch-test-*.db")
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg := database.DefaultConfig()
+	cfg.DSN = tmpFile.Name()
+
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+
+	zoneRepo := repository.NewZoneRepository(db)
+	qubeRepo := repository.NewQubeRepository(db)
+
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithExecutor(exec))
+
+	cleanup := func() {
+		db.Close()
+		os.Remove(tmpFile.Name())
+	}
+	return zoneSvc, qubeSvc, cleanup
+}
+
+// orchTestQubeName is a terraform-safe qube name used by the orchestration
+// tests (maps to a terraform -target address).
+const orchTestQubeName = "web01"
+
+func createQubeForOrch(t *testing.T, zoneSvc ZoneService, qubeSvc QubeService) *models.Qube {
+	t.Helper()
+	ctx := context.Background()
+
+	zone, err := zoneSvc.Create(ctx, &models.ZoneCreateRequest{
+		Name: "Orch Zone",
+		Type: models.ZoneTypeProxmox,
+	})
+	require.NoError(t, err)
+	_, err = zoneSvc.Connect(ctx, zone.ID)
+	require.NoError(t, err)
+
+	qube, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   orchTestQubeName,
+		Type:   models.QubeTypeApp,
+		ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+	return qube
+}
+
+// Start must call the executor's Resume, and only then flip DB status. We assert
+// both that Resume was called and that the recorded status is running.
+func TestStart_CallsResumeThenUpdatesStatus(t *testing.T) {
+	fake := orchestrator.NewFakeExecutor()
+	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
+	defer cleanup()
+
+	ctx := context.Background()
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+
+	got, err := qubeSvc.Start(ctx, qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, models.QubeStatusRunning, got.Status)
+
+	calls := fake.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, orchestrator.ActionResume, calls[0].Action)
+	assert.Equal(t, orchTestQubeName, calls[0].Qube)
+}
+
+// When the executor's Resume fails, the DB status must NOT change (still
+// stopped) — we never report running for a qube the infra did not bring up.
+func TestStart_ExecutorFailure_StatusUnchanged(t *testing.T) {
+	fake := orchestrator.NewFakeExecutor()
+	fake.FailOn[orchestrator.ActionResume] = errors.New("terraform apply failed")
+
+	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
+	defer cleanup()
+
+	ctx := context.Background()
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+
+	_, err := qubeSvc.Start(ctx, qube.ID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrOrchestration)
+
+	// Status must be unchanged (still the initial Stopped from Create).
+	after, err := qubeSvc.GetByID(ctx, qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, models.QubeStatusStopped, after.Status,
+		"status must not flip to running when resume fails")
+}
+
+// Stop must call the executor's Suspend, then set status to Suspended.
+func TestStop_CallsSuspendThenUpdatesStatus(t *testing.T) {
+	fake := orchestrator.NewFakeExecutor()
+	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
+	defer cleanup()
+
+	ctx := context.Background()
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+
+	// Bring it up first.
+	_, err := qubeSvc.Start(ctx, qube.ID)
+	require.NoError(t, err)
+	fake.Reset()
+
+	got, err := qubeSvc.Stop(ctx, qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, models.QubeStatusSuspended, got.Status)
+
+	calls := fake.Calls()
+	require.Len(t, calls, 1)
+	assert.Equal(t, orchestrator.ActionSuspend, calls[0].Action)
+	assert.Equal(t, orchTestQubeName, calls[0].Qube)
+}
+
+// When Suspend fails, status must remain running (the qube is still up).
+func TestStop_ExecutorFailure_StatusUnchanged(t *testing.T) {
+	fake := orchestrator.NewFakeExecutor()
+	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
+	defer cleanup()
+
+	ctx := context.Background()
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+	_, err := qubeSvc.Start(ctx, qube.ID)
+	require.NoError(t, err)
+
+	// Now make suspend fail.
+	fake.FailOn[orchestrator.ActionSuspend] = errors.New("terraform destroy failed")
+
+	_, err = qubeSvc.Stop(ctx, qube.ID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrOrchestration)
+
+	after, err := qubeSvc.GetByID(ctx, qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, models.QubeStatusRunning, after.Status,
+		"status must not flip to suspended when suspend fails")
+}
+
+// A precondition failure (zone disconnected) must be caught BEFORE the executor
+// is called — we don't want to touch infra for a qube we won't start.
+func TestStart_ZoneDisconnected_ExecutorNotCalled(t *testing.T) {
+	fake := orchestrator.NewFakeExecutor()
+	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
+	defer cleanup()
+
+	ctx := context.Background()
+	qube := createQubeForOrch(t, zoneSvc, qubeSvc)
+
+	// Disconnect the zone.
+	_, err := zoneSvc.Disconnect(ctx, qube.ZoneID)
+	require.NoError(t, err)
+
+	_, err = qubeSvc.Start(ctx, qube.ID)
+	require.ErrorIs(t, err, ErrZoneDisconnected)
+
+	assert.Empty(t, fake.Calls(), "executor must not be called when precondition fails")
+}
+
+// The default NoopExecutor path (no WithExecutor) still works and rejects unsafe
+// qube names consistently, without touching any infrastructure.
+func TestDefaultNoopExecutor_RejectsUnsafeName(t *testing.T) {
+	zoneSvc, qubeSvc, cleanup := setupQubeTestServices(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone := createConnectedZone(t, zoneSvc)
+
+	// Create with a display-style name containing a space; Create does not
+	// validate against terraform rules, but Start/Stop go through the executor.
+	qube, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   "Unsafe Name",
+		Type:   models.QubeTypeApp,
+		ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+
+	_, err = qubeSvc.Start(ctx, qube.ID)
+	require.Error(t, err, "start must fail because the name is not terraform-safe")
+	assert.ErrorIs(t, err, ErrOrchestration)
+}

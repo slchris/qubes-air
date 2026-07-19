@@ -168,7 +168,7 @@ func TestQubeService_List(t *testing.T) {
 	ctx := context.Background()
 	zone := createConnectedZone(t, zoneSvc)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		req := &models.QubeCreateRequest{
 			Name:   "Qube " + string(rune('A'+i)),
 			Type:   models.QubeTypeApp,
@@ -237,7 +237,8 @@ func TestQubeService_Start(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Start Qube",
+		// Name must be terraform-safe: it maps to a terraform -target address.
+		Name:   "start-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
@@ -257,7 +258,7 @@ func TestQubeService_Stop(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Stop Qube",
+		Name:   "stop-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}
@@ -266,9 +267,11 @@ func TestQubeService_Stop(t *testing.T) {
 	_, err = qubeSvc.Start(ctx, created.ID)
 	require.NoError(t, err)
 
+	// Stop now suspends (releases compute, keeps data), so the recorded status
+	// is Suspended rather than Stopped.
 	qube, err := qubeSvc.Stop(ctx, created.ID)
 	assert.NoError(t, err)
-	assert.Equal(t, models.QubeStatusStopped, qube.Status)
+	assert.Equal(t, models.QubeStatusSuspended, qube.Status)
 }
 
 func TestQubeService_Start_ZoneDisconnected(t *testing.T) {
@@ -279,7 +282,7 @@ func TestQubeService_Start_ZoneDisconnected(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		Name:   "Disconnected Zone Qube",
+		Name:   "disconnected-zone-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	}

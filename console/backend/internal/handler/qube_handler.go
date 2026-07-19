@@ -32,6 +32,7 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		qubes.DELETE("/:id", h.Delete)
 		qubes.POST("/:id/start", h.Start)
 		qubes.POST("/:id/stop", h.Stop)
+		qubes.GET("/:id/reachable", h.CheckReachable)
 	}
 }
 
@@ -155,6 +156,21 @@ func (h *QubeHandler) Stop(c *gin.Context) {
 	c.JSON(http.StatusOK, qube)
 }
 
+// CheckReachable handles GET /qubes/:id/reachable. It probes the remote qube
+// over the gRPC transport (cross-machine qrexec health check) and returns the
+// result. 502 Bad Gateway when the qube can't be reached.
+func (h *QubeHandler) CheckReachable(c *gin.Context) {
+	id := c.Param("id")
+
+	resp, err := h.qubeSvc.CheckReachable(c.Request.Context(), id)
+	if err != nil {
+		handleQubeError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"reachable": true, "response": resp})
+}
+
 // handleQubeError maps service errors to HTTP responses.
 func handleQubeError(c *gin.Context, err error) {
 	switch {
@@ -168,6 +184,8 @@ func handleQubeError(c *gin.Context, err error) {
 		respondError(c, http.StatusPreconditionFailed, err)
 	case errors.Is(err, service.ErrInvalidQubeType):
 		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrUnreachable):
+		respondError(c, http.StatusBadGateway, err)
 	default:
 		respondError(c, http.StatusInternalServerError, err)
 	}

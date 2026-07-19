@@ -158,7 +158,7 @@ func TestQubeHandler_List(t *testing.T) {
 	ctx := context.Background()
 	zone := createTestZoneForHandler(t, zoneSvc)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
 			Name:   "Qube " + string(rune('A'+i)),
 			Type:   models.QubeTypeApp,
@@ -217,7 +217,7 @@ func TestQubeHandler_Start(t *testing.T) {
 	zone := createTestZoneForHandler(t, zoneSvc)
 
 	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-		Name:   "Start Qube",
+		Name:   "start-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
@@ -242,7 +242,7 @@ func TestQubeHandler_Stop(t *testing.T) {
 	zone := createTestZoneForHandler(t, zoneSvc)
 
 	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
-		Name:   "Stop Qube",
+		Name:   "stop-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
@@ -258,5 +258,6 @@ func TestQubeHandler_Stop(t *testing.T) {
 
 	qube, err := qubeSvc.GetByID(ctx, created.ID)
 	assert.NoError(t, err)
-	assert.Equal(t, models.QubeStatusStopped, qube.Status)
+	// Stop suspends: compute released, data retained.
+	assert.Equal(t, models.QubeStatusSuspended, qube.Status)
 }
