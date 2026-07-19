@@ -424,8 +424,12 @@
     background: var(--modal-bg, #fff);
     padding: 1.5rem;
     border-radius: 8px;
-    min-width: 400px;
-    max-width: 90vw;
+    /* min-width beats max-width in CSS, so the 90vw cap never applied and this
+       dialog overflowed on any viewport under 400px — including a zoomed-in
+       one. See the same fix in QubeList. */
+    width: min(400px, 90vw);
+    max-height: 90dvh;
+    overflow-y: auto;
   }
 
   .modal h3 {

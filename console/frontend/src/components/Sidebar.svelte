@@ -41,6 +41,10 @@
     background: var(--sidebar-bg, #f0f0f0);
     border-right: 1px solid var(--border-color, #ddd);
     flex-shrink: 0;
+    /* The parent row clips its overflow, so without a scroller of its own the
+       lower nav items become unreachable once the viewport is shorter than the
+       menu — which browser zoom causes directly. */
+    overflow-y: auto;
   }
   
   .nav {

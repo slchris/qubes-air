@@ -706,8 +706,14 @@
     background: var(--modal-bg, #fff);
     padding: 1.5rem;
     border-radius: 8px;
-    min-width: 450px;
-    max-width: 90vw;
+    /* width, not min-width. In CSS min-width BEATS max-width, so
+       `min-width: 450px; max-width: 90vw` kept the dialog 450px wide on any
+       viewport narrower than that — the 90vw cap never applied and the dialog
+       overflowed horizontally, which is what browser zoom produces (zooming in
+       shrinks the CSS viewport). min() applies whichever is smaller. */
+    width: min(450px, 90vw);
+    max-height: 90dvh;
+    overflow-y: auto;
   }
 
   .modal h3 {
