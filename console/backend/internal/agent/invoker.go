@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,6 +68,15 @@ type LocalInvoker struct {
 	// RemoteName is exported to services as QUBESAIR_REMOTE_NAME, aligning with
 	// the Qubes RemoteVM remote_name property.
 	RemoteName string
+
+	// mu guards builtins. Registration happens at startup, but the map is read
+	// on every call from the gRPC server's per-request goroutines, and an
+	// unsynchronized map read against a late registration is a data race with
+	// no upper bound on what it corrupts.
+	mu sync.RWMutex
+	// builtins are services handled in-process; see builtin.go for why they
+	// cannot be files and why nothing in ServiceDir may shadow them.
+	builtins map[string]Builtin
 }
 
 // NewLocalInvoker builds an invoker over the standard service directory.
@@ -115,7 +125,23 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 	if !validServiceName(service) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidServiceName, service)
 	}
-	if len(i.Allowed) > 0 && !i.Allowed[baseService(service)] {
+
+	// Qubes services may be invoked as "name+argument"; the implementation file
+	// is the part before the '+', and the argument is passed to it.
+	name, arg := splitServiceArg(service)
+
+	// Builtins are resolved first, on the BASE name, and before the allowlist —
+	// see RegisterBuiltin. Matching on the base name is what closes the gap:
+	// dispatching "qubesair.CompleteRenewal+x" down the file path would let a
+	// script in ServiceDir serve a request the builtin was supposed to answer.
+	if fn := i.builtin(name); fn != nil {
+		if arg != "" {
+			return nil, fmt.Errorf("%w: %q", ErrBuiltinTakesNoArgument, service)
+		}
+		return fn(ctx, target, in)
+	}
+
+	if len(i.Allowed) > 0 && !i.Allowed[name] {
 		return nil, fmt.Errorf("%w: %q", ErrServiceNotAllowed, service)
 	}
 
@@ -123,9 +149,6 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 	if dir == "" {
 		dir = DefaultServiceDir
 	}
-	// Qubes services may be invoked as "name+argument"; the implementation file
-	// is the part before the '+', and the argument is passed to it.
-	name, arg := splitServiceArg(service)
 	path := filepath.Join(dir, name)
 
 	info, err := os.Stat(path)

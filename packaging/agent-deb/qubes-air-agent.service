@@ -85,5 +85,19 @@ PrivateTmp=yes
 # agent binary it is running under.
 ProtectSystem=full
 
+# ProtectSystem=full makes /etc read-only, and the agent's identity lives in
+# /etc/qubes-air. That was fine while the agent only READ its certificates; it
+# silently made renewal impossible the moment the agent had to write one.
+#
+# Found on real hardware, not in tests: every unit test writes to a temp
+# directory with no systemd sandbox, so the whole suite passed while renewal
+# could never succeed on a real host. The error surfaces as
+# "read-only file system" from deep inside the atomic-write path — three layers
+# from anything that says "systemd".
+#
+# Scoped to the one directory rather than relaxing ProtectSystem: the rest of
+# /etc stays read-only, and this is the only path the agent must mutate.
+ReadWritePaths=/etc/qubes-air
+
 [Install]
 WantedBy=multi-user.target
