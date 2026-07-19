@@ -602,3 +602,95 @@ func TestIdentitySnippetIsPinnedByContent(t *testing.T) {
 	assert.Contains(t, body, "filesha256",
 		"the checksum must be computed from the file, not hardcoded")
 }
+
+// TestGuestLearnsItsOwnName — every qube came up as "localhost" with an empty
+// /etc/hostname, verified on real hardware. Nothing in a log line then says
+// which machine produced it.
+//
+// It matters more here than on an ordinary VM: the qube's name already exists
+// in the Proxmox VM name, the agent certificate's common name, and
+// QUBESAIR_REMOTE_NAME. Leaving the OS out of that set is how they drift.
+func TestGuestLearnsItsOwnName(t *testing.T) {
+	out, _ := renderFixture(t)
+
+	var cc struct {
+		Hostname         string `yaml:"hostname"`
+		PreserveHostname *bool  `yaml:"preserve_hostname"`
+		ManageEtcHosts   *bool  `yaml:"manage_etc_hosts"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(out), &cc))
+
+	assert.Equal(t, "remote-dev", cc.Hostname, "the guest must be told its own name")
+	require.NotNil(t, cc.PreserveHostname)
+	assert.False(t, *cc.PreserveHostname, "the image default must not win over this")
+	require.NotNil(t, cc.ManageEtcHosts)
+	assert.True(t, *cc.ManageEtcHosts,
+		"a hostname with no /etc/hosts entry makes self-resolution wait for a DNS timeout")
+}
+
+// TestAgentCanWriteItsOwnIdentity — the unit must grant write access to
+// /etc/qubes-air.
+//
+// ProtectSystem=full makes /etc read-only. That was harmless while the agent
+// only read its certificates and silently made renewal impossible the moment it
+// had to write one: on real hardware CompleteRenewal failed with "read-only
+// file system" from inside the atomic-write path, three layers from anything
+// mentioning systemd.
+//
+// No unit test could have caught it — they all write to temp directories with
+// no sandbox — so this asserts on the shipped unit itself.
+func TestAgentCanWriteItsOwnIdentity(t *testing.T) {
+	unit, err := os.ReadFile("../../../../packaging/agent-deb/qubes-air-agent.service")
+	require.NoError(t, err)
+
+	assert.Contains(t, string(unit), "ReadWritePaths=/etc/qubes-air",
+		"renewal writes the new key and certificate here; without this it fails on every real host")
+}
+
+// TestAptMirrorDominatesProvisioningTime — the guest must be pointed at a local
+// mirror when one is configured.
+//
+// Setting user-data REPLACES a template's vendor data, so a mirror the template
+// configured at boot silently stops being applied and apt falls back to the
+// public Debian redirector. Measured on real hardware with cloud-init's own
+// timing: installing qemu-guest-agent and curl took 857s — 99.3% of a 15-minute
+// provision, enough to push the apply past the executor's timeout and report a
+// failure for a VM that had in fact been built.
+//
+// This is the third consequence of that same vendor-data replacement, after the
+// guest agent and the hostname. Each looked unrelated until traced back.
+func TestAptMirrorDominatesProvisioningTime(t *testing.T) {
+	pkg := testAgentPackage()
+	pkg.AptMirror = "http://10.31.0.2/debian"
+	pkg.AptSecurityMirror = "http://10.31.0.2/debian-security"
+	out, _ := renderWith(t, pkg)
+
+	var cc struct {
+		Apt struct {
+			Primary []struct {
+				URI string `yaml:"uri"`
+			} `yaml:"primary"`
+			Security []struct {
+				URI string `yaml:"uri"`
+			} `yaml:"security"`
+		} `yaml:"apt"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(out), &cc))
+	require.Len(t, cc.Apt.Primary, 1)
+	assert.Equal(t, "http://10.31.0.2/debian", cc.Apt.Primary[0].URI)
+	require.Len(t, cc.Apt.Security, 1)
+	assert.Equal(t, "http://10.31.0.2/debian-security", cc.Apt.Security[0].URI,
+		"Debian serves security from a separate path; reusing the primary reintroduces most of the delay")
+
+	// The stanza must precede packages:, or the sources are not in place when
+	// cloud-init installs them.
+	assert.Less(t, strings.Index(out, "apt:"), strings.Index(out, "packages:"))
+}
+
+// TestNoAptMirrorLeavesImageSourcesAlone — an empty apt block would replace the
+// image's working sources with nothing.
+func TestNoAptMirrorLeavesImageSourcesAlone(t *testing.T) {
+	out, _ := renderFixture(t)
+	assert.NotContains(t, out, "apt:",
+		"with no mirror configured the image's own sources must be left untouched")
+}

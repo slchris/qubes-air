@@ -36,6 +36,16 @@ type AgentPackage struct {
 	URL     string
 	SHA256  string
 	Version string
+	// AptMirror and AptSecurityMirror point the guest at a local Debian mirror.
+	//
+	// They live here because setting user-data REPLACES a template's vendor
+	// data, so a mirror the template configured at boot silently stops being
+	// applied. Measured on real hardware: with the public redirector, installing
+	// qemu-guest-agent and curl took 857s — 99% of a 15-minute provision, enough
+	// to push the apply past the executor's timeout. Empty leaves the image's
+	// own sources alone.
+	AptMirror         string
+	AptSecurityMirror string
 }
 
 // sha256Hex matches the bare 64-character digest sha256sum(1) expects.
@@ -120,6 +130,26 @@ func RenderAgentUserData(remoteName string, bundle *pki.Bundle, listen string, p
 	b.WriteString("# snippet to do stops happening. qemu-guest-agent is the one that matters:\n")
 	b.WriteString("# without it terraform waits for an IP the guest never reports, and the apply\n")
 	b.WriteString("# hangs until its timeout with the VM sitting there running.\n")
+	// The guest must know its own name.
+	//
+	// Without this every qube in the fleet comes up as "localhost" with an EMPTY
+	// /etc/hostname — verified on real hardware — so nothing in a log line says
+	// which machine produced it, and fleet-wide troubleshooting has to correlate
+	// by IP. Empty is worse than wrong: tools that read /etc/hostname directly
+	// get nothing at all.
+	//
+	// It matters more here than on an ordinary VM because this name already
+	// exists in three places that must agree — the Proxmox VM name, the agent
+	// certificate's common name (agent-<name>), and QUBESAIR_REMOTE_NAME below.
+	// Leaving the OS itself out of that set is how they start to drift.
+	//
+	// manage_etc_hosts keeps /etc/hosts consistent with it; without that a
+	// hostname with no matching entry makes anything resolving its own name
+	// wait for a DNS timeout first.
+	writeAptMirror(&b, pkg)
+	fmt.Fprintf(&b, "hostname: %s\n", remoteName)
+	b.WriteString("preserve_hostname: false\n")
+	b.WriteString("manage_etc_hosts: true\n")
 	b.WriteString("packages:\n")
 	b.WriteString("  - qemu-guest-agent\n")
 	// curl fetches the agent package. The image normally has it; naming it here
@@ -408,4 +438,31 @@ func RemoveAgentUserData(dir, qubeName string) error {
 		return nil
 	}
 	return err
+}
+
+// writeAptMirror emits the apt stanza pointing the guest at a local mirror.
+//
+// Emitted before packages: so the sources are in place when cloud-init installs
+// them. Nothing is written when no mirror is configured — an empty apt block
+// would replace the image's working sources with nothing.
+func writeAptMirror(b *strings.Builder, pkg AgentPackage) {
+	primary := strings.TrimSpace(pkg.AptMirror)
+	if primary == "" {
+		return
+	}
+	security := strings.TrimSpace(pkg.AptSecurityMirror)
+	if security == "" {
+		// Better than omitting the security suite, which would leave it pointed
+		// at the public redirector and reintroduce most of the delay — but
+		// Debian serves security from a separate path, so this is a fallback
+		// worth overriding.
+		security = primary
+	}
+	b.WriteString("apt:\n")
+	b.WriteString("  primary:\n")
+	b.WriteString("    - arches: [default]\n")
+	fmt.Fprintf(b, "      uri: %s\n", primary)
+	b.WriteString("  security:\n")
+	b.WriteString("    - arches: [default]\n")
+	fmt.Fprintf(b, "      uri: %s\n", security)
 }
