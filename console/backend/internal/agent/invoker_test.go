@@ -32,7 +32,14 @@ func serviceDir(t *testing.T, scripts map[string]string) string {
 func invokerOver(dir string, allowed ...string) *LocalInvoker {
 	inv := NewLocalInvoker("remote-dev", allowed)
 	inv.ServiceDir = dir
-	inv.Timeout = 5 * time.Second
+	// Generous on purpose. This bound exists to stop a genuinely hung service
+	// from wedging the suite, NOT to assert how fast forking /bin/sh is. At 5s
+	// it was measuring machine load instead: green alone, red under `go test
+	// ./...` where 15 packages compete for CPU. A suite that fails under
+	// parallelism teaches people to re-run until green, which is how a real
+	// regression gets waved through. Passing runs finish in well under a second,
+	// so the higher ceiling costs nothing.
+	inv.Timeout = 30 * time.Second
 	return inv
 }
 
@@ -224,5 +231,29 @@ func TestRealPingScript(t *testing.T) {
 	}
 	if fields[1] != "remote-dev" {
 		t.Errorf("want the remote name, got %q", fields[1])
+	}
+}
+
+// TestInvokeTimeoutSurvivesBackgroundedChild — the timeout must bound the call
+// even when the service leaves a process behind.
+//
+// Stdout is a buffer, not a file, so exec opens an OS pipe and Wait blocks until
+// every writer closes it. The context kills only the direct child; a grandchild
+// inherits the write end and holds it open. Without cmd.WaitDelay the call
+// therefore ran for the grandchild's lifetime — 30s against a 200ms timeout —
+// so any service that backgrounds anything could pin an agent worker.
+func TestInvokeTimeoutSurvivesBackgroundedChild(t *testing.T) {
+	dir := serviceDir(t, map[string]string{
+		// Exits immediately, leaving a child that keeps the pipe open.
+		"qubesair.Leaky": "#!/bin/sh\nsleep 30 &\nexit 0\n",
+	})
+	inv := invokerOver(dir)
+	inv.Timeout = 200 * time.Millisecond
+
+	start := time.Now()
+	_, _ = inv.Invoke(context.Background(), "t", "qubesair.Leaky", nil)
+
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("a backgrounded grandchild held the call open for %s; WaitDelay is not bounding the drain", elapsed)
 	}
 }

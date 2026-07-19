@@ -139,12 +139,25 @@ func TestAgentRefusesDisallowedService(t *testing.T) {
 // asserting a rejection would spin until it timed out.
 func callWhenReady(t *testing.T, cli *Client, target, service string, in []byte) ([]byte, error) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// The overall budget is the real guard against a hang; the per-call timeout
+	// only paces the retries.
+	deadline := time.Now().Add(30 * time.Second)
 	for {
-		callCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		out, err := cli.Call(callCtx, target, service, in)
 		cancel()
-		if !errors.Is(err, ErrNotConnected) || time.Now().After(deadline) {
+		if time.Now().After(deadline) {
+			return out, err
+		}
+		// "Not connected" and "the per-call timeout expired" both mean the tunnel
+		// is not up YET, so both must be retried.
+		//
+		// Retrying only ErrNotConnected is what made this test flaky: under
+		// `go test ./...` the handshake takes longer than one per-call timeout,
+		// so the failure arrives as DeadlineExceeded instead — a different error
+		// with the same meaning — and the loop returned it immediately without
+		// ever spending the budget it was given.
+		if !errors.Is(err, ErrNotConnected) && !errors.Is(err, context.DeadlineExceeded) {
 			return out, err
 		}
 		time.Sleep(25 * time.Millisecond)

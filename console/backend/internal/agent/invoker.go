@@ -165,6 +165,21 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	// Without WaitDelay the timeout above does not actually bound the call.
+	//
+	// Stdout/Stderr are buffers rather than *os.File, so exec creates an OS pipe
+	// and a copying goroutine, and Wait blocks until every writer closes. The
+	// context kills only the DIRECT child; any grandchild it left behind
+	// inherits the pipe's write end and holds it open. A service that
+	// backgrounds anything therefore pins this call for the grandchild's
+	// lifetime — measured at 30s against a 200ms timeout — and a hostile or
+	// merely careless service could hold an agent worker indefinitely.
+	//
+	// WaitDelay bounds the drain: after cancellation, wait this long for I/O to
+	// finish, then force the pipes closed and return. The deadline is what
+	// decides the outcome; this only stops the cleanup from outliving it.
+	cmd.WaitDelay = 2 * time.Second
+
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("service %q timed out after %s", service, timeout)
