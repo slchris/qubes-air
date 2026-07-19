@@ -1,0 +1,48 @@
+# terraform/backend-pg.tf.example
+# =====================================================================
+# 备选远程 backend: pg (自托管 Postgres)。
+#
+# 何时选它而非 S3/MinIO:
+#   - 场景 A (多笔记本 + 自托管 Proxmox, 不碰公有云) 的**首选**。
+#   - 或当 S3 兼容存储 (尤其 MinIO) 的 use_lockfile 原生锁在你的版本上实测不可靠时,
+#     用 pg 获得可靠锁 (Postgres advisory lock, 会话断开自动释放)。
+#
+# 用法: 复制本文件为 terraform/backend.tf (已被 .gitignore 排除), 按下方填。
+#       同一时刻只能存在一个 backend 块 —— pg 与 s3 二选一, 不要同时复制两份。
+#
+# 【本方案同样要求 OpenTofu (tofu), 客户端 state 加密照旧 (见 encryption / docs)】
+#   pg backend 本身**不加密**: state 以文本存 Postgres 表的一行。所以:
+#     - 机密性靠 OpenTofu 客户端加密 (state 进库前已是密文, DBA 只看到密文)。
+#     - 再叠加 Postgres 主机 LUKS 全盘加密 + sslmode=verify-full 传输加密。
+#
+# 【重要: conn_str 含 DB 密码, 不写这里】
+#   连接串里的 Postgres 密码是机密。**不要**把带密码的 conn_str 写进 backend.tf
+#   (即便 gitignore, 仍是明文落盘)。改用环境变量 PG_CONN_STR 注入 —— scripts/
+#   tf-with-passphrase.sh 已支持从 vault-cloud 取 pg-conn-str 凭据并注入。
+#   因此本文件的 backend "pg" 块**留空 conn_str**, 由环境变量提供。
+# =====================================================================
+
+terraform {
+  backend "pg" {
+    # conn_str 故意留空: 由环境变量 PG_CONN_STR 注入 (含密码, 从 vault 取)。
+    # 形如: postgres://tf_laptop_a:<pw>@pg.home.lan:5432/tfstate?sslmode=verify-full
+
+    # schema_name: 每套环境用独立 schema, 便于隔离与权限控制。
+    schema_name = "qubes_air"
+
+    # 不自动建库/schema (由 DBA 预先按最小权限创建, 见 docs/terraform-state.md)。
+    # skip_schema_creation = true
+    # skip_table_creation  = true
+    # skip_index_creation  = true
+  }
+}
+
+# =====================================================================
+# 每台笔记本独立身份 (不共享一把万能凭据):
+#   - 每台笔记本一个独立 Postgres 角色 (tf_laptop_a / tf_laptop_b ...),
+#     各自的 pg-conn-str 存各自 vault-cloud。丢一台单独吊销该角色即可。
+#   - 连接强制 sslmode=verify-full + CA 固定, 防 MITM。
+#
+# 锁: Postgres advisory lock, 自动加/解, 会话中断即释放 (force-unlock 不支持,
+#     也基本不需要 —— 见 docs/terraform-state.md §7)。
+# =====================================================================

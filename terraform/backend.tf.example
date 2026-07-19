@@ -1,0 +1,58 @@
+# terraform/backend.tf.example
+# =====================================================================
+# 多机共享 state 的 S3 兼容远程 backend (定稿方案)。
+#
+# 用法: 复制本文件为 terraform/backend.tf (已被 .gitignore 排除, 因为含
+#       桶名/endpoint 等环境值), 按注释填好, 再 `tofu init`。
+#
+# 【重要】本方案要求 OpenTofu (不是 HashiCorp Terraform):
+#   - S3 backend 的服务端加密 (SSE) 密钥在存储运营方手里, 对"云厂商不可信"
+#     无效; 真正的机密性来自 OpenTofu 客户端 state 加密 (见 encryption.tf.example
+#     / docs/terraform-state.md), 它让 backend 只拿到密文。
+#   - HashiCorp 闭源版 Terraform 没有客户端 state 加密, 不能满足本项目威胁模型。
+#   - 命令用 `tofu` 代替 `terraform` (Makefile 已支持 TF_BIN, 默认 tofu)。
+#
+# 【谁能看到什么】
+#   - 存储运营方 (AWS S3 / 自托管 MinIO 的管理员): 只看到**密文 state blob** +
+#     对象元数据 + 锁文件 .tflock (其内容是否加密属"待实测", 可能泄露操作者/时间)。
+#   - 看不到: 基础设施拓扑、资源属性、敏感变量、provider 凭据 (凭据从不进 state)。
+# =====================================================================
+
+terraform {
+  backend "s3" {
+    # ---- 对象存储位置 ----
+    bucket = "qubes-air-tfstate" # 你的桶名 (先在存储侧创建好)
+    key    = "infra/terraform.tfstate"
+    region = "us-east-1" # 自托管 MinIO 也需填一个占位 region
+
+    # ---- 原生状态锁 (无需 DynamoDB) ----
+    # Terraform 1.11+ / OpenTofu 对应版本: use_lockfile 用 S3 条件写实现互斥。
+    # 迁移期可与 DynamoDB 并存, 确认后删除 dynamodb_table。
+    use_lockfile = true
+
+    # ---- 服务端加密 (仅作"防盘"兜底, 不是主防线) ----
+    # 主防线是 OpenTofu 客户端加密 (encryption.tf.example)。这里的 SSE 密钥
+    # 在存储运营方手里, 不解决"运营方可见"; 保留只为多一层"磁盘被偷"的保护。
+    encrypt = true
+
+    # =================================================================
+    # 场景 B: 直接用 AWS S3
+    #   - 上面填真实 bucket/region 即可。
+    #   - 每台笔记本用**独立 IAM 用户 + 最小权限桶策略** (不共享 root key),
+    #     凭据经环境变量 AWS_ACCESS_KEY_ID/SECRET (从 vault 取), 不写这里。
+    #
+    # 场景 A / 自托管: 指向 MinIO 等 S3 兼容存储 (不碰公有云)
+    #   取消下面注释, 指到你自己的 MinIO:
+    # =================================================================
+    # endpoints                   = { s3 = "https://minio.home.lan:9000" }
+    # use_path_style              = true
+    # skip_credentials_validation = true
+    # skip_region_validation      = true
+    # skip_metadata_api_check     = true
+    # skip_requesting_account_id  = true
+    #
+    # ⚠️ 待实测 (来源冲突, 见 docs/terraform-state.md): MinIO 对
+    #    `If-None-Match: *` 条件写的支持不一致, 可能导致 use_lockfile 锁失效。
+    #    选 MinIO 前务必做并发 apply 冒烟测试; 若锁不可靠, 改用 pg 或 http backend。
+  }
+}

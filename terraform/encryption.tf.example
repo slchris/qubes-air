@@ -1,0 +1,65 @@
+# terraform/encryption.tf.example
+# =====================================================================
+# OpenTofu 客户端 state/plan 加密 (定稿方案的机密性核心)。
+#
+# 作用: 在 state/plan 离开笔记本**之前**用 AES-GCM 加密, 上传到 S3 兼容 backend
+#       后, 存储运营方 (AWS / MinIO 管理员) 只拿到密文, **无法解密**。这是本项目
+#       满足"云厂商不可信"威胁模型的唯一干净手段。
+#
+# 【为什么用 passphrase (PBKDF2) 而不是 aws_kms】
+#   PBKDF2 从 passphrase 本地派生密钥, 无任何外部服务参与 -> 云厂商拿不到密钥。
+#   若用 key_provider "aws_kms"/"gcp_kms", KEK 在云厂商手里 (解密要回调 KMS),
+#   等于把解密能力交回给不可信方, 前功尽弃。**本项目禁止用云 KMS 作 key_provider。**
+#
+# 【passphrase 从哪来 —— 存 vault-cloud, 不硬编码】
+#   passphrase 是"团队密钥": 每台笔记本都要有它才能读写共享 state。它本身是高价值
+#   机密, 复用阶段3 的凭据机制存放:
+#     1) 在每台笔记本的 vault-cloud 里存一个命名凭据 tfstate-passphrase
+#        (~/.qubes-air/credentials/tfstate-passphrase, 权限 600)。
+#     2) mgmt-air 上跑 `scripts/tf-with-passphrase.sh <tofu 子命令>`, 它经
+#        qubesair.GetCredential+tfstate-passphrase (dom0 policy=ask 人工确认) 取回
+#        passphrase, 注入环境变量 TF_ENCRYPTION, 执行完即从环境清除, 全程不落盘。
+#
+# 【两种落地方式 (二选一)】
+#   (A) 用本文件 (复制成 encryption.tf): passphrase 经 var 注入 —— 但 tofu 变量会
+#       进 plan/CLI 历史, **不如 (B) 干净**。仅在无法用环境变量时用。
+#   (B) 推荐: **不放本文件**, 改用环境变量 TF_ENCRYPTION 传整段加密配置
+#       (见 docs/terraform-state.md 的 tf-with-passphrase.sh)。这样加密配置和
+#       passphrase 都不进任何 .tf 文件。
+#
+# 下面给出 (A) 的配置形态供参考; 推荐 (B) 则删除本文件、不复制成 encryption.tf。
+# =====================================================================
+
+# 注意: 需要 OpenTofu >= 1.7 (HashiCorp Terraform 不支持 encryption 块)。
+terraform {
+  encryption {
+    # PBKDF2: 本地 passphrase 派生密钥 (默认 600000 次迭代)。
+    key_provider "pbkdf2" "team" {
+      # 方式(A): 经 var 注入 (次选)。方式(B) 用 TF_ENCRYPTION 环境变量时删掉本块。
+      passphrase = var.tfstate_passphrase
+    }
+
+    method "aes_gcm" "primary" {
+      keys = key_provider.pbkdf2.team
+    }
+
+    state {
+      method = method.aes_gcm.primary
+      # enforced=true: 拒绝读取任何未加密的 state (防有人误传明文)。
+      # 首次从明文迁移时先用 fallback 过渡, 迁移完成后再设 enforced。
+      enforced = true
+    }
+
+    plan {
+      method = method.aes_gcm.primary
+    }
+  }
+}
+
+# 仅方式(A) 需要; 方式(B) 用环境变量则不需要此 variable。
+variable "tfstate_passphrase" {
+  description = "OpenTofu state 加密 passphrase (从 vault-cloud 注入, 绝不硬编码)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
