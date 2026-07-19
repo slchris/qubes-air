@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
@@ -22,7 +23,11 @@ import (
 // Note the terraform root module declares a SINGLE proxmox provider, so it can
 // only ever authenticate to one cluster. That is why this resolves the one
 // proxmox zone rather than taking a zone id: there is nothing per-qube to vary.
-func NewTerraformEnvFunc(zoneRepo repository.ZoneRepository, secrets SecretReader) orchestrator.EnvFunc {
+func NewTerraformEnvFunc(
+	zoneRepo repository.ZoneRepository,
+	secrets SecretReader,
+	sshKeyFile, sshUsername string,
+) orchestrator.EnvFunc {
 	return func(ctx context.Context) ([]string, error) {
 		zone, err := singleProxmoxZone(ctx, zoneRepo)
 		if err != nil {
@@ -50,7 +55,24 @@ func NewTerraformEnvFunc(zoneRepo repository.ZoneRepository, secrets SecretReade
 			return nil, fmt.Errorf(
 				"zone %q: stored credential is not a usable Proxmox secret", zone.Name)
 		}
-		return proxmoxEnv(creds), nil
+
+		env := proxmoxEnv(creds)
+
+		// Read at call time, not at startup: the key can be rotated without
+		// restarting the console, and a console that started before the key
+		// existed picks it up on the next job rather than needing a restart
+		// nobody would connect to the failure.
+		if sshKeyFile != "" {
+			key, err := os.ReadFile(sshKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"read proxmox ssh key %q: %w (uploading the cloud-init "+
+						"snippet needs SSH to the node; the PVE API has no "+
+						"endpoint for it)", sshKeyFile, err)
+			}
+			env = append(env, sshEnv(sshUsername, string(key))...)
+		}
+		return env, nil
 	}
 }
 
@@ -70,6 +92,33 @@ func proxmoxEnv(c scheduler.Credentials) []string {
 		env = append(env, "PROXMOX_VE_INSECURE=true")
 	}
 	return env
+}
+
+// sshEnv supplies the provider's SSH login for the operations the PVE API
+// cannot perform.
+//
+// Uploading a cloud-init snippet writes /var/lib/vz/snippets/ on the node over
+// SSH; there is no API endpoint for it. That snippet carries the per-qube agent
+// identity, so this is not an optional extra for an exotic code path — every
+// provision needs it, and a cluster reachable only on 443 cannot be provisioned
+// at all.
+//
+// Passed as TF_VAR_ rather than written into a tfvars file so the key follows
+// the same rule as the API token: never on disk in the terraform root, never in
+// state. The provider falls back to ssh-agent when these are empty, which does
+// not exist under systemd — so an empty key here fails at apply time rather
+// than silently authenticating as someone else.
+func sshEnv(username, privateKey string) []string {
+	if privateKey == "" {
+		return nil
+	}
+	if username == "" {
+		username = "root"
+	}
+	return []string{
+		"TF_VAR_proxmox_ssh_username=" + username,
+		"TF_VAR_proxmox_ssh_private_key=" + privateKey,
+	}
 }
 
 // singleProxmoxZone returns the one proxmox zone, nil if there is none, or an

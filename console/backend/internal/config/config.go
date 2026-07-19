@@ -111,6 +111,22 @@ type OrchestratorConfig struct {
 	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
 	// Env: QUBES_AIR_AGENT_LISTEN.
 	AgentListen string `yaml:"agent_listen"`
+	// ProxmoxSSHKeyFile is the private key the terraform provider uses to SSH
+	// into PVE nodes, and ProxmoxSSHUsername the login (default "root").
+	//
+	// Required for provisioning, not optional: uploading a cloud-init snippet
+	// writes /var/lib/vz/snippets/ on the node over SSH and the PVE API has no
+	// endpoint for it. That snippet carries the per-qube agent identity, so
+	// without this every provision fails partway — after the VM has been
+	// cloned, which leaves a half-built qube behind.
+	//
+	// A PATH, not the key itself: the content is read at call time and passed
+	// to terraform as a TF_VAR_, so it never lands in the terraform root or in
+	// state. Keeping the path in config means the unit file and any process
+	// listing show a filename rather than a private key.
+	// Env: QUBES_AIR_PROXMOX_SSH_KEY_FILE / QUBES_AIR_PROXMOX_SSH_USERNAME.
+	ProxmoxSSHKeyFile  string `yaml:"proxmox_ssh_key_file"`
+	ProxmoxSSHUsername string `yaml:"proxmox_ssh_username"`
 	// AptMirror is the base URL of a Debian mirror for provisioned qubes, e.g.
 	// "http://10.31.0.2/debian". Empty leaves the image's own sources alone.
 	//
@@ -506,6 +522,12 @@ func (c *Config) loadFromEnv() {
 	}
 	if listen := os.Getenv("QUBES_AIR_AGENT_LISTEN"); listen != "" {
 		c.Orchestrator.AgentListen = listen
+	}
+	if v := os.Getenv("QUBES_AIR_PROXMOX_SSH_KEY_FILE"); v != "" {
+		c.Orchestrator.ProxmoxSSHKeyFile = v
+	}
+	if v := os.Getenv("QUBES_AIR_PROXMOX_SSH_USERNAME"); v != "" {
+		c.Orchestrator.ProxmoxSSHUsername = v
 	}
 	if v := os.Getenv("QUBES_AIR_APT_MIRROR"); v != "" {
 		c.Orchestrator.AptMirror = v

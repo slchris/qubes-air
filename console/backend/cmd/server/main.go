@@ -227,7 +227,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	exec := buildExecutor(cfg.Orchestrator,
 		service.NewQubeSnapshot(qubeRepo, zoneRepo, certIssuer),
-		service.NewTerraformEnvFunc(zoneRepo, credentialRepo))
+		service.NewTerraformEnvFunc(zoneRepo, credentialRepo,
+			cfg.Orchestrator.ProxmoxSSHKeyFile, cfg.Orchestrator.ProxmoxSSHUsername))
 
 	// One scheduler instance, shared by placement (qube service) and the
 	// capacity endpoint (zone handler).
