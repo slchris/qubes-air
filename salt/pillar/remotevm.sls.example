@@ -1,0 +1,25 @@
+# salt/pillar/remotevm.sls.example
+# =====================================================================
+# 阶段2 RemoteVM 链路的 pillar 示例。复制为 remotevm.sls 并按环境填写。
+# 这是"本地名 <-> 远端原始名 <-> 远端 IP/SSH"的唯一声明来源, 被:
+#   - dom0.sls   消费 (建 RemoteVM, 设 relayvm/transport_rpc/remote_name)
+#   - relay.sls  消费 (remote_map 重建 QubesDB, ~/.ssh/config)
+#   - autossh.sls消费 (为每个 target 起一个出站隧道)
+#
+# 安全: 不要把私钥写进 pillar; ssh_public_keys/host key 走 known_hosts pinning, 私钥单独注入。
+# =====================================================================
+
+remotevm:
+  relay: sys-relay-pve            # 本地 Relay AppVM 名 (打 tag=relay)
+  relay_user: user               # Relay 内运行 autossh/ssh 的用户
+  transport_rpc: qubesair.SSHProxy
+
+  targets:
+    - local_name: remote-dev-1   # 本地 RemoteVM 名 (打 tag=remote-zone)
+      remote_name: dev           # 远端主机上该 qube 的原始名 (= ssh Host + QubesDB 值)
+      # host_ip 由 mgmt-air 的 render-ssh-config.sh 从阶段1 terraform output(ip_address) 注入,
+      # 不在此硬编码 (IP 随 compute resume 变化)。此处仅列出以便人工对照:
+      host_ip: ""                # 留空; 渲染时以 terraform output 为准
+      ssh_port: 22
+      reverse_port: 22000        # 反向隧道: 远端回环端口 -> Relay 回环 sshd(2222)
+      label: gray

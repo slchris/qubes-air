@@ -1,0 +1,42 @@
+# ~/.ssh/config —— 部署到本地 Relay (sys-relay-*) 的 user@relay 家目录
+# =====================================================================
+# 由 mgmt-air 上的渲染脚本 (relay/ssh/render-ssh-config.sh) 消费阶段1 terraform
+# output(ip_address) 生成实际文件。占位符形如 {{ REMOTE_RELAY_IP }} 会被替换。
+#
+# 设计要点 (零入站 + host key pinning):
+#   - 本 Relay 只发出站 SSH; 远端(家庭 NAT 后)无需任何公网入站端口。
+#   - ControlMaster 复用一条连接: transport 脚本每次调用不重连, 走 autossh 已建立的 socket。
+#   - StrictHostKeyChecking=yes + 固定 known_hosts (host key pinning), 拒绝首连 TOFU 风险。
+#   - Host 名 = 远端原始名 remote_name (与 QubesDB /remote/<local> 的值一致),
+#     transport 脚本用 `ssh <remote_name>` 即命中此块。
+# =====================================================================
+
+Host {{ REMOTE_NAME }}
+    HostName {{ REMOTE_RELAY_IP }}
+    User {{ SSH_USER }}
+    Port {{ SSH_PORT }}
+    IdentityFile ~/.ssh/id_ed25519_qubesair
+    IdentitiesOnly yes
+
+    # host key pinning: 只信任 known_hosts.d 里预置的这台机器的 key
+    StrictHostKeyChecking yes
+    UserKnownHostsFile ~/.ssh/known_hosts.d/{{ REMOTE_NAME }}
+
+    # 非交互, 禁止密码回退, 禁止分配 tty (transport 走二进制 RPC 流)
+    BatchMode yes
+    PasswordAuthentication no
+    RequestTTY no
+
+    # 连接复用: autossh 维持主连接, transport 每次调用复用 socket (低延迟)
+    ControlMaster auto
+    ControlPath ~/.ssh/cm/%r@%h:%p
+    ControlPersist 600
+
+    # 保活 (NAT 场景): 服务器无响应 3 次(90s)则判定断线, 交给 autossh 重连
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+    # 反向端口转发: 把远端回环端口 {{ REVERSE_PORT }} 转回本 Relay 回环 sshd(2222)。
+    # 这是"零入站双向性"的回程 —— 远端经此端口 ssh 回来调本地 vault/Split-GPG。
+    # (autossh 的持久隧道复用同一 -R; 此处声明保证任何新主连接都带上它。)
+    RemoteForward 127.0.0.1:{{ REVERSE_PORT }} 127.0.0.1:2222

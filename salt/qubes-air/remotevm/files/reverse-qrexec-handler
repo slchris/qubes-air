@@ -1,0 +1,48 @@
+#!/bin/bash
+# reverse-qrexec-handler —— Relay 回环 sshd 的 ForceCommand 目标 (反向调用落地点)
+# =====================================================================
+# 触发链: 远端 qube -> (远端回环端口) -> autossh 的 ssh -R 反向隧道 -> 本 Relay
+#         127.0.0.1:2222 回环 sshd -> ForceCommand 到本脚本。
+#
+# 本脚本把"远端发起的请求"转成一次本地 qrexec 调用。关键: 来源在 dom0 看来是本 Relay
+# (@tag:relay), 因此 dom0 policy 的 C 段 (远端->本地一律 ask) 会兜底弹窗。远端永不 allow。
+#
+# SSH_ORIGINAL_COMMAND 由反向连接携带, 形如: "<service> [arg]"。
+# 白名单校验后调用 qrexec-client-vm 到本地目标 (如 vault)。
+# =====================================================================
+
+set -euo pipefail
+
+log() { echo "reverse-qrexec-handler: $*" >&2; }
+
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+if [[ -z "$cmd" ]]; then
+    log "空命令, 拒绝"
+    exit 1
+fi
+
+# 只允许白名单里的服务名 (防止任意命令)。参数 (如 +keyid) 允许透传。
+service="$(printf '%s' "$cmd" | awk '{print $1}')"
+case "$service" in
+    qubes.Gpg|qubes.Gpg+*|qubesair.VaultRead|qubesair.VaultRead+*)
+        : # 允许
+        ;;
+    *)
+        log "服务 '$service' 不在反向调用白名单, 拒绝"
+        exit 1
+        ;;
+esac
+
+# 目标本地服务 VM (默认 vault); 最终授权仍由 dom0 policy C 段 ask 决定。
+target_vm="${QUBESAIR_REVERSE_TARGET:-vault}"
+
+log "反向调用 -> qrexec-client-vm $target_vm $service"
+# 注意: 这里不带 --source-qube (来源就是本 Relay); dom0 按 @tag:relay 做 policy 决策。
+exec qrexec-client-vm "$target_vm" "$service"
+
+# =====================================================================
+# 待真机确认:
+#   [B9] 从 Relay(AppVM) 内用 qrexec-client-vm 发起到另一本地 qube 的调用是否即触发 dom0 policy
+#        (应当是 —— 所有 qube->qube qrexec 都过 dom0)。来源标记为该 Relay。
+#  [B10] qubes.Gpg 的实际服务名与参数约定 (Split-GPG); 按官方 split-gpg 文档核对。
+# =====================================================================

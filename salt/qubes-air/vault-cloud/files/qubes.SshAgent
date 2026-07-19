@@ -1,0 +1,26 @@
+#!/bin/sh
+# qubes.SshAgent —— vault-cloud 侧 split-ssh 服务 (阶段3)
+# =====================================================================
+# split-ssh 模式: SSH 私钥留在 vault-cloud, ssh-agent 在 vault-cloud 内持有私钥;
+# 调用方 (sys-relay) 只经 qrexec 桥接到本 agent 的 UNIX socket, 用它做签名,
+# 【拿不到私钥本身】。
+#
+# 数据流:
+#   sys-relay 的 SSH_AUTH_SOCK (socat UNIX-LISTEN)
+#     -> qrexec-client-vm vault-cloud qubes.SshAgent
+#       -> 本脚本 socat 到 vault-cloud 内 ssh-agent 的 $SSH_AUTH_SOCK
+#         -> ssh-agent 用 ~/.ssh 里的私钥签名, 只回签名, 私钥不出 vault。
+#
+# 前提 (由 salt vault-cloud.sls 保证):
+#   - vault-cloud 内已 ssh-add 了 relay 用的私钥, 且 $SSH_AUTH_SOCK 指向该 agent。
+#   - vault-cloud 装了 socat。
+#
+# 官方核对: 服务脚本内容对照社区 Split SSH 指南
+#   (forum.qubes-os.org/t/split-ssh/19060): `socat - "UNIX-CONNECT:$SSH_AUTH_SOCK"`。
+# =====================================================================
+
+# 安全提示: 每次 relay 用 agent 都弹一个通知, 供人工比对是否是预期的取用。
+notify-send "[$(qubesdb-read /name)] SSH agent 访问来自: $QREXEC_REMOTE_DOMAIN" 2>/dev/null || true
+
+# 把本次 qrexec 连接桥接到 vault 内 ssh-agent 的 socket。
+exec socat - "UNIX-CONNECT:$SSH_AUTH_SOCK"

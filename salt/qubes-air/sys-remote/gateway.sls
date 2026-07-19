@@ -1,6 +1,12 @@
 # sys-remote Gateway State
 #
-# 配置 sys-remote Qube 作为远程 Zone 的网关
+# ############################################################################
+# 【已废弃 - 阶段2】本 state 属于旧 sys-remote + WireGuard 网关方案, 已被评审否决:
+#   - 开 ip_forward + provides_network 把 Relay 当本地网关 (违反平面分离);
+#   - 部署 qubes-air.Remote (任意命令通道) 是反模式。
+# 新链路 (RemoteVM + SSH transport) 见 salt/qubes-air/remotevm/。
+# 保留此文件仅为历史参考; 不要在新部署里应用它。qubes-air.Remote 服务应删除。
+# ############################################################################
 
 include:
   - qubes-air.common.base

@@ -1,0 +1,51 @@
+# relay-loopback-sshd.conf —— 部署到本地 Relay: 仅监听回环的 sshd (反向调用入口)
+# =====================================================================
+# 零入站双向性的【本地回程终点】。远端经 autossh 的 `ssh -R` 把远端回环端口转回本 Relay
+# 的 127.0.0.1:2222; 远端 qube 想调本地服务 (vault/Split-GPG) 时, ssh 到自己的回环端口,
+# 数据经反向隧道到达这里, 由本 sshd 接住, 再触发一次 qrexec-client-vm 回本地目标。
+#
+# 安全强约束:
+#   - ListenAddress 127.0.0.1 —— 绝不监听任何对外/qube 网卡, 只接反向隧道来的回环流量。
+#     (Relay 本身 netvm=sys-firewall 但不 ProvidesNetwork, 且不开 ip_forward。)
+#   - 强制 publickey, 禁止密码/交互 shell; ForceCommand 只允许受限 qrexec 入口。
+#   - 这是与主 sshd (若有) 分离的独立实例, 走独立端口 2222 + 独立 config。
+#
+# 部署: sshd -f /rw/config/qubesair/relay-loopback-sshd.conf (由 salt 起 systemd 单元)。
+# 持久化: 经 bind-dirs (/rw/config/qubesair/ 与 authorized_keys) 保证重启不丢。
+# =====================================================================
+
+Port 2222
+ListenAddress 127.0.0.1
+Protocol 2
+
+# 仅公钥认证
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UsePAM no
+
+# 授权的反向调用者公钥 (远端 Remote-Relay 的 key)
+AuthorizedKeysFile /rw/config/qubesair/reverse_authorized_keys
+
+# 强制命令: 反向连接只能触发受限的 qrexec 回程处理器, 不给交互 shell。
+# 处理器内部再决定调用哪个本地服务, 最终授权仍由 dom0 policy (C 段) 的 ask 兜底。
+ForceCommand /rw/config/qubesair/reverse-qrexec-handler
+
+# 关闭一切端口转发/agent/x11, 收敛攻击面 (反向连接只用来触发 ForceCommand)
+AllowTcpForwarding no
+AllowAgentForwarding no
+X11Forwarding no
+PermitTunnel no
+GatewayPorts no
+
+# 日志便于自检
+LogLevel VERBOSE
+
+# =====================================================================
+# 待真机确认:
+#   [B7] Relay 上是否已有主 sshd (如复用 mgmt-jump 的 remote-debug sshd); 若有, 本回环实例
+#        必须用不同端口(2222)与独立 config, 避免冲突。
+#   [B8] reverse-qrexec-handler 的确切实现 —— 它是"远端->本地"调用真正落到 qrexec 的地方,
+#        必须把来源标记为 Relay (@tag:relay), 让 dom0 C 段 policy 的 ask 生效。见 relay.sls。
+# =====================================================================

@@ -1,5 +1,9 @@
 # Qubes Air 架构设计文档
 
+> **[DEPRECATED] 本文档描述的是早期 `sys-remote + WireGuard 网关` 方案，已弃用。**
+> 该方案在官方 RemoteVM 落地**之前**设计（评审证明其方向错误：把 relay 当网络网关、违反平面分离）。当前架构改为对齐官方 **RemoteVM**，跨机传输为 **gRPC 双向流**（本地 relay 作为 gRPC 客户端出站建连、长连接双向承载 qrexec 转发与反向回程，零入站；[TODO] gRPC 传输尚未实现，现有骨架为 `qubesair.SSHProxy`）。
+> 现行架构与传输层设计见 [readme.md](../readme.md)、[docs/remotevm-alignment.md](remotevm-alignment.md) 与 [docs/roadmap-to-production.md](roadmap-to-production.md)。本文保留作历史参考。
+
 ## 概述
 
 Qubes Air 是一个 IaC (Infrastructure as Code) 项目，用于在 Qubes OS 中编排和管理远程计算资源，实现 Qubes Air 的愿景。

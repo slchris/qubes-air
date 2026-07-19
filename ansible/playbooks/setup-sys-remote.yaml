@@ -51,18 +51,23 @@
         mode: '0755'
       become: true
 
-    - name: Configure qrexec policy for sys-remote
-      ansible.builtin.copy:
-        dest: /etc/qubes/policy.d/80-qubes-air.policy
-        content: |
-          # Qubes Air qrexec 策略
+    # =====================================================================
+    # 【已废弃 - 阶段2】此处内联 policy 与 dom0 脚本漂移且语义颠倒
+    # (给 sys-remote -> @adminvm allow, 即 Relay 直达 dom0 漏洞; qubes-air.Remote 是反模式)。
+    # policy 已收敛到单一权威来源: dom0-scripts/policy.d/30-qubes-air.policy
+    # (由 salt qubes-air.remotevm.dom0 部署)。本任务不再由 ansible 写 policy。
+    # 保留一个 assert 提醒, 避免有人误以为这里还管 policy。
+    # =====================================================================
+    - name: DEPRECATED - policy 已收敛到 30-qubes-air.policy (single source)
+      ansible.builtin.debug:
+        msg: >
+          qrexec policy 不再由本 playbook 写。请部署 dom0-scripts/policy.d/30-qubes-air.policy
+          (经 salt qubes-air.remotevm.dom0)。旧的 80-qubes-air.policy 已废弃并应删除。
 
-          # 允许从工作 Qube 连接到 sys-remote
-          qubes-air.Remote * {{ sys_remote_name }} @default allow target={{ sys_remote_name }}
-
-          # 允许 sys-remote 执行远程操作
-          qubes-air.RemoteExec {{ sys_remote_name }} @adminvm allow
-        mode: '0644'
+    - name: Remove deprecated 80-qubes-air.policy if present
+      ansible.builtin.file:
+        path: /etc/qubes/policy.d/80-qubes-air.policy
+        state: absent
       become: true
 
     # ==========================================
