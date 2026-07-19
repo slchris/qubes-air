@@ -139,7 +139,13 @@ module "proxmox" {
 
   node_name            = coalesce(var.qube_config.node_name, var.proxmox_default_node)
   template_vm_id       = var.qube_config.template_vm_id
-  template_node_name   = coalesce(var.qube_config.template_node_name, "")
+  # NOT coalesce(). coalesce() errors when every argument is empty, and "" is
+  # itself empty — so `coalesce(x, "")` cannot succeed when x is unset. It only
+  # ever returned x, and failed the whole apply otherwise, with "Error in
+  # function call" pointing at this line rather than at the missing setting.
+  # Empty is a legitimate value here: it means "the template lives on the node
+  # the clone is called against".
+  template_node_name   = var.qube_config.template_node_name == null ? "" : var.qube_config.template_node_name
   datastore_id         = var.qube_config.datastore_id
   network_bridge       = var.qube_config.network_bridge
   ssh_public_keys      = var.qube_config.ssh_public_keys
