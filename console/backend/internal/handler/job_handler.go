@@ -17,11 +17,15 @@ import (
 // infrastructure change this console made, including the ones that failed.
 type JobHandler struct {
 	jobs *repository.JobRepository
+	// logs serves what terraform printed. Nil when orchestration is disabled or
+	// the log directory could not be created; the endpoint then reports that
+	// plainly instead of looking like a job with no output.
+	logs *orchestrator.JobLogStore
 }
 
 // NewJobHandler creates a JobHandler.
-func NewJobHandler(jobs *repository.JobRepository) *JobHandler {
-	return &JobHandler{jobs: jobs}
+func NewJobHandler(jobs *repository.JobRepository, logs *orchestrator.JobLogStore) *JobHandler {
+	return &JobHandler{jobs: jobs, logs: logs}
 }
 
 // RegisterRoutes registers job routes.
@@ -30,6 +34,7 @@ func (h *JobHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	{
 		jobs.GET("", h.List)
 		jobs.GET("/:id", h.GetByID)
+		jobs.GET("/:id/log", h.Log)
 	}
 }
 
@@ -83,4 +88,62 @@ func (h *JobHandler) List(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"jobs": jobs, "count": len(jobs)})
+}
+
+// maxLogChunk bounds one log response. A failed apply can print a great deal;
+// returning it all in one body would stall the browser rendering it and, on a
+// poll loop, resend the same megabytes on every tick.
+const maxLogChunk = 256 * 1024
+
+// Log returns the terraform output of a job, from ?offset= onwards.
+//
+// Offset-based polling rather than a streamed connection: an apply runs for
+// twenty minutes, and a held-open connection through the qrexec TCP forward
+// this console is reached over is a connection to lose. The client asks for
+// what it has not seen, which reads the same whether the job is still running,
+// finished an hour ago, or ran before the last console restart.
+func (h *JobHandler) Log(c *gin.Context) {
+	id := c.Param("id")
+
+	// Confirm the job exists before reporting on its log, so a mistyped id is a
+	// 404 rather than an empty log that looks like a job which printed nothing.
+	job, err := h.jobs.GetByID(c.Request.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrJobNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if h.logs == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"offset": 0, "data": "", "running": job.State == orchestrator.JobRunning,
+			"note": "job logs are not enabled on this console",
+		})
+		return
+	}
+
+	offset, _ := strconv.ParseInt(c.Query("offset"), 10, 64)
+	if offset < 0 {
+		offset = 0
+	}
+
+	data, next, err := h.logs.ReadFrom(id, offset, maxLogChunk)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// running tells the client whether to poll again. Derived from the job
+	// record rather than from "the log stopped growing": a slow terraform step
+	// prints nothing for minutes at a time, and treating that as completion is
+	// how a UI decides an apply finished while it is still going.
+	c.JSON(http.StatusOK, gin.H{
+		"offset":  next,
+		"data":    string(data),
+		"running": job.State == orchestrator.JobRunning || job.State == orchestrator.JobQueued,
+		"state":   job.State,
+	})
 }

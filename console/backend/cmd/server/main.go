@@ -276,8 +276,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	}
 
 	jobRepo := repository.NewJobRepository(db)
-	qubeSvc, runner, agents := startOrchestration(
-		cfg.Orchestrator, jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
+	qubeSvc, runner, agents, jobLogs := startOrchestration(
+		cfg.Orchestrator, cfg.JobLogDir(), jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
 
 	certRenewals.Start()
 
@@ -305,7 +305,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		billingHandler:    handler.NewBillingHandler(),
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
-		jobHandler:        handler.NewJobHandler(jobRepo),
+		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
 		transport:         xport,
 		runner:            runner,
 		agents:            agents,
@@ -326,12 +326,13 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 // take minutes against a 15s server write deadline.
 func startOrchestration(
 	cfg config.OrchestratorConfig,
+	jobLogDir string,
 	jobRepo *repository.JobRepository,
 	qubeRepo repository.QubeRepository,
 	zoneRepo repository.ZoneRepository,
 	exec orchestrator.Executor,
 	qubeSvcOpts []service.QubeServiceOption,
-) (service.QubeService, *orchestrator.Runner, *service.AgentHealthMonitor) {
+) (service.QubeService, *orchestrator.Runner, *service.AgentHealthMonitor, *orchestrator.JobLogStore) {
 	// agents is assigned below, once the service it probes through exists, but
 	// the completion hook has to be handed to the runner before that. The hook
 	// therefore reads it through a getter rather than capturing a value.
@@ -341,6 +342,7 @@ func startOrchestration(
 	// point that publishes the write to it.
 	var agents *service.AgentHealthMonitor
 	var runner *orchestrator.Runner
+	var jobLogs *orchestrator.JobLogStore
 
 	if cfg.Enabled {
 		// Jobs are persisted, not held in memory: they are the audit record of
@@ -352,10 +354,24 @@ func startOrchestration(
 			log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
 		}
 
+		// Job logs live beside the database, under the same data directory that
+		// already holds everything else this console must not lose. A failure
+		// to create the directory is logged, not fatal: an operator who cannot
+		// tail an apply is worse off than one who can, but an operator whose
+		// console refuses to start is worse off than either.
+		if dir := jobLogDir; dir != "" {
+			if store, lerr := orchestrator.NewJobLogStore(dir); lerr == nil {
+				jobLogs = store
+			} else {
+				log.Printf("orchestrator: job logs disabled: %v", lerr)
+			}
+		}
+
 		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
 			Executor: exec,
 			Store:    jobRepo,
 			OnDone:   makeCompletionHook(qubeRepo, func() *service.AgentHealthMonitor { return agents }),
+			Logs:     jobLogs,
 		})
 		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
 	}
@@ -370,7 +386,7 @@ func startOrchestration(
 	if runner != nil {
 		runner.Start()
 	}
-	return qubeSvc, runner, agents
+	return qubeSvc, runner, agents, jobLogs
 }
 
 // buildAgentHealthMonitor wires the background agent prober.

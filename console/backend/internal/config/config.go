@@ -743,3 +743,30 @@ func (c *Config) Address() string {
 func (c *Config) IsTLSEnabled() bool {
 	return c.Server.TLS.Enabled
 }
+
+// JobLogDir is where terraform output is kept, one file per job.
+//
+// Derived from the database path rather than configured separately: the DSN is
+// already the answer to "where does this console keep things it must not lose",
+// and a second setting for the same question is a second thing to get wrong.
+// An operator who moves the database gets the logs moved with it.
+//
+// Empty when the database is in-memory or unset — there is nowhere sensible to
+// put files then, and the log endpoint reports that plainly rather than writing
+// into the working directory of whoever started the process.
+func (c *Config) JobLogDir() string {
+	dsn := c.Database.DSN
+	if dsn == "" || strings.HasPrefix(dsn, ":memory:") || strings.Contains(dsn, "mode=memory") {
+		return ""
+	}
+	// Strip any sqlite query string ("file.db?_busy_timeout=...") before
+	// treating it as a path.
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		dsn = dsn[:i]
+	}
+	dsn = strings.TrimPrefix(dsn, "file:")
+	if dsn == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(dsn), "job-logs")
+}

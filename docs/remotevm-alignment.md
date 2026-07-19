@@ -126,6 +126,76 @@ Salt 模板维护在独立仓库 **[slchris/qubes-salt-config](https://github.co
 
 > 注意（安全）：`config.jinja` 属于用户私有环境配置，其中含真实 SSH 公钥等；若 `qubes-salt-config` 为公开仓库，建议复核不要混入敏感明文（如 WiFi 明文密码），或将这类值改为部署时注入。
 
+## 5.5 「无缝使用」的真实边界（源码级核实，2026-07）
+
+> 这一节的目的是：**让下一个人不必再去猜 RemoteVM 上什么能用、什么不能用。**
+> 结论都对着 `QubesOS/*` 主干源码核实过，不是读 release notes 的推断。
+
+一句话：**数据层很接近本地 qube，交互层完全不是。** RemoteVM 只是一个 qrexec
+路由目标，凡是客户端是 `qrexec-client-vm` 的东西都原生工作；凡是碰到 GUI 协议、
+Xen domid、或 Admin API 电源面的东西都不工作 —— 而且生命周期那一类**不是漏做，是源码里显式 `raise`**。
+
+### 能用（relay 转发后原生，无需本项目做任何事）
+
+| 功能 | 证据 |
+|---|---|
+| `qvm-copy` / `qvm-move` / `-to-vm` | `qvm-copy` 末尾就是 `qrexec-client-vm "$VM" qubes.Filecopy`。**#9015 正是为这个场景写的**，2025 Summit 有「文件复制到 RemoteVM 效果惊艳」的演示报告 |
+| Split-GPG | `gpg-client.c` exec `qrexec-client-vm`，纯 qrexec |
+| Split-SSH | 结构与 Split-GPG 相同（`qubes.SshAgent` 走 `qrexec-client-vm`）；未见测试报告，属推断 |
+| `qubes.ConnectTCP` | `qvm-connect-tcp` = `socat ... EXEC:"qrexec-client-vm '$DOMAIN' qubes.ConnectTCP+$PORT"`，照常转发。**§图形访问的推荐路径依赖它** |
+
+### 不能用，而且不是「还没做」
+
+- **剪贴板（Ctrl+Shift+C）：架构上不可能。** 走的是 **GUI vchan**，`gui-daemon` 用
+  `qrexec-client -d <domid>`；RemoteVM **没有 domid、没有 gui-agent**。两个方向都死。
+  `qubes.ClipboardPaste` 服务存在，但 gui-daemon 用 domid 调它，不经 policy 改写。
+- **图形界面：架构上不可能。** Qubes GUI 协议**不传像素**，传的是 **Xen grant table
+  引用**，dom0 直接映射那块 VM 内存。协议里**根本没有网络路径**。
+  `qubes-gui-daemon` 搜 `remotevm` = 0 命中；RemoteVM 继承 `BaseVM` 而非 `QubesVM`，
+  **连 `guivm` 属性都没有**，没有东西可指向 GUI 域。音频同理（每 domid 一个 vchan）。
+- **`qvm-run` 从 dom0 调 RemoteVM：不工作，且会绊到自动化。** dom0 发起的调用
+  **完全绕过 policy 评估**，而 RemoteVM→relay 的服务改写**正是 policy 做的**。
+  所以注册 RemoteVM 之后，验证必须**从某个本地 qube** 发起
+  `qrexec-client-vm <remotevm> qubes.VMShell`，不能从 dom0 用 `qvm-run`。
+- **Qubes Air 文章里的 per-zone GUI qube：一个字都没实现。** 文章开头自陈
+  "has not been implemented yet"，八年后 GUI 那一半依然如此。
+  > ⚠️ 4.3 release notes 同时列了 "Support for Qubes Air (#9015)" 和
+  > "Better support for GUIVM (#833)"。**这两条无关** —— #833 是在同一台物理机上把
+  > GUI 域拆出 dom0，不是跨 zone 聚合。把两条连起来读成「Qubes Air GUI 支持落地了」
+  > 是很自然的误读，但它是错的。
+
+### 生命周期：源码显式拒绝
+
+`qubes/vm/remotevm.py`：
+
+```python
+def start(self, **kwargs):
+    raise qubes.exc.QubesVMNotHaltedError(self, "Cannot start a RemoteVM.")
+def shutdown(self): raise ...
+def suspend(self):  raise ...
+def kill(self):     raise ...
+```
+
+并且 `is_running()` 硬编码返回 `True`、`get_power_state()` 永远 `"Running"`
+——**不管 Proxmox 上那台机器是否存在**。`admin.vm.device.*` 整面对 RemoteVM 返回空。
+
+**对本项目的意义（干净的分界线）**：**Qubes 永远不会启动这台机器。** 生命周期
+完全归 console/terraform；RemoteVM 对象是机器存在**之后**注册的元数据，机器没了就注销。
+Qubes 侧不会察觉差别 —— 这印证了 §4 里「本项目负责 provision + 编排」的定位，
+也说明 [roadmap Phase B] 的 RemoteVM 注册通道（经受限 qrexec）方向正确。
+
+### 图形访问：推荐 B 方案 + 一条安全铁律
+
+推荐**把 VNC/RDP 经 `qubes.ConnectTCP` 隧道过 relay**：显示流留在 qrexec policy 之内，
+没有监听端口、不用另配 VPN、两侧 policy 照常各校验。代价说清楚：这等于把
+**完整远程桌面流**放进一个本地 qube，用 Qubes 的一层隔离换掉了远端的按应用隔离。
+（`ssh -X` 更接近「本地窗口」，但把 X server 暴露给远端；只在专用 qube 里用，且用 `-X` 不用 `-Y`。）
+
+**安全铁律：按信任层级分开 relay qube，不要共用一个。** 官方文档明说 relay
+**可以伪造经过它的那些 qube 之间的来源身份**（`parser.py` 只校验「relay 是该 source 的
+relay」，不校验它声称的来源是否属实；端到端验证被列为 future work 且未实现）。
+所以共用 relay 时，浏览器流量可以被伪装成 GPG qube 的请求 —— 这是目前唯一的缓解手段。
+
 ## 6. 待确认 / 后续
 
 - `qvm-create` 创建 RemoteVM 的**精确 class 名与 flags**：源码类名为 `RemoteVM`，需在 4.3 实机确认 `qvm-create --class RemoteVM ...` 的确切用法与 `qubes-prefs` 字段（文档未给命令示例）。
@@ -136,6 +206,11 @@ Salt 模板维护在独立仓库 **[slchris/qubes-salt-config](https://github.co
 ## 参考
 
 - [Service call to a RemoteVM（官方机制）](https://dev.qubes-os.org/projects/qubes-core-qrexec/en/stable/qrexec-remotevm.html)
+- [GUI virtualization（为何不传像素，只传 grant 引用）](https://doc.qubes-os.org/en/latest/developer/system/gui.html)
+- [The GUI Domain（2020，把 VNC/RDP 明确列为 future work）](https://www.qubes-os.org/news/2020/03/18/gui-domain/)
+- [Qubes Air（2018，自陈 "has not been implemented yet"）](https://www.qubes-os.org/news/2018/01/22/qubes-air/)
+- [#9015 Design for "remote" qube type](https://github.com/QubesOS/qubes-issues/issues/9015)（power state "out of scope"）
+- 源码核实：`qubes-core-admin/qubes/vm/remotevm.py`、`qubes-core-qrexec/qrexec/policy/parser.py`、`qubes-gui-daemon/gui-daemon/xside.c`
 - [Qubes OS 4.3 release notes](https://doc.qubes-os.org/en/r4.3/developer/releases/4_3/release-notes.html)
 - `qubes-core-admin`：`qubes/vm/remotevm.py`、`qubes/ext/relay.py`
 - [新 qrexec policy 系统](https://www.qubes-os.org/news/2020/06/22/new-qrexec-policy-system/)

@@ -90,6 +90,9 @@ type Runner struct {
 	store   JobStore
 	onDone  Completion
 	timeout time.Duration
+	// logs captures each job's terraform output. Nil disables it, which costs
+	// visibility into a running apply but never blocks one.
+	logs *JobLogStore
 
 	queue chan *Job
 
@@ -116,6 +119,9 @@ type RunnerConfig struct {
 	OnDone    Completion
 	QueueSize int
 	Timeout   time.Duration
+	// Logs captures each job's terraform output as it is produced, so a running
+	// apply can be watched rather than only reported on once it ends. Optional.
+	Logs *JobLogStore
 }
 
 // DefaultQueueSize bounds how many operations may be waiting. Past this,
@@ -136,6 +142,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		store:   cfg.Store,
 		onDone:  cfg.OnDone,
 		timeout: cfg.Timeout,
+		logs:    cfg.Logs,
 		queue:   make(chan *Job, cfg.QueueSize),
 		base:    base,
 		cancel:  cancel,
@@ -215,6 +222,18 @@ func (r *Runner) run(job *Job) {
 
 	ctx, cancel := context.WithTimeout(r.base, r.timeout)
 	defer cancel()
+
+	// Capture terraform's output for this job. Failing to open the log must not
+	// stop the job: not being able to watch an apply is a worse outcome than
+	// not being able to watch it AND not running it.
+	if r.logs != nil {
+		if f, lerr := r.logs.Create(job.ID); lerr == nil {
+			defer func() { _ = f.Close() }()
+			ctx = WithLogSink(ctx, f)
+		} else {
+			log.Printf("orchestrator: job %s: no log (%v)", job.ID, lerr)
+		}
+	}
 
 	var err error
 	switch job.Action {

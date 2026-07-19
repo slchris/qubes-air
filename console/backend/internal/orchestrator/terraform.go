@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"bytes"
+	"io"
 	"context"
 	"encoding/json"
 	"errors"
@@ -126,6 +127,17 @@ func (execRunner) run(ctx context.Context, workDir, name string, args, env []str
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+
+	// Tee to the job log as terraform writes, not after it exits. Buffering
+	// alone is what made a 20-minute apply indistinguishable from a hang: the
+	// output existed the whole time and nobody could see any of it until the
+	// process ended. The buffers stay, because the error message still quotes
+	// stderr and callers still read stdout.
+	if sink := logSinkFrom(ctx); sink != nil {
+		fmt.Fprintf(sink, "$ %s %s\n", name, strings.Join(args, " "))
+		cmd.Stdout = io.MultiWriter(&stdout, sink)
+		cmd.Stderr = io.MultiWriter(&stderr, sink)
+	}
 
 	if err := cmd.Run(); err != nil {
 		return stdout.String(), fmt.Errorf("%s %s failed: %w, stderr: %s",
