@@ -112,11 +112,27 @@ func (s QubeStatus) IsTransient() bool {
 
 // QubeSpec defines resource specifications for a qube.
 type QubeSpec struct {
-	VCPU     int      `json:"vcpu"`
-	Memory   int      `json:"memory"` // Memory in MB
-	Disk     int      `json:"disk"`   // Disk in GB
-	Template string   `json:"template,omitempty"`
-	GPU      *GPUSpec `json:"gpu,omitempty"`
+	VCPU   int `json:"vcpu"`
+	Memory int `json:"memory"` // Memory in MB
+	// Disk is the OS/root disk in GB. It is recreated with the compute
+	// instance, so it holds nothing that must survive a suspend.
+	//
+	// It must be LARGER than the template's disk: Proxmox cannot shrink a
+	// disk, so a clone whose target size is below the template's fails.
+	Disk int `json:"disk"`
+	// DataDiskGB is the persistent data disk, owned by a separate
+	// storage-holder VM and re-attached on every resume. This is what survives
+	// suspend/resume, and what a purge would destroy.
+	DataDiskGB int `json:"data_disk_gb,omitempty"`
+	// Node pins this qube to a cluster node. Empty means the zone default.
+	// Only meaningful with shared storage; with node-local storage the qube
+	// must live where its template and disks are.
+	Node string   `json:"node,omitempty"`
+	GPU  *GPUSpec `json:"gpu,omitempty"`
+
+	// NOTE: a Template string field used to live here. It was never consumed —
+	// only the zone's TemplateVMID selects an image — so it implied an OS choice
+	// the code did not make. Removed rather than left to mislead.
 }
 
 // GPUSpec defines GPU configuration.
