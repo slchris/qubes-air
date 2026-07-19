@@ -42,12 +42,15 @@ qvm-tags  vault-cloud list       # 应含 vault-cloud
 ## 2. 部署 policy (dom0)
 
 policy 单一来源 = `dom0-scripts/policy.d/30-qubes-air.policy` (阶段3 已追加 E 段)。
-由 remotevm dom0 salt 统一部署, 或手动复制:
+
+> **目前只能手动复制。** 原先那条 `state.sls qubes-air.remotevm.dom0` 所在的骨架**已删除**
+> (见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)),而接替它的
+> `qubes-salt-config` 里 **没有**部署本文件的 state:`mgmt.remotevm.policy` 写的是另一个文件
+> (`/etc/qubes/policy.d/30-remotevm.policy`,从 `config.jinja` 渲染 RemoteVM 服务规则),
+> 整个仓库不含下面 E 段的 vault-cloud 规则。补 state 之前,手动复制是唯一途径。
 
 ```bash
-# 在 dom0 (二选一)
-sudo qubesctl --show-output state.sls qubes-air.remotevm.dom0   # salt 部署 (推荐)
-# 或手动:
+# 在 dom0
 sudo cp dom0-scripts/policy.d/30-qubes-air.policy /etc/qubes/policy.d/30-qubes-air.policy
 
 # 校验 E 段存在

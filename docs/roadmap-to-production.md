@@ -17,7 +17,7 @@
 
 **为什么改**：gRPC 双向流用一条应用层长连接同时承载正向调用与反向回程，天然满足"出站建连 + 双向 + 零入站"；相比裸 SSH 隧道，有结构化的服务定义、认证、流控与可观测性，也便于控制台统一接入（控制台已是 Go + REST，gRPC 同栈）。
 
-> **gRPC 传输 Go 实现已落地并接进业务（编译 + 单测 + mTLS 端到端集成测试通过），未真机验证。** proto、client/server、QrexecInvoker、ReverseHandler、证书经 vault 下发、config + main 装配均已实现并有测试；**`QubeService.CheckReachable` 已真正消费 Transport**（跨机 qrexec 探活，HTTP `GET /qubes/:id/reachable`）。**仍待做**：远端提供 `qubesair.Ping`、Salt/dom0 部署 states、**真机验证**、证书轮换对齐。详见 [grpc-transport-design.md](grpc-transport-design.md) 状态段。旧 SSHProxy 骨架（`salt/qubes-air/remotevm/*.sls`）作为过渡参考保留。
+> **gRPC 传输 Go 实现已落地并接进业务（编译 + 单测 + mTLS 端到端集成测试通过），未真机验证。** proto、client/server、QrexecInvoker、ReverseHandler、证书经 vault 下发、config + main 装配均已实现并有测试；**`QubeService.CheckReachable` 已真正消费 Transport**（跨机 qrexec 探活，HTTP `GET /qubes/:id/reachable`）。**仍待做**：远端提供 `qubesair.Ping`、Salt/dom0 部署 states、**真机验证**、证书轮换对齐。详见 [grpc-transport-design.md](grpc-transport-design.md) 状态段。Salt/dom0 states 已在 **qubes-salt-config** 仓库落地（`salt/mgmt/remotevm/`）；本仓库的旧 SSHProxy 骨架 `salt/qubes-air/remotevm/*.sls` 已**删除**，见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)。
 
 ---
 
@@ -91,7 +91,7 @@
 3. **[TODO] 本地 relay 客户端**：`sys-relay` 跑 gRPC client，主动出站建连、维持长连接双向流；dom0 policy 改写后的 qrexec 请求经它编码进流；反向回程帧解码后经 qrexec 交回本地（policy C：ask）。
 4. **[TODO] 认证**：双向流用 mTLS（客户端证书 + 服务端证书），证书/私钥存 vault-cloud，用时经 qrexec ask 下发（替代原 relay SSH 私钥）。
 5. **[TODO] 断线重连 / 保活**：客户端出站重连、心跳保活（替代 autossh 的角色）。
-6. **[TODO] Salt states**：新增 `salt/qubes-air/remotevm/grpc-*.sls` 部署 relay client / remote server 单元；旧 `autossh.sls`/`relay.sls` 标 DEPRECATED 保留。
+6. **[已实现] Salt states**：`salt/mgmt/remotevm/grpc-relay.sls` / `grpc-remote.sls` 在 **qubes-salt-config** 仓库（不在本仓库）部署 relay client / remote server 单元。本仓库的旧 `salt/qubes-air/remotevm/*` 已**删除**而非标 DEPRECATED 保留——见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)。**仍待做**：真机验证。
 7. **[TODO] dom0 policy**：确认 gRPC 路径下 policy A/B/C 语义不变（Relay 不得直达 dom0、破坏性操作 ask）。
 
 **验收标准**：

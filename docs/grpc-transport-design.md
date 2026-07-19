@@ -152,8 +152,9 @@ work-1 ─qrexec→ 本地 dom0 (policy A/B 校验 + 改写) ─▶ sys-relay
 - `internal/qrexec/client.go` 是**孤立死代码**（未被任何包 import），且调用的 `qubes-air.Remote`/
   `.Status` 是**被评审否决的自造协议**——**不要**把它当"现有传输路径"。但它的
   `Call(ctx, target, service string, input []byte) ([]byte, error)` 签名是很好的**帧语义原型**。
-- SSHProxy 传输实体只在 shell/salt（`relay/transport/qubesair.SSHProxy` + `salt/qubes-air/remotevm/*`），
-  **不在 Go 里**。gRPC 传输是一条**全新 Go 路径**。
+- SSHProxy 传输实体只在 shell/salt（`relay/transport/qubesair.SSHProxy`，以及 qubes-salt-config 的
+  `salt/mgmt/remotevm/relay.sls`；本仓库的 `salt/qubes-air/remotevm/*` 已删除，见
+  [salt/qubes-air/README.md](../salt/qubes-air/README.md)），**不在 Go 里**。gRPC 传输是一条**全新 Go 路径**。
 - go.mod **没有 grpc**（`protobuf` 是 gin 带入的 indirect）；需 `go get google.golang.org/grpc`
   + `protoc-gen-go` / `protoc-gen-go-grpc` 工具链。
 
@@ -186,11 +187,15 @@ type ReverseHandler func(ctx context.Context, service string, in []byte) ([]byte
 | 配置（端点/证书/保活/退避） | `internal/config`（仿 `OrchestratorConfig` + `TLSConfig`） |
 | mTLS 证书经 vault 下发 | 复用 `qubesair.GetCredential`（qrexec，`salt/qubes-air/vault-cloud/files/`）——Go 侧客户端调用当前**缺口**，需新写（仿 `qrexec.Client.Call(target="vault-cloud", service="qubesair.GetCredential+<name>")`） |
 
-## 7. 部署（Salt / dom0）—— 均为 [TODO]
+## 7. 部署（Salt / dom0）
 
-- **[TODO]** 新增 `salt/qubes-air/remotevm/grpc-relay.sls`：在 `sys-relay` 部署 gRPC client 单元（systemd），配置出站端点、证书路径（指向 vault 下发的内存挂载）、保活/重连参数。用 bind-dirs 持久化配置。
-- **[TODO]** 新增远端 `grpc-remote.sls`：在 Remote-Relay 部署 gRPC server 单元。
-- **[TODO]** 旧 `relay.sls` / `autossh.sls` 已标 gRPC 迁移注释；gRPC 落地后标 DEPRECATED，保留作过渡参考。
+> **states 在 `qubes-salt-config` 仓库，不在本仓库。** 本仓库的 `salt/qubes-air/`
+> 已退役，见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)。
+
+- **[已实现]** `salt/mgmt/remotevm/grpc-relay.sls`（qubes-salt-config）：在 relay 部署 gRPC client 单元（systemd），配置出站端点、证书路径（指向 vault 下发的内存挂载）、保活/重连参数。用 bind-dirs 持久化配置。配置读 `salt/config.jinja` 的 `remotevm.grpc`。
+- **[已实现]** `salt/mgmt/remotevm/grpc-remote.sls`（qubes-salt-config）：在 Remote-Relay 部署 gRPC server 单元。
+- **[已删除]** 旧 `relay.sls` / `autossh.sls` 的本仓库骨架已删除（而非标 DEPRECATED 保留）——留着就是第二份来源。SSHProxy 那条路的 states 在 qubes-salt-config 的 `salt/mgmt/remotevm/relay.sls`，与 `grpc-relay.sls` 二选一部署。
+- **[TODO]** 真机验证。
 - **[TODO]** dom0 policy：确认 gRPC 路径下 policy A/B/C 语义不变（已在 proto 注释固化），无需为传输方式改 policy——因为授权仍在 qrexec 层。
 
 ## 8. 验收标准（对齐路线图阶段 T）

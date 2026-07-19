@@ -28,7 +28,7 @@
 - [待真机验证] **RemoteVM 的 `qvm-create` 确切用法、dom0 改写后看到的调用来源**需 R4.3 实机确认（文档内已逐项标注 `待真机确认`）。
 - [待真机验证] **Proxmox `path_in_datastore` 是 experimental**：首测前须按 runbook 验证挂载语义、确保 storage VM 常关机。
 - [待真机验证] **GCP/AWS 的 compute/storage 为骨架 TODO**（接口已对齐，未实现真实资源）。
-- [部分实现] **旧的 `salt/qubes-air/sys-remote/` WireGuard 网关方案已弃用**（评审证明其 states 断链、方向错误），保留仅作历史参考，已标 DEPRECATED；请用 RemoteVM 链路。
+- [已移除] **`salt/qubes-air/` 整个骨架已退役**（sys-remote + WireGuard 网关方向错误、states 断链；RemoteVM 的 autossh/`ssh -R` 骨架被 gRPC 传输取代）。Qubes 侧 states 的单一来源是 **qubes-salt-config** 仓库的 `salt/mgmt/`；退役说明与新旧对照表见 [salt/qubes-air/README.md](salt/qubes-air/README.md)。
 - [部分实现] **监控 / 账单仍为占位**：已显式标注 `placeholder`，未接真实成本源。
 
 ### 路线图（诚实版）

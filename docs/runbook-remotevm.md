@@ -1,10 +1,15 @@
 # Runbook: RemoteVM + 零入站 SSH transport (阶段2, 真机执行)
 
-> ⚠️ **传输层说明**: 本 runbook 描述的是 **`qubesair.SSHProxy` transport**(autossh 出站 + `ssh -R` 反向回程)——
-> 这是**现有骨架实现**, 作为过渡参考仍可照做验证。
+> ⚠️ **传输层说明**: 本 runbook 描述的是 **`qubesair.SSHProxy` transport**(autossh 出站 + `ssh -R` 反向回程)。
 > **目标架构的跨机传输已改为 gRPC 双向流**(relay 出站建 gRPC 长连接、双向承载 qrexec 转发与反向回程, 零入站)。
-> gRPC 版 runbook 待该传输实现后补充; 落地路线见 [roadmap-to-production.md](roadmap-to-production.md)。
-> 本文的 SSHProxy 命令**不改**——gRPC 尚未实现, 改成 gRPC 命令就是假手册。
+> gRPC 版 runbook 待真机验证后补充; 落地路线见 [roadmap-to-production.md](roadmap-to-production.md)。
+>
+> ⚠️ **本文照做不通了(§3 起)**: 它 apply 的 `qubes-air.remotevm.relay/.autossh` 骨架**已删除**
+> (见 [salt/qubes-air/README.md](../salt/qubes-air/README.md))。接替它的
+> `qubes-salt-config` 仓库 `mgmt.remotevm.relay` **只覆盖其中一部分**——装 transport 脚本
+> 与 `~/.ssh/config`,**没有** autossh 单元、回环 sshd、反向 handler、bind-dirs 持久化。
+> 也就是说 §3 之后依赖这些的步骤(§5 起 autossh、§9 反向调用验证)**目前没有对应的 state**。
+> 缺口逐项列在 §3。gRPC 那条路是完整的(`mgmt.remotevm.grpc-relay`,含 bind-dirs)。
 
 > 目标: 从"terraform 建出远端 VM"到"本地 AppVM 里 `qrexec-client-vm remote-dev-1 <service>` 调通",
 > 全链路可照做。含零入站验证与反向调用验证。
@@ -80,23 +85,49 @@ qvm-tags  sys-relay-pve list               # 期望含 relay
 
 ## 3. 部署 Relay 内配置 (salt, 经 mgmt-air / qubesctl)
 
-```bash
-# 3a. 先对 Relay 用的模板装包 (autossh 等必须进模板才持久)
-sudo qubesctl --skip-dom0 --targets fedora-42 state.sls qubes-air.remotevm.relay
+> **states 在 `qubes-salt-config` 仓库**(`salt/mgmt/remotevm/`),配置走它的 `salt/config.jinja`,
+> 调用式是 `state.apply mgmt.remotevm.<state>`(不是本仓库旧的 `state.sls qubes-air.remotevm.*`)。
+> 该仓库的 `cfg.remotevm.relay` **默认是 `mgmt-jump`**,不是本文的 `sys-relay-pve`;
+> 要沿用本文命名,得改 `config.jinja` 的 `remotevm.relay` **并同步改 `relay.top` 里的目标 qube**
+> (Salt top 匹配字面量 qube 名)。
 
-# 3b. 再对 Relay AppVM 应用配置 (transport / 回环 sshd / autossh 单元)
-sudo qubesctl --skip-dom0 --targets sys-relay-pve \
-    state.sls qubes-air.remotevm.relay,qubes-air.remotevm.autossh
+```bash
+# 3a. 先对 Relay 用的模板装包: openssh-client
+#     mgmt.remotevm.relay 里的兜底是 `apt-get`(仅 Debian 系), 本文的 relay 模板是
+#     fedora-42 —— 兜底在这里不起作用, 必须自己装进模板:
+#     qvm-run -u root fedora-42 'dnf install -y openssh-clients' && qvm-shutdown --wait fedora-42
+
+# 3b. 再对 Relay AppVM 应用 transport 配置
+sudo qubesctl --skip-dom0 --targets=sys-relay-pve state.apply mgmt.remotevm.relay
 ```
 
-持久化检查 (评审重点):
+它装的只有两样: `/etc/qubes-rpc/qubesair.SSHProxy` 和 `/home/user/.ssh/config`
+(按 `cfg.remotevm.targets` 每个目标一条 Host)。
+
+**相对被删骨架的缺口** —— 下面这些本文后续步骤依赖、但接替方**没有实现**:
+
+| 缺的东西 | 影响本文哪一步 |
+|---|---|
+| `autossh-qubesair@.service` 出站隧道单元 | §5 起隧道、§10 停隧道 |
+| 回环 sshd + `reverse-qrexec-handler`(ForceCommand) | §9 反向调用验证 |
+| bind-dirs 持久化 | 见下 |
+
+**持久化: 目前会丢。** 旧骨架用 bind-dirs 把 transport 脚本绑回 `/etc/qubes-rpc/`;
+`mgmt.remotevm.relay` 直接写 `/etc/qubes-rpc/`,而 AppVM 的 `/etc` 属**根卷**,
+重启即还原(`~/.ssh/config` 在私有卷,不受影响)。所以:
+
 ```bash
-qvm-run -p sys-relay-pve 'ls -l /rw/config/qubes-bind-dirs.d/50_qubesair.conf'   # 存在
-qvm-run -p sys-relay-pve 'cat /rw/bind-dirs/etc/qubes-rpc/qubesair.SSHProxy | head -3'
-# 重启 Relay 后 transport 仍在 (bind-dirs 生效):
+# 装完当场可用:
+qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'   # 存在
+# 但重启后没了 —— 这是已知缺口, 不是操作失误:
 qvm-shutdown --wait sys-relay-pve && qvm-start sys-relay-pve
-qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'                # 应存在
+qvm-run -p sys-relay-pve 'ls -l /etc/qubes-rpc/qubesair.SSHProxy'   # 不存在
 ```
+
+绕过办法二选一: 把 transport 脚本装进**模板**, 或每次 Relay 启动后重新 apply。
+根治要在 `qubes-salt-config` 的 `mgmt.remotevm.relay` 里补 bind-dirs——
+同仓库的 `mgmt.remotevm.grpc-relay` 已经这么做了(`/rw/config/qubes-bind-dirs.d/50_qubesair_grpc.conf`),
+照它抄即可。
 
 ---
 
