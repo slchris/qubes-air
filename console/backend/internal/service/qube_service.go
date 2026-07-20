@@ -265,16 +265,20 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 		return nil, err
 	}
 
-	// Mint the agent's identity now, while the qube row exists to own it and
-	// before any infrastructure is built. Issuing later would mean a running
-	// remote with no way to authenticate; issuing earlier would leave a
-	// registered certificate with no qube to revoke it against.
+	// Mint the agent's bootstrap credential now, while the qube row exists to
+	// own it and before any infrastructure is built. Later would mean a running
+	// remote with no way to authenticate; earlier would leave a token with no
+	// qube to invalidate it against.
+	//
+	// This does NOT produce a certificate — the agent generates its own key at
+	// first boot and BootstrapMonitor signs it. So the qube is deliberately
+	// created uncertified, and stays that way until the console reaches it.
 	if s.issuer != nil {
-		if _, err := s.issuer.IssueFor(ctx, qube); err != nil {
+		if err := s.issuer.IssueFor(ctx, qube); err != nil {
 			// The qube row is left in place deliberately: it already exists, and
 			// deleting it here would race the caller's own view. A qube without a
-			// certificate is visible and retryable; a half-deleted one is not.
-			return nil, fmt.Errorf("%w: issue agent certificate: %v", ErrOrchestration, err)
+			// credential is visible and retryable; a half-deleted one is not.
+			return nil, fmt.Errorf("%w: mint agent bootstrap credential: %v", ErrOrchestration, err)
 		}
 	}
 
@@ -671,7 +675,7 @@ func (s *QubeServiceImpl) reissueIdentityForResume(
 	// start anyway, so reporting "resuming" would promise something that cannot
 	// happen — and this project's recurring defect is exactly the failure that
 	// looks like success.
-	if _, err := s.issuer.ReissueFor(ctx, qube,
+	if err := s.issuer.ReissueFor(ctx, qube,
 		fmt.Sprintf("compute instance rebuilt on resume from %s", prior)); err != nil {
 		return fmt.Errorf("%w: reissue agent identity for %q: %v", ErrOrchestration, qube.Name, err)
 	}

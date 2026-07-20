@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"os"
 	"os/exec"
@@ -32,18 +33,26 @@ func testAgentPackage() AgentPackage {
 	return AgentPackage{URL: testPkgURL, SHA256: testPkgSHA(), Version: "0.1.0"}
 }
 
-func renderWith(t *testing.T, pkg AgentPackage) (string, *pki.Bundle) {
+// testIdentityDoc is what the console delivers under the token design: a public
+// CA and a one-shot token, and deliberately no key material.
+func testIdentityDoc(t *testing.T) (AgentIdentityDoc, string) {
 	t.Helper()
 	ca, err := pki.NewCA("test-ca", 0)
 	require.NoError(t, err)
-	bundle, err := ca.IssueAgentCert("agent-dev-work", 0)
-	require.NoError(t, err)
-	out, err := RenderAgentUserData("remote-dev", bundle, "0.0.0.0:8443", pkg)
-	require.NoError(t, err)
-	return out, bundle
+	caPEM := pki.EncodeCACertPEM(ca)
+	require.NotEmpty(t, caPEM)
+	return AgentIdentityDoc{CAPEM: caPEM, BootstrapToken: "test-bootstrap-token"}, caPEM
 }
 
-func renderFixture(t *testing.T) (string, *pki.Bundle) {
+func renderWith(t *testing.T, pkg AgentPackage) (string, AgentIdentityDoc) {
+	t.Helper()
+	id, _ := testIdentityDoc(t)
+	out, err := RenderAgentUserData("remote-dev", id, "0.0.0.0:8443", pkg)
+	require.NoError(t, err)
+	return out, id
+}
+
+func renderFixture(t *testing.T) (string, AgentIdentityDoc) {
 	t.Helper()
 	return renderWith(t, testAgentPackage())
 }
@@ -86,45 +95,62 @@ func TestRenderedUserDataIsValidYAML(t *testing.T) {
 		"cloud-init requires the #cloud-config header to treat this as config")
 
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 5, "three PEMs, the env file and the package installer")
+	assert.Len(t, cc.WriteFiles, 4, "the CA, the bootstrap token, the env file and the package installer")
 	assert.NotEmpty(t, cc.Runcmd)
 }
 
-// TestPrivateKeySurvivesYAMLRoundTrip is the one that would fail silently.
+// TestCASurvivesYAMLRoundTrip is the one that would fail silently.
+//
 // PEM is multi-line; if the literal block mangles it — an indentation slip, a
-// trailing-space rule — the file still looks like a key and openssl rejects it
-// only on the remote, at boot, where nobody is watching.
-func TestPrivateKeySurvivesYAMLRoundTrip(t *testing.T) {
-	out, bundle := renderFixture(t)
+// trailing-space rule — the file still LOOKS like a certificate and is rejected
+// only on the remote, at boot, where nobody is watching. The agent then trusts
+// nothing and refuses every console that dials it, which reads as a network
+// fault rather than a rendering one.
+func TestCASurvivesYAMLRoundTrip(t *testing.T) {
+	out, id := renderFixture(t)
 	cc := parseConfig(t, out)
 
-	keyContent := fileContent(t, cc, "agent-key.pem")
-	require.NotEmpty(t, keyContent, "the agent key must be delivered")
+	caContent := fileContent(t, cc, "ca.pem")
+	require.NotEmpty(t, caContent, "the CA must be delivered")
+	assert.Equal(t, strings.TrimRight(id.CAPEM, "\n"), strings.TrimRight(caContent, "\n"),
+		"the CA must arrive byte-identical")
 
-	assert.Equal(t, strings.TrimRight(bundle.KeyPEM, "\n"), strings.TrimRight(keyContent, "\n"),
-		"the key must arrive byte-identical")
-
-	// Prove it, rather than trusting string equality: parse the extracted key.
-	cmd := exec.Command("openssl", "ec", "-noout", "-text")
-	cmd.Stdin = strings.NewReader(keyContent)
-	if err := cmd.Run(); err != nil {
-		t.Errorf("openssl could not parse the delivered key: %v", err)
-	}
+	// Prove it, rather than trusting string equality: parse what was extracted.
+	pool := x509.NewCertPool()
+	assert.True(t, pool.AppendCertsFromPEM([]byte(caContent)),
+		"the delivered CA does not parse; the agent would trust nothing")
 }
 
-// TestPrivateKeyIsNotWorldReadable — a world-readable key on a multi-user host
-// hands the agent's identity to every local account, turning a revocable
-// credential back into an ambient one.
-func TestPrivateKeyIsNotWorldReadable(t *testing.T) {
+// TestBootstrapTokenSurvivesYAMLRoundTrip — the token is a single line, but a
+// mangled one is a qube that can never be issued an identity, and the console
+// only finds out when it dials.
+func TestBootstrapTokenSurvivesYAMLRoundTrip(t *testing.T) {
+	out, id := renderFixture(t)
+	cc := parseConfig(t, out)
+
+	got := strings.TrimSpace(fileContent(t, cc, "bootstrap-token"))
+	assert.Equal(t, id.BootstrapToken, got, "the token must arrive byte-identical")
+}
+
+// TestBootstrapTokenIsNotWorldReadable — a world-readable token lets any local
+// account on the guest claim this qube's identity before the agent does.
+//
+// The blast radius is smaller than it was for a private key — one qube, one
+// boot, rather than a 90-day credential — but it is not zero, and the mode
+// costs nothing.
+func TestBootstrapTokenIsNotWorldReadable(t *testing.T) {
 	out, _ := renderFixture(t)
 	cc := parseConfig(t, out)
 
+	var seen bool
 	for _, f := range cc.WriteFiles {
-		if strings.HasSuffix(f.Path, "agent-key.pem") {
-			assert.Equal(t, "0600", f.Permissions, "the private key must not be readable by other users")
+		if strings.HasSuffix(f.Path, "bootstrap-token") {
+			seen = true
+			assert.Equal(t, "0600", f.Permissions, "the token must not be readable by other users")
 		}
 		assert.Equal(t, "root:root", f.Owner)
 	}
+	assert.True(t, seen, "no bootstrap token was delivered at all")
 }
 
 // TestRemoteNameReachesTheAgent — qubesair.Ping returns this value, and
@@ -138,27 +164,42 @@ func TestRemoteNameReachesTheAgent(t *testing.T) {
 	assert.Contains(t, env, "QUBESAIR_LISTEN=0.0.0.0:8443")
 }
 
-// TestCAPrivateKeyNeverDelivered — the bundle excludes it, and the renderer
-// must not reintroduce it. This document goes to a host assumed compromisable.
-func TestCAPrivateKeyNeverDelivered(t *testing.T) {
+// TestNoPrivateKeyIsEverDelivered — this document goes to a host assumed
+// compromisable, and on Proxmox it is readable by anyone holding
+// VM.Config.Cloudinit. It used to carry the agent's key; it must never again.
+func TestNoPrivateKeyIsEverDelivered(t *testing.T) {
 	out, _ := renderFixture(t)
-	assert.Equal(t, 1, strings.Count(out, "BEGIN EC PRIVATE KEY"),
-		"exactly one private key — the agent's — may appear")
+	assert.Equal(t, 0, strings.Count(out, "PRIVATE KEY"),
+		"no private key may appear in a document delivered through cloud-init")
 }
 
 // TestRenderRejectsIncompleteInput — failing here is far better than emitting a
 // document that installs nothing and looks like it worked.
 func TestRenderRejectsIncompleteInput(t *testing.T) {
-	ca, err := pki.NewCA("t", 0)
-	require.NoError(t, err)
-	bundle, err := ca.IssueAgentCert("a", 0)
-	require.NoError(t, err)
+	id, caPEM := testIdentityDoc(t)
 
-	_, err = RenderAgentUserData("remote", nil, "", testAgentPackage())
-	assert.Error(t, err, "a missing bundle must fail")
+	_, err := RenderAgentUserData("remote", AgentIdentityDoc{}, "", testAgentPackage())
+	assert.Error(t, err, "an empty identity must fail")
 
-	_, err = RenderAgentUserData("", bundle, "", testAgentPackage())
+	_, err = RenderAgentUserData("remote", AgentIdentityDoc{CAPEM: caPEM}, "", testAgentPackage())
+	assert.Error(t, err, "a missing token must fail: the agent could never be issued a certificate")
+
+	_, err = RenderAgentUserData("remote", AgentIdentityDoc{BootstrapToken: "t"}, "", testAgentPackage())
+	assert.Error(t, err, "a missing CA must fail: the agent could not verify the console")
+
+	_, err = RenderAgentUserData("", id, "", testAgentPackage())
 	assert.Error(t, err, "a missing remote name must fail: qubesair.Ping reports it")
+}
+
+// The whole point of the redesign, checked at the renderer.
+func TestRenderedDocumentHasNoKeyMaterial(t *testing.T) {
+	out, _ := renderFixture(t)
+	for _, marker := range []string{"PRIVATE KEY", "agent-key.pem", "agent.pem"} {
+		assert.NotContains(t, out, marker,
+			"the rendered document carries key material; that is the hole the token design closed")
+	}
+	assert.Contains(t, out, "/etc/qubes-air/bootstrap-token")
+	assert.Contains(t, out, "/etc/qubes-air/ca.pem")
 }
 
 // TestSnippetVolumeIDFormat — Proxmox resolves a snippet by this exact shape,
@@ -302,7 +343,7 @@ func TestUnsafePackageURLIsNeverEmbedded(t *testing.T) {
 func TestUnpinnedConsoleDegradesSafely(t *testing.T) {
 	out, _ := renderWith(t, AgentPackage{})
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 5, "the document stays complete when no package is pinned")
+	assert.Len(t, cc.WriteFiles, 4, "the document stays complete when no package is pinned")
 
 	installer := fileContent(t, cc, agentInstallerPath)
 	assert.Contains(t, installer, "PKG_URL=''")

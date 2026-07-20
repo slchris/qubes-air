@@ -62,11 +62,27 @@ type CertIssuer struct {
 	// loudly in the guest rather than producing a qube with a dead unit.
 	agentPkg AgentPackage
 
+	// tokens mints the one-shot bootstrap credentials cloud-init delivers.
+	// Without it a qube can be created but has no way to ever obtain an
+	// identity, so IssueFor refuses rather than rendering a document that
+	// cannot work.
+	tokens BootstrapTokenStore
+	// bootstrapTokenTTL overrides defaultBootstrapTokenTTL. Zero takes the
+	// default.
+	bootstrapTokenTTL time.Duration
+
 	// mu guards lazy CA initialization so two concurrent qube creations cannot
 	// each mint a CA and race to store it — which would leave agents trusting
 	// different roots.
 	mu sync.Mutex
 	ca *pki.CA
+}
+
+// BootstrapTokenStore mints and invalidates bootstrap tokens.
+// Implemented by *repository.BootstrapTokenRepository.
+type BootstrapTokenStore interface {
+	Issue(ctx context.Context, qubeID, qubeName string, ttl time.Duration) (string, error)
+	InvalidateForQube(ctx context.Context, qubeID string, now time.Time) (int64, error)
 }
 
 // CredentialStore is the subset of the credential repository this needs.
@@ -96,6 +112,14 @@ func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository,
 // a forgotten empty string decides.
 func (c *CertIssuer) WithSnippetDatastore(datastore string) *CertIssuer {
 	c.snippetDatastore = strings.TrimSpace(datastore)
+	return c
+}
+
+// WithBootstrapTokens supplies the token store IssueFor mints from, and
+// optionally overrides the token lifetime (zero keeps the default).
+func (c *CertIssuer) WithBootstrapTokens(tokens BootstrapTokenStore, ttl time.Duration) *CertIssuer {
+	c.tokens = tokens
+	c.bootstrapTokenTTL = ttl
 	return c
 }
 
@@ -142,67 +166,101 @@ func (c *CertIssuer) IdentityVolumeID(qubeName string) string {
 	return SnippetVolumeID(c.snippetDatastore, name)
 }
 
-// IssueFor mints a client certificate for a qube's agent and registers it.
+// IssueFor mints a qube's bootstrap credential and renders its delivery
+// document.
 //
-// The returned bundle is what cloud-init delivers to the remote. It contains
-// the agent's key but never the CA's — see pki.Bundle.
-func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bundle, error) {
+// It no longer issues a CERTIFICATE, and that is the change the whole bootstrap
+// design exists for. Cloud-init used to carry the agent's private key, which
+// then existed in at least three places it did not need to: the rendered file
+// on the console, the snippet on the hypervisor, and any backup of either. On
+// Proxmox that made VM.Config.Cloudinit equivalent to holding every agent
+// identity ever delivered.
+//
+// Now the guest is given a public CA and a one-shot token. The agent generates
+// its own key at first boot, and the console dials in and signs a CSR against
+// that token (service.AgentBootstrapper). So a qube is created with NO
+// certificate, deliberately, and BootstrapMonitor is what turns the token into
+// one — a console with that sweep disabled will provision qubes that never
+// obtain an identity, which is why it says so loudly at startup.
+//
+// Any outstanding token is invalidated first. A qube being re-provisioned must
+// not remain claimable with a token minted for an earlier attempt, and the
+// order matters: mint-then-invalidate would spend the token it just created.
+func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
+	if c.tokens == nil {
+		return fmt.Errorf("no bootstrap token store configured; qube %q cannot be given a way to obtain an identity", qube.Name)
+	}
 	ca, err := c.loadOrCreateCA(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("certificate authority: %w", err)
+		return fmt.Errorf("certificate authority: %w", err)
 	}
 
-	// The common name identifies the agent in logs and in the registry. It is
-	// NOT an authorization input: the fingerprint is what the registry matches,
-	// so a certificate cannot gain privilege by naming itself something else.
-	cn := AgentCommonName(qube.Name)
-	bundle, err := ca.IssueAgentCert(cn, pki.DefaultAgentCertLifetime)
+	if n, err := c.tokens.InvalidateForQube(ctx, qube.ID, time.Now()); err != nil {
+		// Fatal, unlike most cleanup. A surviving old token is a second way to
+		// claim this qube's name, which is exactly what single-use exists to
+		// prevent.
+		return fmt.Errorf("invalidate previous bootstrap tokens for %q: %w", qube.Name, err)
+	} else if n > 0 {
+		log.Printf("pki: invalidated %d outstanding bootstrap token(s) for %q before minting a new one", n, qube.Name)
+	}
+
+	token, err := c.tokens.Issue(ctx, qube.ID, qube.Name, c.tokenTTL())
 	if err != nil {
-		return nil, fmt.Errorf("issue certificate for %q: %w", qube.Name, err)
+		return fmt.Errorf("mint bootstrap token for %q: %w", qube.Name, err)
 	}
 
-	notAfter := bundle.NotAfter
-	if err := c.certs.Register(ctx, &repository.AgentCert{
-		Fingerprint: bundle.Fingerprint,
-		QubeID:      qube.ID,
-		SubjectCN:   cn,
-		IssuedAt:    time.Now().UTC(),
-		ExpiresAt:   &notAfter,
-	}); err != nil {
-		// Registration failed, so this certificate can never be authorized.
-		// Returning it would hand out a credential that silently does not work.
-		return nil, fmt.Errorf("register certificate for %q: %w", qube.Name, err)
-	}
-
-	// Render and persist the delivery document. Without this the certificate is
-	// registered but has no way to reach the remote, which is exactly the state
-	// this whole chain existed to leave behind.
+	// Render and persist the delivery document. Without this the token exists
+	// but has no way to reach the remote, which is exactly the state this whole
+	// chain existed to leave behind.
 	if c.identityDir != "" {
-		userData, err := RenderAgentUserData(qube.Name, bundle, c.agentListen, c.agentPkg)
+		userData, err := RenderAgentUserData(qube.Name, AgentIdentityDoc{
+			CAPEM:          pki.EncodeCACertPEM(ca),
+			BootstrapToken: token,
+		}, c.agentListen, c.agentPkg)
 		if err != nil {
-			return nil, fmt.Errorf("render identity for %q: %w", qube.Name, err)
+			return fmt.Errorf("render identity for %q: %w", qube.Name, err)
 		}
 		if c.snippetDatastore != "" {
 			// Shared storage: the console writes where the nodes already read,
 			// so terraform uploads nothing and needs no SSH to a hypervisor.
 			name, err := WriteSharedAgentUserData(c.identityDir, qube.Name, userData)
 			if err != nil {
-				return nil, fmt.Errorf("persist identity for %q on the share: %w", qube.Name, err)
+				return fmt.Errorf("persist identity for %q on the share: %w", qube.Name, err)
 			}
 			log.Printf("pki: wrote agent identity for %q to %s",
 				qube.Name, SnippetVolumeID(c.snippetDatastore, name))
 		} else {
 			path, err := WriteAgentUserData(c.identityDir, qube.Name, userData)
 			if err != nil {
-				return nil, fmt.Errorf("persist identity for %q: %w", qube.Name, err)
+				return fmt.Errorf("persist identity for %q: %w", qube.Name, err)
 			}
 			log.Printf("pki: wrote agent identity for %q to %s", qube.Name, path)
 		}
 	}
 
-	log.Printf("pki: issued certificate %s for qube %q (expires %s)",
-		bundle.Fingerprint[:16], qube.Name, notAfter.Format(time.RFC3339))
-	return bundle, nil
+	log.Printf("pki: qube %q can now bootstrap; its certificate is issued when the console reaches its agent", qube.Name)
+	return nil
+}
+
+// defaultBootstrapTokenTTL is how long a minted token stays redeemable.
+//
+// Sized against MEASURED provisioning, not intuition. The window that has to
+// fit inside it is "terraform starts the apply" through "the agent is up and
+// the console has dialed it", and section 7.4 records a provision spending 14
+// minutes in apt alone before that was fixed. A token that felt short —
+// five minutes, say — would expire during one slow boot, and the failure only
+// becomes visible when the console dials and is refused, long after the apply
+// reported success.
+//
+// An hour is far past any provision observed here while still bounding a leak
+// to a window, which is the property being bought.
+const defaultBootstrapTokenTTL = time.Hour
+
+func (c *CertIssuer) tokenTTL() time.Duration {
+	if c.bootstrapTokenTTL > 0 {
+		return c.bootstrapTokenTTL
+	}
+	return defaultBootstrapTokenTTL
 }
 
 // ReissueFor replaces a qube's agent identity, retiring whatever it held before.
@@ -228,9 +286,9 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 // row belonging to the qube, so running it afterwards would revoke the
 // certificate just minted and the qube would boot holding a revoked one — the
 // same permanent lockout, reached from the other side.
-func (c *CertIssuer) ReissueFor(ctx context.Context, qube *models.Qube, reason string) (*pki.Bundle, error) {
+func (c *CertIssuer) ReissueFor(ctx context.Context, qube *models.Qube, reason string) error {
 	if qube == nil {
-		return nil, errors.New("reissue: no qube given")
+		return errors.New("reissue: no qube given")
 	}
 
 	// The instance that held the previous certificate is gone: suspend destroyed

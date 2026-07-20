@@ -25,6 +25,7 @@ type resumeFixture struct {
 	qubes    repository.QubeRepository
 	zones    repository.ZoneRepository
 	certs    *repository.AgentCertRepository
+	tokens   *repository.BootstrapTokenRepository
 	issuer   *CertIssuer
 	exec     *orchestrator.FakeExecutor
 	zoneID   string
@@ -51,7 +52,8 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 	certs := repository.NewAgentCertRepository(db)
-	issuer := NewCertIssuer(newMemCredStore(), certs, t.TempDir(), "0.0.0.0:8443", testAgentPackage())
+	issuer := NewCertIssuer(newMemCredStore(), certs, t.TempDir(), "0.0.0.0:8443", testAgentPackage()).
+		WithBootstrapTokens(repository.NewBootstrapTokenRepository(db), 0)
 
 	exec := orchestrator.NewFakeExecutor()
 	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
@@ -67,6 +69,7 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 
 	return &resumeFixture{
 		svc: qubeSvc, db: db, qubes: qubeRepo, zones: zoneRepo, certs: certs,
+		tokens: repository.NewBootstrapTokenRepository(db),
 		issuer: issuer, exec: exec, zoneID: zone.ID, qubeID: op.Qube.ID, qubeName: name,
 	}
 }
@@ -80,18 +83,30 @@ func (f *resumeFixture) suspend(t *testing.T) {
 	f.exec.Reset()
 }
 
-// liveCerts returns the qube's registered, unrevoked certificates.
-func (f *resumeFixture) liveCerts(t *testing.T) []*repository.AgentCert {
+// liveTokens returns the qube's unredeemed, unexpired bootstrap tokens. Under
+// the token design this — not a certificate — is what provisioning produces.
+func (f *resumeFixture) liveTokens(t *testing.T) []*repository.BootstrapToken {
 	t.Helper()
-	all, err := f.certs.ListByQube(context.Background(), f.qubeID)
+	all, err := f.tokens.ListByQube(context.Background(), f.qubeID)
 	require.NoError(t, err)
-	var live []*repository.AgentCert
-	for _, c := range all {
-		if !c.Revoked() {
-			live = append(live, c)
+	var live []*repository.BootstrapToken
+	for _, tok := range all {
+		if tok.RedeemedAt == nil && tok.NotAfter.After(time.Now()) {
+			live = append(live, tok)
 		}
 	}
 	return live
+}
+
+// registerCert puts a certificate in the registry directly, standing in for a
+// bootstrap that already happened. Provisioning no longer registers one.
+func (f *resumeFixture) registerCert(t *testing.T, fingerprint string) {
+	t.Helper()
+	expires := time.Now().Add(90 * 24 * time.Hour)
+	require.NoError(t, f.certs.Register(context.Background(), &repository.AgentCert{
+		Fingerprint: fingerprint, QubeID: f.qubeID,
+		SubjectCN: AgentCommonName(f.qubeName), IssuedAt: time.Now().UTC(), ExpiresAt: &expires,
+	}))
 }
 
 // expire backdates a registered certificate, standing in for the months a qube
@@ -117,32 +132,34 @@ func TestStart_ResumeIssuesAFreshIdentity(t *testing.T) {
 	f := newResumeFixture(t)
 	ctx := context.Background()
 
-	before := f.liveCerts(t)
-	require.Len(t, before, 1, "creation issues exactly one identity")
-	original := before[0].Fingerprint
+	before := f.liveTokens(t)
+	require.Len(t, before, 1, "creation mints exactly one bootstrap credential")
+	original := before[0].SecretHash
 
 	f.suspend(t)
 	_, err := f.svc.Start(ctx, f.qubeID)
 	require.NoError(t, err)
 
-	after := f.liveCerts(t)
-	require.Len(t, after, 1, "a resumed qube holds exactly one usable identity")
-	assert.NotEqual(t, original, after[0].Fingerprint,
-		"resume must mint a NEW certificate; reusing the old one is what leaves a long-parked qube expired")
-	require.NotNil(t, after[0].ExpiresAt)
-	assert.True(t, after[0].ExpiresAt.After(time.Now().Add(24*time.Hour)),
-		"the resumed qube must come back with a full lifetime ahead of it")
+	after := f.liveTokens(t)
+	require.Len(t, after, 1,
+		"a resumed qube must hold exactly one live credential; a leftover second is another way to claim its name")
+	assert.NotEqual(t, original, after[0].SecretHash,
+		"resume must mint a NEW token; the one from months ago has long expired")
+	assert.True(t, after[0].NotAfter.After(time.Now()),
+		"the resumed qube must come back with a credential that has not already expired")
 
-	// Signed and registered is only half of it: the identity has to reach the
-	// remote, and the cloud-init document terraform uploads is the only channel
-	// that does. A certificate in the registry with no rendered document is a
-	// credential the agent never receives.
+	// Minting is only half of it: the credential has to reach the remote, and
+	// the cloud-init document terraform uploads is the only channel that does.
+	// A token in the table with no rendered document is one the agent never
+	// receives.
 	path := f.issuer.IdentityPath(f.qubeName)
 	require.NotEmpty(t, path)
 	rendered, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Contains(t, string(rendered), "BEGIN CERTIFICATE",
-		"resume must rewrite the cloud-init identity document, not just the registry")
+	assert.Contains(t, string(rendered), "/etc/qubes-air/bootstrap-token",
+		"resume must rewrite the cloud-init document, not just the token table")
+	assert.NotContains(t, string(rendered), "PRIVATE KEY",
+		"resume must not reintroduce key delivery")
 }
 
 // TestStart_ResumeRetiresThePreviousIdentity — the instance that held the old
@@ -157,24 +174,25 @@ func TestStart_ResumeRetiresThePreviousIdentity(t *testing.T) {
 	f := newResumeFixture(t)
 	ctx := context.Background()
 
-	original := f.liveCerts(t)[0].Fingerprint
+	// Stand in for a bootstrap that already ran: the qube holds a certificate.
+	const original = "fp-from-an-earlier-bootstrap"
+	f.registerCert(t, original)
+	_, err := f.certs.Authorize(ctx, original)
+	require.NoError(t, err, "precondition: the parked qube holds a working certificate")
 
 	f.suspend(t)
-	_, err := f.svc.Start(ctx, f.qubeID)
+	_, err = f.svc.Start(ctx, f.qubeID)
 	require.NoError(t, err)
 
 	_, err = f.certs.Authorize(ctx, original)
 	assert.ErrorIs(t, err, repository.ErrCertRevoked,
 		"the certificate of a destroyed instance must stop being accepted")
 
-	// And the ordering that makes this safe: the NEW certificate must survive.
-	// RevokeByQube revokes every row for the qube, so revoking after issuing
-	// would kill the identity just minted and the qube would boot holding a
-	// revoked certificate — the same permanent lockout, from the other side.
-	fresh := f.liveCerts(t)
-	require.Len(t, fresh, 1)
-	_, err = f.certs.Authorize(ctx, fresh[0].Fingerprint)
-	assert.NoError(t, err, "the identity the resumed qube is about to receive must be authorized")
+	// And the qube must have a way back: a live token for the fresh bootstrap
+	// that follows. Revoking without reissuing is the lockout from the other
+	// side.
+	assert.Len(t, f.liveTokens(t), 1,
+		"the resumed qube was left revoked with no credential to bootstrap with")
 }
 
 // TestStart_LongSuspendedQubeWithAnExpiredCertificateResumes is the lockout
@@ -189,9 +207,11 @@ func TestStart_LongSuspendedQubeWithAnExpiredCertificateResumes(t *testing.T) {
 	f := newResumeFixture(t)
 	ctx := context.Background()
 
+	// The qube bootstrapped once, long ago, and its certificate has since run
+	// out while it sat parked.
+	const stale = "fp-from-before-the-long-park"
+	f.registerCert(t, stale)
 	f.suspend(t)
-
-	stale := f.liveCerts(t)[0].Fingerprint
 	f.expire(t, stale, time.Now().UTC().Add(-24*time.Hour))
 	_, err := f.certs.Authorize(ctx, stale)
 	require.ErrorIs(t, err, repository.ErrCertExpired,
@@ -201,12 +221,18 @@ func TestStart_LongSuspendedQubeWithAnExpiredCertificateResumes(t *testing.T) {
 	require.NoError(t, err, "a long-suspended qube must still be resumable; it cannot renew its way out")
 	assert.Equal(t, models.QubeStatusRunning, op.Qube.Status)
 
-	live := f.liveCerts(t)
-	require.Len(t, live, 1)
-	got, err := f.certs.Authorize(ctx, live[0].Fingerprint)
-	require.NoError(t, err, "the resumed qube must come back with an identity that authorizes")
-	require.NotNil(t, got.ExpiresAt)
-	assert.True(t, got.ExpiresAt.After(time.Now()))
+	// The way back is a fresh bootstrap, not a fresh certificate: resume hands
+	// the qube a live token, and the console issues the certificate once it can
+	// reach the agent. What matters is that the expired one is gone and a usable
+	// credential took its place — without that the qube is unrecoverable,
+	// because the channel that would repair it is the one that is broken.
+	live := f.liveTokens(t)
+	require.Len(t, live, 1, "the resumed qube must come back with a way to obtain an identity")
+	assert.True(t, live[0].NotAfter.After(time.Now()))
+
+	_, err = f.certs.Authorize(ctx, stale)
+	assert.ErrorIs(t, err, repository.ErrCertRevoked,
+		"the expired certificate of a destroyed instance must also stop being accepted")
 }
 
 // TestStart_ReissueFailureDoesNotStrandTheClaim — nothing is running when
@@ -224,8 +250,10 @@ func TestStart_ReissueFailureDoesNotStrandTheClaim(t *testing.T) {
 	// Same qube and same repositories, but an issuer whose registry is
 	// unavailable — so issuance fails the way it does when the database is down,
 	// while the qube row itself remains readable and writable.
-	broken := NewCertIssuer(newMemCredStore(), repository.NewAgentCertRepository(closedDB(t)),
-		t.TempDir(), "0.0.0.0:8443", testAgentPackage())
+	brokenDB := closedDB(t)
+	broken := NewCertIssuer(newMemCredStore(), repository.NewAgentCertRepository(brokenDB),
+		t.TempDir(), "0.0.0.0:8443", testAgentPackage()).
+		WithBootstrapTokens(repository.NewBootstrapTokenRepository(brokenDB), 0)
 	svc := NewQubeService(f.qubes, f.zones, WithExecutor(f.exec), WithCertIssuer(broken))
 
 	_, err := svc.Start(ctx, f.qubeID)

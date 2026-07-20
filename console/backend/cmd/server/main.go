@@ -133,11 +133,6 @@ type Dependencies struct {
 	settingsHandler   *handler.SettingsHandler
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
-	// bootstrapper dials qubes that have no identity yet and trades their
-	// one-shot token for a first certificate. No HTTP route is involved: the
-	// console DIALS the agent, same direction as renewal and probing
-	// (docs/bootstrap-design.md §9.3).
-	bootstrapper *service.AgentBootstrapper
 	// bootstrapTokens mints the tokens cloud-init delivers.
 	bootstrapTokens *repository.BootstrapTokenRepository
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
@@ -154,6 +149,10 @@ type Dependencies struct {
 	// mTLS channel the agent already holds. Without it the only way to rotate a
 	// certificate is to rebuild the qube. Nil-safe.
 	certRenewals *service.CertRenewalMonitor
+	// bootstraps issues a first certificate to qubes that hold none. Without it
+	// a qube provisioned under the token design NEVER obtains an identity — it
+	// boots, looks provisioned, and its agent refuses to serve. Nil-safe.
+	bootstraps *service.BootstrapMonitor
 }
 
 // Close releases all resources.
@@ -172,6 +171,10 @@ func (d *Dependencies) Close() {
 	// renewal leaves the agent holding the certificate it already had, so there
 	// is nothing to finish and nothing to strand.
 	d.certRenewals.Shutdown(agentHealthShutdownGrace)
+	// Bootstraps on the same grace: an abandoned one either never redeemed its
+	// token, in which case the next sweep starts over, or did, in which case the
+	// certificate is registered and the next sweep skips the qube.
+	d.bootstraps.Shutdown(agentHealthShutdownGrace)
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -228,7 +231,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 			URL:               cfg.Orchestrator.AgentPackageURL,
 			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
 			Version:           cfg.Orchestrator.AgentPackageVersion,
-		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore)
+		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore).
+		WithBootstrapTokens(bootstrapTokenRepo, 0)
 	if ds := cfg.Orchestrator.AgentSnippetDatastore; ds != "" {
 		// Said at startup because the two delivery paths are invisible from the
 		// outside once running, and they fail in completely different places: a
@@ -265,7 +269,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// erased by the next successful probe, leaving the fleet reading healthy
 	// until the day its certificates ran out.
 	certRenewals := buildCertRenewals(cfg, certIssuer, qubeRepo, agentCertRepo)
-	bootstrapper := buildBootstrapper(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo)
+	bootstraps := buildBootstrapMonitor(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo, qubeRepo)
 
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
@@ -290,6 +294,12 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		cfg.Orchestrator, cfg.JobLogDir(), jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
 
 	certRenewals.Start()
+	bootstraps.Start()
+	// Spent and expired tokens can no longer authorize anything, so retention
+	// costs only history. Run once at startup rather than on a timer: the table
+	// gains one row per provision, so it grows at human speed, and restarts are
+	// frequent enough to keep it bounded without another goroutine to own.
+	go pruneBootstrapTokens(bootstrapTokenRepo)
 
 	// A qube left in a transient status belongs to a job that died with a
 	// previous process — the queue is in memory, so nothing will ever finish it.
@@ -316,7 +326,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
-		bootstrapper:      bootstrapper,
+		bootstraps:        bootstraps,
 		bootstrapTokens:   bootstrapTokenRepo,
 		transport:         xport,
 		runner:            runner,
@@ -656,6 +666,29 @@ func loadClientMTLS(cfg config.TransportConfig) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
+// bootstrapTokenRetention is how long a spent or expired token stays on record.
+//
+// Those rows can no longer authorize anything, so this is purely an audit
+// trail: a row that exists and is spent says a token was issued for that qube,
+// which a missing row does not.
+const bootstrapTokenRetention = 30 * 24 * time.Hour
+
+// pruneBootstrapTokens drops tokens past retention.
+//
+// Failure is logged and dropped. A table holding a few thousand dead rows is a
+// housekeeping problem; refusing to start the console over one would be worse
+// than the problem.
+func pruneBootstrapTokens(tokens *repository.BootstrapTokenRepository) {
+	n, err := tokens.DeleteSpent(context.Background(), time.Now().Add(-bootstrapTokenRetention))
+	if err != nil {
+		log.Printf("bootstrap: could not prune spent tokens: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("bootstrap: pruned %d spent or expired token(s) older than %s", n, bootstrapTokenRetention)
+	}
+}
+
 // buildCertRenewals wires background certificate renewal.
 func buildCertRenewals(
 	cfg *config.Config,
@@ -672,6 +705,19 @@ func buildCertRenewals(
 			Interval:  time.Duration(cfg.Orchestrator.AgentCertRenewIntervalSeconds) * time.Second,
 			Threshold: float64(cfg.Orchestrator.AgentCertRenewThresholdPercent) / 100,
 		})
+}
+
+// buildBootstrapMonitor wires the sweep that issues first certificates.
+func buildBootstrapMonitor(
+	cfg *config.Config,
+	certIssuer *service.CertIssuer,
+	tokens *repository.BootstrapTokenRepository,
+	certs *repository.AgentCertRepository,
+	qubes repository.QubeRepository,
+) *service.BootstrapMonitor {
+	return service.NewBootstrapMonitor(qubes, certs,
+		buildBootstrapper(cfg, certIssuer, tokens, certs),
+		time.Duration(cfg.Orchestrator.AgentBootstrapIntervalSeconds)*time.Second)
 }
 
 // buildBootstrapper wires first-certificate issuance.

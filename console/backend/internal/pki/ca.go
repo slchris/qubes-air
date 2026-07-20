@@ -190,6 +190,18 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 // it to the expected name would produce a working certificate and destroy the
 // only evidence that something asked for another agent's identity — which is an
 // attempt to move sideways through the fleet, not a typo to be helpful about.
+// EncodeCACertPEM returns the CA certificate in PEM form.
+//
+// The CA CERTIFICATE, never its key. It is public by nature — agents verify
+// the console's client certificate with it — and it is the one piece of PKI
+// material that is safe to put in a cloud-init document.
+func EncodeCACertPEM(ca *CA) string {
+	if ca == nil || ca.Cert == nil {
+		return ""
+	}
+	return encodePEM(blockCertificate, ca.Cert.Raw)
+}
+
 // AgentCommonName is the subject common name an agent certificate carries for
 // a qube.
 //
