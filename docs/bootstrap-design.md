@@ -963,3 +963,81 @@ zone 要么有到自己 qube 的路由，要么没有。同一个开关，同一
   且 PVE 没有可用的证明原语，所以 PVE 仍要留着现在这套。
 
 如果目标是「四种环境一个形状」，WireGuard 更整齐——这也是仓库原本的选择。
+
+## 12. WG 密钥放哪、谁来轮换、以及组网为什么必须分 provider
+
+> 2026-07-20，三个相关的判断：「不要写这种奇怪的脚本去 rotate key，还是写在代码里比较合适」、
+> 「wg 的这个存放在哪里，我理解就是单独的一个 qube 来存放的」、
+> 「组网还是要看云的能力的」。三个都对，但第二个有一处技术差别必须说清楚。
+
+### 12.1 轮换不该是 shell 脚本，理由有三条
+
+`crypto/scripts/rotate-keys.sh` 里的 `rotate_wg` 已删除。过时的那条指示
+（「重应用 salt sys-remote.wireguard」，而那个 state 已随 `sys-remote/` 删掉）只是表症，
+真正的问题是这件事的形状不对：
+
+1. **它是第三套凭据机制。** console 已经有加密凭据库（AES-256-GCM + 版本化密钥，
+   `cmd/rotate-key` 能做无停机轮换），vault-cloud 已经是那个专门存凭据的无网络 qube。
+   再往 `$HOME/.qubes-air/keys` 写一份**明文**私钥，等于把凭据散到第三个地方，
+   而那个地方没有加密、没有版本、没有审计。
+2. **它把私钥写在「运行脚本的机器」上，而不是「用这把钥匙的机器」上。**
+   agent 证书轮换（§7.1）早就不这么干了：密钥在要用它的那台机器生成，只有 CSR 过网。
+   这是同一条原则，WireGuard 没有理由例外。
+3. **轮换必须和对端协同**，换完公钥要推给网关。shell 脚本做不到，所以它只能打印一句
+   「请手工分发」——而手工那一步一旦漏掉，隧道就断了，且**没有任何东西会报错**。
+
+**该做成什么：照抄 `CertRenewer` 的形状。** console 发起，密钥在持有它的那一侧生成，
+只有公钥出来，console 负责推到对端并记进注册表。区别只是对端是网关而不是 agent。
+
+### 12.2 「单独一个 qube 存放」——对，但 WG 不能像 SSH 那样拆
+
+vault-cloud 里已经有两种模式，而它们的安全性质**不一样**：
+
+- `qubes.SshAgent`（split-ssh）：私钥**从不出来**，只出签名。
+- `qubesair.GetCredential`：按名**把凭据发出去**。
+
+**WireGuard 只能用第二种。** WG 的握手在内核里做，没有「签名预言机」模式——
+私钥必须存在于**运行 wg0 的那个网络命名空间**里。所以「放在 vault-cloud」只能是
+「vault-cloud 在启动时把它发给运行 wg0 的那一侧」，不可能是 split-ssh 那种「永不出库」。
+
+这个差别值得写下来，因为很容易顺着 split-ssh 的直觉以为 WG 也能这么保护。**不能。**
+能拿到的是：私钥不落在 console 的磁盘上、集中管理、可轮换、可审计——**不是**「私钥永不离开保险库」。
+
+于是 wg0 该放哪就有了答案：**一个专门的 sys-vpn qube，除了跑 WireGuard 什么都不做**，
+console 用它当 NetVM。
+
+**这不是 §11.1 那个被否决的模式**，区别要点清楚：被否决的是 **relay 兼任网络网关**
+（`sys-remote` 同时处理 qrexec 调用**和**给别人当 NetVM，控制平面和网络平面被揉在一起）。
+一个只跑 WireGuard、不承载任何 qrexec 服务的 sys-vpn，是 Qubes 的标准做法，
+控制面（console/relay）仍然是独立的 qube。**平面是分开的，只要那个 qube 不同时是 relay。**
+
+### 12.3 组网确实要看云的能力——而且它决定了 console 要不要改代码
+
+这是三点里影响最大的一条。各家能力不同，而且**分成两类**，代价差别很大：
+
+**A 类：路由型（console 零改动）**
+到 zone 私网段有一条真实路由，`agentprobe` 拨私网 IP 直接就通。
+- 自建 WireGuard 网关：四种环境都能用，PVE 异地场景**只有这条路**
+- GCP Cloud VPN / Cloud Router、AWS Site-to-Site VPN / Transit Gateway：托管版的同一件事
+
+**B 类：按连接转发型（console 必须改）**
+云厂商自己的「不开入站也能到达私有实例」原语，用 IAM 授权而不是共享密钥：
+- **GCP: IAP TCP forwarding** —— 不需要网关实例、不需要公网 IP、不需要防火墙放行
+- **AWS: SSM Session Manager port forwarding** —— 同样形状，靠实例上的 SSM agent
+
+B 类在安全上更好（授权是 IAM，可审计、可撤销、没有长期共享密钥，也不用多养一台网关机），
+但它**不是一条路由**：每次连接都要起一个转发通道。而 console 现在是
+`net.JoinHostPort(qube.IPAddress, 8443)` 直接拨——那句话在 B 类下不成立。
+
+所以 §11.4 那句「console 侧零改动」只对 **A 类**成立。要支持 B 类，需要把「怎么拨到这台 qube」
+抽成一个 per-zone 的拨号器，`AgentProber` / `CertRenewer` / `AgentBootstrapper` 三处共用
+（它们现在各自 `dial`，但都走同一个 `agentSession`，所以接缝是现成的）。
+
+### 12.4 建议的顺序
+
+1. **先决定 wg0 放哪**（sys-vpn qube），因为它决定 console 侧密钥归谁保管，
+   也决定 §12.1 那个轮换服务往哪个 qube 发 qrexec。
+2. **PVE 异地 + 自建网关先跑通 A 类**，它是唯一四种环境通用的形状，且 console 不用改。
+3. **云上再评估 B 类**。如果决定上 IAP/SSM，先做 §12.3 那个 per-zone 拨号器抽象，
+   否则三处 dial 会各长一套。
+4. **轮换服务最后做**，它依赖 1 和 2 —— 没有网关就没有对端可推公钥。

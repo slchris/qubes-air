@@ -11,17 +11,9 @@ chmod 700 "$KEY_DIR"
 
 echo "=== Qubes Air Key Generation ==="
 
-# WireGuard 密钥
-echo "Generating WireGuard keys..."
-if [ ! -f "$KEY_DIR/wg_private.key" ]; then
-    wg genkey > "$KEY_DIR/wg_private.key"
-    chmod 600 "$KEY_DIR/wg_private.key"
-    cat "$KEY_DIR/wg_private.key" | wg pubkey > "$KEY_DIR/wg_public.key"
-    echo "  Private key: $KEY_DIR/wg_private.key"
-    echo "  Public key:  $KEY_DIR/wg_public.key"
-else
-    echo "  WireGuard keys already exist"
-fi
+# WireGuard 密钥不在这里生成 —— 见 crypto/scripts/rotate-keys.sh 里那段说明。
+# 简版: 私钥应当在**要用它的那台机器**上生成 (网关自己, 或持有 wg0 的那个 qube),
+# 由 console 编排, 只有公钥出来。往 $KEY_DIR 写一份明文私钥是第三套凭据机制。
 
 # age 加密密钥
 echo "Generating age keys..."
@@ -41,7 +33,6 @@ fi
 
 echo ""
 echo "=== Public Keys ==="
-echo "WireGuard: $(cat $KEY_DIR/wg_public.key 2>/dev/null || echo 'N/A')"
 echo "age:       $(cat $KEY_DIR/age.pub 2>/dev/null || echo 'N/A')"
 echo ""
 echo "Add these public keys to your remote Zone configuration"

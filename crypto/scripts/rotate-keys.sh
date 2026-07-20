@@ -150,36 +150,28 @@ rotate_age() {
 }
 
 # =====================================================================
-# WireGuard 轮换 (只出公钥, 私钥留本地)
+# WireGuard 轮换 —— 已移除, 不要在这里重新加回来
 # =====================================================================
-rotate_wg() {
-    command -v wg >/dev/null 2>&1 || { log_error "缺少 wg (wireguard-tools)"; return 1; }
-
-    local priv="$KEY_DIR/wg_private.key"
-    local pub="$KEY_DIR/wg_public.key"
-
-    log_info "轮换 WireGuard 密钥..."
-    backup_file "$priv"
-    backup_file "$pub"
-
-    if [ "$DRY_RUN" = "1" ]; then
-        echo "  DRY_RUN> wg genkey > $priv.new; wg pubkey < $priv.new > $pub.new; mv 就位"
-        return 0
-    fi
-
-    umask 077
-    wg genkey > "$priv.new"
-    wg pubkey < "$priv.new" > "$pub.new"
-    mv "$priv.new" "$priv"
-    mv "$pub.new" "$pub"
-    chmod 600 "$priv"
-
-    log_info "WireGuard 轮换完成。"
-    log_warn "新公钥 (分发给对端 peer, 私钥【不外传】):"
-    echo "    $(cat "$pub")"
-    log_warn "分发后, 在对端把本机 peer 的 PublicKey 改为上面的值; 并更新 pillar 里本机 private_key"
-    log_warn "(经 SOPS 加密后的 secrets.sls), 然后重应用 salt sys-remote.wireguard。"
-}
+#
+# 这里原本有一个 rotate_wg(), 它把新私钥写进 $KEY_DIR ($HOME/.qubes-air/keys),
+# 然后指示「更新 pillar 里的 private_key, 重应用 salt sys-remote.wireguard」。
+# 那个 state 已经随 sys-remote/ 一起删掉了 (salt/qubes-air/README.md), 所以这条
+# 指示指向不存在的东西 —— 而脚本本身会「成功」, 这比不能跑更糟。
+#
+# 但真正的问题不是那条过时的指示, 是**这件事不该由 shell 脚本做**:
+#
+#   1. 它是第三套凭据机制。console 已经有加密凭据库 (AES-256-GCM + 版本化密钥,
+#      见 cmd/rotate-key), vault-cloud 已经是那个专门存凭据的无网络 qube。
+#      再往 $HOME/.qubes-air/keys 写一份明文私钥, 等于把凭据散到第三个地方,
+#      而那个地方没有加密、没有版本、没有审计。
+#   2. 它把私钥写在**运行脚本的机器**上, 而不是**用这把钥匙的机器**上。
+#      agent 证书轮换 (internal/service/certrenew.go) 早就不这么干了:
+#      密钥在要用它的那台机器生成, 只有公钥/CSR 过网。WireGuard 该照抄这个形状。
+#   3. 轮换要和对端 peer 协同 (换完公钥要推给网关), shell 脚本做不了这件事,
+#      所以它只能打印一句「请手工分发」—— 而手工那一步没做, 隧道就断了。
+#
+# 该做成什么: 参照 CertRenewer —— console 发起, 密钥在持有它的那个 qube 内生成,
+# 只有公钥出来, console 负责推到对端并记录。设计见 docs/bootstrap-design.md §12。
 
 # =====================================================================
 # relay transport SSH key 轮换 (只出公钥)
@@ -217,7 +209,6 @@ usage() {
     cat <<'EOF'
 用法: rotate-keys.sh <age|wg|ssh|all>
   age   轮换 age 私钥并用新公钥重加密 SOPS 文件 (旧密钥先解后重加)
-  wg    轮换 WireGuard 私钥, 输出新公钥供分发
   ssh   轮换 relay transport SSH 私钥, 输出新公钥供分发
   all   以上全部
 
