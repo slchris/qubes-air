@@ -740,25 +740,36 @@ qube 带 token，扫到的是空集，完全无害），再切 cloud-init。
 > **刻意先走 SFTP**：(g) 改的是投递机制，而这里验的是投递内容和 bootstrap 流程，
 > 先在能用的机制上验完，之后换机制出问题才分得清是哪一层。
 
-### 9.5 还没做：真机验证
+### 9.5 真机验证：通过（2026-07-20）
 
-代码全绿，但这套东西最擅长的失败方式就是「全绿而功能是死的」（§7.4 记了三次）。
-必须在真机上确认的：
+在 infra 集群上跑了一台一次性 VM（克隆模板 901），走**生产渲染器**产出的 cloud-init，
+用**真实的 `AgentBootstrapper` + `BootstrapIssuer`** 拨过去。逐条对照当初列的判据：
 
-1. **qube 建出来时确实没有证书**，注册表里是空的，而扫描在一分钟内把它填上。
-2. **agent 首启进的是 bootstrap 模式**——`NewPendingIdentity` 认的是「一对文件完全不存在」，
-   而真机上模板可能留下别的东西。
-3. **装完之后 agent 不重启就换上真证书**（`CertSource` 那条路），下一次探测直接绿。
-4. **token 文件被抹掉**，且重启后 agent 走的是普通模式而不是再 bootstrap 一次。
-5. **`ProtectSystem=full` + `ReadWritePaths=/etc/qubes-air` 对 bootstrap 写入同样成立**——
-   §7.4 那条就是「测试写临时目录、没有 systemd 沙箱」才漏掉的，bootstrap 写的是同一个目录，
-   但它是**新的写入方**，没验过就不算数。
+1. **qube 建出来时没有证书** ✅ 首启 `/etc/qubes-air/` 里只有 `ca.pem`(0644)、
+   `bootstrap-token`(0600)、`agent.env`——**没有 agent.pem/agent-key.pem**。
+2. **agent 进 bootstrap 模式** ✅ 日志 `no identity installed; awaiting bootstrap`，
+   8443 起了占位监听。旧 agent 会因缺 cert/key 直接 Fatalf；新的没有。
+3. **装完不重启就换真证书** ✅ 拨号返回 `status=ok`，落盘 `agent.pem` 的 SHA256 指纹
+   `c54f5f3a…` == console 注册的那张。证书文件时间戳正是 bootstrap 那一刻。
+4. **token 被抹、重启进普通模式** ✅ `onInstalled` 删掉了 `bootstrap-token`（GONE），
+   重启后日志变成 `identity : agent-bootstrap-probe (expires 2026-10-18)`，不再 pending。
+5. **`ProtectSystem=full` + `ReadWritePaths=/etc/qubes-air` 对 bootstrap 写入成立** ✅
+   ——这条当初特别标注为「新写入方、没验过不算数」（§7.4）。装证书**和**删 token 都穿过了
+   systemd 沙箱，没有出现 §7.4 那种 read-only file system。
 
-两个接线时必须对准的数字：
+**两个诚实的旁注**：
+- 这次没走 console 的 `BootstrapMonitor` 扫描，是手工把 token 塞进真 token 库、直接调
+  `AgentBootstrapper.Bootstrap`。扫描本身有单测覆盖；真机验的是**拨号→签发→落盘→热加载**
+  这条单测替身够不到的链路。
+- 也没走真 console 进程（它在 Qubes AppVM 里，本机够不到），用的是把生产组件拼起来的
+  一次性 e2e 测试。CA 是测试自签的，不是 console credential store 里那个——但签发/验证
+  路径是同一份代码。
 
-- token TTL 取了 1 小时，理由见上。
-- `DeleteSpent` 现在在启动时跑一次，保留 30 天。表按每次置备一行增长，是人的速度，
-  不值得为它单开一个 goroutine。
+**§9 到此在真机上闭环。** 剩下的是把它接进真 console（填那三行 agent 包配置 + 让
+`BootstrapMonitor` 自动扫），以及投递机制从 SFTP 换到 (g)——都不影响这条已验证的核心链路。
+
+两个已定的数字：token TTL 取 1 小时（§7.4 记过一次置备光 apt 就 14 分钟，5 分钟会中途过期）；
+`DeleteSpent` 启动时跑一次、保留 30 天（表按每次置备一行增长，是人的速度，不值得单开 goroutine）。
 
 连带好处：`terraform/modules/remote-qube-base/providers/gcp/main.tf:106` 现在硬性要求
 identity bucket 必须私有，理由就是「身份文档含 agent 私钥」。换成 token 之后，
