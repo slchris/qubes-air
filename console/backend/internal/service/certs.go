@@ -30,18 +30,21 @@ const (
 	caCredentialType     = "pki"
 )
 
-// CertIssuer issues and registers agent certificates.
+// CertIssuer owns the console CA and the credentials a qube is provisioned
+// with.
 //
-// Issuance and registration are deliberately coupled: a certificate that is
-// signed but not registered would be refused at connection time, and one that
-// is registered without being issued cannot exist. Doing them together is what
-// keeps the CA and the revocation registry describing the same reality.
+// It plays two roles that used to be one. At qube-creation time IssueFor mints
+// a bootstrap TOKEN and issues no certificate — the certificate is signed later
+// by BootstrapMonitor, once the console can dial the agent (§9). SignAgentCSR
+// is the shared signing entry point for both that bootstrap and renewal; it
+// deliberately does NOT register, leaving that to the caller, because the
+// order of sign-then-register matters differently in each.
 type CertIssuer struct {
 	creds CredentialStore
 	certs *repository.AgentCertRepository
-	// identityDir is where rendered cloud-init identity files are written.
-	// Empty disables delivery: certificates are still issued and registered,
-	// but never reach the remote.
+	// identityDir is where rendered cloud-init documents are written.
+	// Empty disables delivery: a token is still minted, but never reaches the
+	// remote, so the qube can never bootstrap.
 	//
 	// Its meaning depends on snippetDatastore: with it empty, this is a private
 	// staging directory terraform uploads FROM over SFTP; with it set, this is

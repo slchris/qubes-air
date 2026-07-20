@@ -58,7 +58,6 @@ clean:
 	rm -rf console/backend/bin/
 	rm -rf console/frontend/dist/
 	rm -rf console/frontend/node_modules/
-	rm -rf packer/output/
 	rm -rf dist/
 
 # ============================================================
@@ -165,10 +164,9 @@ tf-resume:
 	cd terraform && $(TF_BIN) apply -var-file=$(TFVARS) \
 		-target='module.remote_qubes["$(QUBE)"].module.proxmox[0].proxmox_virtual_environment_vm.compute'
 
-# Salt
-salt-apply:
-	@echo "Applying Salt states (run in dom0)..."
-	sudo qubesctl --all state.apply
+# Salt: qubes-air 的 states 已退役 (见 salt/qubes-air/README.md)。
+# Qubes 侧真正在跑的 states 在 qubes-salt-config 仓库, 不由本 Makefile 驱动。
+# salt-apply 目标已移除 —— `qubesctl --all` 对本仓库无 state 可应用。
 
 # 密钥生成
 keys:

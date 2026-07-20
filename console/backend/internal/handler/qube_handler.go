@@ -211,9 +211,9 @@ func (h *QubeHandler) CheckReachable(c *gin.Context) {
 // ListCerts returns the certificates issued to a qube's agent.
 //
 // Deliberately metadata only — fingerprint, validity, revocation state. The
-// private key is returned exactly once, when the certificate is issued, and is
-// never retrievable afterwards: an endpoint that hands out agent keys on demand
-// would make every reader of this API able to impersonate any agent.
+// agent generates its own private key and it never leaves that host, so there
+// is nothing here to hand out; this endpoint could not leak a key even if it
+// tried.
 func (h *QubeHandler) ListCerts(c *gin.Context) {
 	if h.certs == nil {
 		respondError(c, http.StatusNotImplemented, errors.New("certificate issuance is not configured"))

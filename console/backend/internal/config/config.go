@@ -100,12 +100,14 @@ type OrchestratorConfig struct {
 	// Env: QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE.
 	GeneratedVarFile string `yaml:"generated_var_file"`
 	// AgentIdentityDir holds the rendered cloud-init documents that deliver
-	// each agent's mTLS identity. They contain PRIVATE KEYS, so the directory
-	// is created 0700 and the files 0600.
+	// each agent's bootstrap credential — a public CA and a one-shot token,
+	// NEVER a private key (docs/bootstrap-design.md §9). Files are still 0600
+	// for the token, but a leak here is bounded to one qube's next boot rather
+	// than a 90-day identity.
 	//
 	// Terraform is given the PATH of a file, never its content: source_file
 	// records only the path and volume id in state, while inlining the content
-	// would put a private key into state in plaintext.
+	// would put the token into state in plaintext.
 	//
 	// With AgentSnippetDatastore set this is instead a MOUNT of the shared
 	// storage the PVE nodes read snippets from, and the modes above change

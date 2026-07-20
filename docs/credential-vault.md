@@ -2,7 +2,7 @@
 
 > 目标: 云 API 凭据 / relay 传输凭据 / age 私钥集中放无网络的 `vault-cloud`,
 > 控制台 (`mgmt-air`) **不持有明文**, 用时经 qrexec 向 vault 要、用完即弃; 并给出
-> 控制台加密密钥、age/WireGuard/传输凭据的轮换流程。
+> 控制台加密密钥、age/传输凭据的轮换流程。(WireGuard 轮换已删除, 见 crypto/README.md)
 >
 > 平面分离铁律 (同阶段2): **dom0 永远离线且是唯一授权决策点**; 编排在 `mgmt-air`;
 > vault-cloud 无网络。
@@ -249,7 +249,7 @@ cd console/backend && go build ./... && go test ./...
 
 ---
 
-## 本机 vault 密钥轮换 (age / WireGuard / SSH)
+## 本机 vault 密钥轮换 (age / SSH)
 
 见 `crypto/scripts/rotate-keys.sh` 与 `crypto/README.md`。要点: 私钥留本机只出公钥, 有备份、幂等、失败不留半成品。
 

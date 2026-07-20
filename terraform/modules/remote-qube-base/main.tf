@@ -85,7 +85,7 @@ variable "qube_config" {
     # 一个 proxmox qube 不该因为缺 GCP 字段而渲染失败。缺失在 GCP 子模块里报错。
     gcp_zone     = optional(string)
     source_image = optional(string, "debian-cloud/debian-12")
-    # 身份文档经私有 GCS bucket 投递 —— 放 metadata 会把 agent 私钥写进 state。
+    # 身份文档 (CA + 单次 token) 经私有 GCS bucket 投递 —— 放 metadata 会把它写进 state。
     identity_bucket       = optional(string, "")
     service_account_email = optional(string, "")
     network               = optional(string, "default")
@@ -195,7 +195,9 @@ module "gcp" {
   # The agent identity was never passed to GCP at all, so a GCP qube had no way
   # to authenticate even once the module built something. Same value the proxmox
   # branch gets; how it reaches the VM differs (GCS object vs snippet) because
-  # putting it in GCP instance metadata would write the private key into state.
+  # putting it in GCP instance metadata would write the token into state. (The
+  # document is a CA + one-shot token now, not a private key — §9 — but it is
+  # still a credential and still stays out of state.)
   zone                  = var.qube_config.gcp_zone
   source_image          = var.qube_config.source_image
   agent_user_data_file  = var.qube_config.agent_user_data_file

@@ -26,14 +26,14 @@
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | 管理控制台（Go + Svelte） | ✅ 已实现 | `/api/v1` Bearer 认证、CORS 收敛、坏密钥 fail-fast、单测 + CI |
-| 存算分离 Terraform（Proxmox） | ✅ 已实现 | compute/storage 拆分、`compute_running` 开关、数据盘 `prevent_destroy`、`terraform validate` 通过 |
+| 存算分离 Terraform（Proxmox） | ✅ 真机 apply 过 | compute/storage 拆分、`compute_running` 开关、数据盘 `prevent_destroy`；2026-07 在 infra 集群真机 clone 模板 901、跑通完整 provision |
 | 控制台接真实 Suspend/Resume | ✅ 已实现 | 先落地再改状态、executor 可注入、qubeName 白名单 |
 | 凭据 vault + 密钥轮换 | ✅ 已实现 | vault-cloud 无网、qrexec ask 下发不落盘、AES-256-GCM、多版本原子轮换 |
 | 多机加密 state backend | ✅ 已实现 | OpenTofu 客户端加密（PBKDF2）+ S3/pg 双 backend |
 | 跨机传输（SSHProxy 骨架） | 🟡 骨架 | dom0 RemoteVM 创建、修正后的 qrexec policy、autossh/ssh -R 配置存在，**未真机验证** |
 | **gRPC 双向流传输** | 🟢 真机跑通（单机） | proto + client/server + invoker/反向/证书下发 + 集成测试；**真机验证：** 交叉编译 linux/amd64 在真 Qubes AppVM(mgmt-jump) 上跑通 mTLS Tunnel，relay-client 读 salt 渲染的 relay.env、与 gRPC server 建立 ESTABLISHED 连接。待跨两台机验证 + Salt 真机 apply |
-| 真机端到端 | 🔴 未验证 | 从未在真实 Qubes R4.3 + 云上跑通完整链路 |
-| GCP / AWS 真实资源 | 🔴 骨架 | 接口对齐，未实现真实 compute/storage |
+| 真机端到端 | 🟡 部分 | 2026-07 在 Proxmox 上跑通 provision + agent bootstrap 闭环（bootstrap-design.md §9.5）；尚未接真 console 进程, 云侧未验 |
+| GCP 真实资源 | 🟡 资源真实、不可达 | GCP 模块建真实 compute/disk/identity，但控制台够不到 VPC 私网地址（bootstrap-design.md §10.2）。AWS 仍是纯骨架 |
 | 监控 / 账单 | 🔴 占位 | 显式标注 placeholder，未接真实源 |
 
 ---

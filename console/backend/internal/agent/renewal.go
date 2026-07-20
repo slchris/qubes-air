@@ -9,11 +9,10 @@
 //	qubesair.CompleteRenewal  {nonce, cert_pem, ca_pem}  -> {installed_fingerprint, not_after}
 //
 // The private key NEVER crosses the network. The agent generates it here and
-// returns only a certificate signing request, which also repairs an existing
-// weakness: today the console mints the key and ships it inside Proxmox
-// cloud-init user-data, readable by anyone holding VM.Config.Cloudinit (see
-// service/cloudinit.go). A key that is born on the host it authenticates cannot
-// leak from anywhere it was never sent.
+// returns only a certificate signing request. Bootstrap now works the same way
+// (internal/agent/bootstrap.go), so a private key is never shipped in
+// cloud-init at all — a key born on the host it authenticates cannot leak from
+// anywhere it was never sent.
 //
 // The old certificate is left to expire rather than revoked on renewal.
 // Revoking at the moment of issue would kill connections that are in flight and

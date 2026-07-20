@@ -7,7 +7,8 @@ base:
   '*':
     - default
   
-  # sys-remote 获取 WireGuard 和 secrets 配置
+  # [已退役] sys-remote-* minion 类已不存在 (sys-remote 方案被删)。
+  # 这段和它引用的 secrets.sls WireGuard 块都是残留, 保留仅为不扩大改动范围。
   'sys-remote-*':
     - secrets
   

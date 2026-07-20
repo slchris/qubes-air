@@ -57,11 +57,8 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.0.0"
     }
-    # Random Provider (用于生成随机值)
-    random = {
-      source  = "hashicorp/random"
-      version = ">= 3.5.0"
-    }
+    # 没有 random provider: 它唯一的历史用途是 zone-base 里那个
+    # random_id.wireguard_key_seed, 而那个已作为评审红线删除 (密钥种子会明文进 state)。
   }
 }
 

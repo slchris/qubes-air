@@ -6,7 +6,6 @@
 #
 # 支持三类 (可分别或一起轮换):
 #   age   —— 生成新 age 私钥, 用【新公钥】重加密所有 SOPS 文件 (旧密文旧密钥仍能解, 先解后重加)。
-#   wg    —— 生成新 WireGuard 私钥, 输出新公钥 (需你把新公钥分发给对端 peer, 见输出提示)。
 #   ssh   —— 生成新的 relay transport SSH 私钥对, 输出新公钥 (需追加到远端 authorized_keys)。
 #
 # 设计:
@@ -206,7 +205,7 @@ rotate_ssh() {
 
 usage() {
     cat <<'EOF'
-用法: rotate-keys.sh <age|wg|ssh|all>
+用法: rotate-keys.sh <age|ssh|all>  (wg 子命令已删除, 见文件中段说明)
   age   轮换 age 私钥并用新公钥重加密 SOPS 文件 (旧密钥先解后重加)
   ssh   轮换 relay transport SSH 私钥, 输出新公钥供分发
   all   以上全部

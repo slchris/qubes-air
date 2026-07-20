@@ -1,5 +1,13 @@
 # Qubes Air 快速入门指南
 
+> **[DEPRECATED] 本文档描述的是早期 `sys-remote + WireGuard` 手工流程，已弃用。**
+> 该方案被评审否决（把 relay 当网络网关、违反平面分离），相关脚本与 salt states 已删除，
+> 本文引用的 `security.md` / `troubleshooting.md` 也不存在。当前的置备是控制台驱动的
+> （建 zone → 建 qube → cloud-init 送 token → 控制台拨过去 bootstrap），
+> 见 [bootstrap-design.md](bootstrap-design.md) 与 [getting-started.md](getting-started.md)。
+> 下面内容仅作历史参考。
+
+
 ## 前置要求
 
 - Qubes OS 4.2 或更高版本 (推荐 4.3)

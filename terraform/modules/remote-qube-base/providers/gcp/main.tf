@@ -103,9 +103,10 @@ variable "identity_bucket" {
   description = <<-EOT
     存放 per-qube 身份文档的 GCS bucket 名。agent_user_data_file 非空时必填。
 
-    这个 bucket 应当是**私有**的: 身份文档含 agent 私钥, 靠实例的服务账号读取,
-    不能公开。(agent .deb 是另一回事 —— 它不是秘密, 完整性由 cloud-init 里钉死的
-    SHA256 保证, 与局域网 store 同一套信任模型。)
+    这个 bucket 应当是**私有**的: 身份文档含**单次 bootstrap token**, 靠实例的服务
+    账号读取。已经不含私钥 (2026-07, 见 docs/bootstrap-design.md §9), 所以泄露的后果
+    从「等于泄露车队身份」降到「一个短时效、单次、绑定单机的 token」—— 但 token 仍是
+    授予凭据的东西, 保持私有。(agent .deb 是另一回事: 不是秘密, 完整性由 SHA256 钉死。)
   EOT
   type        = string
   default     = ""

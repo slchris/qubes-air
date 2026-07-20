@@ -8,9 +8,9 @@
 ```
 .
 ├── scripts/
-│   ├── generate-keys.sh      # 生成 WireGuard + age 密钥到 KEY_DIR
+│   ├── generate-keys.sh      # 生成 age 密钥到 KEY_DIR (WireGuard 部分已删)
 │   ├── encrypt-secrets.sh    # 用 SOPS/age 加解密敏感文件 (encrypt|decrypt)
-│   └── rotate-keys.sh        # 轮换 age / WireGuard / relay SSH 密钥 (阶段3)
+│   └── rotate-keys.sh        # 轮换 age / relay SSH 密钥 (wg 已删)
 ├── sops/
 │   └── .sops.yaml            # SOPS 创建规则 (age 收件人 = 你的 age 公钥)
 └── README.md
@@ -21,7 +21,6 @@
 | 密钥 | 生成 | 存放 | 谁用 |
 |---|---|---|---|
 | age/SOPS 私钥 | generate-keys.sh | KEY_DIR / vault-cloud | 解密 salt pillar secrets |
-| WireGuard 私钥 | generate-keys.sh | KEY_DIR (私钥留本地) | sys-remote VPN |
 | relay transport SSH 私钥 | rotate-keys.sh ssh / ssh-keygen | vault-cloud ~/.ssh (split-ssh) | sys-relay 经 agent 用, 拿不到私钥 |
 | 控制台加密密钥 (AES-256) | 运维自选 32 字节 | mgmt-air 控制台 config | 控制台加密 SQLite 凭据元数据 |
 
@@ -34,7 +33,7 @@
 ### 生成初始密钥
 ```
 bash scripts/generate-keys.sh
-# 输出 WireGuard/age 公钥, 把公钥填进 sops/.sops.yaml 与远端 Zone 配置。
+# 输出 age 公钥, 填进 sops/.sops.yaml。
 ```
 
 ### 加解密 SOPS 文件
@@ -63,7 +62,7 @@ DRY_RUN=1 bash scripts/rotate-keys.sh all
 - **幂等友好**: 用临时文件 (`.new`) 生成, 校验成功后原子 `mv` 就位。
 - **失败不留半成品**: `set -euo pipefail`; SOPS 重加密任一文件失败即中止, 其余文件保持旧密钥可解,
   旧 age 私钥备份仍在 -> 可回滚。
-- **只出公钥**: WireGuard/SSH 只打印新公钥, 私钥留本机。
+- **只出公钥**: SSH 只打印新公钥, 私钥留本机。
 
 轮换后需人工完成的分发 (脚本会提示):
 - age: 更新 `sops/.sops.yaml` 的 age 收件人为新公钥并提交 (公钥可入 git); 确认新密钥可解后销毁旧备份。

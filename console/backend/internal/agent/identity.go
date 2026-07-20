@@ -32,11 +32,11 @@ import (
 
 // File modes for the installed identity.
 //
-// These match what service.RenderAgentUserData writes through cloud-init at
-// first boot. Renewal replaces those exact files, so a drift here would mean a
-// certificate that is world-readable (harmless) or a private key that is
-// (not) — the difference between an identity that can be revoked and one that
-// every local account on the host already holds.
+// Bootstrap and renewal write these files (the agent generates its own key —
+// cloud-init delivers no key or cert, only a CA and a token). A drift here
+// would mean a certificate that is world-readable (harmless) or a private key
+// that is (not) — the difference between an identity that can be revoked and
+// one that every local account on the host already holds.
 const (
 	certFileMode fs.FileMode = 0o644
 	keyFileMode  fs.FileMode = 0o600

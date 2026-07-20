@@ -152,7 +152,8 @@ agent 主动向 Console/Relay 的 gRPC 端点建立 `Tunnel` 长连接，
 UI 建 qube
   → 调度器选节点（见 internal/scheduler）
   → terraform clone 模板 901，挂回数据盘
-  → cloud-init 安装并启动 qubes-air-agent，注入 mTLS 证书
+  → cloud-init 送 {公开 CA + 单次 token}, agent 首启进 bootstrap 模式
+  → console 拨过去, agent 自生密钥交 CSR, 换回签名证书 (§9)
   → agent 出站连到 Relay，Handshake 带上 remote_name
   → dom0-scripts/create-remotevm.sh 建立本地 RemoteVM 记录与 QubesDB 映射
 ```
@@ -161,18 +162,20 @@ UI 建 qube
 
 - **CA 存在加密凭据库里**，不落盘 —— 它是本 Console 最有价值的密钥，谁拿到谁就能伪造舰队里任意
   agent 身份。存储时的描述字段刻意写得刺眼，让浏览凭据的人知道这是什么。
-- **签发与注册是原子配对的**。签了但没注册的证书连接时会被拒，注册了但没签的证书不存在；
-  注册失败时**不返回 bundle** —— 否则就是发给对方一个静默失效的凭据。
-- **bundle 里绝不含 CA 私钥**（有专门测试逐字段比对），且 agent 证书是 **client-auth only、
-  不能签名**，所以泄露一张 agent 证书只损失那一台，不会获得签发能力。
+- **签发与注册在续期/bootstrap 里是原子配对的**。签了但没注册的证书连接时会被拒，
+  注册了但没签的证书不存在。注意 `IssueFor`（建 qube 时）**不再签发证书**——它只铸一个
+  bootstrap token；证书由 `BootstrapMonitor` 拨到 agent 后才产生（§9）。
+- **绝不含 CA 私钥**，且 agent 证书是 **client-auth only、不能签名**，所以泄露一张 agent
+  证书只损失那一台，不会获得签发能力。
 - **CA 半存在时拒绝启动**：只剩一半意味着写入或删除不完整，此时铸造新 CA 会静默作废
   已签发的所有证书 —— 所以报错让人来看，而不是自作主张。
 
-> **一个必须说明的取舍**：密钥对由 Console 生成后经 cloud-init 送到远端，因此**任何能读取
-> 该 VM cloud-init 数据的人都能读到私钥**（在 Proxmox 上，这意味着持有 `VM.Config.Cloudinit`
-> 权限的账号）。更好的做法是 agent 自己生成密钥、提交 CSR，但那需要一条用别的方式认证过的
-> 引导通道，目前不存在。鉴于远端本就假设可被攻破、且注册表让吊销即时生效，
-> 这是务实的起点而非终态。
+> **取舍已经消除（2026-07，真机验证过）。** 这里原来写着「密钥对由 Console 生成后经
+> cloud-init 送到远端，因此任何持有 `VM.Config.Cloudinit` 的人都能读到私钥」，并说
+> 「agent 自己生成密钥、提交 CSR 需要一条引导通道，目前不存在」。
+> **那条通道现在存在了**：`internal/agent/bootstrap.go` + `service.AgentBootstrapper` +
+> `BootstrapMonitor`。cloud-init 只送公开 CA + 单次 token，agent 首启自生密钥、只交 CSR，
+> **私钥从不过网**。详见 docs/bootstrap-design.md §9（含真机验证记录 §9.5）。
 
 ### 5.2 使用（对用户透明）
 
