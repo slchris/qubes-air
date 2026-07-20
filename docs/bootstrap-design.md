@@ -366,3 +366,94 @@ count 0→1，属于**创建**而非修改。
 - **多集群**：CA 现在是 console 全局一个。多个 zone 是共用一个 CA，还是每 zone 一个？
   共用意味着一个 zone 的 CA 泄露波及全部。
 - **(d) 的 helper 长什么样**：还没设计。
+
+## 9. Bootstrap token：首次签发也走 CSR（进行中）
+
+> 状态：console 侧两层已落地并通过 CI；**行为上还没有任何变化**。
+> 传输方向有一个未决问题，见 §9.3——它会决定 agent 侧怎么写。
+
+§7.1 的续期已经做到「私钥永不过网」，但**首次签发还没有**。今天 cloud-init 投递的是
+`/etc/qubes-air/agent-key.pem`，一把和证书同寿命（90 天）的私钥，它至少存在于三个不必要的地方：
+console 上渲染出的身份文件、上传到 hypervisor 的 snippet、以及这两者的任何备份。
+
+续期做不到的原因是个先有鸡还是先有蛋：续期由 mTLS 证书认证，而 agent 此刻还没有证书。
+bootstrap token 就是用来打断这个循环的——它只授权签发一张证书、只给一个 qube 名、只能用一次、
+且很快过期。
+
+### 9.1 已经做完的
+
+- `internal/pki/bootstrap.go`——token 原语。只存 SHA-256 摘要，名字和摘要都做恒定时间比较
+  且两个比较无条件都跑（提前返回会让两者在时间上可区分）。
+- `internal/repository/bootstrap_token_repository.go` + `bootstrap_tokens` 表——持久化。
+  **兑换是一条语句**：`UPDATE ... WHERE redeemed_at IS NULL AND not_after > ?` 带 `RETURNING`。
+  Go 里 Verify 再 Redeem 是 check-then-act，而库跑在 WAL + 25 连接池下，两个 agent 拿同一个
+  泄露的 token 可以都通过检查再各自写入，结果是同名两张证书——正是单次性要防的冒充。
+  过期判断放同一条语句是同样的理由。
+- `internal/handler/bootstrap_handler.go`——签发逻辑。三个顺序都是承重的：
+  先兑换后签发（fail-closed：签发失败烧掉 token，好过「证书已发 + token 仍有效」）、
+  先注册后返回（注册表才是授权依据，发一张没登记的证书 = 给一个到处看着对、哪都用不了的身份）、
+  先校验请求体后兑换（畸形请求不该烧掉还能用的 token）。
+  CN 只从兑换记录取，绝不从请求体或 CSR 取。
+
+### 9.2 一个必须写下来的测试结论
+
+`TestConcurrentRedemptionHasExactlyOneWinner` **抓不住它名义上针对的 bug**。把 `Redeem` 换成
+朴素的 SELECT-then-UPDATE，12 并发和 300 并发都照样通过——天然窗口比调度粒度还窄。
+插入 5ms 延迟后才失败（12 个全赢），说明测试形状对、灵敏度不行。
+
+所以单次性靠的是**语句结构**（没有窗口可丢），不是那个测试。条件逻辑由顺序测试确定性覆盖。
+测试留着是因为几乎不花钱、且能在高负载下抓到粗暴回归，但**改 `Redeem` 要对着语句 review，
+不能对着这里的绿灯**。
+
+（CN 来源和注册顺序两条测试做过反事实验证，确实能抓住对应的 bug。）
+
+### 9.3 未决：传输方向——这是下一步的前提
+
+现在的 handler 是一个 HTTP 端点，挂在 `/bootstrap/certificate`，**在 `/api/v1` 之外、无认证**
+（首启的 agent 没有 API token）。它隐含要求 **agent 主动连回 console**。
+
+这个方向是错的，理由有两条：
+
+1. **系统里没有别的东西需要这个方向。** 续期（`certrenew.go:460`）和健康探测
+   （`agentprobe.go:267`）都是 console 拨向 `qube.IPAddress`。让 bootstrap 反过来，
+   等于凭空多要一条连通性——内网 PVE 无所谓，GCP 就得先有 WireGuard。
+2. **靠 WireGuard 打通会绕回原点。** WG 配置得由 cloud-init 送进 guest，里面含 WG 私钥。
+   于是「不在 cloud-init 里放私钥」变成了「换一把私钥放」。差别有（WG 私钥只给网络接入，
+   不是车队 PKI 身份），但目标被稀释了。想让 guest 自己生成 WG 密钥，又需要一条把公钥送回去的
+   通道——同一个循环。
+
+**建议的形状：和续期同方向，console 拨 agent。** 关键在于认证的两个方向不需要靠传输层解决：
+
+- **agent 认 console**——cloud-init 本来就要送 CA 证书（公开的，不是秘密）。
+  agent 用它验对方的客户端证书，**验完才交出 token**。
+- **console 认 agent**——靠 token。
+
+```
+cloud-init 送 {token, ca.pem}     (无私钥)
+agent 首启 → 生成密钥对 + CSR, 临时自签证书起监听
+console → 拨过去, 出示 CA 签的客户端证书
+agent   → 用 cloud-init 的 CA 验 console, 通过后交出 {token, csr}
+console → 兑换 token, 签发, 登记, 返回证书
+agent   → 验证书链到那张 CA, Identity.Install 落盘
+```
+
+第 6 步的原子安装（`identity.go:223`，带 `.commit` 文件和 fsync 目录）续期已经有了，直接复用。
+
+**若采纳，需要改的：**
+- `internal/handler/bootstrap_handler.go` 这个 HTTP 壳应当**摘掉**。它现在是挂着的、
+  无认证的、对外的端点，按新设计不该存在，留着只是多一个攻击面。
+  里面的逻辑（三个顺序、CN 来源、拒绝不泄露细节）原样搬到 agent 侧服务。
+- §9.1 的持久层与传输方式无关，全部保留。
+- agent 现在硬性要求证书才启动（`cmd/qubes-air-agent/main.go:99`），要加 bootstrap 模式。
+
+### 9.4 还没接的
+
+无论方向怎么定，这三件都还没做，所以**目前行为零变化**：
+
+1. cloud-init 改造——送 token + CA，不送私钥（`internal/service/cloudinit.go:163` 是私钥那行）
+2. agent 首启流程
+3. 签发时机——`CreateQube` 里调 `bootstrapTokens.Issue`，重新 provision 时 `InvalidateForQube`
+
+连带好处：`terraform/modules/remote-qube-base/providers/gcp/main.tf:106` 现在硬性要求
+identity bucket 必须私有，理由就是「身份文档含 agent 私钥」。换成 token 之后，
+泄露的后果从「等于泄露车队身份」降级成「一个短时效、单次、绑定单机的 token」。
