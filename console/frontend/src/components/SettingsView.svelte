@@ -250,13 +250,13 @@
 
   h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font: var(--title-1-emphasized);
   }
 
   h3 {
     margin: 0 0 1rem;
-    font-size: 1.125rem;
-    border-bottom: 1px solid #ddd;
+    font: var(--title-2-emphasized);
+    border-bottom: 1px solid var(--systemQuaternary);
     padding-bottom: 0.5rem;
   }
 
@@ -267,26 +267,26 @@
 
   .message {
     padding: 0.75rem 1rem;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     margin-bottom: 1rem;
   }
 
   .message.error {
-    background: #f8d7da;
-    color: #721c24;
+    background: color-mix(in srgb, var(--systemRed) 10%, var(--pageBG));
+    color: var(--systemRed);
   }
 
   .message.success {
-    background: #d4edda;
-    color: #155724;
+    background: color-mix(in srgb, var(--systemGreen) 10%, var(--pageBG));
+    color: var(--systemGreen);
   }
 
   .section {
-    background: white;
-    border-radius: 8px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-small);
     padding: 1.5rem;
     margin-bottom: 1.5rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
   }
 
   .field {
@@ -320,15 +320,15 @@
   .field select {
     width: 100%;
     padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 0.9375rem;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
+    font: var(--title-3);
   }
 
   .field input:focus,
   .field select:focus {
     outline: none;
-    border-color: #0066cc;
+    border-color: var(--keyColor);
   }
 
   .actions {
@@ -338,53 +338,21 @@
 
   .btn-primary {
     padding: 0.625rem 1.5rem;
-    background: #0066cc;
+    background: var(--keyColor);
     color: white;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
-    font-size: 1rem;
+    font: var(--title-2);
   }
 
   .btn-primary:hover:not(:disabled) {
-    background: #0052a3;
+    background: var(--keyColor-pressed);
   }
 
   .btn-primary:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    h3 {
-      border-bottom-color: #444;
-    }
-
-    .section {
-      background: #2a2a2a;
-    }
-
-    .field input,
-    .field select {
-      background: #333;
-      border-color: #444;
-      color: #e0e0e0;
-    }
-
-    .field input:focus,
-    .field select:focus {
-      border-color: #4da3ff;
-    }
-
-    .message.error {
-      background: #5c1a1a;
-      color: #f5c6cb;
-    }
-
-    .message.success {
-      background: #1a3d1a;
-      color: #c3e6cb;
-    }
   }
 
   /* 响应式布局 */
@@ -399,11 +367,11 @@
     }
 
     h2 {
-      font-size: 1.25rem;
+      font: var(--title-1-emphasized);
     }
 
     h3 {
-      font-size: 1rem;
+      font: var(--title-2);
     }
 
     .actions {
@@ -418,8 +386,8 @@
   .hint {
     display: block;
     margin-top: 0.35rem;
-    font-size: 0.75rem;
-    color: var(--text-muted, #888);
+    font: var(--subhead);
+    color: var(--text-muted, var(--systemSecondary));
     line-height: 1.5;
   }
   .hint code {
@@ -430,7 +398,7 @@
   }
   .token-message {
     margin-left: 0.75rem;
-    font-size: 0.8rem;
-    color: var(--success, #4caf50);
+    font: var(--callout);
+    color: var(--success, var(--systemGreen));
   }
 </style>

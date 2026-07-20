@@ -120,12 +120,12 @@
 
   h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font: var(--title-1-emphasized);
   }
 
   h3 {
     margin: 0 0 1rem;
-    font-size: 1.125rem;
+    font: var(--title-2-emphasized);
   }
 
   .loading, .error, .empty {
@@ -134,7 +134,7 @@
   }
 
   .error {
-    color: #cc0000;
+    color: var(--systemRed);
   }
 
   .summary-cards {
@@ -145,31 +145,31 @@
   }
 
   .summary-card {
-    background: white;
-    border-radius: 8px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-small);
     padding: 1.5rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
   }
 
   .card-label {
-    font-size: 0.875rem;
-    color: #666;
+    font: var(--body);
+    color: var(--systemSecondary);
   }
 
   .card-value {
-    font-size: 1.75rem;
+    font: var(--large-title-emphasized);
     font-weight: 600;
   }
 
   .card-value.muted {
-    color: #666;
+    color: var(--systemSecondary);
   }
 
   .card-value.accent {
-    color: #0066cc;
+    color: var(--keyColor);
   }
 
   .section {
@@ -179,46 +179,20 @@
   .table {
     width: 100%;
     border-collapse: collapse;
-    background: white;
-    border-radius: 4px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-xsmall);
     overflow: hidden;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
   }
 
   .table th, .table td {
     padding: 0.75rem 1rem;
     text-align: left;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--systemQuaternary);
   }
 
   .table th {
-    background: #f8f8f8;
+    background: var(--systemQuinary);
     font-weight: 500;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .summary-card {
-      background: #2a2a2a;
-    }
-
-    .card-label {
-      color: #999;
-    }
-
-    .card-value.muted {
-      color: #999;
-    }
-
-    .table {
-      background: #2a2a2a;
-    }
-
-    .table th {
-      background: #333;
-    }
-
-    .table th, .table td {
-      border-bottom-color: #444;
-    }
   }
 </style>

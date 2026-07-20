@@ -166,9 +166,9 @@
 
 <style>
   .placeholder-banner {
-    margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: 4px;
-    border: 1px solid #d97706; background: #fffbeb; color: #7c2d12;
-    font-size: 0.85rem; line-height: 1.5;
+    margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: var(--global-border-radius-xsmall);
+    border: 1px solid var(--systemOrange); background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG)); color: var(--systemRed);
+    font: var(--body); line-height: 1.5;
   }
 
   .monitoring-view {
@@ -184,24 +184,28 @@
 
   h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font: var(--title-1-emphasized);
   }
 
   h3 {
     margin: 0 0 1rem;
-    font-size: 1.125rem;
+    font: var(--title-2-emphasized);
   }
 
   .btn-secondary {
-    padding: 0.5rem 1rem;
-    background: #f0f0f0;
-    border: 1px solid #ddd;
-    border-radius: 4px;
+    padding: 6px 12px;
+    background: var(--systemQuinary);
+    /* Foreground stated next to the background. Without it the inherited colour
+       landed on the fill and the control was invisible. */
+    color: var(--systemPrimary);
+    font: var(--body);
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
   }
 
   .btn-secondary:hover {
-    background: #e0e0e0;
+    background: var(--systemQuaternary);
   }
 
   .loading, .error {
@@ -210,7 +214,7 @@
   }
 
   .error {
-    color: #cc0000;
+    color: var(--systemRed);
   }
 
   .metrics-grid {
@@ -221,43 +225,43 @@
   }
 
   .metric-card {
-    background: white;
-    border-radius: 8px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-small);
     padding: 1rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
   }
 
   .metric-label {
     display: block;
-    font-size: 0.875rem;
-    color: #666;
+    font: var(--body);
+    color: var(--systemSecondary);
     margin-bottom: 0.75rem;
   }
 
   .metric-bar {
     height: 8px;
-    background: #e0e0e0;
-    border-radius: 4px;
+    background: var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
     overflow: hidden;
     margin-bottom: 0.5rem;
   }
 
   .metric-fill {
     height: 100%;
-    background: #0066cc;
-    border-radius: 4px;
-    transition: width 0.3s;
+    background: var(--keyColor);
+    border-radius: var(--global-border-radius-xsmall);
+    transition: var(--hover-transition);
   }
 
   .metric-value {
-    font-size: 1.25rem;
+    font: var(--title-1-emphasized);
     font-weight: 600;
   }
 
   .network-stats {
     display: flex;
     justify-content: space-between;
-    font-size: 1rem;
+    font: var(--title-2);
     font-weight: 500;
   }
 
@@ -266,20 +270,23 @@
   }
 
   .empty-alerts {
-    background: #e8f5e9;
-    border-radius: 8px;
+    background: color-mix(in srgb, var(--systemGreen) 10%, var(--pageBG));
+    border-radius: var(--global-border-radius-small);
     padding: 2rem;
     text-align: center;
   }
 
   .check-icon {
-    font-size: 2rem;
-    color: #4caf50;
+    font: var(--header-emphasized);
+    color: var(--systemGreen);
   }
 
+  /* Green text on a green wash measured 1.96:1. The colour belongs to the
+     check mark, which carries the meaning; the sentence reads in ink. */
   .empty-alerts p {
-    margin: 0.5rem 0 0;
-    color: #2e7d32;
+    margin: 8px 0 0;
+    color: var(--systemSecondary);
+    font: var(--body);
   }
 
   .alert-list {
@@ -289,23 +296,23 @@
   }
 
   .alert-item {
-    background: white;
-    border-radius: 4px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-xsmall);
     padding: 1rem;
     border-left: 4px solid;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
   }
 
   .alert-item.severity-critical {
-    border-left-color: #dc3545;
+    border-left-color: var(--systemRed);
   }
 
   .alert-item.severity-warning {
-    border-left-color: #ffc107;
+    border-left-color: var(--systemOrange);
   }
 
   .alert-item.severity-info {
-    border-left-color: #17a2b8;
+    border-left-color: var(--systemTeal);
   }
 
   .alert-header {
@@ -316,30 +323,30 @@
   }
 
   .alert-severity {
-    font-size: 0.75rem;
+    font: var(--subhead);
     font-weight: 600;
     padding: 0.125rem 0.5rem;
     border-radius: 3px;
   }
 
   .severity-critical .alert-severity {
-    background: #f8d7da;
-    color: #721c24;
+    background: color-mix(in srgb, var(--systemRed) 10%, var(--pageBG));
+    color: var(--systemRed);
   }
 
   .severity-warning .alert-severity {
-    background: #fff3cd;
-    color: #856404;
+    background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG));
+    color: var(--systemOrange);
   }
 
   .severity-info .alert-severity {
-    background: #d1ecf1;
-    color: #0c5460;
+    background: color-mix(in srgb, var(--systemTeal) 12%, var(--pageBG));
+    color: var(--systemTeal);
   }
 
   .alert-time {
-    font-size: 0.75rem;
-    color: #666;
+    font: var(--subhead);
+    color: var(--systemSecondary);
   }
 
   .alert-message {
@@ -348,47 +355,7 @@
   }
 
   .alert-source {
-    font-size: 0.75rem;
-    color: #888;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .btn-secondary {
-      background: #333;
-      border-color: #444;
-      color: #e0e0e0;
-    }
-
-    .btn-secondary:hover {
-      background: #444;
-    }
-
-    .metric-card {
-      background: #2a2a2a;
-    }
-
-    .metric-label {
-      color: #999;
-    }
-
-    .metric-bar {
-      background: #444;
-    }
-
-    .empty-alerts {
-      background: #1b3d1f;
-    }
-
-    .empty-alerts p {
-      color: #a5d6a7;
-    }
-
-    .alert-item {
-      background: #2a2a2a;
-    }
-
-    .alert-time, .alert-source {
-      color: #999;
-    }
+    font: var(--subhead);
+    color: var(--systemSecondary);
   }
 </style>

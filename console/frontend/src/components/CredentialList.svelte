@@ -258,20 +258,20 @@
 
   h2 {
     margin: 0;
-    font-size: 1.5rem;
+    font: var(--title-1-emphasized);
   }
 
   .btn-primary {
     padding: 0.5rem 1rem;
-    background: #0066cc;
+    background: var(--keyColor);
     color: white;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
   }
 
   .btn-primary:hover {
-    background: #0052a3;
+    background: var(--keyColor-pressed);
   }
 
   .loading, .error, .empty {
@@ -280,12 +280,12 @@
   }
 
   .error {
-    color: #cc0000;
+    color: var(--systemRed);
   }
 
   .hint {
-    color: #666;
-    font-size: 0.875rem;
+    color: var(--systemSecondary);
+    font: var(--body);
   }
 
   .card-grid {
@@ -295,10 +295,10 @@
   }
 
   .card {
-    background: white;
-    border-radius: 8px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-small);
     padding: 1rem;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-small);
   }
 
   .card-header {
@@ -308,12 +308,16 @@
     margin-bottom: 0.5rem;
   }
 
+  /* The one uppercase role in this system is the eyebrow: 600 11px, secondary
+     ink, no tracking. */
   .card-type {
-    font-size: 0.75rem;
-    padding: 0.125rem 0.5rem;
-    background: #e0e0e0;
-    border-radius: 3px;
+    font: var(--subhead-emphasized);
+    color: var(--systemSecondary);
+    padding: 2px 6px;
+    background: var(--systemQuinary);
+    border-radius: var(--global-border-radius-xsmall);
     text-transform: uppercase;
+    letter-spacing: 0;
   }
 
   .card-actions {
@@ -332,28 +336,28 @@
   }
 
   .btn-icon:hover {
-    background: #f0f0f0;
+    background: var(--systemQuinary);
   }
 
   .btn-danger:hover {
-    background: #ffeeee;
-    color: #cc0000;
+    background: color-mix(in srgb, var(--systemRed) 10%, var(--pageBG));
+    color: var(--systemRed);
   }
 
   .card-name {
     margin: 0 0 0.5rem;
-    font-size: 1.125rem;
+    font: var(--title-2-emphasized);
   }
 
   .card-desc {
     margin: 0 0 0.75rem;
-    font-size: 0.875rem;
-    color: #666;
+    font: var(--body);
+    color: var(--systemSecondary);
   }
 
   .card-meta {
-    font-size: 0.75rem;
-    color: #888;
+    font: var(--subhead);
+    color: var(--systemSecondary);
   }
 
   /* Modal styles */
@@ -371,11 +375,11 @@
   }
 
   .modal {
-    background: white;
-    border-radius: 8px;
+    background: var(--pageBG);
+    border-radius: var(--global-border-radius-small);
     width: 100%;
     max-width: 480px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-medium);
   }
 
   .modal-header {
@@ -383,33 +387,33 @@
     justify-content: space-between;
     align-items: center;
     padding: 1rem 1.5rem;
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--systemQuaternary);
   }
 
   .modal-header h3 {
     margin: 0;
-    font-size: 1.25rem;
+    font: var(--title-1-emphasized);
   }
 
   .btn-close {
     background: none;
     border: none;
-    font-size: 1.5rem;
+    font: var(--title-1-emphasized);
     cursor: pointer;
-    color: #666;
+    color: var(--systemSecondary);
   }
 
   .btn-secondary {
     padding: 0.5rem 1rem;
-    background: #f0f0f0;
-    color: #333;
-    border: 1px solid #ddd;
-    border-radius: 4px;
+    background: var(--systemQuinary);
+    color: var(--systemPrimary);
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
   }
 
   .btn-secondary:hover {
-    background: #e0e0e0;
+    background: var(--systemQuaternary);
   }
 
   .modal-form {
@@ -417,10 +421,10 @@
   }
 
   .form-error {
-    background: #ffeeee;
-    color: #cc0000;
+    background: color-mix(in srgb, var(--systemRed) 10%, var(--pageBG));
+    color: var(--systemRed);
     padding: 0.75rem;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     margin-bottom: 1rem;
   }
 
@@ -439,9 +443,9 @@
   .form-group textarea {
     width: 100%;
     padding: 0.5rem;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    font-size: 1rem;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
+    font: var(--title-2);
     box-sizing: border-box;
     font-family: inherit;
   }
@@ -456,58 +460,6 @@
     justify-content: flex-end;
     gap: 0.5rem;
     margin-top: 1.5rem;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    .card {
-      background: #2a2a2a;
-    }
-
-    .card-type {
-      background: #444;
-    }
-
-    .btn-icon:hover {
-      background: #444;
-    }
-
-    .card-desc {
-      color: #999;
-    }
-
-    .hint {
-      color: #999;
-    }
-
-    .modal {
-      background: #2a2a2a;
-    }
-
-    .modal-header {
-      border-bottom-color: #444;
-    }
-
-    .btn-close {
-      color: #999;
-    }
-
-    .form-group input,
-    .form-group select,
-    .form-group textarea {
-      background: #333;
-      border-color: #444;
-      color: #e0e0e0;
-    }
-
-    .btn-secondary {
-      background: #333;
-      border-color: #444;
-      color: #e0e0e0;
-    }
-
-    .btn-secondary:hover {
-      background: #444;
-    }
   }
 
   /* 响应式布局 */
