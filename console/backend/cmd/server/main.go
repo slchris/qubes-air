@@ -25,6 +25,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
+	"github.com/slchris/qubes-air/console/internal/qrexec"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
 	"github.com/slchris/qubes-air/console/internal/transport"
@@ -367,11 +368,22 @@ func startOrchestration(
 			}
 		}
 
+		// Registers each provisioned qube as a RemoteVM with dom0 over qrexec.
+		// Off unless configured, because it needs the dom0 service and policy
+		// from mgmt.remotevm.register to exist.
+		registrar := service.NewRemoteVMRegistrar(
+			qrexec.NewClient(), cfg.RegisterRemoteVM)
+		if cfg.RegisterRemoteVM {
+			log.Printf("orchestrator: RemoteVM registration enabled (dom0 %s)",
+				"qubesair.RegisterRemoteVM")
+		}
+
 		runner = orchestrator.NewRunner(orchestrator.RunnerConfig{
 			Executor: exec,
 			Store:    jobRepo,
-			OnDone:   makeCompletionHook(qubeRepo, func() *service.AgentHealthMonitor { return agents }),
-			Logs:     jobLogs,
+			OnDone: makeCompletionHook(qubeRepo,
+				func() *service.AgentHealthMonitor { return agents }, registrar),
+			Logs: jobLogs,
 		})
 		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
 	}
@@ -437,6 +449,7 @@ func buildAgentHealthMonitor(
 // queued apply behind it.
 func makeCompletionHook(
 	qubeRepo repository.QubeRepository, agents func() *service.AgentHealthMonitor,
+	registrar *service.RemoteVMRegistrar,
 ) orchestrator.Completion {
 	return func(ctx context.Context, j *orchestrator.Job) {
 		status := models.QubeStatusError
@@ -459,10 +472,24 @@ func makeCompletionHook(
 		// a live agent. A failed job, a suspend or a release has nothing to
 		// probe, and probing them would fill the health column with failures
 		// that mean "this qube is intentionally off".
+		// A qube the fleet no longer contains loses its addressing shell. Only
+		// on release/destroy, not on suspend: a suspended qube still exists and
+		// can be resumed, and dropping its registration would make every resume
+		// need a re-register before local qubes could reach it again.
+		if j.State == orchestrator.JobSucceeded &&
+			(j.Action == orchestrator.ActionRelease || j.Action == orchestrator.ActionDestroy) {
+			registrar.DeregisterQuietly(ctx, j.QubeName)
+		}
+
 		if j.State != orchestrator.JobSucceeded ||
 			(j.Action != orchestrator.ActionProvision && j.Action != orchestrator.ActionResume) {
 			return
 		}
+
+		// Tell dom0 the machine exists, so local qubes can address it at all.
+		// Registration is idempotent, so doing it on resume as well repairs a
+		// registration that was lost or never made.
+		registrar.RegisterQuietly(ctx, j.QubeName)
 		// Note what is NOT happening: the job's outcome is already recorded and
 		// is not revisited. The VM exists and the apply did its work, so a
 		// silent agent is a fact about the qube, not a failed job.

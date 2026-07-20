@@ -127,6 +127,16 @@ type OrchestratorConfig struct {
 	// Env: QUBES_AIR_PROXMOX_SSH_KEY_FILE / QUBES_AIR_PROXMOX_SSH_USERNAME.
 	ProxmoxSSHKeyFile  string `yaml:"proxmox_ssh_key_file"`
 	ProxmoxSSHUsername string `yaml:"proxmox_ssh_username"`
+	// RegisterRemoteVM makes the console tell dom0 about each provisioned qube,
+	// via the qubesair.RegisterRemoteVM qrexec service, so local qubes can
+	// address it. Without it the fleet is reachable only from this console.
+	//
+	// Off by default because it needs the dom0 side installed
+	// (mgmt.remotevm.register in qubes-salt-config). With that absent every
+	// provision would log a registration failure, which just teaches an
+	// operator to ignore the log.
+	// Env: QUBES_AIR_REGISTER_REMOTEVM.
+	RegisterRemoteVM bool `yaml:"register_remotevm"`
 	// AptMirror is the base URL of a Debian mirror for provisioned qubes, e.g.
 	// "http://10.31.0.2/debian". Empty leaves the image's own sources alone.
 	//
@@ -528,6 +538,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if v := os.Getenv("QUBES_AIR_PROXMOX_SSH_USERNAME"); v != "" {
 		c.Orchestrator.ProxmoxSSHUsername = v
+	}
+	if v := os.Getenv("QUBES_AIR_REGISTER_REMOTEVM"); v != "" {
+		c.Orchestrator.RegisterRemoteVM = strings.ToLower(v) == "true"
 	}
 	if v := os.Getenv("QUBES_AIR_APT_MIRROR"); v != "" {
 		c.Orchestrator.AptMirror = v
