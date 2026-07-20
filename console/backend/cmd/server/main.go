@@ -133,9 +133,11 @@ type Dependencies struct {
 	settingsHandler   *handler.SettingsHandler
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
-	// bootstrapHandler issues a first certificate against a one-shot token.
-	// Deliberately NOT mounted under /api/v1 — see setupRouter.
-	bootstrapHandler *handler.BootstrapHandler
+	// bootstrapIssuer issues a first certificate against a one-shot token.
+	// No HTTP route serves it: the console DIALS the agent to run bootstrap,
+	// same direction as renewal and probing (docs/bootstrap-design.md §9.3).
+	// The dialer that consumes this is the next wiring step.
+	bootstrapIssuer *service.BootstrapIssuer
 	// bootstrapTokens mints the tokens cloud-init delivers.
 	bootstrapTokens *repository.BootstrapTokenRepository
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
@@ -313,7 +315,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
-		bootstrapHandler: handler.NewBootstrapHandler(
+		bootstrapIssuer: service.NewBootstrapIssuer(
 			bootstrapTokenRepo, certIssuer, agentCertRepo),
 		bootstrapTokens: bootstrapTokenRepo,
 		transport:       xport,
@@ -666,15 +668,13 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	// /health is intentionally left unauthenticated for liveness probes.
 	r.GET("/health", healthHandler(deps.db))
 
-	// Bootstrap sits OUTSIDE /api/v1, and that is the whole design rather than
-	// an oversight. An agent on first boot has no API token — it has a one-shot
-	// bootstrap token and nothing else — so mounting this behind Auth would make
-	// it unreachable by the only caller it exists for. The token in the request
-	// body is the authentication, and it authorizes exactly one certificate for
-	// exactly one qube, once, before it expires.
-	if deps.bootstrapHandler != nil {
-		deps.bootstrapHandler.RegisterRoutes(r.Group("/bootstrap"))
-	}
+	// There is deliberately NO /bootstrap route. The HTTP endpoint that used to
+	// hang here required the agent to dial the console — the only thing in the
+	// system that would have needed that direction — and stood open,
+	// unauthenticated, on the same listener as everything else. Bootstrap now
+	// runs over a connection the console makes TO the agent, like renewal and
+	// probing (docs/bootstrap-design.md §9.3); the issuance logic lives in
+	// service.BootstrapIssuer.
 
 	// All /api/v1 routes require a valid Bearer token when an API token is
 	// configured. When none is configured, Auth is a pass-through and a
