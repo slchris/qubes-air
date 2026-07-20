@@ -113,8 +113,12 @@ variable "proxmox_ssh_private_key" {
 # ============================================
 
 provider "google" {
-  project = var.gcp_config.project
-  region  = var.gcp_config.region
+  # project / region / credentials 全部来自环境变量 (GOOGLE_PROJECT /
+  # GOOGLE_REGION / GOOGLE_CREDENTIALS), 由控制台按 zone 记录注入。
+  #
+  # 刻意**不**接 var.gcp_config: 同一个设置有两个来源, 正是上面 proxmox_endpoint
+  # 那个坑的形状 —— 变量带默认值时 tfvars 改了毫无作用, provider 一直连着错误的
+  # 目标, 而 plan 不建连接, 只有 apply 才炸。一个来源就没有这个问题。
 }
 
 # ============================================

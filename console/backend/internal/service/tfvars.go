@@ -174,7 +174,60 @@ func renderQube(q *models.Qube, zone *models.Zone) (map[string]any, error) {
 			return nil, err
 		}
 	}
+	if zone.Type == models.ZoneTypeGCP {
+		if err := renderGCP(entry, zone); err != nil {
+			return nil, err
+		}
+	}
 	return entry, nil
+}
+
+// renderGCP adds the GCP-specific placement fields.
+//
+// Refuses rather than defaults on the two that cannot be guessed. A missing
+// compute zone means the data disk and the instance can land in different zones
+// and the disk simply will not attach; a missing identity bucket means the
+// agent's identity has nowhere to go, and the VM boots without one — a machine
+// that looks provisioned and whose agent can never authenticate. Both are
+// cheaper to refuse here than to diagnose on a running instance.
+func renderGCP(entry map[string]any, zone *models.Zone) error {
+	gc := zone.Config.GCP
+	if gc == nil {
+		return fmt.Errorf(
+			"zone %q has no gcp config; set zone, identity_bucket and credential_id", zone.Name)
+	}
+	if gc.Zone == "" {
+		return fmt.Errorf(
+			"zone %q has no compute zone; the data disk and the instance must share one "+
+				"or the disk cannot be attached", zone.Name)
+	}
+	entry["gcp_zone"] = gc.Zone
+
+	if gc.SourceImage != "" {
+		entry["source_image"] = gc.SourceImage
+	}
+	// Only required when an identity is actually being delivered; the module
+	// skips identity delivery entirely when either side is empty.
+	if _, wantsIdentity := entry["agent_user_data_file"]; wantsIdentity && gc.IdentityBucket == "" {
+		return fmt.Errorf(
+			"zone %q has an agent identity to deliver but no identity_bucket; the identity "+
+				"cannot go in instance metadata because terraform would write the agent's "+
+				"private key into state", zone.Name)
+	}
+	if gc.IdentityBucket != "" {
+		entry["identity_bucket"] = gc.IdentityBucket
+	}
+	if gc.ServiceAccountEmail != "" {
+		entry["service_account_email"] = gc.ServiceAccountEmail
+	}
+	if gc.Network != "" {
+		entry["network"] = gc.Network
+	}
+	if gc.Subnetwork != "" {
+		entry["subnetwork"] = gc.Subnetwork
+	}
+	entry["assign_public_ip"] = gc.AssignPublicIP
+	return nil
 }
 
 // computeRunning maps a qube's status onto the terraform switch.

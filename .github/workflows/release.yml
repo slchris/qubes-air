@@ -1,0 +1,154 @@
+# Build and publish the artifacts a deployment actually needs.
+#
+# Why this exists: the console qube and every provisioned VM fetch their
+# binaries from an artifact store at http://10.31.0.2 — a LAN address. That is
+# fine on the home network and impossible everywhere else, so a cloud VM (GCP,
+# AWS) cannot be bootstrapped at all: cloud-init cannot reach the .deb. A
+# release is reachable from anywhere, immutable, and versioned, which is what
+# the bootstrap's pinned-SHA256 model wants anyway.
+#
+# What it publishes:
+#   qubes-air-console                  linux/amd64, cgo (go-sqlite3)
+#   qubes-air-console-web.tar.gz       the built frontend
+#   qubes-air-agent_<version>_amd64.deb the remote agent
+#   SHA256SUMS                         checksums for all of the above
+#
+# The checksums are the point, not a formality. Delivery to a guest is plain
+# HTTP with no authentication, so the digest pinned in the cloud-init identity
+# document — which travels a trusted path — is the only integrity control on
+# that link. See docs/bootstrap-design.md §6.
+#
+# Build logic lives in scripts/, not here. A workflow that reimplements the
+# build drifts from what a developer runs locally, and the difference only shows
+# up in a release nobody can reproduce.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets a release be rebuilt without moving a tag, e.g. after fixing the
+  # workflow itself.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (defaults to the current ref)"
+        required: false
+        type: string
+
+permissions:
+  contents: write # required to create the release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build-agent-deb.sh derives its version from `git describe`, which
+          # needs tags and history; a shallow clone yields a bare hash.
+          fetch-depth: 0
+
+      # The version reaches the shell through the environment, never through
+      # ${{ }} interpolation into the script. Interpolation splices the value in
+      # before bash parses the line, so a value containing shell metacharacters
+      # executes; via env it is only ever data. workflow_dispatch already
+      # requires write access, but this costs nothing and removes the pattern.
+      #
+      # It is also validated: a version becomes a git tag, a release name and a
+      # Debian package version, and anything outside this set breaks one of
+      # those somewhere far from here.
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_VERSION}" ]; then
+            v="${INPUT_VERSION}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME}"
+          else
+            v="$(git describe --tags --always)"
+          fi
+          case "$v" in
+            *[!A-Za-z0-9.+~_-]*|"")
+              echo "refusing version '$v': only [A-Za-z0-9.+~_-] allowed" >&2
+              exit 1
+              ;;
+          esac
+          printf 'version=%s\n' "$v" >> "$GITHUB_OUTPUT"
+          printf 'Building %s\n' "$v"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: console/backend/go.mod
+          cache-dependency-path: console/backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/frontend/package-lock.json
+
+      # CGO_ENABLED=1 is not optional: the console uses mattn/go-sqlite3, and a
+      # CGO_ENABLED=0 build compiles cleanly then fails at runtime with
+      # `unknown driver "sqlite3"` — a working binary that cannot open its own
+      # database. The runner is already linux/amd64, so no cross-toolchain is
+      # needed here (unlike building on an arm64 Mac).
+      - name: Build console binary
+        working-directory: console/backend
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -ldflags="-s -w" \
+            -o "${GITHUB_WORKSPACE}/dist/qubes-air-console" ./cmd/server
+          file "${GITHUB_WORKSPACE}/dist/qubes-air-console"
+
+      - name: Build web bundle
+        working-directory: console/frontend
+        run: |
+          npm ci
+          npm run build
+          tar -czf "${GITHUB_WORKSPACE}/dist/qubes-air-console-web.tar.gz" -C dist .
+
+      # Reuses the same Docker-based script a developer runs, so the published
+      # .deb is the artifact that was tested locally rather than a second recipe.
+      - name: Build agent .deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build-agent-deb.sh
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum qubes-air-console qubes-air-console-web.tar.gz \
+            qubes-air-agent_*_amd64.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/qubes-air-console
+            dist/qubes-air-console-web.tar.gz
+            dist/qubes-air-agent_*_amd64.deb
+            dist/SHA256SUMS
+          body: |
+            Artifacts for deploying the console and provisioning remote qubes.
+
+            **Pin the digests.** Delivery to a guest is unauthenticated plain
+            HTTP; the SHA256 recorded in the cloud-init identity document is the
+            only integrity control on that hop. Take the values from
+            `SHA256SUMS` and set them in `salt/config.jinja`
+            (`console_binary_sha256`, `console_web_sha256`,
+            `agent_package_sha256`) — do not re-derive them later from memory.
+
+            Download URLs have the form:
+
+                https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/<file>

@@ -86,6 +86,39 @@ type ZoneConfig struct {
 	// Proxmox is set for zones of type proxmox. The column is already JSON, so
 	// adding this needs no migration.
 	Proxmox *ProxmoxZoneConfig `json:"proxmox,omitempty"`
+	// GCP is set for zones of type gcp. Same reasoning as Proxmox: the shared
+	// ZoneConfig does not accumulate fields that are meaningless elsewhere.
+	GCP *GCPZoneConfig `json:"gcp,omitempty"`
+}
+
+// GCPZoneConfig holds what a GCP zone needs beyond project/region.
+//
+// Deliberately mirrors ProxmoxZoneConfig: placement defaults plus a reference
+// into the credential store, never the secret itself — ZoneConfig is returned
+// by the zones API in cleartext.
+type GCPZoneConfig struct {
+	// Zone is the compute zone, e.g. "asia-east1-b". Instances and their data
+	// disks must share one, or the disk cannot be attached.
+	Zone string `json:"zone,omitempty"`
+	// SourceImage is the boot image, e.g. "debian-cloud/debian-12". GCP has no
+	// "clone a template VM" concept, so this replaces Proxmox's template_vm_id.
+	SourceImage string `json:"source_image,omitempty"`
+	// IdentityBucket is a PRIVATE GCS bucket the per-qube agent identity is
+	// delivered through. It cannot go in instance metadata: metadata is a
+	// resource attribute, so terraform would write the agent's private key into
+	// state in plaintext.
+	IdentityBucket string `json:"identity_bucket,omitempty"`
+	// ServiceAccountEmail is the instance's service account; it needs read
+	// access to IdentityBucket or the VM cannot fetch its own identity.
+	ServiceAccountEmail string `json:"service_account_email,omitempty"`
+	Network             string `json:"network,omitempty"`
+	Subnetwork          string `json:"subnetwork,omitempty"`
+	// AssignPublicIP exposes the agent's mTLS port to the internet. Left false,
+	// the console is expected to reach it over a private path.
+	AssignPublicIP bool `json:"assign_public_ip,omitempty"`
+	// CredentialID references the encrypted store entry holding the service
+	// account key JSON.
+	CredentialID string `json:"credential_id,omitempty"`
 }
 
 // ZoneCreateRequest represents a request to create a new zone.

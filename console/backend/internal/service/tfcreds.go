@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
@@ -33,19 +34,16 @@ func NewTerraformEnvFunc(
 		if err != nil {
 			return nil, err
 		}
-		// No zone configured yet is not an error: terraform may legitimately be
-		// invoked with nothing to do. Returning no variables lets whatever the
-		// operator has in their own environment still work.
-		if zone == nil {
-			return nil, nil
+		// No proxmox zone is not an error — a GCP-only deployment is legitimate,
+		// and terraform may be invoked with nothing to do at all. Fall through
+		// to the GCP variables rather than returning early, which is what made
+		// a GCP zone produce no environment whatsoever.
+		if zone == nil || zone.Config.Proxmox == nil ||
+			zone.Config.Proxmox.CredentialID == "" {
+			return gcpEnvFor(ctx, zoneRepo, secrets)
 		}
 
-		pc := zone.Config.Proxmox
-		if pc == nil || pc.CredentialID == "" {
-			return nil, nil
-		}
-
-		secret, err := secrets.GetSecret(ctx, pc.CredentialID)
+		secret, err := secrets.GetSecret(ctx, zone.Config.Proxmox.CredentialID)
 		if err != nil {
 			return nil, fmt.Errorf("zone %q: read credential: %w", zone.Name, err)
 		}
@@ -57,6 +55,15 @@ func NewTerraformEnvFunc(
 		}
 
 		env := proxmoxEnv(creds)
+
+		// A GCP zone contributes its own variables. Both provider blocks live in
+		// one root module, so a deployment with both a Proxmox and a GCP zone
+		// needs both sets present in the same terraform process.
+		gcpEnv, err := gcpEnvFor(ctx, zoneRepo, secrets)
+		if err != nil {
+			return nil, err
+		}
+		env = append(env, gcpEnv...)
 
 		// Read at call time, not at startup: the key can be rotated without
 		// restarting the console, and a console that started before the key
@@ -157,6 +164,89 @@ func singleProxmoxZone(ctx context.Context, zoneRepo repository.ZoneRepository) 
 		return nil, fmt.Errorf(
 			"%d proxmox zones have credentials (%v) but the terraform root module declares a single "+
 				"provider and cannot target more than one cluster; leave a credential_id on only one",
+			len(found), names)
+	}
+}
+
+// gcpEnvFor renders the GCP zone's credentials and placement as environment
+// variables, or nothing when there is no usable GCP zone.
+//
+// Everything the google provider needs arrives this way — credentials AND
+// project/region. The provider block in the root module is deliberately empty:
+// wiring it to a tfvars variable would give one setting two sources, which is
+// exactly how the proxmox endpoint came to be silently ignored while
+// `terraform output` still echoed the value the operator had typed.
+//
+// GOOGLE_CREDENTIALS takes the service-account key JSON directly, so no gcloud
+// CLI and no key file on disk are involved.
+func gcpEnvFor(
+	ctx context.Context, zoneRepo repository.ZoneRepository, secrets SecretReader,
+) ([]string, error) {
+	zone, err := singleGCPZone(ctx, zoneRepo)
+	if err != nil || zone == nil {
+		return nil, err
+	}
+	gc := zone.Config.GCP
+
+	key, err := secrets.GetSecret(ctx, gc.CredentialID)
+	if err != nil {
+		return nil, fmt.Errorf("zone %q: read credential: %w", zone.Name, err)
+	}
+	key = strings.TrimSpace(key)
+	// A service-account key is JSON. Catching the shape here names the problem;
+	// the provider's own failure is a generic auth error several minutes into an
+	// apply, which reads as a permissions issue rather than a pasted-wrong-thing
+	// issue.
+	if !strings.HasPrefix(key, "{") {
+		return nil, fmt.Errorf(
+			"zone %q: stored credential is not a GCP service-account key (expected JSON)",
+			zone.Name)
+	}
+
+	env := []string{"GOOGLE_CREDENTIALS=" + key}
+	if p := strings.TrimSpace(zone.Config.Project); p != "" {
+		env = append(env, "GOOGLE_PROJECT="+p)
+	}
+	if r := strings.TrimSpace(zone.Config.Region); r != "" {
+		env = append(env, "GOOGLE_REGION="+r)
+	}
+	if z := strings.TrimSpace(gc.Zone); z != "" {
+		env = append(env, "GOOGLE_ZONE="+z)
+	}
+	return env, nil
+}
+
+// singleGCPZone mirrors singleProxmoxZone: one google provider in the root
+// module means one authenticated project, so two credentialed GCP zones are a
+// hard failure rather than an arbitrary pick.
+func singleGCPZone(ctx context.Context, zoneRepo repository.ZoneRepository) (*models.Zone, error) {
+	opts := repository.DefaultZoneListOptions()
+	opts.Limit = 1000
+	zones, err := zoneRepo.List(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list zones: %w", err)
+	}
+
+	var found []*models.Zone
+	for _, z := range zones {
+		if z.Type == models.ZoneTypeGCP && z.Config.GCP != nil && z.Config.GCP.CredentialID != "" {
+			found = append(found, z)
+		}
+	}
+
+	switch len(found) {
+	case 0:
+		return nil, nil
+	case 1:
+		return found[0], nil
+	default:
+		names := make([]string, 0, len(found))
+		for _, z := range found {
+			names = append(names, z.Name)
+		}
+		return nil, fmt.Errorf(
+			"%d gcp zones have credentials (%v) but the terraform root module declares a single "+
+				"google provider and cannot target more than one project; leave a credential_id on only one",
 			len(found), names)
 	}
 }
