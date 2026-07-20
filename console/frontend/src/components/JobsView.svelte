@@ -94,7 +94,6 @@
 <style>
   .jobs {
     color: var(--systemPrimary);
-    max-width: 1100px;
   }
 
   .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.9rem; }

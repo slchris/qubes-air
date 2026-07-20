@@ -134,6 +134,15 @@
     overflow-y: auto;
   }
 
+  /* Content is capped and CENTRED here, once, rather than each view pinning its
+     own max-width. Views were setting 1100px and inheriting the default
+     left alignment, so on a wide display everything crowded into a narrow
+     left-hand column with the rest of the screen empty. */
+  .content > :global(*) {
+    max-width: 1680px;
+    margin-inline: auto;
+  }
+
   .placeholder {
     display: flex;
     flex-direction: column;

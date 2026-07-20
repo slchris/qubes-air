@@ -29,6 +29,27 @@ export interface ProxmoxZoneConfig {
   credential_id?: string;
 }
 
+// GCP-specific zone configuration, mirroring backend models.GCPZoneConfig.
+// Same rule as the proxmox sub-object: placement plus a credential REFERENCE,
+// never the secret — ZoneConfig is returned by the zones API in cleartext.
+export interface GCPZoneConfig {
+  // Instances and their data disks must share a compute zone or the disk
+  // cannot be attached.
+  zone?: string;
+  // GCP has images, not template VMs, so this replaces template_vm_id.
+  source_image?: string;
+  // A PRIVATE bucket the per-qube agent identity is delivered through. It
+  // cannot go in instance metadata: metadata is a resource attribute, so
+  // terraform would write the agent's private key into state.
+  identity_bucket?: string;
+  service_account_email?: string;
+  network?: string;
+  subnetwork?: string;
+  // Exposes the agent's mTLS port to the internet.
+  assign_public_ip?: boolean;
+  credential_id?: string;
+}
+
 // Zone configuration
 export interface ZoneConfig {
   endpoint: string;
@@ -37,6 +58,8 @@ export interface ZoneConfig {
   // Present on proxmox zones. Carried through edits verbatim — see the note on
   // ProxmoxZoneConfig for why dropping it is destructive.
   proxmox?: ProxmoxZoneConfig;
+  // Present on gcp zones, same contract.
+  gcp?: GCPZoneConfig;
 }
 
 // Zone entity matching backend models.Zone

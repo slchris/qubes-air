@@ -180,7 +180,6 @@
 <style>
   .dash {
     color: var(--systemPrimary);
-    max-width: 1100px;
   }
 
   .head, .sec-head {
