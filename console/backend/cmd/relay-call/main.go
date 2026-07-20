@@ -44,20 +44,19 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("relay-call: ")
 
-	dsn := flag.String("db", "", "console sqlite DSN")
+	dsn := flag.String("db", "", "console sqlite DSN (mint mode)")
 	port := flag.String("port", "8443", "agent mTLS port")
-	// The address may be given explicitly for a one-shot test; normally it is
-	// resolved from the database by target name.
-	addr := flag.String("addr", "", "agent host:port (overrides db lookup)")
+	// The address may be given explicitly; in provisioned mode it is required,
+	// in mint mode it defaults to a database lookup by target name.
+	addr := flag.String("addr", "", "agent host:port (required in provisioned mode)")
+	// Provisioned mode: a relay that holds a console-issued client certificate on
+	// disk (see cmd/relay-bootstrap) rather than the CA that mints one. Giving
+	// all three switches the tool off the database entirely.
+	certFile := flag.String("cert", "", "client certificate PEM (provisioned mode)")
+	keyFile := flag.String("key", "", "client key PEM (provisioned mode)")
+	caFile := flag.String("ca", "", "CA certificate PEM (provisioned mode)")
 	timeout := flag.Duration("timeout", 45*time.Second, "overall deadline")
 	flag.Parse()
-
-	// Read from the environment, never a flag: command-line arguments are
-	// world-readable through /proc on the same host.
-	encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
-	if encKey == "" {
-		log.Fatal("QUBES_AIR_ENCRYPTION_KEY is required")
-	}
 
 	args := flag.Args()
 	if len(args) < 2 {
@@ -74,32 +73,80 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	db, err := database.New(&database.Config{DSN: *dsn})
-	must(err)
-	defer db.Close()
-
-	kr, err := keyring.NewSingle([]byte(encKey))
-	must(err)
-	creds := repository.NewCredentialRepository(db, kr)
-
-	endpoint := *addr
-	remoteName := target
-	if endpoint == "" {
-		ep, rn := resolveAgent(ctx, repository.NewQubeRepository(db), target, *port)
-		endpoint, remoteName = ep, rn
+	var (
+		pair     tls.Certificate
+		pool     *x509.CertPool
+		endpoint = *addr
+	)
+	if *certFile != "" || *keyFile != "" || *caFile != "" {
+		// Provisioned mode: the relay does not hold the CA, so it cannot resolve
+		// endpoints from the console database either — the address is passed in
+		// (the relay's transport handler reads it from QubesDB).
+		if *certFile == "" || *keyFile == "" || *caFile == "" {
+			log.Fatal("provisioned mode needs -cert, -key and -ca together")
+		}
+		if endpoint == "" {
+			log.Fatal("provisioned mode needs -addr")
+		}
+		pair, pool = loadProvisioned(*certFile, *keyFile, *caFile)
+	} else {
+		// Mint mode (console-as-relay): read the CA from the console database and
+		// sign a short-lived client certificate on the spot, resolving the
+		// endpoint from the database when -addr was not given.
+		encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
+		if encKey == "" {
+			log.Fatal("QUBES_AIR_ENCRYPTION_KEY is required in mint mode")
+		}
+		db, err := database.New(&database.Config{DSN: *dsn})
+		must(err)
+		defer db.Close()
+		kr, err := keyring.NewSingle([]byte(encKey))
+		must(err)
+		creds := repository.NewCredentialRepository(db, kr)
+		if endpoint == "" {
+			endpoint, target = resolveAgent(ctx, repository.NewQubeRepository(db), target, *port)
+		}
+		ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
+			secretNamed(ctx, creds, "qubes-air-ca-key"))
+		must(err)
+		pair, pool = mintFromCA(ca)
 	}
+
 	log.Printf("target=%s service=%s endpoint=%s", target, service, endpoint)
-
-	ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
-		secretNamed(ctx, creds, "qubes-air-ca-key"))
-	must(err)
-
-	out, err := call(ctx, ca, endpoint, remoteName, service, body)
+	out, err := dialAndCall(ctx, pair, pool, endpoint, target, service, body)
 	if err != nil {
 		log.Fatalf("call failed: %v", err)
 	}
 	// Response bytes only — this is what qrexec hands back to the local caller.
 	_, _ = os.Stdout.Write(out)
+}
+
+// mintFromCA signs a fresh short-lived client certificate from the console CA —
+// the console-as-relay path, where the relay is the qube that holds the CA.
+func mintFromCA(ca *pki.CA) (tls.Certificate, *x509.CertPool) {
+	bundle, err := ca.IssueAgentCert("console-relay", time.Hour)
+	must(err)
+	pair, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM))
+	must(err)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(bundle.CAPEM)) {
+		log.Fatal("CA PEM did not parse")
+	}
+	return pair, pool
+}
+
+// loadProvisioned reads a console-issued client certificate and the CA from
+// disk — the separate-relay path, where the relay holds only its own identity.
+func loadProvisioned(certFile, keyFile, caFile string) (tls.Certificate, *x509.CertPool) {
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	must(err)
+	caPEM, err := os.ReadFile(caFile)
+	must(err)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		log.Fatalf("CA file %s did not parse", caFile)
+	}
+	return pair, pool
 }
 
 // resolveAgent finds the running target qube by name and returns its
@@ -131,24 +178,14 @@ func resolveAgent(ctx context.Context, repo repository.QubeRepository, target, p
 	return match.IPAddress + ":" + port, match.Name
 }
 
-// call dials the agent over mTLS with a freshly minted client certificate and
+// dialAndCall dials the agent over mTLS with the given client certificate and
 // invokes one service. It mirrors the console health probe's TLS setup: the
 // agent's certificate carries no SAN for a bare IP, so the chain is verified by
-// hand in VerifyConnection rather than by the stack.
-func call(ctx context.Context, ca *pki.CA, endpoint, remoteName, service string, in []byte) ([]byte, error) {
-	bundle, err := ca.IssueAgentCert("console-relay", time.Hour)
-	if err != nil {
-		return nil, fmt.Errorf("mint client cert: %w", err)
-	}
-	pair, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM))
-	if err != nil {
-		return nil, err
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM([]byte(bundle.CAPEM)) {
-		return nil, errors.New("CA PEM did not parse")
-	}
-
+// hand in VerifyConnection rather than by the stack. The certificate may have
+// been minted from the CA (console-as-relay) or loaded from disk (separate
+// relay) — dialing does not care which.
+func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) ([]byte, error) {
+	var err error
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: endpoint,
 		RelayName:      "console-relay",

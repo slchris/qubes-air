@@ -214,6 +214,17 @@ func EncodeCACertPEM(ca *CA) string {
 // drift.
 func AgentCommonName(qubeName string) string { return "agent-" + qubeName }
 
+// RelayCommonName is the subject common name a RELAY client certificate carries.
+//
+// A relay is a local qube that forwards RemoteVM qrexec calls to remote agents
+// over gRPC. Like an agent it presents a client certificate signed by this CA,
+// but it is a different kind of principal, so its common name is derived from
+// the relay qube's own name with a distinct prefix. It lives beside
+// AgentCommonName for the same reason: the console pins a relay CSR to this name
+// (from the unforgeable qrexec caller identity) and the relay writes the same
+// name into the CSR it generates — two definitions would drift.
+func RelayCommonName(qubeName string) string { return "relay-" + qubeName }
+
 func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*SignedCert, error) {
 	if ca == nil || ca.Cert == nil || ca.Key == nil {
 		return nil, ErrNoCA

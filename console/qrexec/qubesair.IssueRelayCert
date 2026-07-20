@@ -1,0 +1,39 @@
+#!/bin/bash
+# qubesair.IssueRelayCert —— relay 证书签发服务 (部署在 CONSOLE qube 的 /etc/qubes-rpc/)
+# =====================================================================
+# 分离式 relay 传输的证书下发的 console 半边 (docs/grpc-transport-design.md §0.5)。
+#
+# relay qube 自己生成密钥、只把 CSR 经 qrexec 发到这里; 本服务用 console CA 签名后把证书
+# 回给它。relay 的私钥永不出 relay, console 也不进数据面 —— 它只当 CA。
+#
+# 认证靠 dom0, 不靠 token: 调用方 qube 名由 dom0 以 $QREXEC_REMOTE_DOMAIN 传入, 源 qube
+# 无法伪造; issue-relay-cert 把 CSR 的 CN 钉死成该名字派生的 relay-<caller>, 因此一个 qube
+# 只能拿到它自己的 relay 身份证书, 且必须先被 dom0 policy 放行才能到达本服务。
+#
+# 协议: CSR(PEM) 从 stdin 进, 签好的证书 (JSON: cert_pem/ca_pem/...) 从 stdout 出。
+# =====================================================================
+
+set -euo pipefail
+
+log() { echo "qubesair.IssueRelayCert: $*" >&2; }
+
+caller="${QREXEC_REMOTE_DOMAIN:-}"
+if [[ -z "$caller" ]]; then
+    log "拒绝: 无法确定调用方 (QREXEC_REMOTE_DOMAIN 为空)"
+    exit 1
+fi
+
+# 与 salt/qubesair/console.sls 的 data_dir 一致。secrets.env 里的
+# QUBES_AIR_ENCRYPTION_KEY 解密库中的 CA 私钥; 只在本 qube 内 source。
+DATA_DIR="${QUBES_AIR_DATA_DIR:-/rw/config/qubesair}"
+if [[ ! -r "$DATA_DIR/secrets.env" ]]; then
+    log "读不到 $DATA_DIR/secrets.env —— 本服务是否装在了 console qube 上?"
+    exit 1
+fi
+set -a
+# shellcheck disable=SC1091
+. "$DATA_DIR/secrets.env"
+set +a
+
+# stdin(CSR) 透传给 issue-relay-cert; 它把 CN 钉到 relay-<caller> 再签。
+exec /usr/local/bin/issue-relay-cert -db "$DATA_DIR/qubes-air.db" "$caller"

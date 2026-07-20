@@ -79,12 +79,15 @@ TLS 校验说明（回应安全评审）：`InsecureSkipVerify: true` 配合 `Ve
 `qubesair-console` qube 上执行 `relay-call remote-reg2 qubesair.Ping` →
 `pong remote-reg2 <ts>`，exit 0。即：从 relay 位置用**每调用**客户端拨通了远端 agent。
 
+> **owner 决定（2026-07）：走 b —— 独立 relay + 证书下发（§0.5）。** console-as-relay
+> 作为**已在真机验证过的回退/对照**保留在 §0.3–0.4；`relay-call` 同时支持两种模式。
+
 ### 0.3 架构取舍：为什么 relay 是 console qube 本身
 
 - **console qube 是唯一同时持有 CA 私钥与 qube→IP 映射的地方。** 让它当 relay，`relay-call`
   就能现签证书、零额外下发。独立 Relay（mgmt-jump / sys-relay-*）要当 gRPC relay，必须先有
   一套把 Relay 证书下发到它的设施（vault `qubesair.GetCredential` handler 或 salt 下发
-  cert）——**这套目前不存在**（见 §4、`grpc-relay.sls:64`）。
+  cert）——**这套此前不存在，§0.5 正是把它建起来**。
 - **代价 / 待 owner 确认：** 现有 salt-config 与 policy 刻意把 relay 与 console **分开**（console
   持 CA + PVE token + terraform state，见 `salt/qubesair/README.md`「Why not just reuse
   mgmt-jump」）。console-as-relay 让本地 qube 能经 dom0 policy 触发 console 去拨 agent。该
@@ -116,6 +119,47 @@ TLS 校验说明（回应安全评审）：`InsecureSkipVerify: true` 配合 `Ve
 
 **未决 [C1]：** 改写后 B 段调用的 SOURCE 是原始本地 qube 还是 dom0/relay，R4.3 实测才能定
 （本文 §5、`30-qubes-air.policy` 的 [C1] 注同此）。先按原始 caller 写；若被拒，据实测放宽。
+
+### 0.5 已选方案（b）：独立 relay + CSR 证书下发
+
+owner 选了让 relay 与持凭据的 console **分开**。难点一直是：relay 不持 CA,怎么拿到一张
+console CA 签发的客户端证书,而**私钥不出 relay、console 也不进数据面**。答案是复用 §9 agent
+bootstrap 那套 **CSR 流程**,只是信道改成本地 qrexec,且**不用 token**——relay 是本地可信
+qube,dom0 已经不可伪造地告诉 console 谁在调用,以此认证。
+
+**控制面（一次性 + 定时续期）:**
+
+- **`cmd/issue-relay-cert`（console 侧）** —— 读 stdin 的 CSR,把 CN **钉死**成
+  `relay-<caller>`(caller = `$QREXEC_REMOTE_DOMAIN`,dom0 保证不可伪造),用 console CA
+  经 `pki.SignAgentCSR` 签名,输出 JSON。已单测:签自身身份通过,冒充别的 relay / agent 身份
+  一律拒,非法 caller 名拒。
+- **`console/qrexec/qubesair.IssueRelayCert`（console 的 /etc/qubes-rpc/）** —— 薄封装,
+  source `secrets.env` 后 exec 上面的 CLI,把 caller 传进去。dom0 policy 只放行 relay qube。
+- **`cmd/relay-bootstrap`（relay 侧,静态二进制,无 CGO）** —— 生成 P-256 密钥 + CSR(CN=
+  `relay-<自身名>`,名字取自 `qubesdb-read /name`),经 `qrexec-client-vm <console>
+  qubesair.IssueRelayCert` 发 CSR、收证书,原子写 `relay.key`(0600)/`relay.crt`/`ca.crt`。
+  幂等,可由 systemd timer 定时续期。已单测:生成的 CSR 能被 CA 签、身份校验、密钥落盘 0600。
+
+**数据面（每调用,console 不参与）:**
+
+- **`cmd/relay-call` 新增 provisioned 模式** —— 给 `-cert/-key/-ca` 就**从磁盘加载**已下发
+  证书、不碰数据库,端点由 `-addr` 传入(relay 的 transport handler 从 QubesDB 读)。mint
+  模式(console-as-relay)保留,真机回归验证仍回 `pong`。
+- `relay/transport/qubesair.GrpcProxy` 在独立 relay 上从 QubesDB `/remote/<target>` 取
+  `<ip:port>`,以 `-cert/-key/-ca -addr` 调 `relay-call`(而非 console 上的 mint 模式)。
+
+**端点下发:** dom0 在 RemoteVM 注册 / relay 开机时把 `qube→ip:port` 写进 relay 的 QubesDB
+`/remote/<target>`(沿用 SSHProxy 的 `/remote/` 约定,只是值改成 `ip:port`),console 不进
+数据面。
+
+**已完成(Go + 单测,已提交):** `issue-relay-cert`、`relay-bootstrap`、`relay-call`
+provisioned 模式、`qubesair.IssueRelayCert` handler、`RelayCommonName`。
+**待硬件部署(有人监督):** 把 `issue-relay-cert`/`relay-bootstrap` 交叉编译发布;salt 在
+console 装 CLI + `qubesair.IssueRelayCert`、在 relay 装 `relay-bootstrap`(+timer)/`relay-call`/
+`qubesair.GrpcProxy`;dom0 policy(`qubesair.IssueRelayCert * <relay> qubesair-console allow`
++ §0.4 的 A/B 段,DESTINATION relay 改成独立 relay qube);dom0 写 QubesDB 端点映射。
+验收:relay 上跑 `relay-bootstrap` 拿到证书 → 从本地 qube `qrexec-client-vm remote-reg2
+qubesair.Ping` 回 `pong`。
 
 ---
 
