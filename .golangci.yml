@@ -49,7 +49,7 @@ linters:
       # a deprecation warning but fails `config verify`, which is what the
       # GitHub action executes before linting.
       ignore-string-values:
-        - '^(error|total|note|version|status|message|count|provider)$'
+        - '^(error|total|note|version|status|message|count|provider|offset|running)$'
     gocyclo:
       min-complexity: 15
     gosec:

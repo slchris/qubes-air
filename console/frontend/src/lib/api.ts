@@ -375,6 +375,59 @@ export async function getJobLog(id: string, offset = 0): Promise<JobLogChunk> {
 }
 
 /**
+ * Streams a job's terraform output as it is written, one chunk per callback.
+ *
+ * Uses fetch (not the browser EventSource) on purpose: EventSource cannot set
+ * the Authorization header, and this API is Bearer-authenticated. apiFetch
+ * attaches the token; the body is read incrementally as a text/event-stream.
+ *
+ * The stream ENDS on its own — the server caps how long it holds a connection,
+ * because the console is reached over a qrexec TCP forward where a connection
+ * held open for a 20-minute apply is a connection to lose. That is not a
+ * failure: the last chunk carries the offset the caller resumes from, whether
+ * by reconnecting the stream or falling back to getJobLog polling. `signal`
+ * lets the caller abort when the component unmounts or the job is replaced.
+ */
+export async function streamJobLog(
+  id: string,
+  offset: number,
+  onChunk: (chunk: JobLogChunk) => void,
+  signal: AbortSignal
+): Promise<void> {
+  const response = await apiFetch(`/jobs/${id}/log/stream?offset=${offset}`, { signal });
+  if (!response.ok || !response.body) {
+    throw new ApiException(response.status, 'STREAM_FAILED', 'log stream not available');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  // Read until the server ends the stream (its duration cap) or the caller
+  // aborts. Each SSE event is a "data: <json>\n\n" record; split on the blank
+  // line and parse the JSON, which is the same shape getJobLog returns.
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const record = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const line = record.startsWith('data: ') ? record.slice(6) : record;
+      if (!line.trim()) continue;
+      try {
+        onChunk(JSON.parse(line) as JobLogChunk);
+      } catch {
+        // A partial or malformed record is not worth tearing the stream down
+        // for; the next well-formed event carries a fresh offset.
+      }
+    }
+  }
+}
+
+/**
  * Lists recent jobs, newest first. Pass qubeId to scope to one qube.
  *
  * This is the audit view: every infrastructure change the console made,

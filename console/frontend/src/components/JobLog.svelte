@@ -8,13 +8,13 @@
   once it ends.
 -->
 <script lang="ts">
-  import { getJobLog, getJob } from '../lib/api';
+  import { getJobLog, getJob, streamJobLog } from '../lib/api';
 
   interface Props {
     jobId: string;
     // Whether the qube is still in a transient state. Used only as the initial
-    // guess; the log endpoint's own `running` flag is authoritative once polling
-    // starts, because the job record is what knows it finished.
+    // guess; the log endpoint's own `running` flag is authoritative once the
+    // feed starts, because the job record is what knows it finished.
     active?: boolean;
   }
   let { jobId, active = true }: Props = $props();
@@ -25,51 +25,96 @@
   let jobState = $state<string | null>(null);
   let error = $state<string | null>(null);
   let open = $state(active); // auto-expand while an apply is in flight
+  let streaming = $state(false); // true while the live stream is attached
+
+  let pre = $state<HTMLPreElement | null>(null);
 
   const POLL_MS = 3000;
 
   // Restart cleanly if the card is reused for a different job (Svelte may not
-  // remount the component when only the prop changes).
+  // remount the component when only the prop changes). The AbortController tears
+  // down any in-flight stream from the previous job.
   let current = $state('');
+  let controller: AbortController | null = null;
   $effect(() => {
     if (jobId === current) return;
     current = jobId;
+    controller?.abort();
     text = '';
     offset = 0;
     running = active;
     error = null;
     open = active;
-    void poll();
+    void feed();
+    return () => controller?.abort();
   });
+
+  // Auto-scroll to the newest line as output arrives, but only when the view is
+  // already at (or near) the bottom — so an operator who scrolled up to read
+  // something is not yanked back down on every chunk.
+  function apply(chunk: { data?: string; offset: number; running: boolean; state?: string }): void {
+    if (jobId !== current) return;
+    const el = pre;
+    const atBottom = el ? el.scrollHeight - el.scrollTop - el.clientHeight < 40 : true;
+    if (chunk.data) text += chunk.data;
+    offset = chunk.offset;
+    running = chunk.running;
+    jobState = chunk.state ?? jobState;
+    if (el && atBottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
+  }
+
+  // Stream first, poll as the fallback. The stream gives line-by-line output;
+  // when it ends — its own duration cap, or a dropped qrexec forward — control
+  // falls through to polling from the last offset, so nothing is missed.
+  async function feed(): Promise<void> {
+    controller = new AbortController();
+    while (running && jobId === current) {
+      try {
+        streaming = true;
+        await streamJobLog(jobId, offset, apply, controller.signal);
+        // The stream ended. If the job is still running, loop and reconnect;
+        // the offset is where we left off.
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        // Stream unavailable (older console, proxy, a drop). Stop trying to
+        // stream and poll instead — same data, resilient to this transport.
+        streaming = false;
+        void poll();
+        return;
+      }
+      streaming = false;
+      if (!running) break;
+    }
+    await finish();
+  }
 
   async function poll(): Promise<void> {
     try {
       const chunk = await getJobLog(jobId, offset);
       if (jobId !== current) return; // a newer job took over mid-request
-      if (chunk.data) text += chunk.data;
-      offset = chunk.offset;
-      running = chunk.running;
-      jobState = chunk.state ?? jobState;
+      apply(chunk);
     } catch (e) {
       error = e instanceof Error ? e.message : 'Failed to read job log';
       running = false;
     }
 
-    if (running) {
+    if (running && jobId === current) {
       setTimeout(() => void poll(), POLL_MS);
       return;
     }
+    await finish();
+  }
 
-    // The job finished. If nothing was logged (logs disabled on this console),
-    // fall back to the job's own error field so a failure still has a reason.
-    if (!text.trim()) {
-      try {
-        const job = await getJob(jobId);
-        jobState = job.state;
-        if (job.error) { text = job.error; open = true; }
-      } catch {
-        // Leave the panel empty rather than surfacing a secondary error.
-      }
+  // The job finished. If nothing was logged (logs disabled on this console),
+  // fall back to the job's own error field so a failure still has a reason.
+  async function finish(): Promise<void> {
+    if (jobId !== current || text.trim()) return;
+    try {
+      const job = await getJob(jobId);
+      jobState = job.state;
+      if (job.error) { text = job.error; open = true; }
+    } catch {
+      // Leave the panel empty rather than surfacing a secondary error.
     }
   }
 
@@ -82,9 +127,9 @@
   <button class="bar" onclick={() => (open = !open)}>
     <span class="chev">{open ? '▾' : '▸'}</span>
     <span class="title">
-      {#if running}Provisioning — live log{:else if failed}Failed — see log{:else}Job log{/if}
+      {#if running}Provisioning — {streaming ? 'live stream' : 'live log'}{:else if failed}Failed — see log{:else}Job log{/if}
     </span>
-    {#if running}<span class="spinner">●</span>{/if}
+    {#if running}<span class="spinner" title={streaming ? 'streaming' : 'polling'}>●</span>{/if}
   </button>
 
   {#if open}
@@ -92,7 +137,7 @@
       <p class="err">{error}</p>
     {/if}
     {#if clean.trim()}
-      <pre>{clean}</pre>
+      <pre bind:this={pre}>{clean}</pre>
     {:else if running}
       <p class="waiting">Waiting for terraform output…</p>
     {:else}
