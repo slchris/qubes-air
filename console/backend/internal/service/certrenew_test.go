@@ -251,7 +251,7 @@ func TestRenewalRefusesCSRForAnotherIdentity(t *testing.T) {
 
 	assert.Equal(t, CertRenewalRefused, res.Status)
 	assert.Contains(t, res.Reason, "agent-prod-billing")
-	assert.Contains(t, res.Reason, agentCertCN(qube.Name))
+	assert.Contains(t, res.Reason, AgentCommonName(qube.Name))
 
 	// The three things that must NOT have happened.
 	assert.Zero(t, signer.signed(), "a mismatched identity must never reach the CA")
@@ -262,14 +262,14 @@ func TestRenewalRefusesCSRForAnotherIdentity(t *testing.T) {
 
 // TestVerifyRenewalCSR covers the identity rules directly.
 func TestVerifyRenewalCSR(t *testing.T) {
-	want := agentCertCN("dev-1")
+	want := AgentCommonName("dev-1")
 
 	t.Run("accepts its own identity", func(t *testing.T) {
 		require.NoError(t, verifyRenewalCSR(makeCSR(t, want), want))
 	})
 
 	t.Run("refuses a different common name", func(t *testing.T) {
-		err := verifyRenewalCSR(makeCSR(t, agentCertCN("dev-2")), want)
+		err := verifyRenewalCSR(makeCSR(t, AgentCommonName("dev-2")), want)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "agent-dev-2")
 	})
@@ -306,7 +306,7 @@ func TestVerifyRenewalCSR(t *testing.T) {
 // unable to authenticate.
 func TestRenewalRegistersBeforeInstalling(t *testing.T) {
 	qube := renewTestQube()
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 	signer := &fakeSigner{}
 
 	var order []string
@@ -328,7 +328,7 @@ func TestRenewalRegistersBeforeInstalling(t *testing.T) {
 // strictly worse than leaving the agent with the one that still works.
 func TestRenewalNotDeliveredWhenRegistrationFails(t *testing.T) {
 	qube := renewTestQube()
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 	reg := newFakeRegistry()
 	reg.err = errors.New("database is locked")
 
@@ -347,7 +347,7 @@ func TestRenewalRejectsWrongInstalledFingerprint(t *testing.T) {
 	qube := renewTestQube()
 	agent := &fakeAgent{
 		nonce:     "n1",
-		csrPEM:    makeCSR(t, agentCertCN(qube.Name)),
+		csrPEM:    makeCSR(t, AgentCommonName(qube.Name)),
 		installed: strings.Repeat("a", 64),
 	}
 	reg := newFakeRegistry()
@@ -373,7 +373,7 @@ func TestRenewalRejectsWrongInstalledFingerprint(t *testing.T) {
 // a CA rotation cannot leave the agent unable to verify the console.
 func TestRenewalSendsCAAndNonce(t *testing.T) {
 	qube := renewTestQube()
-	agent := &fakeAgent{nonce: "nonce-42", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "nonce-42", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 	reg := newFakeRegistry()
 
 	r := NewCertRenewer(nil, &fakeSigner{}, reg, reg, "0.0.0.0:8443", time.Second)
@@ -388,7 +388,7 @@ func TestRenewalSendsCAAndNonce(t *testing.T) {
 	assert.Contains(t, seen.CAPEM, "BEGIN CERTIFICATE")
 	assert.NotContains(t, seen.CertPEM, "PRIVATE KEY", "no private key may ever cross the wire")
 	require.Equal(t, 1, reg.count())
-	assert.Equal(t, agentCertCN(qube.Name), reg.registered[0].SubjectCN)
+	assert.Equal(t, AgentCommonName(qube.Name), reg.registered[0].SubjectCN)
 	assert.NotNil(t, reg.registered[0].ExpiresAt, "an unexpiring registry row would never be renewed again")
 }
 
@@ -399,10 +399,10 @@ func TestRenewalLeavesTheOldCertificateAlone(t *testing.T) {
 	qube := renewTestQube()
 	old := time.Now().Add(20 * 24 * time.Hour)
 	reg := newFakeRegistry(&repository.AgentCert{
-		Fingerprint: "old-fp", QubeID: qube.ID, SubjectCN: agentCertCN(qube.Name),
+		Fingerprint: "old-fp", QubeID: qube.ID, SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt: time.Now().Add(-70 * 24 * time.Hour), ExpiresAt: &old,
 	})
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 
 	r := NewCertRenewer(nil, &fakeSigner{}, reg, reg, "0.0.0.0:8443", time.Second)
 
@@ -598,7 +598,7 @@ func renewalFixture(t *testing.T) (
 	previous := "c" + strings.Repeat("2", 63)
 	expires := time.Now().Add(20 * 24 * time.Hour).UTC()
 	require.NoError(t, certs.Register(t.Context(), &repository.AgentCert{
-		Fingerprint: previous, QubeID: qube.ID, SubjectCN: agentCertCN(qube.Name),
+		Fingerprint: previous, QubeID: qube.ID, SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt: time.Now().Add(-70 * 24 * time.Hour).UTC(), ExpiresAt: &expires,
 	}))
 
@@ -619,7 +619,7 @@ func renewalFixture(t *testing.T) (
 // certificate is precisely what a legitimate agent looks like.
 func TestPurgeRacingARenewalIsRefused(t *testing.T) {
 	r, certs, qube, previous, peer := renewalFixture(t)
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 
 	// The purge, landing while the renewal is in flight.
 	n, err := certs.RevokeByQube(t.Context(), qube.ID, "qube purged")
@@ -659,14 +659,14 @@ func TestRenewalIdentityMismatchIsNotReportedAsAPurge(t *testing.T) {
 	previous := "d" + strings.Repeat("3", 63)
 	expires := time.Now().Add(20 * 24 * time.Hour).UTC()
 	require.NoError(t, certs.Register(t.Context(), &repository.AgentCert{
-		Fingerprint: previous, QubeID: "some-other-qube", SubjectCN: agentCertCN(qube.Name),
+		Fingerprint: previous, QubeID: "some-other-qube", SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt: time.Now().UTC(), ExpiresAt: &expires,
 	}))
 
 	r := NewCertRenewer(nil, &fakeSigner{}, certs, certs, "0.0.0.0:8443", time.Second)
 	peer := &verifiedPeer{}
 	peer.note(previous)
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 
 	res := runExchangeAs(r, agent, qube, peer, previous)
 
@@ -694,7 +694,7 @@ func TestPurgeGuardChecksTheCertificateThePeerPresented(t *testing.T) {
 	orphan := "e" + strings.Repeat("4", 63)
 	far := time.Now().Add(89 * 24 * time.Hour).UTC()
 	require.NoError(t, certs.Register(t.Context(), &repository.AgentCert{
-		Fingerprint: orphan, QubeID: qube.ID, SubjectCN: agentCertCN(qube.Name),
+		Fingerprint: orphan, QubeID: qube.ID, SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt: time.Now().UTC(), ExpiresAt: &far,
 	}))
 	require.Equal(t, orphan, r.currentCert(t.Context(), qube.ID).Fingerprint,
@@ -703,7 +703,7 @@ func TestPurgeGuardChecksTheCertificateThePeerPresented(t *testing.T) {
 	// Only the certificate the agent actually holds is revoked.
 	require.NoError(t, certs.Revoke(t.Context(), previous, "key leaked"))
 
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 	res := runExchangeAs(r, agent, qube, peer, orphan)
 
 	assert.Equal(t, CertRenewalWithdrawn, res.Status,
@@ -717,7 +717,7 @@ func TestRegistrationFailureIsStillAConsoleFault(t *testing.T) {
 	qube := renewTestQube()
 	reg := newFakeRegistry()
 	reg.err = errors.New("database is locked")
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 
 	r := NewCertRenewer(nil, &fakeSigner{}, reg, reg, "0.0.0.0:8443", time.Second)
 	res := runExchangeAs(r, agent, qube, nil, "old-fp")
@@ -733,7 +733,7 @@ func TestRegistrationFailureIsStillAConsoleFault(t *testing.T) {
 func TestRenewalWithoutAPredecessorStillRegisters(t *testing.T) {
 	qube := renewTestQube()
 	reg := newFakeRegistry() // no RecordRenewal
-	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))}
+	agent := &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))}
 
 	r := NewCertRenewer(nil, &fakeSigner{}, reg, reg, "0.0.0.0:8443", time.Second)
 	res := runExchangeAs(r, agent, qube, nil, "")

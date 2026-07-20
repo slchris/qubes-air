@@ -97,7 +97,7 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 	// The common name identifies the agent in logs and in the registry. It is
 	// NOT an authorization input: the fingerprint is what the registry matches,
 	// so a certificate cannot gain privilege by naming itself something else.
-	cn := "agent-" + qube.Name
+	cn := AgentCommonName(qube.Name)
 	bundle, err := ca.IssueAgentCert(cn, pki.DefaultAgentCertLifetime)
 	if err != nil {
 		return nil, fmt.Errorf("issue certificate for %q: %w", qube.Name, err)

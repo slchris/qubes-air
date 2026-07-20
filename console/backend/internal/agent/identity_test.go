@@ -20,7 +20,7 @@ import (
 )
 
 // testAgentCN is the common name the console mints for a qube's agent
-// (service.agentCertCN). Renewal must preserve it exactly.
+// (service.AgentCommonName). Renewal must preserve it exactly.
 const testAgentCN = "agent-qube-1"
 
 // installedIdentity lays out an agent's identity the way cloud-init does and

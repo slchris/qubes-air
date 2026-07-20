@@ -133,6 +133,11 @@ type Dependencies struct {
 	settingsHandler   *handler.SettingsHandler
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
+	// bootstrapHandler issues a first certificate against a one-shot token.
+	// Deliberately NOT mounted under /api/v1 — see setupRouter.
+	bootstrapHandler *handler.BootstrapHandler
+	// bootstrapTokens mints the tokens cloud-init delivers.
+	bootstrapTokens *repository.BootstrapTokenRepository
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
 	// Held here so it stays a live, injectable dependency; a service will consume
 	// it in the next stage-T wiring step.
@@ -202,6 +207,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	}
 	credentialRepo := repository.NewCredentialRepository(db, kr)
 	agentCertRepo := repository.NewAgentCertRepository(db)
+	bootstrapTokenRepo := repository.NewBootstrapTokenRepository(db)
 	// The snapshot makes the database the source of truth for which qubes
 	// exist: the executor renders it to the generated var-file before every
 	// terraform invocation, and refuses to act on a qube missing from it.
@@ -307,10 +313,13 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
-		transport:         xport,
-		runner:            runner,
-		agents:            agents,
-		certRenewals:      certRenewals,
+		bootstrapHandler: handler.NewBootstrapHandler(
+			bootstrapTokenRepo, certIssuer, agentCertRepo),
+		bootstrapTokens: bootstrapTokenRepo,
+		transport:       xport,
+		runner:          runner,
+		agents:          agents,
+		certRenewals:    certRenewals,
 	}, nil
 }
 
@@ -656,6 +665,16 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 
 	// /health is intentionally left unauthenticated for liveness probes.
 	r.GET("/health", healthHandler(deps.db))
+
+	// Bootstrap sits OUTSIDE /api/v1, and that is the whole design rather than
+	// an oversight. An agent on first boot has no API token — it has a one-shot
+	// bootstrap token and nothing else — so mounting this behind Auth would make
+	// it unreachable by the only caller it exists for. The token in the request
+	// body is the authentication, and it authorizes exactly one certificate for
+	// exactly one qube, once, before it expires.
+	if deps.bootstrapHandler != nil {
+		deps.bootstrapHandler.RegisterRoutes(r.Group("/bootstrap"))
+	}
 
 	// All /api/v1 routes require a valid Bearer token when an API token is
 	// configured. When none is configured, Auth is a pass-through and a

@@ -771,12 +771,12 @@ func TestSchedulerRetriesAfterAFailedInstallAgainstTheRealRegistry(t *testing.T)
 	oldFP := "f" + strings.Repeat("5", 63)
 	require.NoError(t, certs.Register(ctx, &repository.AgentCert{
 		Fingerprint: oldFP, QubeID: qube.ID,
-		SubjectCN: agentCertCN(qube.Name),
+		SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt:  expires.Add(-pki.DefaultAgentCertLifetime), ExpiresAt: &expires,
 	}))
 
 	agent := &fakeAgent{
-		nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name)),
+		nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name)),
 		completeErr: errors.New("tunnel dropped mid-install"),
 	}
 	renewer := &exchangeRenewer{
@@ -835,7 +835,7 @@ func TestSchedulerReportsAPurgeRaceDistinctlyFromAConsoleFault(t *testing.T) {
 	expires := time.Now().Add(15 * 24 * time.Hour).UTC()
 	fp := "g" + strings.Repeat("6", 63)
 	require.NoError(t, certs.Register(ctx, &repository.AgentCert{
-		Fingerprint: fp, QubeID: qube.ID, SubjectCN: agentCertCN(qube.Name),
+		Fingerprint: fp, QubeID: qube.ID, SubjectCN: AgentCommonName(qube.Name),
 		IssuedAt: expires.Add(-pki.DefaultAgentCertLifetime), ExpiresAt: &expires,
 	}))
 
@@ -846,7 +846,7 @@ func TestSchedulerReportsAPurgeRaceDistinctlyFromAConsoleFault(t *testing.T) {
 	renewer := &exchangeRenewer{
 		inner: NewCertRenewer(nil, &fakeSigner{}, certs, certs, "0.0.0.0:8443", time.Second),
 		agent: &purgingAgent{
-			inner:  &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, agentCertCN(qube.Name))},
+			inner:  &fakeAgent{nonce: "n1", csrPEM: makeCSR(t, AgentCommonName(qube.Name))},
 			certs:  certs,
 			qubeID: qube.ID,
 		},

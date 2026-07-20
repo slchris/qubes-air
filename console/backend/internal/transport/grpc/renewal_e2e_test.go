@@ -36,7 +36,7 @@ func TestRenewalOverTheTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
-	const qubeCN = "agent-qube-1" // service.agentCertCN(qube.Name)
+	const qubeCN = "agent-qube-1" // service.AgentCommonName(qube.Name)
 
 	// Lay out the agent's identity as cloud-init does at first boot.
 	dir := t.TempDir()

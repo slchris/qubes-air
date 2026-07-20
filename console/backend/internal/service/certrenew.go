@@ -547,7 +547,7 @@ func (r *CertRenewer) exchange(
 	ctx context.Context, qube *models.Qube, sess agentCaller, peer *verifiedPeer, res *CertRenewalResult,
 	done func(CertRenewalStatus, string, ...any) CertRenewalResult,
 ) CertRenewalResult {
-	wantCN := agentCertCN(qube.Name)
+	wantCN := AgentCommonName(qube.Name)
 	// Needed to re-dial if the exchange fails: discardUninstalled must ask the
 	// agent what it actually holds before withdrawing anything.
 	addr := sess.address()
@@ -969,7 +969,7 @@ func (r *CertRenewer) dial(ctx context.Context, qubeName, addr string, peer *ver
 	// revoked-but-unexpired key answers at the qube's address and walks away with
 	// a brand-new 90-day certificate for a key of their choosing — while the
 	// prober would refuse that same peer in the same second.
-	tlsCfg, err := probeTLSConfigWithAuthz(bundle, agentCertCN(qubeName), r.authorizeFingerprint(ctx, peer))
+	tlsCfg, err := probeTLSConfigWithAuthz(bundle, AgentCommonName(qubeName), r.authorizeFingerprint(ctx, peer))
 	if err != nil {
 		return nil, fmt.Errorf("client certificate for %s is unusable: %w", addr, err)
 	}

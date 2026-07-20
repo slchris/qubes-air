@@ -119,9 +119,14 @@ type CertAuthorizer interface {
 	Authorize(ctx context.Context, fingerprint string) (*repository.AgentCert, error)
 }
 
-// agentCertCN is the common name certs.go mints for a qube's agent. Kept next
-// to the verification that depends on it so the two cannot drift apart.
-func agentCertCN(qubeName string) string { return "agent-" + qubeName }
+// AgentCommonName is the common name a qube's agent certificate carries.
+//
+// Exported and used by every path that mints, renews, verifies or bootstraps an
+// identity. It is one function because a disagreement about this string is not a
+// cosmetic bug: the certificate would be issued and registered successfully and
+// then refused at the handshake, which reads as a network fault rather than a
+// naming one.
+func AgentCommonName(qubeName string) string { return "agent-" + qubeName }
 
 // AgentProbeResult is everything one probe learned about one qube's agent.
 //
@@ -287,7 +292,7 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 	}
 	// certs.go mints agent certificates as "agent-<qube name>"; that is the
 	// binding this probe holds the peer to.
-	tlsCfg, err := probeTLSConfig(bundle, agentCertCN(qube.Name))
+	tlsCfg, err := probeTLSConfig(bundle, AgentCommonName(qube.Name))
 	if err != nil {
 		return done(AgentProbeNotConfigured, "probe certificate is unusable: %v", err)
 	}
