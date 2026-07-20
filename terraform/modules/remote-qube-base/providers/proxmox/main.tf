@@ -342,6 +342,12 @@ output "result" {
 
     # 便于调试的额外信息
     storage_vm_id = proxmox_virtual_environment_vm.storage.vm_id
-    compute_vm_id = var.compute_running ? proxmox_virtual_environment_vm.compute[0].vm_id : null
+    # 守卫**集合本身**, 不是 var.compute_running。两者在正常路径一致, 但当
+    # compute_running=true 而 compute 集合为空时 —— 一次部分 apply、创建失败、或
+    # plan 阶段 compute[0] 尚不存在 —— 用 var 做守卫会让 `[0]` 在空 tuple 上直接
+    # 报 "Invalid index" 并**掩盖真正的错误**。ip_address 上面已经用 try() 躲过了
+    # 同一个坑, 这里对齐。真机上撞到过: 新建 remote-reg-test 时 compute 为空,
+    # 真正的失败被这行的索引错误盖住。
+    compute_vm_id = length(proxmox_virtual_environment_vm.compute) > 0 ? proxmox_virtual_environment_vm.compute[0].vm_id : null
   }
 }
