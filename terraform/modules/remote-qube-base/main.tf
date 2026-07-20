@@ -154,8 +154,8 @@ module "proxmox" {
   os_disk_gb      = local.final_config.disk
   data_disk_gb    = local.final_config.data_disk_gb
 
-  node_name            = coalesce(var.qube_config.node_name, var.proxmox_default_node)
-  template_vm_id       = var.qube_config.template_vm_id
+  node_name      = coalesce(var.qube_config.node_name, var.proxmox_default_node)
+  template_vm_id = var.qube_config.template_vm_id
   # NOT coalesce(). coalesce() errors when every argument is empty, and "" is
   # itself empty — so `coalesce(x, "")` cannot succeed when x is unset. It only
   # ever returned x, and failed the whole apply otherwise, with "Error in

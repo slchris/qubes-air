@@ -39,7 +39,11 @@ check_dom0() {
 # =====================================================================
 create_relay() {
     local relay_name="sys-relay-pve"
-    local creator="$(dirname "$0")/create-sys-relay.sh"
+    # Declared and assigned separately (SC2155): `local x="$(cmd)"` returns
+    # local's exit status, not the command's, so a failing command substitution
+    # is invisible to `set -e`.
+    local creator
+    creator="$(dirname "$0")/create-sys-relay.sh"
 
     log_info "Creating local Relay via create-sys-relay.sh: $relay_name"
     if [ ! -f "$creator" ]; then
@@ -60,7 +64,8 @@ create_relay() {
 # 此函数改为部署那份正确 policy, 不再内联错误规则。
 # =====================================================================
 setup_qrexec_policy() {
-    local src="$(dirname "$0")/policy.d/30-qubes-air.policy"
+    local src
+    src="$(dirname "$0")/policy.d/30-qubes-air.policy"
     local policy_file="/etc/qubes/policy.d/30-qubes-air.policy"
 
     log_info "Deploying single-source qrexec policy -> $policy_file"
