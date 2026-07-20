@@ -160,6 +160,71 @@ console 拨过去跑 bootstrap
 本地 `local` 上。首启之后无害（cloud-init 只读一次），但**重新 provision 会踩到**——
 PVE 自己的文档也要求 cicustom 文件在所有可能迁移到的节点上都存在。
 
+### 4.4 (f) 的实施计划（2026-07-20 晚要做）
+
+> (g) 的做法往后推，不在今晚范围内。
+
+**目标**：console 把 snippet 直接写进 PVE 节点已经能读到的地方，于是 terraform 再也不需要 SSH。
+
+#### 一个必须先说的坑：(f) 会把 §7 那个 bug 原样带回来
+
+今天是 `proxmox_virtual_environment_file` 上那句 `checksum = filesha256(...)` 让 terraform
+依赖**内容**。§7 记着它的来历：没有它，真机上出现过「console 渲染了新身份、节点上还是旧
+snippet、cloud-init 照旧文件跑完并报 done」，而且**证书轮换会永远传不下去，每次 apply 都报成功**。
+
+(f) 把这个资源整个删掉，terraform 只拿到一个 volume ID 字符串。**字符串不会因为文件内容变了
+而变**——于是 §7 那个 bug 一字不差地回来了，而且这次连 `checksum` 这个补丁都没地方挂。
+
+**解法：把内容哈希放进文件名。**
+
+```
+qubes-air-<name>-<sha256 前 12 位>.yaml
+```
+
+内容变 → 文件名变 → volume ID 变 → `user_data_file_id` 在 VM 上是 ForceNew → 计算实例重建
+→ cloud-init 读到新文档。行为和今天完全一致，但这次是**由构造保证**的，不是靠记得传 checksum。
+附带好处：身份文档变成内容寻址的，旧的一份永远不会被就地覆盖。
+
+代价是旧文件会堆积，console 要负责回收（qube 删除时、以及重新 provision 成功后只留当前那份）。
+
+#### 存储选型
+
+**首选 CephFS**：外部 Ceph 集群本来就在（mon `10.31.0.77/78/79`），PVE 原生支持 CephFS
+存储类型且允许 `snippets` content，而且它是**真共享**——顺带修掉 §4.1 提的那个迁移隐患
+（现在 snippet 躺在节点本地 `local`，而 `main.tf:288` 对 `node_name` 做了 `ignore_changes`）。
+
+**今晚第一件要验的**：那个 Ceph 集群**有没有跑 MDS / 建过文件系统**。纯 RBD 的集群通常没有。
+节点上 `ceph fs ls` 一句就能知道。没有的话要么建 CephFS（起 MDS），要么退到 NFS。
+
+NFS 是退路而不是首选：多一个 SPOF，且认证比 cephx 弱得多。真要用就配 `root_squash` + IP 白名单。
+
+#### 步骤
+
+1. `ceph fs ls` —— 确认有没有 CephFS。没有则决定「建 MDS」还是「退 NFS」。
+2. PVE 里加这个存储，**显式声明 `snippets` content type**。
+   （注意现在的 `local` 其实**没有**声明 snippets，能用纯属 `pvesm path` 恰好解析得出来——
+   新存储别再靠这个巧合。）
+3. 每个节点上 `pvesm path <ds>:snippets/probe.yaml` 验证解析得出来。
+4. 在 console 跑的地方挂上这个共享（console 是 Qubes AppVM 里的 systemd 服务，
+   只有 `/rw` 持久，所以挂载要写进 AppVM 的持久配置而不是手工 mount）。
+5. 代码：`AgentIdentityDir` 指向挂载点；`SnippetVolumeID`（**现在是死代码，只有测试在用——
+   它就是为这件事写的**）加上内容哈希参数；proxmox 模块删掉
+   `proxmox_virtual_environment_file.agent_identity`，`user_data_file_id` 改成变量传入。
+6. 确认还有没有别的东西需要 provider 的 `ssh` 块。如果没有，整个块可以删——**那才是这件事的收益**。
+
+#### 两个要当场验、不要假设的
+
+- **共享挂了会怎样。** cloud-init 只在首启读一次，但 PVE 在 VM **启动时**会按 cicustom
+  重新生成 cidata ISO。所以共享不可用可能不只是「建不了新 qube」，而是「现有 qube 起不来」。
+  这条决定了它是不是新的 SPOF，必须实测。
+- **谁能读到。** snippet 里是 token。token 设计下它是单次、短时效、绑定单机的，比 90 天私钥
+  好得多，但共享目录仍然不该整个局域网可读。cephx key 限定子树，或 NFS 白名单。
+
+#### 落地方式
+
+**走配置开关，保留 SFTP 那条路作为回退。** 这条链路今天在真机上是通的，(f) 动的正是它，
+一次性切换没有退路可言。
+
 ### 4.3 现在的判断
 
 **SSH 的「疼」已经比 §4 写的时候小了一个量级**：它运的从「90 天私钥」变成了
