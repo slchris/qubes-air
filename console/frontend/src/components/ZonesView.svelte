@@ -113,29 +113,51 @@
 </div>
 
 <style>
-  .zones { padding: 0.5rem; }
+  /* Same trap as LoginGate: a hard-coded light surface with no foreground of
+     its own. Inside .app the inherited colour is LIGHT in dark mode, so these
+     cards rendered light-on-white. Each surface sets both. */
+  .zones {
+    --surface: #ffffff;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --border: #d4d4d4;
+    --accent: #1d4ed8;
+    padding: 0.5rem;
+    color: var(--text);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .zones {
+      --surface: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #374151;
+      --accent: #2563eb;
+    }
+  }
   .header {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 1rem;
   }
-  h2 { margin: 0; font-size: 1.2rem; }
+  h2 { margin: 0; font-size: 1.2rem; color: var(--text); }
   .refresh {
-    padding: 0.4rem 0.8rem; border: 1px solid var(--border, #d4d4d4);
-    border-radius: 4px; background: var(--surface, #fff); cursor: pointer;
+    padding: 0.4rem 0.8rem; border: 1px solid var(--border);
+    border-radius: 4px; background: var(--surface); color: var(--text);
+    cursor: pointer;
   }
   .banner {
     margin: 0 0 1rem; padding: 0.6rem 0.8rem; border-radius: 4px; font-size: 0.9rem;
   }
   .banner.error { border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; }
-  .empty { color: #6b7280; font-size: 0.9rem; line-height: 1.5; }
+  .empty { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
 
   .grid {
     display: grid; gap: 1rem;
     grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr));
   }
   .card {
-    border: 1px solid var(--border, #d4d4d4); border-radius: 6px;
-    padding: 1rem; background: var(--surface, #fff);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 1rem; background: var(--surface); color: var(--text);
   }
   .card-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -153,21 +175,19 @@
     display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 0.75rem;
     margin: 0 0 1rem; font-size: 0.85rem;
   }
-  dt { color: #6b7280; }
-  dd { margin: 0; word-break: break-word; }
+  dt { color: var(--muted); }
+  dd { margin: 0; word-break: break-word; color: var(--text); }
   .mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
 
   .actions { display: flex; justify-content: flex-end; }
   .toggle {
     padding: 0.45rem 0.9rem; border-radius: 4px; border: 1px solid transparent;
-    cursor: pointer; background: var(--accent, #1d4ed8); color: #fff; font-size: 0.85rem;
+    cursor: pointer; background: var(--accent); color: #fff; font-size: 0.85rem;
   }
   .toggle.connected { background: #fff; color: #b91c1c; border-color: #b91c1c; }
   .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 
   @media (prefers-color-scheme: dark) {
-    .refresh, .card, .toggle.connected { background: #1f2937; }
-    .card, .refresh { border-color: #374151; }
-    dd { color: #e5e7eb; }
+    .toggle.connected { background: var(--surface); }
   }
 </style>

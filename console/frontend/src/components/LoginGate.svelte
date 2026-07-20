@@ -76,19 +76,49 @@
 </div>
 
 <style>
+  /* Colours are declared for BOTH schemes, explicitly.
+     This component replaces the whole .app shell, so it inherits none of the
+     shell's colours — and with `color-scheme: light dark` in index.html the UA
+     default text colour is WHITE on a dark-mode machine. A card with a
+     hard-coded white background and no colour of its own therefore rendered
+     white-on-white: the heading, the labels and the help text were all
+     invisible, leaving only the placeholder and the button. Every surface here
+     now sets its own foreground next to its background. */
   .gate {
-    min-height: 100vh;
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --text: #1a1a1a;
+    --muted: #52525b;
+    --border: #d4d4d4;
+    --field-bg: #ffffff;
+    --accent: #1d4ed8;
+
+    min-height: 100dvh;
     display: grid;
     place-items: center;
     padding: 2rem 1rem;
-    background: var(--bg, #f5f5f5);
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .gate {
+      --bg: #111827;
+      --surface: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #374151;
+      --field-bg: #111827;
+      --accent: #2563eb;
+    }
   }
 
   .card {
     width: 100%;
     max-width: 28rem;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #d4d4d4);
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 1.75rem;
     display: flex;
@@ -100,20 +130,26 @@
     margin: 0;
     font-size: 1.25rem;
     font-weight: 600;
+    color: var(--text);
   }
 
-  .lede,
+  .lede {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    color: var(--muted);
+  }
+
   .alert {
     margin: 0;
     font-size: 0.9rem;
     line-height: 1.5;
-  }
-
-  .alert.error {
     padding: 0.65rem 0.8rem;
     border-radius: 4px;
     border: 1px solid #d97706;
     background: #fef3c7;
+    /* Fixed dark text: this banner keeps its amber background in both schemes,
+       so its foreground must not follow the theme or it becomes unreadable. */
     color: #7c2d12;
   }
 
@@ -122,14 +158,21 @@
     flex-direction: column;
     gap: 0.35rem;
     font-size: 0.85rem;
+    color: var(--text);
   }
 
   .field input {
     padding: 0.55rem 0.65rem;
-    border: 1px solid var(--border, #d4d4d4);
+    border: 1px solid var(--border);
     border-radius: 4px;
+    background: var(--field-bg);
+    color: var(--text);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.9rem;
+  }
+
+  .field input::placeholder {
+    color: var(--muted);
   }
 
   .reveal {
@@ -137,13 +180,14 @@
     align-items: center;
     gap: 0.4rem;
     font-size: 0.85rem;
+    color: var(--text);
   }
 
   button {
     padding: 0.6rem 1rem;
     border: 1px solid transparent;
     border-radius: 4px;
-    background: var(--accent, #1d4ed8);
+    background: var(--accent);
     color: #fff;
     font-size: 0.9rem;
     cursor: pointer;
@@ -157,22 +201,28 @@
   details {
     font-size: 0.85rem;
     line-height: 1.5;
+    color: var(--text);
   }
 
   summary {
     cursor: pointer;
+    color: var(--text);
+  }
+
+  details p {
+    color: var(--muted);
   }
 
   pre {
     overflow-x: auto;
     padding: 0.6rem;
     border-radius: 4px;
-    background: #1f2937;
+    background: #0f172a;
     color: #e5e7eb;
     font-size: 0.78rem;
   }
 
   .muted {
-    color: #52525b;
+    color: var(--muted);
   }
 </style>

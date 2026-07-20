@@ -102,14 +102,30 @@
 </div>
 
 <style>
+  /* Explicit foreground next to every hard-coded background — the collapsed
+     bar was light-on-light in dark mode for the same reason as the login gate. */
   .joblog {
-    margin-top: 0.6rem; border: 1px solid var(--border, #e5e7eb); border-radius: 4px;
+    --surface-2: #f9fafb;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+
+    margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 4px;
     overflow: hidden;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .joblog {
+      --surface-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #374151;
+    }
   }
   .joblog.failed { border-color: #dc2626; }
   .bar {
     width: 100%; display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.4rem 0.6rem; background: var(--surface-2, #f9fafb);
+    padding: 0.4rem 0.6rem; background: var(--surface-2); color: var(--text);
     border: none; cursor: pointer; font-size: 0.82rem; text-align: left;
   }
   .joblog.failed .bar { background: #fef2f2; color: #991b1b; }
@@ -122,6 +138,6 @@
     background: #0f172a; color: #e2e8f0;
     font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
   }
-  .waiting, .err { margin: 0; padding: 0.6rem; font-size: 0.8rem; color: #6b7280; }
+  .waiting, .err { margin: 0; padding: 0.6rem; font-size: 0.8rem; color: var(--muted); }
   .err { color: #b91c1c; }
 </style>
