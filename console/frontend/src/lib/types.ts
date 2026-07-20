@@ -136,10 +136,16 @@ export interface Qube {
 }
 
 // Agent health as reported by the console's background prober.
-//   healthy    — last probe succeeded
-//   unhealthy  — last probe failed (see agent_last_error)
-//   unknown    — not probed yet, or probing disabled
-export type AgentHealth = 'healthy' | 'unhealthy' | 'unknown';
+//
+// These strings must match models.AgentHealth on the backend exactly. They did
+// not: this declared 'unhealthy' while the API returns 'unreachable', so every
+// comparison against it was false — three qubes with dead agents produced no
+// warning anywhere, which is precisely the "looks fine" failure the field
+// exists to prevent.
+//   healthy      — last probe succeeded
+//   unreachable  — last probe failed (see agent_last_error)
+//   unknown      — not probed yet, or probing disabled
+export type AgentHealth = 'healthy' | 'unreachable' | 'unknown';
 
 // Request payload for creating a qube
 export interface QubeCreateRequest {

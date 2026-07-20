@@ -30,13 +30,16 @@
 </header>
 
 <style>
+  /* Nav chrome is OPAQUE in this system — blur is reserved for popovers. The
+     bar was a dark slab with white text, which is a different design language;
+     it now sits on the raised surface with primary ink and a hairline. */
   .header {
     display: flex;
     align-items: center;
-    padding: 0.75rem 1rem;
-    background: var(--header-bg, #2d2d2d);
-    color: var(--header-text, #fff);
-    border-bottom: 1px solid var(--border-color, #404040);
+    padding: 0 16px;
+    background: var(--pageBG);
+    color: var(--systemPrimary);
+    border-bottom: var(--keyline-border-style);
     height: 48px;
     box-sizing: border-box;
   }
@@ -45,66 +48,55 @@
     display: none;
     background: none;
     border: none;
-    color: inherit;
-    font-size: 1.25rem;
+    color: var(--systemSecondary);
+    font: var(--title-2);
     cursor: pointer;
-    padding: 0.25rem 0.5rem;
-    margin-right: 0.5rem;
-    border-radius: 4px;
+    padding: 4px 8px;
+    margin-right: 8px;
+    border-radius: var(--global-border-radius-xsmall);
   }
 
-  .menu-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
+  @media (hover: hover) and (pointer: fine) {
+    .menu-btn:hover { background: var(--systemQuinary); color: var(--systemPrimary); }
   }
-  
+
   .brand {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-weight: 600;
+    gap: 8px;
+    font: var(--title-3-emphasized);
+    letter-spacing: 0;
   }
-  
-  .logo {
-    font-size: 1.5rem;
-  }
-  
+
+  .logo { font: var(--title-2); color: var(--keyColor); }
+
   .status {
     margin-left: auto;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.875rem;
+    gap: 6px;
+    font: var(--callout);
+    color: var(--systemSecondary);
   }
-  
+
+  /* The markup calls this .indicator; `.connected` is what turns it green.
+     A dot with no state class stays tertiary rather than claiming health. */
   .indicator {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background: #888;
+    background: var(--systemTertiary);
+    flex: none;
   }
-  
-  .indicator.connected {
-    background: #4caf50;
-  }
-  
+  .indicator.connected { background: var(--systemGreen); }
+
   .version {
-    margin-left: 1rem;
-    font-size: 0.75rem;
-    opacity: 0.7;
+    margin-left: 12px;
+    font: var(--caption-1);
+    color: var(--systemTertiary);
   }
 
-  /* 响应式 - 移动端 */
   @media (max-width: 768px) {
-    .menu-btn {
-      display: block;
-    }
-
-    .title {
-      display: none;
-    }
-
-    .status-text {
-      display: none;
-    }
+    .menu-btn { display: block; }
   }
 </style>

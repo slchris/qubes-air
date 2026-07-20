@@ -105,39 +105,27 @@
   /* Explicit foreground next to every hard-coded background — the collapsed
      bar was light-on-light in dark mode for the same reason as the login gate. */
   .joblog {
-    --surface-2: #f9fafb;
-    --text: #1a1a1a;
-    --muted: #6b7280;
-    --border: #e5e7eb;
 
-    margin-top: 0.6rem; border: 1px solid var(--border); border-radius: 4px;
+    margin-top: 0.6rem; border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-xsmall);
     overflow: hidden;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .joblog {
-      --surface-2: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-    }
-  }
-  .joblog.failed { border-color: #dc2626; }
+  .joblog.failed { border-color: var(--systemRed); }
   .bar {
     width: 100%; display: flex; align-items: center; gap: 0.5rem;
-    padding: 0.4rem 0.6rem; background: var(--surface-2); color: var(--text);
-    border: none; cursor: pointer; font-size: 0.82rem; text-align: left;
+    padding: 0.4rem 0.6rem; background: var(--systemQuinary); color: var(--systemPrimary);
+    border: none; cursor: pointer; font: var(--callout); text-align: left;
   }
   .joblog.failed .bar { background: #fef2f2; color: #991b1b; }
   .chev { width: 1em; }
   .title { flex: 1; }
-  .spinner { color: #2563eb; animation: pulse 1.2s ease-in-out infinite; }
+  .spinner { color: var(--keyColor); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: 0.25; } }
   pre {
     margin: 0; padding: 0.6rem; max-height: 22rem; overflow: auto;
     background: #0f172a; color: #e2e8f0;
-    font-size: 0.72rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+    font: var(--subhead); line-height: 1.45; white-space: pre-wrap; word-break: break-word;
   }
-  .waiting, .err { margin: 0; padding: 0.6rem; font-size: 0.8rem; color: var(--muted); }
-  .err { color: #b91c1c; }
+  .waiting, .err { margin: 0; padding: 0.6rem; font: var(--callout); color: var(--systemSecondary); }
+  .err { color: var(--systemRed); }
 </style>

@@ -49,7 +49,7 @@
 
   // The case this dashboard exists for: the qube is up, so the status dot is
   // green, but the console cannot reach its agent. Nothing else surfaces it.
-  const unreachable = $derived(running.filter(q => q.agent_health === 'unhealthy'));
+  const unreachable = $derived(running.filter(q => q.agent_health === 'unreachable'));
 
   const connectedZones = $derived(zonesState.zones.filter(z => z.status === 'connected'));
   const failedJobs = $derived(recentJobs.filter(j => j.state === 'failed'));
@@ -179,44 +179,32 @@
 
 <style>
   .dash {
-    --surface: #ffffff;
-    --text: #1a1a1a;
-    --muted: #6b7280;
-    --border: #e5e7eb;
-    color: var(--text);
+    color: var(--systemPrimary);
     max-width: 1100px;
-  }
-  @media (prefers-color-scheme: dark) {
-    .dash {
-      --surface: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-    }
   }
 
   .head, .sec-head {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 0.75rem;
   }
-  h2 { margin: 0; font-size: 1.3rem; color: var(--text); }
-  h3 { margin: 0; font-size: 1rem; color: var(--text); }
+  h2 { margin: 0; font: var(--title-1-emphasized); color: var(--systemPrimary); }
+  h3 { margin: 0; font: var(--title-2-emphasized); color: var(--systemPrimary); }
 
   .ghost, .link {
-    border: 1px solid var(--border); background: var(--surface); color: var(--text);
-    border-radius: 4px; padding: 0.35rem 0.7rem; font-size: 0.82rem; cursor: pointer;
+    border: 1px solid var(--systemQuaternary); background: var(--pageBG); color: var(--systemPrimary);
+    border-radius: var(--global-border-radius-xsmall); padding: 0.35rem 0.7rem; font: var(--callout); cursor: pointer;
   }
-  .link { border-color: transparent; color: #2563eb; padding: 0.2rem 0.3rem; }
+  .link { border-color: transparent; color: var(--keyColor); padding: 0.2rem 0.3rem; }
 
   .alert {
     display: block; width: 100%; text-align: left; cursor: pointer;
-    margin-bottom: 0.6rem; padding: 0.65rem 0.85rem; border-radius: 5px;
-    font-size: 0.88rem; line-height: 1.45;
+    margin-bottom: 0.6rem; padding: 0.65rem 0.85rem; border-radius: var(--global-border-radius-xsmall);
+    font: var(--body); line-height: 1.45;
   }
-  .alert .names { display: block; font-size: 0.8rem; opacity: 0.85; margin-top: 0.15rem; }
+  .alert .names { display: block; font: var(--callout); opacity: 0.85; margin-top: 0.15rem; }
   /* Fixed foregrounds: these keep their background in both schemes. */
   .alert.warn { border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; }
-  .alert.bad { border: 1px solid #dc2626; background: #fef2f2; color: #991b1b; }
+  .alert.bad { border: 1px solid var(--systemRed); background: #fef2f2; color: #991b1b; }
 
   .tiles {
     display: grid; gap: 0.75rem; margin: 1rem 0 1.5rem;
@@ -224,32 +212,32 @@
   }
   .tile {
     display: flex; flex-direction: column; gap: 0.15rem; text-align: left;
-    padding: 0.9rem 1rem; border: 1px solid var(--border); border-radius: 6px;
-    background: var(--surface); color: var(--text); cursor: pointer;
+    padding: 0.9rem 1rem; border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-small);
+    background: var(--pageBG); color: var(--systemPrimary); cursor: pointer;
   }
-  .tile .n { font-size: 1.7rem; font-weight: 600; line-height: 1.1; }
-  .tile .l { font-size: 0.85rem; }
-  .tile .sub { font-size: 0.76rem; color: var(--muted); }
+  .tile .n { font: var(--large-title-emphasized); font-weight: 600; line-height: 1.1; }
+  .tile .l { font: var(--body); }
+  .tile .sub { font: var(--subhead); color: var(--systemSecondary); }
 
   section { margin-bottom: 1.5rem; }
-  .empty { margin: 0; font-size: 0.85rem; color: var(--muted); line-height: 1.5; }
+  .empty { margin: 0; font: var(--body); color: var(--systemSecondary); line-height: 1.5; }
 
-  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-small); overflow: hidden; }
   .rows li {
     display: flex; align-items: center; gap: 0.75rem;
-    padding: 0.5rem 0.8rem; background: var(--surface);
-    border-top: 1px solid var(--border); font-size: 0.85rem;
+    padding: 0.5rem 0.8rem; background: var(--pageBG);
+    border-top: 1px solid var(--systemQuaternary); font: var(--body);
   }
   .rows li:first-child { border-top: none; }
   .name { font-weight: 500; flex: 1; min-width: 8rem; }
-  .meta { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+  .meta { color: var(--systemSecondary); font: var(--callout); white-space: nowrap; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .agent.healthy { color: #16a34a; }
-  .agent.unhealthy { color: #dc2626; }
+  .agent.healthy { color: var(--systemGreen); }
+  .agent.unreachable { color: var(--systemRed); }
 
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #9ca3af; }
-  .dot.running, .dot.job-succeeded { background: #16a34a; }
-  .dot.error, .dot.job-failed { background: #dc2626; }
-  .dot.creating, .dot.resuming, .dot.suspending, .dot.deleting, .dot.job-running { background: #2563eb; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--systemSecondary); }
+  .dot.running, .dot.job-succeeded { background: var(--systemGreen); }
+  .dot.error, .dot.job-failed { background: var(--systemRed); }
+  .dot.creating, .dot.resuming, .dot.suspending, .dot.deleting, .dot.job-running { background: var(--keyColor); }
   .dot.suspended, .dot.released { background: #7e57c2; }
 </style>

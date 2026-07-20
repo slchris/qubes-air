@@ -20,7 +20,7 @@
   function agentLabel(h: AgentHealth | undefined): string {
     switch (h) {
       case 'healthy': return 'healthy';
-      case 'unhealthy': return 'unreachable';
+      case 'unreachable': return 'unreachable';
       default: return 'unknown';
     }
   }
@@ -352,7 +352,7 @@
             <span class="c-agent">
               <span class="agent {qube.agent_health ?? 'unknown'}"
                     title={qube.agent_last_error || ''}>{agentLabel(qube.agent_health)}</span>
-              {#if qube.agent_health === 'unhealthy' && qube.agent_last_error}
+              {#if qube.agent_health === 'unreachable' && qube.agent_last_error}
                 <span class="agent-err" title={qube.agent_last_error}>{qube.agent_last_error}</span>
               {/if}
             </span>
@@ -595,24 +595,12 @@
      without a <table> (rows need to expand into a log panel, which a table row
      cannot contain cleanly). */
   .qube-table {
-    --surface: #ffffff;
-    --text: #1a1a1a;
-    --muted: #6b7280;
-    --border: #e5e7eb;
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-small);
     /* Safety net: if a column set ever exceeds the container again, the row
        scrolls instead of hiding its controls. */
     overflow-x: auto;
-    color: var(--text);
-  }
-  @media (prefers-color-scheme: dark) {
-    .qube-table {
-      --surface: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-    }
+    color: var(--systemPrimary);
   }
 
   .qhead, .qrow {
@@ -634,31 +622,31 @@
     padding: 0.5rem 0.8rem;
   }
   .qhead {
-    background: color-mix(in srgb, var(--text) 5%, var(--surface));
-    color: var(--muted);
-    font-size: 0.72rem;
+    background: color-mix(in srgb, var(--systemPrimary) 5%, var(--pageBG));
+    color: var(--systemSecondary);
+    font: var(--subhead);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
   }
-  .qrow-wrap { border-top: 1px solid var(--border); background: var(--surface); }
+  .qrow-wrap { border-top: 1px solid var(--systemQuaternary); background: var(--pageBG); }
   .qrow-wrap:first-of-type { border-top: none; }
-  .qrow { font-size: 0.85rem; }
+  .qrow { font: var(--body); }
   .qrow-log { padding: 0 0.8rem 0.6rem; }
 
   .c-name { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
   .c-name .nm { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
   .c-name .ty {
-    font-size: 0.7rem; color: var(--muted); border: 1px solid var(--border);
+    font: var(--footnote); color: var(--systemSecondary); border: 1px solid var(--systemQuaternary);
     border-radius: 3px; padding: 0 0.25rem;
   }
-  .c-status, .c-zone, .c-spec, .c-ip { color: var(--text); min-width: 0; }
-  .c-ip { font-size: 0.8rem; }
-  .dim { color: var(--muted); }
+  .c-status, .c-zone, .c-spec, .c-ip { color: var(--systemPrimary); min-width: 0; }
+  .c-ip { font: var(--callout); }
+  .dim { color: var(--systemSecondary); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .c-act { display: flex; gap: 0.35rem; justify-content: flex-end; }
   .c-agent { display: flex; flex-direction: column; min-width: 0; }
   .agent-err {
-    font-size: 0.7rem; color: #b91c1c;
+    font: var(--footnote); color: var(--systemRed);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
@@ -687,11 +675,11 @@
     .c-spec { display: block; }
     .c-act { justify-content: flex-start; margin-top: 0.5rem; }
     /* Labels, because without the header row a bare value says nothing. */
-    .c-status::before { content: 'Status: '; color: var(--muted); }
-    .c-agent::before { content: 'Agent: '; color: var(--muted); }
-    .c-zone::before { content: 'Zone: '; color: var(--muted); }
-    .c-spec::before { content: 'Spec: '; color: var(--muted); }
-    .c-ip::before { content: 'Address: '; color: var(--muted); }
+    .c-status::before { content: 'Status: '; color: var(--systemSecondary); }
+    .c-agent::before { content: 'Agent: '; color: var(--systemSecondary); }
+    .c-zone::before { content: 'Zone: '; color: var(--systemSecondary); }
+    .c-spec::before { content: 'Spec: '; color: var(--systemSecondary); }
+    .c-ip::before { content: 'Address: '; color: var(--systemSecondary); }
     /* The stacked agent cell is a column; the label needs to sit inline with
        the value rather than above it. */
     .c-agent { flex-direction: row; gap: 0.3rem; align-items: baseline; flex-wrap: wrap; }
@@ -701,7 +689,7 @@
      calls to action, when they are one row's controls. */
   .c-act .btn {
     padding: 0.3rem 0.6rem;
-    font-size: 0.78rem;
+    font: var(--callout);
     white-space: nowrap;
   }
   @media (max-width: 820px) {
@@ -709,10 +697,10 @@
   }
 
   .agent { font-weight: 500; }
-  .agent.healthy { color: #16a34a; }
-  .agent.unhealthy { color: #dc2626; }
-  .agent.unknown { color: #6b7280; }
-  .agent-err span { color: #b91c1c; font-size: 0.78rem; word-break: break-word; }
+  .agent.healthy { color: var(--systemGreen); }
+  .agent.unreachable { color: var(--systemRed); }
+  .agent.unknown { color: var(--systemSecondary); }
+  .agent-err span { color: var(--systemRed); font: var(--callout); word-break: break-word; }
 
   .header {
     display: flex;
@@ -734,7 +722,7 @@
   .qube-card {
     background: var(--card-bg, #fff);
     border: 1px solid var(--border-color, #ddd);
-    border-radius: 6px;
+    border-radius: var(--global-border-radius-small);
     padding: 1rem;
   }
 
@@ -747,7 +735,7 @@
 
   .qube-name {
     font-weight: 600;
-    font-size: 1.125rem;
+    font: var(--title-2-emphasized);
   }
 
   .status-dot {
@@ -763,7 +751,7 @@
   .info-row {
     display: flex;
     gap: 0.5rem;
-    font-size: 0.875rem;
+    font: var(--body);
     margin-bottom: 0.25rem;
   }
 
@@ -776,7 +764,7 @@
     padding: 0.125rem 0.375rem;
     background: var(--code-bg, #e8e8e8);
     border-radius: 3px;
-    font-size: 0.8125rem;
+    font: var(--body);
   }
 
   .qube-actions {
@@ -790,9 +778,9 @@
     background: #1976d2;
     color: #fff;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
-    font-size: 0.875rem;
+    font: var(--body);
   }
 
   .btn:disabled {
@@ -815,7 +803,7 @@
     background: #1976d2;
     color: #fff;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
   }
 
@@ -835,7 +823,7 @@
 
   .hint {
     color: var(--label-color, #666);
-    font-size: 0.875rem;
+    font: var(--body);
     margin-top: 0.5rem;
   }
 
@@ -883,8 +871,8 @@
     width: 100%;
     padding: 0.5rem;
     border: 1px solid var(--border-color, #ddd);
-    border-radius: 4px;
-    font-size: 1rem;
+    border-radius: var(--global-border-radius-xsmall);
+    font: var(--title-2-emphasized);
   }
 
   .form-group input:disabled {
@@ -912,7 +900,7 @@
     color: #c62828;
     background: #ffcdd2;
     padding: 0.5rem;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     margin-bottom: 1rem;
   }
 
@@ -947,7 +935,7 @@
   .field-hint {
     display: block;
     margin-top: 0.25rem;
-    font-size: 0.75rem;
+    font: var(--subhead);
     color: var(--text-muted, #888);
     line-height: 1.4;
   }

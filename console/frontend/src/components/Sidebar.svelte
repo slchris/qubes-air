@@ -40,78 +40,79 @@
 <style>
   .sidebar {
     width: 200px;
-    background: var(--sidebar-bg, #f0f0f0);
-    border-right: 1px solid var(--border-color, #ddd);
+    /* The system's own nav-sidebar token: a 3% ink wash over the page floor,
+       not a grey hex. */
+    background: var(--navSidebarBG);
+    border-right: var(--keyline-border-style);
     flex-shrink: 0;
     /* The parent row clips its overflow, so without a scroller of its own the
        lower nav items become unreachable once the viewport is shorter than the
        menu — which browser zoom causes directly. */
     overflow-y: auto;
   }
-  
+
   .nav {
     display: flex;
     flex-direction: column;
-    padding: 0.5rem;
+    padding: 8px;
+    gap: 2px;
   }
-  
+
   .nav-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
+    gap: 10px;
+    padding: 8px 12px;
     background: none;
     border: none;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     cursor: pointer;
     text-align: left;
-    font-size: 0.9375rem;
-    color: inherit;
-  }
-  
-  .nav-item:hover {
-    background: var(--hover-bg, rgba(0,0,0,0.05));
-  }
-  
-  .nav-item.active {
-    background: var(--active-bg, rgba(0,0,0,0.1));
-    font-weight: 500;
-  }
-  
-  .icon {
-    font-size: 1.125rem;
+    font: var(--title-3);
+    letter-spacing: 0;
+    color: var(--systemSecondary);
+    transition: var(--hover-transition);
   }
 
-  /* 响应式 - 移动端 */
+  /* Hover is gated: a touch device has no hover state to give, and leaving it
+     ungated leaves the last-tapped item stuck looking active. */
+  @media (hover: hover) and (pointer: fine) {
+    .nav-item:hover {
+      background: var(--systemQuinary);
+      color: var(--systemPrimary);
+    }
+  }
+
+  /* Selection is carried by weight and ink, not a heavy fill. */
+  .nav-item.active {
+    background: var(--systemQuinary);
+    font: var(--title-3-emphasized);
+    color: var(--systemPrimary);
+  }
+
+  .icon {
+    font: var(--title-3);
+    width: 1.25em;
+    text-align: center;
+    color: var(--systemSecondary);
+  }
+  .nav-item.active .icon { color: var(--keyColor); }
+
   @media (max-width: 768px) {
     .sidebar {
       position: fixed;
-      top: 48px; /* Header 高度 */
-      left: 0;
+      top: 48px;
       bottom: 0;
+      left: 0;
       z-index: 100;
       transform: translateX(-100%);
-      transition: transform 0.2s ease;
-      box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+      transition: transform var(--hover-transition);
+      background: var(--pageBG);
     }
-
-    .sidebar.open {
-      transform: translateX(0);
-    }
+    .sidebar.open { transform: translateX(0); }
   }
 
-  @media (prefers-color-scheme: dark) {
-    .sidebar {
-      --sidebar-bg: #252525;
-      --border-color: #333;
-    }
-    
-    .nav-item:hover {
-      --hover-bg: rgba(255,255,255,0.05);
-    }
-    
-    .nav-item.active {
-      --active-bg: rgba(255,255,255,0.1);
-    }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar, .nav-item { transition: none; }
   }
 </style>

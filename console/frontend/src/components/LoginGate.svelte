@@ -85,41 +85,23 @@
      invisible, leaving only the placeholder and the button. Every surface here
      now sets its own foreground next to its background. */
   .gate {
-    --bg: #f5f5f5;
-    --surface: #ffffff;
-    --text: #1a1a1a;
-    --muted: #52525b;
-    --border: #d4d4d4;
-    --field-bg: #ffffff;
-    --accent: #1d4ed8;
 
     min-height: 100dvh;
     display: grid;
     place-items: center;
     padding: 2rem 1rem;
-    background: var(--bg);
-    color: var(--text);
+    background: var(--pageBg);
+    color: var(--systemPrimary);
   }
 
-  @media (prefers-color-scheme: dark) {
-    .gate {
-      --bg: #111827;
-      --surface: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-      --field-bg: #111827;
-      --accent: #2563eb;
-    }
-  }
 
   .card {
     width: 100%;
     max-width: 28rem;
-    background: var(--surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    background: var(--pageBG);
+    color: var(--systemPrimary);
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-small);
     padding: 1.75rem;
     display: flex;
     flex-direction: column;
@@ -128,24 +110,24 @@
 
   h1 {
     margin: 0;
-    font-size: 1.25rem;
+    font: var(--title-1-emphasized);
     font-weight: 600;
-    color: var(--text);
+    color: var(--systemPrimary);
   }
 
   .lede {
     margin: 0;
-    font-size: 0.9rem;
+    font: var(--body);
     line-height: 1.5;
-    color: var(--muted);
+    color: var(--systemSecondary);
   }
 
   .alert {
     margin: 0;
-    font-size: 0.9rem;
+    font: var(--body);
     line-height: 1.5;
     padding: 0.65rem 0.8rem;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     border: 1px solid #d97706;
     background: #fef3c7;
     /* Fixed dark text: this banner keeps its amber background in both schemes,
@@ -157,39 +139,39 @@
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-    font-size: 0.85rem;
-    color: var(--text);
+    font: var(--body);
+    color: var(--systemPrimary);
   }
 
   .field input {
     padding: 0.55rem 0.65rem;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--field-bg);
-    color: var(--text);
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
+    background: var(--pageBG);
+    color: var(--systemPrimary);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.9rem;
+    font: var(--body);
   }
 
   .field input::placeholder {
-    color: var(--muted);
+    color: var(--systemSecondary);
   }
 
   .reveal {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.85rem;
-    color: var(--text);
+    font: var(--body);
+    color: var(--systemPrimary);
   }
 
   button {
     padding: 0.6rem 1rem;
     border: 1px solid transparent;
-    border-radius: 4px;
-    background: var(--accent);
+    border-radius: var(--global-border-radius-xsmall);
+    background: var(--keyColor);
     color: #fff;
-    font-size: 0.9rem;
+    font: var(--body);
     cursor: pointer;
   }
 
@@ -199,30 +181,30 @@
   }
 
   details {
-    font-size: 0.85rem;
+    font: var(--body);
     line-height: 1.5;
-    color: var(--text);
+    color: var(--systemPrimary);
   }
 
   summary {
     cursor: pointer;
-    color: var(--text);
+    color: var(--systemPrimary);
   }
 
   details p {
-    color: var(--muted);
+    color: var(--systemSecondary);
   }
 
   pre {
     overflow-x: auto;
     padding: 0.6rem;
-    border-radius: 4px;
+    border-radius: var(--global-border-radius-xsmall);
     background: #0f172a;
-    color: #e5e7eb;
-    font-size: 0.78rem;
+    color: var(--systemQuaternary);
+    font: var(--callout);
   }
 
   .muted {
-    color: var(--muted);
+    color: var(--systemSecondary);
   }
 </style>

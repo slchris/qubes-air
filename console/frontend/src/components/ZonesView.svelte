@@ -117,47 +117,33 @@
      its own. Inside .app the inherited colour is LIGHT in dark mode, so these
      cards rendered light-on-white. Each surface sets both. */
   .zones {
-    --surface: #ffffff;
-    --text: #1a1a1a;
-    --muted: #6b7280;
-    --border: #d4d4d4;
-    --accent: #1d4ed8;
     padding: 0.5rem;
-    color: var(--text);
+    color: var(--systemPrimary);
   }
 
-  @media (prefers-color-scheme: dark) {
-    .zones {
-      --surface: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-      --accent: #2563eb;
-    }
-  }
   .header {
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 1rem;
   }
-  h2 { margin: 0; font-size: 1.2rem; color: var(--text); }
+  h2 { margin: 0; font: var(--title-2-emphasized); color: var(--systemPrimary); }
   .refresh {
-    padding: 0.4rem 0.8rem; border: 1px solid var(--border);
-    border-radius: 4px; background: var(--surface); color: var(--text);
+    padding: 0.4rem 0.8rem; border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall); background: var(--pageBG); color: var(--systemPrimary);
     cursor: pointer;
   }
   .banner {
-    margin: 0 0 1rem; padding: 0.6rem 0.8rem; border-radius: 4px; font-size: 0.9rem;
+    margin: 0 0 1rem; padding: 0.6rem 0.8rem; border-radius: var(--global-border-radius-xsmall); font: var(--body);
   }
   .banner.error { border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; }
-  .empty { color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+  .empty { color: var(--systemSecondary); font: var(--body); line-height: 1.5; }
 
   .grid {
     display: grid; gap: 1rem;
     grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr));
   }
   .card {
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 1rem; background: var(--surface); color: var(--text);
+    border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-small);
+    padding: 1rem; background: var(--pageBG); color: var(--systemPrimary);
   }
   .card-head {
     display: flex; align-items: center; justify-content: space-between;
@@ -165,7 +151,7 @@
   }
   .name { font-weight: 600; }
   .badge {
-    font-size: 0.72rem; padding: 0.15rem 0.5rem; border-radius: 999px;
+    font: var(--subhead); padding: 0.15rem 0.5rem; border-radius: 999px;
     text-transform: uppercase; letter-spacing: 0.03em;
   }
   .badge.connected { background: #dcfce7; color: #166534; }
@@ -173,21 +159,18 @@
 
   dl {
     display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 0.75rem;
-    margin: 0 0 1rem; font-size: 0.85rem;
+    margin: 0 0 1rem; font: var(--body);
   }
-  dt { color: var(--muted); }
-  dd { margin: 0; word-break: break-word; color: var(--text); }
-  .mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  dt { color: var(--systemSecondary); }
+  dd { margin: 0; word-break: break-word; color: var(--systemPrimary); }
+  .mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font: var(--callout); }
 
   .actions { display: flex; justify-content: flex-end; }
   .toggle {
-    padding: 0.45rem 0.9rem; border-radius: 4px; border: 1px solid transparent;
-    cursor: pointer; background: var(--accent); color: #fff; font-size: 0.85rem;
+    padding: 0.45rem 0.9rem; border-radius: var(--global-border-radius-xsmall); border: 1px solid transparent;
+    cursor: pointer; background: var(--keyColor); color: #fff; font: var(--body);
   }
-  .toggle.connected { background: #fff; color: #b91c1c; border-color: #b91c1c; }
+  .toggle.connected { background: #fff; color: var(--systemRed); border-color: var(--systemRed); }
   .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  @media (prefers-color-scheme: dark) {
-    .toggle.connected { background: var(--surface); }
-  }
 </style>

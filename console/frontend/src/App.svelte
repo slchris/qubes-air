@@ -102,6 +102,8 @@
 {/if}
 
 <style>
+  /* Colours, type and radii come from styles/tokens.css. Nothing here declares
+     a hex value or a font size of its own. */
   .app {
     display: flex;
     flex-direction: column;
@@ -109,8 +111,8 @@
        address bar, so a 100vh shell is taller than what is actually visible and
        the bottom of the page cannot be reached. */
     height: 100dvh;
-    background: var(--bg-color, #f5f5f5);
-    color: var(--text-color, #1a1a1a);
+    background: var(--pageBg);
+    color: var(--systemPrimary);
   }
 
   .main {
@@ -125,13 +127,13 @@
        since zoom shrinks the viewport while the content keeps its size. */
     min-height: 0;
   }
-  
+
   .content {
     flex: 1;
-    padding: 1rem;
+    padding: var(--bodyGutter);
     overflow-y: auto;
   }
-  
+
   .placeholder {
     display: flex;
     flex-direction: column;
@@ -141,41 +143,16 @@
     text-align: center;
   }
 
-  /* 移动端遮罩层 */
-  .sidebar-overlay {
-    display: none;
-  }
-  
-  /* 深色模式支持 */
-  @media (prefers-color-scheme: dark) {
-    .app {
-      --bg-color: #1a1a1a;
-      --text-color: #e0e0e0;
-    }
-  }
+  .sidebar-overlay { display: none; }
 
-  /* 响应式布局 - 平板 */
-  @media (max-width: 1024px) {
-    .content {
-      padding: 0.75rem;
-    }
-  }
-
-  /* 响应式布局 - 移动端 */
   @media (max-width: 768px) {
     .sidebar-overlay {
       display: block;
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
+      inset: 0;
+      background: var(--modalScrimColor);
       z-index: 99;
     }
-
-    .content {
-      padding: 0.5rem;
-    }
+    .content { padding: 16px; }
   }
 </style>

@@ -1,0 +1,342 @@
+/* =============================================================================
+   Design tokens for the console UI.
+
+   One source for colour, type, shape, spacing and motion. Every component reads
+   these custom properties; none declares a hex value, a font size or a
+   dark-mode block of its own.
+
+   The three properties that make the rest work:
+
+   - Ink is a 5-step ALPHA ladder, never a grey hex and never pure #000/#fff.
+     Because it is alpha, the same token stays legible on either surface.
+   - The type ramp is a fixed set of sizes. Nothing scales with the viewport; a
+     component points at a different rung instead.
+   - Theming is one `prefers-color-scheme` remap of :root. No theme class, no
+     data attribute, no JS.
+
+   Values follow Apple's published system so the ladder steps and optical sizes
+   are ones that have been tuned rather than guessed. Do not round them.
+   ============================================================================= */
+
+:root {
+  color-scheme: light dark;
+
+  /* ---------------------------------------------------------------------------
+     TYPEFACE
+     `-apple-system` gives Apple platforms the real SF Pro. Apple serves SF Pro
+     to everyone else from //www.apple.com/wss/fonts — you cannot use that
+     endpoint and must not self-host SF Pro. Swap in your own grotesque below.
+     --------------------------------------------------------------------------- */
+  --font-family: -apple-system, BlinkMacSystemFont, "Apple Color Emoji", "SF Pro",
+                 "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  /* SF Pro Rounded. Badges and monograms ONLY — never running text. */
+  --font-family-rounded: ui-rounded, -apple-system, BlinkMacSystemFont,
+                 "Apple Color Emoji", "SF Pro", "SF Pro Icons",
+                 "Helvetica Neue", Helvetica, Arial, sans-serif;
+
+  /* ---------------------------------------------------------------------------
+     TYPE RAMP — size NEVER changes with viewport.
+     Responsive type = a component pointing at a different rung at 484/1000px.
+     `-emphasized` is role-dependent: Title-1 → 700, Title-3 → 600, Headline → 800.
+     --------------------------------------------------------------------------- */
+  --header:                  400 34px/1.1764905882 var(--font-family);
+  --header-emphasized:       700 34px/1.1764905882 var(--font-family);
+
+  --large-title:             400 26px/1.2307692308 var(--font-family);
+  --large-title-emphasized:  700 26px/1.2307692308 var(--font-family);
+  --large-title-emphasized-tall: 700 26px/1.3077523077 var(--font-family);
+
+  --title-1:                 400 22px/1.1818181818 var(--font-family);
+  --title-1-emphasized:      700 22px/1.1818181818 var(--font-family);
+
+  --title-2:                 400 17px/1.2941176471 var(--font-family);
+  --title-2-emphasized:      700 17px/1.2941176471 var(--font-family);
+  --title-2-tall:            400 17px/1.4118447059 var(--font-family);
+
+  --title-3:                 400 15px/1.3333833333 var(--font-family);
+  --title-3-emphasized:      600 15px/1.3333833333 var(--font-family);
+  --title-3-tall:            400 15px/1.4666666667 var(--font-family);
+
+  --headline:                700 13px/1.2307692308 var(--font-family);
+  --headline-emphasized:     800 13px/1.2307692308 var(--font-family);
+
+  --body:                    400 13px/1.2307692308 var(--font-family);
+  --body-emphasized:         600 13px/1.2307692308 var(--font-family);
+  --body-semibold-tall:      600 13px/1.3846153846 var(--font-family);
+  --body-tall:               400 13px/1.3846153846 var(--font-family);
+
+  --callout:                 400 12px/1.25 var(--font-family);
+  --callout-emphasized:      600 12px/1.25 var(--font-family);
+
+  --subhead:                 400 11px/1.2727272727 var(--font-family);
+  --subhead-emphasized:      600 11px/1.2727272727 var(--font-family);
+
+  --footnote:                400 10px/1.3 var(--font-family);
+  --footnote-emphasized:     600 10px/1.3 var(--font-family);
+  --footnote-bold:           700 10px/1.3 var(--font-family);
+
+  --caption-1:               400 10px/1.3 var(--font-family);
+  --caption-1-emphasized:    500 10px/1.3 var(--font-family);
+  --caption-2:               500 10px/1.3 var(--font-family);
+  --caption-2-emphasized:    600 10px/1.3 var(--font-family);
+
+  --live-badge:              600 10px/1 var(--font-family-rounded);
+  --live-badge-large:        600 15px/1 var(--font-family-rounded);
+
+  /* ---------------------------------------------------------------------------
+     INK — a 5-step alpha ladder. Primary is 85% black, never #000.
+     --------------------------------------------------------------------------- */
+  --systemPrimary:    rgba(0, 0, 0, .85);
+  --systemSecondary:  rgba(0, 0, 0, .5);
+  --systemTertiary:   rgba(0, 0, 0, .25);
+  --systemQuaternary: rgba(0, 0, 0, .1);
+  --systemQuinary:    rgba(0, 0, 0, .05);
+
+  /* Ink for a KNOWN substrate (text over artwork).
+     Absolute — these do NOT change in dark mode. That is the point. */
+  --systemPrimary-onLight:    rgba(0, 0, 0, .85);
+  --systemSecondary-onLight:  rgba(0, 0, 0, .5);
+  --systemTertiary-onLight:   rgba(0, 0, 0, .25);
+  --systemQuaternary-onLight: rgba(0, 0, 0, .1);
+  --systemPrimary-onDark:     hsla(0, 0%, 100%, .85);
+  --systemSecondary-onDark:   hsla(0, 0%, 100%, .55);
+  --systemTertiary-onDark:    hsla(0, 0%, 100%, .25);
+  --systemQuaternary-onDark:  hsla(0, 0%, 100%, .1);
+
+  /* Opaque ink for translucent materials (alpha would double-composite). */
+  --systemPrimary-vibrant:    #4c4c4c;
+  --systemSecondary-vibrant:  grey;
+  --systemTertiary-vibrant:   #bfbfbf;
+  --systemQuaternary-vibrant: #e6e6e6;
+  --systemQuinary-vibrant:    #f2f2f2;
+
+  /* High-contrast values published as tokens so components can force them
+     unconditionally, without waiting for the media query. */
+  --systemPrimary-default_IC:    #000;
+  --systemSecondary-default_IC:  rgba(0, 0, 0, .76);
+  --systemTertiary-default_IC:   rgba(0, 0, 0, .56);
+  --systemQuaternary-default_IC: rgba(0, 0, 0, .35);
+  --systemSecondary-onLight_IC:  rgba(0, 0, 0, .76);   /* doubles as the dark-gray button fill */
+  --systemSecondary-onDark_IC:   hsla(0, 0%, 100%, .7);
+
+  /* ---------------------------------------------------------------------------
+     PALETTE. Note: there is no --systemGray1; the base is --systemGray.
+     --------------------------------------------------------------------------- */
+  --systemRed:    #ff3b30;  --systemOrange: #ff9500;  --systemYellow: #fc0;
+  --systemGreen:  #28cd41;  --systemMint:   #00c7be;  --systemTeal:   #59adc4;
+  --systemCyan:   #55bef0;  --systemBlue:   #007aff;  --systemIndigo: #5856d6;
+  --systemPurple: #af52de;  --systemPink:   #ff2d55;  --systemBrown:  #a2845e;
+
+  --systemGray:  #8e8e93;
+  --systemGray2: #aeaeb2;
+  --systemGray3: #c7c7cc;
+  --systemGray4: #d1d1d6;
+  --systemGray5: #e5e5ea;
+  --systemGray6: #f2f2f7;
+  --defaultLine: var(--systemGray4);
+
+  /* Accent. NOTE: --keyColor does NOT change in dark mode; --systemBlue does.
+     Publish -rgb companions for anything that gets alpha-tinted. */
+  --keyColor:            #007aff;
+  --keyColor-rgb:        0, 122, 255;
+  --keyColor-rollover:   #0045b7;   /* :hover  */
+  --keyColor-pressed:    #005cd7;   /* :active */
+  --keyColor-default_IC: #0040dd;
+
+  /* ---------------------------------------------------------------------------
+     SURFACES. --pageBg (recessed floor) vs --pageBG (raised) differ by ONE
+     letter's case and mean opposite things. Rename them in your own system.
+     --------------------------------------------------------------------------- */
+  --pageBg:          #f5f5f7;   /* body — the recessed floor */
+  --pageBg-rgb:      245, 245, 247;
+  --pageBG:          #fff;      /* modals, dialogs, inputs — raised */
+  --footerBg:        #f2f2f2;
+  --navSidebarBG:    rgba(60, 60, 67, .03);
+  --genericJoeColor: #ebebeb;   /* artwork placeholder while loading */
+
+  /* Materials — blur is ALWAYS paired with saturate() >= 120%. */
+  --systemStandardThinMaterialSover:       hsla(0, 0%, 96%, .48);
+  --systemStandardMediumMaterialSover:     hsla(0, 0%, 96%, .6);
+  --systemStandardThickMaterialSover:      hsla(120, 0%, 96%, .72);
+  --systemStandardUltrathickMaterialSover: hsla(0, 0%, 96%, .84);
+  --systemHeaderMaterialSover:             hsla(0, 0%, 100%, .8);
+
+  /* Lines, scrims, shadows. Only TWO shadows exist in the whole system. */
+  --labelDivider:         rgba(0, 0, 0, .15);
+  --keyline-border-style: .5px solid var(--labelDivider);
+  --modalScrimColor:      rgba(0, 0, 0, .45);
+  --dialogShadowColor:    rgba(0, 0, 0, .25);
+  --shadow-small:  0 3px  9px rgba(0, 0, 0, .08);
+  --shadow-medium: 0 3px 20px rgba(0, 0, 0, .08);
+  --artworkShadowInset: inset 0 0 0 1px hsla(0, 0%, 50%, .1);
+
+  /* ---------------------------------------------------------------------------
+     SHAPE
+     --------------------------------------------------------------------------- */
+  --global-border-radius-xsmall: 5px;
+  --global-border-radius-small:  9px;
+  --global-border-radius-medium: 12px;
+  --global-border-radius-large:  17px;   /* the default card radius */
+  --global-border-radius-xlarge: 24px;
+  --buttonRadius: 6px;
+  --pill-button-border-radius: 1000px;
+  --modalBorderRadius: 10px;
+  /* App icons use PERCENTAGE radii so the curve scales with the icon:
+     .rounded-rect 23% · .rounded-rect-prerendered 25% · .round 50% */
+
+  /* ---------------------------------------------------------------------------
+     SPACING
+     Scale: 2 3 4 5 6 8 10 12 13 15 16 20 24 25 30 32 40 50
+     --------------------------------------------------------------------------- */
+  --bodyGutter:   25px;   /* → 40px at >=1000px */
+  --moduleGutter: 30px;
+  --grid-column-gap: 20px;
+  --grid-column-gap-xsmall: 10px;
+  --grid-row-gap: 24px;
+  --standard-lockup-shadow-offset: 15px;   /* the load-bearing shelf bleed */
+
+  /* ---------------------------------------------------------------------------
+     MOTION — 210ms ease-out is the house transition.
+     --------------------------------------------------------------------------- */
+  --global-transition-property: opacity;
+  --global-transition-duration: .1s;
+  --global-transition-timing-function: ease-in;
+  --global-transition: var(--global-transition-property, opacity)
+                       var(--global-transition-duration, .1s)
+                       var(--global-transition-timing-function, ease-in);
+  --hover-transition: 210ms ease-out;
+  --spring: cubic-bezier(.04, .04, .12, .96);
+
+  /* Z-index ladder */
+  --z-default: 1;
+  --z-bubbles: 50;
+  --z-web-chrome: 9901;
+  --z-contextual-menus: 9951;
+  --z-modal: 10001;
+}
+
+@media (min-width: 1000px) {
+  :root { --bodyGutter: 40px; }
+}
+
+/* =============================================================================
+   DARK — same token names, remapped values.
+   ============================================================================= */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --systemPrimary:    hsla(0, 0%, 100%, .85);
+    --systemSecondary:  hsla(0, 0%, 100%, .55);   /* +5%: white-on-dark reads dimmer */
+    --systemTertiary:   hsla(0, 0%, 100%, .25);
+    --systemQuaternary: hsla(0, 0%, 100%, .1);
+    --systemQuinary:    hsla(0, 0%, 100%, .05);
+
+    /* -onLight / -onDark intentionally NOT remapped */
+
+    --systemPrimary-vibrant:    #e5e5e5;
+    --systemSecondary-vibrant:  #7c7c7c;
+    --systemTertiary-vibrant:   #414141;
+    --systemQuaternary-vibrant: #232323;
+    --systemQuinary-vibrant:    #080808;
+
+    --systemPrimary-default_IC:    #fff;
+    --systemSecondary-default_IC:  hsla(0, 0%, 100%, .7);
+    --systemTertiary-default_IC:   hsla(0, 0%, 100%, .5);
+    --systemQuaternary-default_IC: hsla(0, 0%, 100%, .3);
+
+    --systemRed:    #ff453a;  --systemOrange: #ff9f0a;  --systemYellow: #ffd60a;
+    --systemGreen:  #32d74b;  --systemMint:   #63e6e2;  --systemTeal:   #6ac4dc;
+    --systemCyan:   #5ac8f5;  --systemBlue:   #0a84ff;  --systemIndigo: #5e5ce6;
+    --systemPurple: #bf5af2;  --systemPink:   #ff375f;  --systemBrown:  #ac8e68;
+
+    --systemGray:  #98989d;
+    --systemGray2: #636366;
+    --systemGray3: #48484a;
+    --systemGray4: #3a3a3c;
+    --systemGray5: #2c2c2e;
+    --systemGray6: #1c1c1e;
+
+    /* --keyColor deliberately unchanged */
+
+    --pageBg:          #151515;
+    --pageBg-rgb:      21, 21, 21;
+    --pageBG:          #1f1f1f;
+    --footerBg:        #323232;
+    --navSidebarBG:    rgba(235, 235, 245, .03);
+    --genericJoeColor: #323232;
+
+    --systemStandardThinMaterialSover:       rgba(40, 40, 40, .5);
+    --systemStandardMediumMaterialSover:     rgba(40, 40, 40, .6);
+    --systemStandardThickMaterialSover:      rgba(40, 40, 40, .7);
+    --systemStandardUltrathickMaterialSover: rgba(40, 40, 40, .8);
+    --systemHeaderMaterialSover:             rgba(30, 30, 30, .8);
+
+    --labelDivider:      hsla(0, 0%, 100%, .1);
+    --dialogShadowColor: rgba(0, 0, 0, .55);
+    /* --shadow-* and --modalScrimColor intentionally identical in dark */
+  }
+}
+
+/* =============================================================================
+   HIGH CONTRAST — also exposed as a `.increase-contrast` class hook so it can
+   be forced without the media query.
+   ============================================================================= */
+@media (prefers-contrast: more) {
+  :root {
+    --systemPrimary:   var(--systemPrimary-default_IC);
+    --systemSecondary: var(--systemSecondary-default_IC);
+    --systemTertiary:  var(--systemTertiary-default_IC);
+    --keyColor:        #0040dd;
+    --keyColor-rgb:    0, 64, 221;
+  }
+}
+
+/* =============================================================================
+   NON-APPLE TEXT RENDERING
+   Without SF Pro's optical sizing the same alpha reads lighter, so the ink
+   ladder is compensated at the token layer.
+   ============================================================================= */
+@supports not (font: -apple-system-body) {
+  :root {
+    --systemPrimary:   rgba(0, 0, 0, .88);
+    --systemSecondary: rgba(0, 0, 0, .56);
+    --systemTertiary:  rgba(0, 0, 0, .48);
+    --systemPrimary-vibrant: #1d1d1f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --systemPrimary:   hsla(0, 0%, 100%, .92);
+      --systemSecondary: hsla(0, 0%, 100%, .64);
+      --systemTertiary:  hsla(0, 0%, 100%, .4);
+      --systemPrimary-vibrant: #f5f5f7;
+    }
+  }
+}
+
+/* =============================================================================
+   BASE
+   ============================================================================= */
+body {
+  background-color: var(--pageBg);
+  color: var(--systemPrimary);
+  font: var(--body);
+  letter-spacing: 0;          /* explicit 0, not `normal` */
+}
+
+body, button, input, select, textarea {
+  font-synthesis: none;       /* never fake a weight — real cuts only */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:focus-visible {
+  outline: 4px solid var(--sk-focus-color, rgba(var(--keyColor-rgb), .6));
+  outline-offset: var(--sk-focus-offset, 1px);
+}
+
+/* Localized stacks: redefine --font-family itself, inserting the script family
+   right after SF Pro. Add only the locales you ship. */
+[lang]:lang(zh-CN) { --font-family: -apple-system, BlinkMacSystemFont, "Apple Color Emoji", "SF Pro", "PingFang SC", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+[lang]:lang(zh-TW) { --font-family: -apple-system, BlinkMacSystemFont, "Apple Color Emoji", "SF Pro", "PingFang TC", "SF Pro Icons", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+[lang]:lang(ja)    { --font-family: -apple-system, BlinkMacSystemFont, "Apple Color Emoji", "SF Pro", "Hiragino Sans", "SF Pro Icons", "Hiragino Kaku Gothic Pro", Meiryo, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+[lang]:lang(ko)    { --font-family: -apple-system, BlinkMacSystemFont, "Apple Color Emoji", "SF Pro", "Apple SD Gothic Neo", "SF Pro Icons", "Malgun Gothic", "Helvetica Neue", Helvetica, Arial, sans-serif; }

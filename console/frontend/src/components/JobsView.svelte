@@ -93,55 +93,43 @@
 
 <style>
   .jobs {
-    --surface: #ffffff;
-    --text: #1a1a1a;
-    --muted: #6b7280;
-    --border: #e5e7eb;
-    color: var(--text);
+    color: var(--systemPrimary);
     max-width: 1100px;
-  }
-  @media (prefers-color-scheme: dark) {
-    .jobs {
-      --surface: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
-      --border: #374151;
-    }
   }
 
   .head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.9rem; }
-  h2 { margin: 0; font-size: 1.3rem; color: var(--text); }
+  h2 { margin: 0; font: var(--title-1-emphasized); color: var(--systemPrimary); }
   .ghost {
-    border: 1px solid var(--border); background: var(--surface); color: var(--text);
-    border-radius: 4px; padding: 0.35rem 0.7rem; font-size: 0.82rem; cursor: pointer;
+    border: 1px solid var(--systemQuaternary); background: var(--pageBG); color: var(--systemPrimary);
+    border-radius: var(--global-border-radius-xsmall); padding: 0.35rem 0.7rem; font: var(--callout); cursor: pointer;
   }
   .banner {
-    margin: 0 0 1rem; padding: 0.6rem 0.8rem; border-radius: 4px;
-    border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; font-size: 0.88rem;
+    margin: 0 0 1rem; padding: 0.6rem 0.8rem; border-radius: var(--global-border-radius-xsmall);
+    border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; font: var(--body);
   }
-  .empty { margin: 0; font-size: 0.87rem; color: var(--muted); line-height: 1.55; }
+  .empty { margin: 0; font: var(--body); color: var(--systemSecondary); line-height: 1.55; }
 
-  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-  .rows li { border-top: 1px solid var(--border); background: var(--surface); }
+  .rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-small); overflow: hidden; }
+  .rows li { border-top: 1px solid var(--systemQuaternary); background: var(--pageBG); }
   .rows li:first-child { border-top: none; }
-  .rows li.failed { background: color-mix(in srgb, #dc2626 6%, var(--surface)); }
+  .rows li.failed { background: color-mix(in srgb, var(--systemRed) 6%, var(--pageBG)); }
 
   .row {
     width: 100%; display: flex; align-items: center; gap: 0.75rem;
     padding: 0.55rem 0.8rem; background: none; border: none; cursor: pointer;
-    color: var(--text); font-size: 0.85rem; text-align: left;
+    color: var(--systemPrimary); font: var(--body); text-align: left;
   }
   .name { font-weight: 500; min-width: 9rem; }
   .action { min-width: 5rem; }
   .state { min-width: 5rem; }
-  .meta { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+  .meta { color: var(--systemSecondary); font: var(--callout); white-space: nowrap; }
   .time { margin-left: auto; }
-  .chev { color: var(--muted); width: 1em; }
+  .chev { color: var(--systemSecondary); width: 1em; }
 
   .detail { padding: 0 0.8rem 0.7rem; }
 
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #9ca3af; }
-  .dot.succeeded { background: #16a34a; }
-  .dot.failed { background: #dc2626; }
-  .dot.running, .dot.queued { background: #2563eb; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--systemSecondary); }
+  .dot.succeeded { background: var(--systemGreen); }
+  .dot.failed { background: var(--systemRed); }
+  .dot.running, .dot.queued { background: var(--keyColor); }
 </style>
