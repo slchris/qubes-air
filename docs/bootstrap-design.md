@@ -509,3 +509,117 @@ token，扫描扫到的是空集，完全无害；确认它在真机上稳定之
 连带好处：`terraform/modules/remote-qube-base/providers/gcp/main.tf:106` 现在硬性要求
 identity bucket 必须私有，理由就是「身份文档含 agent 私钥」。换成 token 之后，
 泄露的后果从「等于泄露车队身份」降级成「一个短时效、单次、绑定单机的 token」。
+
+## 10. 分环境：§9 定的方向只对 PVE 成立
+
+> 2026-07-20 调查。起因是一个直接的问题：PVE、AWS、GCP、k8s+kata 的 bootstrap 是不是
+> 得各做各的。答案是「是，但分界不在协议上」——而调查过程中撞到一个**比 bootstrap 更急**
+> 的缺口，见 §10.2。
+
+协议本身（CSR + 单次 token + 原子安装）是provider 无关的，已经写成那样了。
+每个环境真正不同的只有两件事：
+
+- **(a) `{token, ca.pem}` 怎么送进 guest**
+- **(b) console 能不能拨到 guest**
+
+(a) 早就是分 provider 的，且已经抽象好了。(b) 才是问题所在。
+
+### 10.1 (a) 投递：token 设计让每个 provider 都变轻
+
+| | 机制 | 需要的特权 |
+|---|---|---|
+| Proxmox | snippet，SFTP 传到节点（`proxmox/main.tf:161`） | **节点 root SSH**（§4） |
+| GCP | 私有 GCS object + 开机脚本从 metadata 取 token 再拉（`gcp/main.tf:176`） | 写 bucket；实例 SA 有读权限 |
+| AWS | **没有**。`agent_user_data_file` 在 AWS 子模块里连变量都不存在 | — |
+
+token 设计不改变机制，改变的是**载荷**：从「90 天私钥」变成「公开的 CA + 一个单次、
+短时效、绑定单机的 token」。这在每个 provider 上都是净收益，而且直接降级两条现有约束：
+`gcp/main.tf:106` 要求 identity bucket 必须私有的理由消失大半，§4 里节点 root SSH 的
+**后果**也小了一个量级（拿到 snippet 不再等于拿到车队身份）。
+
+它**不**消除 §4 的 SSH 需求：PVE API 至今没有 snippet 上传接口，写任意文件仍然只能 SFTP。
+所以「不用 SSH 能不能做完 PVE 的 bootstrap」——不能，§4(a)（专用 key + `command=` 钉死）
+仍是近期答案。但这条现在没那么疼了。
+
+### 10.2 (b) 可达性：GCP 今天就是坏的，而且不是 bootstrap 弄坏的
+
+**整个 terraform 树里没有任何防火墙 / security group 资源。** grep 全仓只有一条命中，
+而且是注释——`gcp/main.tf:137`「控制台经私有路径 (WireGuard) 拨 agent 的 :8443」。
+
+那条私有路径**没有任何资源在建**。WireGuard 在 `zone-base/main.tf:42` 和
+`terraform/variables.tf:145` 里只是几个没人引用的变量，默认空值，注释写着「由后续阶段回填」。
+
+于是 GCP 的实际行为是：`assign_public_ip` 默认 false → 实例没有外网地址 →
+`gcp/main.tf:298` 把 **VPC 私网地址**写进 output → console 存下来 →
+`agentprobe.go:267` 直接 `net.JoinHostPort(私网IP, 8443)` 从 console 主机拨出去 → 永远超时。
+
+**每台 GCP qube 都会置备成功，然后永远报 unreachable。** 这比 AWS 那个诚实的空壳
+（88 行，全是注释掉的 TODO，什么都不建）难查得多——又是这份文档从头到尾在消灭的那个形状。
+
+这件事**先于** bootstrap：探测和续期今天就撞在上面，bootstrap 接上去只是第三个受害者。
+
+### 10.3 一个必须记的推论：§9.3 的论证在 GCP 上有个洞
+
+§9.3 选 console→agent 的第一条理由是「系统里没有别的东西需要 agent→console 这个方向，
+续期和探测本来就是 console 拨 agent」。这条**成立**——bootstrap 确实没有新增连通性要求。
+
+但它顺带假设了那个要求**已经被满足**。在 PVE（同一 L2）是满足的；在 GCP **不满足**，
+而且没有任何东西在满足它。§9.3 还专门论证过「靠 WireGuard 打通会绕回原点：WG 配置得由
+cloud-init 送进 guest，里面含 WG 私钥」——那段是用来反驳 agent→console 的，
+**但它对 console→agent 同样成立**，只是下沉了一层。§9.3 没注意到这一点。
+
+结论不是方向选错了，是**这个方向只对 PVE 是免费的**。
+
+### 10.4 正确的分界：有没有可信证明，代码里早就写了
+
+`internal/pki/bootstrap.go:48` 自己写着：**在提供签名实例证明的 provider 上，
+那个证明应当取代 token，而不是和它并存。** 这就是真正的分环境轴，而且没人动过：
+
+| | 可用的证明 | bootstrap 该长什么样 |
+|---|---|---|
+| **PVE** | **没有** | token 是唯一选择，保持现状 |
+| **GCP** | instance identity token（metadata server 签发，Google 签名，带 audience、实例 ID） | 用它，cloud-init 里**不放任何秘密** |
+| **AWS** | instance identity document + PKCS7 签名 / IMDSv2 | 同上 |
+| **k8s+kata** | projected ServiceAccount token + TokenReview | 四者里最强：API server 是在线权威，token 短时效且绑 audience |
+
+这条推论比看起来重要：**有了证明，agent 就能在没有预共享秘密的情况下自证身份**，
+于是 agent→console 方向变安全了——而那个方向**根本不需要入站可达性**。
+
+所以 §10.2 的 GCP 缺口有两条出路，而不是一条：要么把 WireGuard 真建出来（并接受
+WG 私钥进 cloud-init），要么**在云上翻转方向**，让 agent 带着云厂商签名的证明拨回 console。
+后者同时解决可达性和「秘密进 user-data」两件事，代价是 console 需要一个可达端点
+（但它本来就有 HTTP 服务）。
+
+**建议：PVE 保持 console→agent + token；云上走 attestation + agent→console。**
+两条路共用同一套 `BootstrapIssuer`（兑换换成验证证明即可）和同一套 agent 侧安装逻辑。
+
+### 10.5 packer：不需要结合，这是 §6 特意拆开的
+
+`packer/scripts/install-agent.sh` 已经退役成硬失败，镜像里只留 debian-12 +
+`qemu-guest-agent`。所以「打模板生成 key」这件事**恰恰是不能做的**——模板是所有 qube 共享的，
+里面任何 per-qube 秘密都等于「一台被攻破 = 全部被攻破」（§6）。token 设计让这条更干净：
+模板里现在连证书都没有。
+
+顺带：`packer/templates/fedora.pkr.hcl` 是死的——从没跑过，`iso_checksum` 至今是
+`sha256:xxxxx`，而且是 Fedora，跟现网的 `debian-12-cloudimg-template` 对不上。
+它该删，留着只会让人以为镜像构建是通的。
+
+### 10.6 k8s + kata 不是 bootstrap 的一个变体，是第三种 zone
+
+没有 cloud-init，没有 terraform 的 VM 生命周期，`compute_running` 的挂起/恢复没有对应物
+（Pod 不是那么工作的），存算分离映射到 PVC + Pod。身份走 projected SA token。
+
+也就是说它复用的是**协议和 agent 侧**，不是 provider 模块那一层。当前仓库里零基础，
+应当按「新增 zone type」估工作量，不要按「再写一个 provider 模块」估。
+
+### 10.7 现状快照（2026-07-20 实测）
+
+| | terraform | console 接线 | 能不能真跑 |
+|---|---|---|---|
+| Proxmox | 322 行，完整 | 完整 | ✅ 真机验证过 |
+| GCP | 308 行，资源都是真的 | 部分（`renderGCP` 有，容量报告是占位） | ⚠️ 能建起来，然后永远不可达（§10.2） |
+| AWS | 88 行，纯空壳，资源全注释掉 | **只有名字**，没有 `renderAWS`，没有凭证注入 | ❌ 什么都不建 |
+| k8s+kata | 不存在 | 不存在 | ❌ |
+
+`scheduling.go:179` 那句注释说「GCP/AWS 模块还是不建任何资源的骨架」——对 GCP 已经过时了，
+而这个过时正好掩盖了 §10.2：它让人以为 GCP 还没开始，实际上它已经能建出永远连不上的机器。
