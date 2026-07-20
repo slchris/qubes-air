@@ -2,11 +2,11 @@ package orchestrator
 
 import (
 	"bytes"
-	"io"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,10 +244,14 @@ func WithTimeout(d time.Duration) TerraformOption {
 	return func(t *TerraformExecutor) { t.Timeout = d }
 }
 
+// defaultTerraformBinary is the executable looked up on PATH when the caller
+// does not name one.
+const defaultTerraformBinary = "terraform"
+
 // NewTerraformExecutor builds a TerraformExecutor rooted at workDir.
 func NewTerraformExecutor(workDir string, opts ...TerraformOption) *TerraformExecutor {
 	t := &TerraformExecutor{
-		Binary:  "terraform",
+		Binary:  defaultTerraformBinary,
 		WorkDir: workDir,
 		Timeout: DefaultTimeout,
 		runner:  execRunner{},
@@ -256,7 +260,7 @@ func NewTerraformExecutor(workDir string, opts ...TerraformOption) *TerraformExe
 		opt(t)
 	}
 	if t.Binary == "" {
-		t.Binary = "terraform"
+		t.Binary = defaultTerraformBinary
 	}
 	if t.Timeout <= 0 {
 		t.Timeout = DefaultTimeout
@@ -406,11 +410,11 @@ func (t *TerraformExecutor) execReadOnly(ctx context.Context, qubeName string, b
 		}
 	}
 	out, err := t.runner.run(ctx, t.WorkDir, t.Binary, buildArgs(), env)
-	return out, t.explainTimeout(ctx, qubeName, out, err)
+	return out, t.explainTimeout(ctx, qubeName, err)
 }
 
 // ErrApplyTimedOut reports that terraform was still running when its deadline
-// expired and was signalled to stop.
+// expired and was signaled to stop.
 var ErrApplyTimedOut = errors.New("terraform did not finish before its deadline and was interrupted")
 
 // explainTimeout turns an interrupted run into an actionable message.
@@ -425,7 +429,7 @@ var ErrApplyTimedOut = errors.New("terraform did not finish before its deadline 
 // ALREADY CREATED infrastructure. Terraform was stopped, not rolled back, so the
 // console records a failure for a qube that exists and is billing. Saying so is
 // the difference between "retry it" and "go look at the cluster first".
-func (t *TerraformExecutor) explainTimeout(ctx context.Context, qubeName, out string, err error) error {
+func (t *TerraformExecutor) explainTimeout(ctx context.Context, qubeName string, err error) error {
 	if err == nil || ctx.Err() == nil {
 		return err
 	}
@@ -434,7 +438,7 @@ func (t *TerraformExecutor) explainTimeout(ctx context.Context, qubeName, out st
 		limit = DefaultTimeout
 	}
 	return fmt.Errorf(
-		"%w after %s while working on %q: terraform was signalled to stop, so it may have "+
+		"%w after %s while working on %q: terraform was signaled to stop, so it may have "+
 			"ALREADY created or changed infrastructure that is not reflected here — check the "+
 			"cluster before retrying, and raise the executor timeout if provisioning legitimately "+
 			"takes this long (underlying error: %v)",
@@ -477,7 +481,7 @@ func (t *TerraformExecutor) exec(ctx context.Context, qubeName string, requireKe
 	}
 
 	// Only impose our own deadline when the caller has not already set a tighter
-	// one. Callers must NOT hand us an HTTP request context: cancelling mid-apply
+	// one. Callers must NOT hand us an HTTP request context: canceling mid-apply
 	// signals terraform away before it persists state, which orphans real VMs.
 	// The job runner owns a lifetime context derived from Background for this
 	// reason; the timeout here is a backstop for direct use.

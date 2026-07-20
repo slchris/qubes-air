@@ -62,7 +62,7 @@ func TestExpiredTokenIsRefused(t *testing.T) {
 	}
 }
 
-// A token authorises ONE name. Without this a token leaked from any qube would
+// A token authorizes ONE name. Without this a token leaked from any qube would
 // mint a certificate for the most valuable one.
 func TestTokenIsBoundToItsQube(t *testing.T) {
 	secret, rec, _ := NewBootstrapToken("remote-dev-1", time.Hour)

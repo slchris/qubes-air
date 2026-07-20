@@ -70,7 +70,7 @@ func signCSR(t *testing.T, ca *pki.CA, csrPEM string) string {
 // TestBeginProducesCSRForThisAgent — the agent does not get to pick its own
 // name. The console holds the peer's common name to "agent-<qube>", so a CSR
 // asking for anything else would either be refused or produce an identity the
-// console can no longer recognise.
+// console can no longer recognize.
 func TestBeginProducesCSRForThisAgent(t *testing.T) {
 	id, _, _ := installedIdentity(t, testAgentCN)
 	r := NewRenewalService(id, 0)
@@ -137,7 +137,7 @@ func TestRenewalRoundTrip(t *testing.T) {
 	}
 
 	// The key on disk must be the NEW one: the agent generated it, so a key
-	// that did not change means the console's key travelled instead.
+	// that did not change means the console's key traveled instead.
 	if readAt(t, filepath.Join(dir, "agent-key.pem")) == oldKeyOnDisk {
 		t.Error("the private key on disk did not change, so it was not generated here")
 	}

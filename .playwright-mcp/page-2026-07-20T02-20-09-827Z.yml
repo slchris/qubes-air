@@ -1,0 +1,65 @@
+- generic [ref=f1e87]:
+  - banner [ref=f1e88]:
+    - generic [ref=f1e89]:
+      - generic [ref=f1e90]: ◇
+      - generic [ref=f1e91]: Qubes Air
+    - generic [ref=f1e92]: Connected
+    - generic [ref=f1e95]: v0.1.0
+  - generic [ref=f1e96]:
+    - complementary [ref=f1e97]:
+      - navigation [ref=f1e98]:
+        - button "◎ Dashboard" [ref=f1e99] [cursor=pointer]:
+          - generic [ref=f1e100]: ◎
+          - generic [ref=f1e101]: Dashboard
+        - button "□ Qubes" [ref=f1e102] [cursor=pointer]:
+          - generic [ref=f1e103]: □
+          - generic [ref=f1e104]: Qubes
+        - button "◈ Zones" [ref=f1e105] [cursor=pointer]:
+          - generic [ref=f1e106]: ◈
+          - generic [ref=f1e107]: Zones
+        - button "≡ Jobs" [ref=f1e108] [cursor=pointer]:
+          - generic [ref=f1e109]: ≡
+          - generic [ref=f1e110]: Jobs
+        - button "⬡ Infrastructure" [ref=f1e111] [cursor=pointer]:
+          - generic [ref=f1e112]: ⬡
+          - generic [ref=f1e113]: Infrastructure
+        - button "⚿ Credentials" [ref=f1e114] [cursor=pointer]:
+          - generic [ref=f1e115]: ⚿
+          - generic [ref=f1e116]: Credentials
+        - button "$ Billing" [ref=f1e117] [cursor=pointer]:
+          - generic [ref=f1e118]: $
+          - generic [ref=f1e119]: Billing
+        - button "◉ Monitoring" [ref=f1e120] [cursor=pointer]:
+          - generic [ref=f1e121]: ◉
+          - generic [ref=f1e122]: Monitoring
+        - button "⚙ Settings" [ref=f1e123] [cursor=pointer]:
+          - generic [ref=f1e124]: ⚙
+          - generic [ref=f1e125]: Settings
+    - main [ref=f1e126]:
+      - generic [ref=f1e127]:
+        - generic [ref=f1e128]:
+          - heading "Overview" [level=2] [ref=f1e129]
+          - button "Refresh" [ref=f1e130] [cursor=pointer]
+        - generic [ref=f1e131]:
+          - button "0 Qubes 0 running · 0 parked" [ref=f1e132] [cursor=pointer]:
+            - generic [ref=f1e133]: "0"
+            - generic [ref=f1e134]: Qubes
+            - generic [ref=f1e135]: 0 running · 0 parked
+          - button "0 Zones 0 connected" [ref=f1e136] [cursor=pointer]:
+            - generic [ref=f1e137]: "0"
+            - generic [ref=f1e138]: Zones
+            - generic [ref=f1e139]: 0 connected
+          - button "0 Recent jobs all clear" [ref=f1e140] [cursor=pointer]:
+            - generic [ref=f1e141]: "0"
+            - generic [ref=f1e142]: Recent jobs
+            - generic [ref=f1e143]: all clear
+        - generic [ref=f1e144]:
+          - generic [ref=f1e145]:
+            - heading "Qubes" [level=3] [ref=f1e146]
+            - button "View all" [ref=f1e147] [cursor=pointer]
+          - paragraph [ref=f1e148]: No qubes yet. Create one from the Qubes view — it needs a connected zone first.
+        - generic [ref=f1e149]:
+          - generic [ref=f1e150]:
+            - heading "Recent activity" [level=3] [ref=f1e151]
+            - button "View all" [ref=f1e152] [cursor=pointer]
+          - paragraph [ref=f1e153]: Nothing has run yet.

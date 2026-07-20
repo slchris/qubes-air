@@ -55,7 +55,8 @@ func run(listenAddr string) error {
 	clientTLS := mustClientTLS(caCert, caKey)
 
 	// Pick a concrete port up front so the client knows where to dial.
-	lis, err := net.Listen("tcp", listenAddr)
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
@@ -101,7 +102,7 @@ func run(listenAddr string) error {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("Call never succeeded: %w", err)
+			return fmt.Errorf("call never succeeded: %w", err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -110,7 +111,8 @@ func run(listenAddr string) error {
 func waitDial(addr string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		dialer := net.Dialer{Timeout: 200 * time.Millisecond}
+		c, err := dialer.DialContext(context.Background(), "tcp", addr)
 		if err == nil {
 			_ = c.Close()
 			return

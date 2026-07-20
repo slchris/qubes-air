@@ -44,7 +44,8 @@ func New(cfg *Config) (*DB, error) {
 
 	configurePool(db, cfg)
 
-	if err := db.Ping(); err != nil {
+	// Background: this runs at startup, before any request context exists.
+	if err := db.PingContext(context.Background()); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -97,7 +98,7 @@ func (d *DB) migrate() error {
 	}
 
 	for _, m := range migrations {
-		if _, err := d.db.Exec(m); err != nil {
+		if _, err := d.db.ExecContext(context.Background(), m); err != nil {
 			return err
 		}
 	}
@@ -145,7 +146,7 @@ func (d *DB) migrate() error {
 func (d *DB) addColumnIfMissing(table, column, definition string) error {
 	// #nosec G202 -- table/column/definition are compile-time constants from
 	// this package, never user input; PRAGMA cannot be parameterized.
-	rows, err := d.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	rows, err := d.db.QueryContext(context.Background(), fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return fmt.Errorf("inspecting %s: %w", table, err)
 	}
@@ -177,7 +178,7 @@ func (d *DB) addColumnIfMissing(table, column, definition string) error {
 
 	// #nosec G202 -- identifiers are constants from this package, not user input.
 	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
-	if _, err := d.db.Exec(stmt); err != nil {
+	if _, err := d.db.ExecContext(context.Background(), stmt); err != nil {
 		return fmt.Errorf("adding column %s.%s: %w", table, column, err)
 	}
 	return nil

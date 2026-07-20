@@ -475,7 +475,7 @@ func TestThresholdFallsBackOnNonsense(t *testing.T) {
 // discovered in production.
 //
 // This test pins the arithmetic so the claim and the code cannot drift apart
-// again — including the direction, which is what a centred jitter would change.
+// again — including the direction, which is what a centered jitter would change.
 func TestGuaranteedRunwayIsNotTheRenewalWindow(t *testing.T) {
 	const lifetime = pki.DefaultAgentCertLifetime
 	window := time.Duration(float64(lifetime) * DefaultCertRenewalThreshold)
@@ -764,7 +764,7 @@ func TestSchedulerRetriesAfterAFailedInstallAgainstTheRealRegistry(t *testing.T)
 	// comfortably inside the renewal window.
 	expires := time.Now().Add(20 * 24 * time.Hour).UTC()
 	// The agent has been handshaking with this certificate, so the registry has
-	// SEEN it. Modelling that is not decoration: dueness is computed from the
+	// SEEN it. Modeling that is not decoration: dueness is computed from the
 	// certificate the agent is observed to be using, precisely so an orphan the
 	// agent never received cannot masquerade as a fresh renewal. A test where
 	// nothing was ever seen is a state production does not reach.
@@ -798,7 +798,7 @@ func TestSchedulerRetriesAfterAFailedInstallAgainstTheRealRegistry(t *testing.T)
 	require.Len(t, list, 2, "the certificate WAS registered before the install was attempted")
 	assert.NotNil(t, newestUsableCert(list))
 	assert.Equal(t, 20*24*time.Hour.Round(time.Hour),
-		newestUsableCert(list).ExpiresAt.Sub(time.Now()).Round(time.Hour),
+		time.Until(*newestUsableCert(list).ExpiresAt).Round(time.Hour),
 		"an orphan the agent never received must not outrank the certificate it is actually using")
 
 	// Sweep two, after the backoff, with the tunnel healthy again.
@@ -813,7 +813,7 @@ func TestSchedulerRetriesAfterAFailedInstallAgainstTheRealRegistry(t *testing.T)
 	require.NoError(t, err)
 	best := newestUsableCert(list)
 	require.NotNil(t, best)
-	assert.Greater(t, best.ExpiresAt.Sub(time.Now()), 80*24*time.Hour,
+	assert.Greater(t, time.Until(*best.ExpiresAt), 80*24*time.Hour,
 		"the qube now holds a freshly renewed certificate")
 
 	// And it is no longer due, so the console does not sign one every hour.

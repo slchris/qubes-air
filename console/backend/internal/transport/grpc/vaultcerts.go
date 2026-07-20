@@ -31,7 +31,7 @@ type VaultCertConfig struct {
 
 // getCredentialService is the qrexec service that cats a named credential from
 // vault-cloud to stdout (dom0 policy: ask).
-const getCredentialService = "qubesair.GetCredential"
+const getCredentialService = "qubesair.GetCredential" //nolint:gosec // G101: a qrexec service name, not a credential
 
 // FetchClientMTLS fetches client cert/key (and optional CA) from vault-cloud via
 // qrexec and returns an in-memory *tls.Config for the outbound relay client.

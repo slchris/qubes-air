@@ -369,7 +369,7 @@ type CertRenewer struct {
 // NewCertRenewer builds a renewer.
 //
 // agentListen is the same config value the agent was told to bind, so the port
-// dialled here and the port the agent listens on cannot drift. Any nil
+// dialed here and the port the agent listens on cannot drift. Any nil
 // dependency leaves the renewer unable to renew, which it reports as
 // CertRenewalNotConfigured rather than as a failed agent.
 func NewCertRenewer(
@@ -636,7 +636,7 @@ func (r *CertRenewer) exchange(
 // the decommissioned machine a working credential straight back — in a row that
 // looks exactly like a legitimate agent's, so nothing downstream ever flags it.
 // repository.RecordRenewal folds the check into the insert so there is no
-// window at all, rather than hoping the two statements interleave favourably.
+// window at all, rather than hoping the two statements interleave favorably.
 //
 // The three outcomes are kept apart because they send an operator to three
 // different places: a purge that raced a renewal (nothing is broken), a
@@ -1167,7 +1167,7 @@ func (r *CertRenewer) certificateHeldBy(ctx context.Context, qubeName, addr stri
 	}
 	defer sess.close()
 
-	// A call is what forces the handshake to complete; dialling alone may not.
+	// A call is what forces the handshake to complete; dialing alone may not.
 	// Ping is the cheapest one the agent always answers.
 	if _, err := sess.call(ctx, qubeName, pingService, nil); err != nil {
 		if fp := peer.presented(); fp != "" {

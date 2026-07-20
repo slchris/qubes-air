@@ -39,7 +39,7 @@ const (
 	// certRenewalJitterFraction, and renewalRunway, which computes the real
 	// number rather than leaving it to be inferred from prose). Every claim about
 	// this window has to be made against renewalRunway(), never the window width
-	// — quoting the width is how a threshold gets "optimised" down by someone
+	// — quoting the width is how a threshold gets "optimized" down by someone
 	// reading the wrong number.
 	//
 	// Sized by how much repeated failure it has to absorb, not by taste. With an
@@ -310,7 +310,7 @@ func (m *CertRenewalMonitor) Start() {
 
 // Shutdown stops the sweep and waits for it, up to grace.
 //
-// The base context is cancelled before waiting, matching AgentHealthMonitor: an
+// The base context is canceled before waiting, matching AgentHealthMonitor: an
 // abandoned renewal leaves nothing behind — the agent keeps the certificate it
 // already had — so there is no reason to hold a restart open for one.
 func (m *CertRenewalMonitor) Shutdown(grace time.Duration) {
@@ -427,7 +427,7 @@ func (m *CertRenewalMonitor) watchdog() {
 // instance to dial, so trying would produce a guaranteed failure every sweep and
 // bury the real ones. A suspended qube whose certificate expires while it is
 // down is a genuine gap, and it is left to the resume path rather than solved by
-// dialling a machine that does not exist.
+// dialing a machine that does not exist.
 func (m *CertRenewalMonitor) Sweep(ctx context.Context) {
 	// Marked before and after, and the end is deferred so it lands however this
 	// returns. The pair is what lets a wedged sweep be told apart from a dead
@@ -613,7 +613,7 @@ func (m *CertRenewalMonitor) dueAt(qubeID string, cert *repository.AgentCert) ti
 }
 
 // renewalDueAt is dueAt as a pure function, so the scheduling rule can be
-// asserted directly rather than inferred from the behaviour of a loop.
+// asserted directly rather than inferred from the behavior of a loop.
 func renewalDueAt(qubeID string, cert *repository.AgentCert, threshold float64) time.Time {
 	if cert == nil || cert.ExpiresAt == nil {
 		// No expiry recorded means nothing can be reasoned about. Returning the

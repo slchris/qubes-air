@@ -20,7 +20,7 @@ type QubeHandler struct {
 }
 
 // NewQubeHandler creates a new QubeHandler.
-// QubeHandlerOption customises a QubeHandler.
+// QubeHandlerOption customizes a QubeHandler.
 type QubeHandlerOption func(*QubeHandler)
 
 // WithCertRepository enables the per-qube certificate listing endpoint.

@@ -339,7 +339,7 @@ func startOrchestration(
 	// therefore reads it through a getter rather than capturing a value.
 	//
 	// This is safe without a lock only because runner.Start() is deliberately
-	// deferred to the end: creating the worker goroutine is the synchronisation
+	// deferred to the end: creating the worker goroutine is the synchronization
 	// point that publishes the write to it.
 	var agents *service.AgentHealthMonitor
 	var runner *orchestrator.Runner
@@ -522,7 +522,7 @@ func reconcileStrandedQubes(ctx context.Context, qubeRepo repository.QubeReposit
 
 // buildExecutor selects the orchestration executor from configuration. When
 // orchestration is disabled (the default), a NoopExecutor is returned so that
-// start/stop only update the DB status — preserving behaviour on machines
+// start/stop only update the DB status — preserving behavior on machines
 // without terraform/cloud access. When enabled, a real TerraformExecutor drives
 // compute/storage separation.
 func buildExecutor(

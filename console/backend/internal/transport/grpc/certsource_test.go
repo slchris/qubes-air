@@ -61,7 +61,7 @@ func peerLeaf(t *testing.T, addr string, clientCert tls.Certificate) *x509.Certi
 		Certificates: []tls.Certificate{clientCert},
 		// The chain is not what this test is about, and the agent's leaf carries
 		// no name matching an IP dial anyway.
-		InsecureSkipVerify: true, //nolint:gosec // inspecting which certificate is served, not trusting it
+		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS12,
 	})
 	defer func() { _ = conn.Close() }()

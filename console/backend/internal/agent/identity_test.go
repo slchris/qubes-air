@@ -187,7 +187,7 @@ func TestInstallRejectsMismatchedPair(t *testing.T) {
 // TestInstallRejectsForeignCA: a certificate that verifies perfectly against
 // some other CA is not an identity this agent may adopt. Accepting one would
 // let anyone who can complete a handshake replace the agent's identity with one
-// the console will never recognise.
+// the console will never recognize.
 func TestInstallRejectsForeignCA(t *testing.T) {
 	id, _, dir := installedIdentity(t, testAgentCN)
 	before := snapshot(t, dir)
@@ -393,7 +393,7 @@ func TestRecoverDiscardsUnusableCommit(t *testing.T) {
 func TestTrustsCA(t *testing.T) {
 	id, ca, _ := installedIdentity(t, testAgentCN)
 	if !id.TrustsCA(ca.Cert.Raw) {
-		t.Error("the agent does not recognise its own CA")
+		t.Error("the agent does not recognize its own CA")
 	}
 	other, err := pki.NewCA("other-ca", 0)
 	if err != nil {

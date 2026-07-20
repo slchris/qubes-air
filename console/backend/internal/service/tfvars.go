@@ -19,7 +19,7 @@ type IdentityLocator interface {
 // main.tf's zone_provider lookup understands.
 //
 // An unknown key would silently fall back to proxmox in the terraform config,
-// so the mapping is explicit and anything unrecognised is rejected rather than
+// so the mapping is explicit and anything unrecognized is rejected rather than
 // quietly provisioned on the wrong cloud.
 var zoneNameForProvider = map[models.ZoneType]string{
 	models.ZoneTypeProxmox: "proxmox-zone",

@@ -25,6 +25,18 @@ const (
 	ZoneTypeAzure   ZoneType = "azure"
 )
 
+// Zone status values.
+//
+// These were bare literals in six places, one of them a comparison
+// (qube_service: `zone.Status != "connected"`). A single typo there does not
+// fail loudly — it silently refuses every qube the zone should have accepted,
+// or stops refusing ones it should not. The frontend already models this as a
+// closed union; naming the values here is what keeps the two ends agreeing.
+const (
+	ZoneStatusConnected    = "connected"
+	ZoneStatusDisconnected = "disconnected"
+)
+
 // IsValid checks if the zone type is valid.
 func (t ZoneType) IsValid() bool {
 	switch t {

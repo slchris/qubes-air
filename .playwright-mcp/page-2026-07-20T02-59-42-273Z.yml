@@ -1,0 +1,81 @@
+- generic [ref=f3e3]:
+  - banner [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - generic [ref=f3e6]: ◇
+      - generic [ref=f3e7]: Qubes Air
+    - generic [ref=f3e8]: Connected
+    - generic [ref=f3e11]: v0.1.0
+  - generic [ref=f3e12]:
+    - complementary [ref=f3e13]:
+      - navigation [ref=f3e14]:
+        - button "◎ Dashboard" [ref=f3e15] [cursor=pointer]:
+          - generic [ref=f3e16]: ◎
+          - generic [ref=f3e17]: Dashboard
+        - button "□ Qubes" [ref=f3e18] [cursor=pointer]:
+          - generic [ref=f3e19]: □
+          - generic [ref=f3e20]: Qubes
+        - button "◈ Zones" [ref=f3e21] [cursor=pointer]:
+          - generic [ref=f3e22]: ◈
+          - generic [ref=f3e23]: Zones
+        - button "≡ Jobs" [ref=f3e24] [cursor=pointer]:
+          - generic [ref=f3e25]: ≡
+          - generic [ref=f3e26]: Jobs
+        - button "⚿ Credentials" [ref=f3e27] [cursor=pointer]:
+          - generic [ref=f3e28]: ⚿
+          - generic [ref=f3e29]: Credentials
+        - button "$ Billing" [ref=f3e30] [cursor=pointer]:
+          - generic [ref=f3e31]: $
+          - generic [ref=f3e32]: Billing
+        - button "◉ Monitoring" [ref=f3e33] [cursor=pointer]:
+          - generic [ref=f3e34]: ◉
+          - generic [ref=f3e35]: Monitoring
+        - button "⚙ Settings" [ref=f3e36] [cursor=pointer]:
+          - generic [ref=f3e37]: ⚙
+          - generic [ref=f3e38]: Settings
+    - main [ref=f3e39]:
+      - generic [ref=f3e141]:
+        - generic [ref=f3e142]:
+          - heading "Overview" [level=2] [ref=f3e143]
+          - button "Refresh" [ref=f3e144] [cursor=pointer]
+        - button "3 qubes are running but their agent is unreachable remote-gamma, remote-beta, remote-alpha" [ref=f3e145] [cursor=pointer]:
+          - strong [ref=f3e146]: "3"
+          - text: qubes are running but their agent is unreachable
+          - generic [ref=f3e147]: remote-gamma, remote-beta, remote-alpha
+        - generic [ref=f3e148]:
+          - button "3 Qubes 3 running · 0 parked" [ref=f3e149] [cursor=pointer]:
+            - generic [ref=f3e150]: "3"
+            - generic [ref=f3e151]: Qubes
+            - generic [ref=f3e152]: 3 running · 0 parked
+          - button "1 Zones 0 connected" [ref=f3e153] [cursor=pointer]:
+            - generic [ref=f3e154]: "1"
+            - generic [ref=f3e155]: Zones
+            - generic [ref=f3e156]: 0 connected
+          - button "0 Recent jobs all clear" [ref=f3e157] [cursor=pointer]:
+            - generic [ref=f3e158]: "0"
+            - generic [ref=f3e159]: Recent jobs
+            - generic [ref=f3e160]: all clear
+        - generic [ref=f3e161]:
+          - generic [ref=f3e162]:
+            - heading "Qubes" [level=3] [ref=f3e163]
+            - button "View all" [ref=f3e164] [cursor=pointer]
+          - list [ref=f3e165]:
+            - listitem [ref=f3e166]:
+              - generic [ref=f3e168]: remote-gamma
+              - generic [ref=f3e169]: running
+              - generic [ref=f3e170]: agent unreachable
+              - generic [ref=f3e171]: —
+            - listitem [ref=f3e172]:
+              - generic [ref=f3e174]: remote-beta
+              - generic [ref=f3e175]: running
+              - generic [ref=f3e176]: agent unreachable
+              - generic [ref=f3e177]: —
+            - listitem [ref=f3e178]:
+              - generic [ref=f3e180]: remote-alpha
+              - generic [ref=f3e181]: running
+              - generic [ref=f3e182]: agent unreachable
+              - generic [ref=f3e183]: —
+        - generic [ref=f3e184]:
+          - generic [ref=f3e185]:
+            - heading "Recent activity" [level=3] [ref=f3e186]
+            - button "View all" [ref=f3e187] [cursor=pointer]
+          - paragraph [ref=f3e188]: Nothing has run yet.

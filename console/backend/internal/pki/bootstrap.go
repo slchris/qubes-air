@@ -26,7 +26,7 @@ import (
 // only because of a chicken-and-egg — renewal is authenticated by the mTLS
 // certificate the agent does not yet have.
 //
-// A bootstrap token breaks that cycle. It authorises issuing exactly one
+// A bootstrap token breaks that cycle. It authorizes issuing exactly one
 // certificate, for exactly one qube name, once, before it expires. The agent
 // generates its own key, sends a CSR plus the token, and the console signs.
 //

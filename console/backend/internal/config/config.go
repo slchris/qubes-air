@@ -359,7 +359,7 @@ func (c *Config) EncryptionKeyBytes() ([]byte, error) {
 //  1. If EncryptionKeys (multi-version spec) is set, parse it — the highest
 //     version is primary. This is the rotation-capable path.
 //  2. Otherwise use the single EncryptionKey (or the dev fallback) at
-//     version 1, preserving pre-rotation behaviour and legacy rows.
+//     version 1, preserving pre-rotation behavior and legacy rows.
 func (c *Config) Keyring() (*keyring.Keyring, error) {
 	if c.Security.EncryptionKeys != "" {
 		return keyring.ParseSpec(c.Security.EncryptionKeys)
@@ -468,6 +468,11 @@ func (c *Config) loadFromFile(path string) error {
 }
 
 // loadFromEnv loads configuration from environment variables.
+// One independent lookup per configuration field. The complexity score counts
+// fields, not difficulty: there are no interacting branches here, and cutting
+// it into loadNetworkEnv/loadTLSEnv/... would only move the same flat list.
+//
+//nolint:gocyclo,funlen // flat per-field sequence; both scores track field count
 func (c *Config) loadFromEnv() {
 	if host := os.Getenv("QUBES_AIR_HOST"); host != "" {
 		c.Server.Host = host
@@ -643,6 +648,9 @@ func (c *Config) loadFromEnv() {
 }
 
 // Validate checks if the configuration is valid.
+// Same shape as loadFromEnv: one check per field, no interaction between them.
+//
+//nolint:gocyclo // flat per-field sequence; the score tracks field count
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Server.Port)

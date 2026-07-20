@@ -378,7 +378,7 @@ func (r *qubeRepository) UpdateAgentHealth(
 ) error {
 	if !health.IsValid() {
 		// A typo'd health value would be persisted and rendered verbatim, so it
-		// would show up as an unrecognised state in the UI rather than as a
+		// would show up as an unrecognized state in the UI rather than as a
 		// visible failure. Refuse it here instead.
 		return fmt.Errorf("UpdateAgentHealth: invalid agent health %q", health)
 	}

@@ -4,7 +4,7 @@ import "context"
 
 // NoopExecutor is an Executor that does nothing and always succeeds. It is the
 // default when no terraform environment is configured, preserving the console's
-// original behaviour (flip the DB status without touching infrastructure) so
+// original behavior (flip the DB status without touching infrastructure) so
 // that existing CRUD flows and tests keep working on a machine without a cloud.
 //
 // It still validates the qube name so that even the no-op path rejects unsafe

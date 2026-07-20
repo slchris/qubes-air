@@ -73,7 +73,7 @@ func (f *fakeInvoker) Invoke(_ context.Context, target, service string, _ []byte
 // conventional server certificate would prove nothing about production.
 // startAgent runs an in-process mTLS agent. serverCN is the identity its
 // certificate claims — an explicit parameter because the prober now binds the
-// certificate to the qube it dialled, so which name the agent presents is part
+// certificate to the qube it dialed, so which name the agent presents is part
 // of what each test is asserting, not an incidental detail.
 func startAgent(t *testing.T, serverCA *pki.CA, clientCA *pki.CA, serverCN string, inv transportgrpc.QrexecInvoker) (addr string, agentFingerprint string) {
 	t.Helper()
@@ -198,7 +198,7 @@ func TestProbe_NoAddressIsItsOwnDiagnosis(t *testing.T) {
 	assert.False(t, res.Reachable)
 	assert.Equal(t, AgentProbeNoAddress, res.Status)
 	assert.NotEqual(t, AgentProbeUnreachable, res.Status)
-	assert.Empty(t, res.Address, "nothing was dialled, so nothing should be reported as dialled")
+	assert.Empty(t, res.Address, "nothing was dialed, so nothing should be reported as dialed")
 	assert.NotEmpty(t, res.Reason)
 	assert.Empty(t, certs.touched(), "a probe that never ran must not touch the registry")
 }
@@ -358,7 +358,7 @@ func TestProbe_CallerDeadlineIsHonoured(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	res := p.Probe(ctx, &models.Qube{ID: "q1", Name: "cancelled", IPAddress: host})
+	res := p.Probe(ctx, &models.Qube{ID: "q1", Name: "canceled", IPAddress: host})
 
 	assert.False(t, res.Reachable)
 	assert.Less(t, time.Since(start), 10*time.Second)
@@ -518,7 +518,7 @@ func derOf(t *testing.T, certPEM string) [][]byte {
 }
 
 // TestForeignQubeCertIsRejected — chain-to-CA answers "is this our fleet", NOT
-// "is this the qube we dialled". Every qube holds a CA-signed certificate, so
+// "is this the qube we dialed". Every qube holds a CA-signed certificate, so
 // without a name binding any one of them authenticates as any other.
 //
 // Reachable, not theoretical: qubes share an L2 bridge, so a compromised qube
@@ -528,7 +528,7 @@ func derOf(t *testing.T, certPEM string) [][]byte {
 func TestForeignQubeCertIsRejected(t *testing.T) {
 	ca := newCA(t)
 	// The server is a legitimate fleet member — its certificate is signed by the
-	// same CA. It simply is not the qube we dialled.
+	// same CA. It simply is not the qube we dialed.
 	addr, _ := startAgent(t, ca, ca, "agent-other-qube", &fakeInvoker{resp: []byte("pong")})
 	host, port := hostPort(t, addr)
 

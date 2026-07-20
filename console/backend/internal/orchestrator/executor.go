@@ -8,7 +8,7 @@
 //   - production wires a TerraformExecutor that really shells out to terraform;
 //   - tests wire a FakeExecutor that records calls without touching a cloud;
 //   - a NoopExecutor keeps the console working when no terraform is configured,
-//     preserving the pre-orchestration "just flip the DB status" behaviour.
+//     preserving the pre-orchestration "just flip the DB status" behavior.
 package orchestrator
 
 import "context"

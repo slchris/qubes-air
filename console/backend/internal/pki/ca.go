@@ -181,7 +181,7 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 
 // SignAgentCSR renews an agent's certificate from a request it generated itself.
 //
-// expectedCN is the identity the CALLER already proved, by dialling the agent
+// expectedCN is the identity the CALLER already proved, by dialing the agent
 // over mTLS and verifying the certificate it presented. Everything here hangs
 // off that: the console is not deciding who the requester is, it is refusing to
 // sign anything that disagrees with who the requester already turned out to be.
@@ -218,7 +218,7 @@ func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*
 	// in case are two different qubes; folding them together would make the
 	// check pass for the wrong one.
 	if csr.Subject.CommonName != expectedCN {
-		return nil, fmt.Errorf("%w: dialled %q but the request asks for %q",
+		return nil, fmt.Errorf("%w: dialed %q but the request asks for %q",
 			ErrCSRSubjectMismatch, expectedCN, csr.Subject.CommonName)
 	}
 

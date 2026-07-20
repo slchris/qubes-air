@@ -107,7 +107,7 @@ func TestRenewalOverTheTunnel(t *testing.T) {
 	}
 
 	// --- 2. The console signs it. The identity in the CSR must match the qube
-	// it dialled; anything else is an escalation attempt, not a typo.
+	// it dialed; anything else is an escalation attempt, not a typo.
 	csr := mustParseCSR(t, began.CSRPEM)
 	if csr.Subject.CommonName != qubeCN {
 		t.Fatalf("CSR asks for %q, but this connection proved %q", csr.Subject.CommonName, qubeCN)
@@ -158,7 +158,7 @@ func TestRenewalOverTheTunnel(t *testing.T) {
 			got[:16], completed.InstalledFingerprint[:16])
 	}
 	if leaf.Subject.CommonName != qubeCN {
-		t.Errorf("renewal changed the agent's identity to %q; the console would stop recognising it",
+		t.Errorf("renewal changed the agent's identity to %q; the console would stop recognizing it",
 			leaf.Subject.CommonName)
 	}
 
@@ -176,7 +176,7 @@ func writeFixture(t *testing.T, path, content string, mode os.FileMode) {
 }
 
 // consoleTLS mirrors service.probeTLSConfig: the agent's certificate carries no
-// SAN for the address dialled and is client-auth only, so the chain is verified
+// SAN for the address dialed and is client-auth only, so the chain is verified
 // by hand against this CA and the peer held to the qube's name.
 func consoleTLS(t *testing.T, b *pki.Bundle, ca *pki.CA, wantCN string) *tls.Config {
 	t.Helper()
@@ -207,7 +207,7 @@ func consoleTLS(t *testing.T, b *pki.Bundle, ca *pki.CA, wantCN string) *tls.Con
 		Certificates:       []tls.Certificate{pair},
 		RootCAs:            pool,
 		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true, //nolint:gosec // chain and name verified in VerifyConnection below
+		InsecureSkipVerify: true,
 		VerifyConnection:   func(cs tls.ConnectionState) error { return verify(cs.PeerCertificates) },
 	}
 }

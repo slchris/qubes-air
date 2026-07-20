@@ -57,7 +57,7 @@ func TestAgentEndToEnd(t *testing.T) {
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ctx) }()
 
-	// The relay: the local side, dialling outbound.
+	// The relay: the local side, dialing outbound.
 	cli := NewClient(ClientConfig{
 		RemoteEndpoint: addr,
 		RelayName:      "sys-relay-pve",
@@ -87,7 +87,7 @@ func TestAgentEndToEnd(t *testing.T) {
 }
 
 // TestAgentRefusesDisallowedService — a service outside the allowlist must not
-// run even when its script exists. Defence in depth against a script dropped
+// run even when its script exists. Defense in depth against a script dropped
 // into the directory becoming reachable; the real boundary stays in dom0 policy.
 func TestAgentRefusesDisallowedService(t *testing.T) {
 	svcDir := t.TempDir()

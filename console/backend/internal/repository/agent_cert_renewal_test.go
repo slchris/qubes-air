@@ -120,7 +120,7 @@ func TestRenewalCandidatesExcludeRevoked(t *testing.T) {
 
 // TestRenewalCandidatesIncludeAlreadyExpired — these are the qubes that already
 // went dark. Renewal will probably fail for them, since the agent can no longer
-// authenticate to be dialled, but that failure is the signal. Dropping them
+// authenticate to be dialed, but that failure is the signal. Dropping them
 // would hide exactly the fleet-wide silence this mechanism exists to catch.
 func TestRenewalCandidatesIncludeAlreadyExpired(t *testing.T) {
 	repo := certRepo(t)
@@ -317,7 +317,7 @@ func TestRecordRenewalRefusesIdentityMismatch(t *testing.T) {
 }
 
 // TestRecordRenewalRefusesUnknownPrevious — renewing something that was never
-// registered means the caller is confused about what it dialled. Inserting
+// registered means the caller is confused about what it dialed. Inserting
 // anyway would create a certificate with no lineage.
 func TestRecordRenewalRefusesUnknownPrevious(t *testing.T) {
 	repo := certRepo(t)

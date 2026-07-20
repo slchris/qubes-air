@@ -21,9 +21,12 @@ import (
 // whoever has it can mint any agent identity in the fleet. It lives in the
 // encrypted credential store rather than on disk so it is protected by the same
 // keyring, and can be rotated by the same machinery.
+// gosec G101 fires on both names because they contain "cert"/"key". They are
+// the LOOKUP NAMES a secret is stored under, not the secret — the value they
+// address never appears in this file.
 const (
-	caCertCredentialName = "qubes-air-ca-cert"
-	caKeyCredentialName  = "qubes-air-ca-key"
+	caCertCredentialName = "qubes-air-ca-cert" //nolint:gosec // G101: a store key, not a credential
+	caKeyCredentialName  = "qubes-air-ca-key"  //nolint:gosec // G101: a store key, not a credential
 	caCredentialType     = "pki"
 )
 
@@ -242,7 +245,7 @@ func (c *CertIssuer) createCA(ctx context.Context) (*pki.CA, error) {
 
 	// Store the certificate first. If the process dies between the two writes
 	// the result is a half-present CA, which loadOrCreateCA refuses rather than
-	// papering over — that is the intended behaviour, not an oversight.
+	// papering over — that is the intended behavior, not an oversight.
 	if _, err := c.creds.Create(ctx, models.CredentialCreateRequest{
 		Name:        caCertCredentialName,
 		Type:        caCredentialType,

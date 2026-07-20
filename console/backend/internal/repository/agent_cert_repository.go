@@ -247,7 +247,7 @@ func (r *AgentCertRepository) ListByQube(ctx context.Context, qubeID string) ([]
 //
 // Certificates that have ALREADY expired are included on purpose. Renewal will
 // probably fail for them, since the agent can no longer authenticate to be
-// dialled — but they are precisely the qubes that went dark, and a query that
+// dialed — but they are precisely the qubes that went dark, and a query that
 // dropped them would hide the failure this mechanism exists to surface.
 func (r *AgentCertRepository) ListRenewalCandidates(ctx context.Context, cutoff time.Time) ([]*AgentCert, error) {
 	// The inner query picks one fingerprint rather than comparing against

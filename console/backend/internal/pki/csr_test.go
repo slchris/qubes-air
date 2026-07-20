@@ -92,7 +92,7 @@ func TestSignAgentCSRRefusesMismatchedCommonName(t *testing.T) {
 		t.Errorf("want ErrCSRSubjectMismatch, got %v", err)
 	}
 	// Both names must appear: whoever reads this needs to know which agent was
-	// dialled and which one was asked for, or the log says nothing useful.
+	// dialed and which one was asked for, or the log says nothing useful.
 	for _, want := range []string{"agent-vault", "agent-dev-work"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must name %q, got: %v", want, err)
