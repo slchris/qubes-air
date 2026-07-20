@@ -532,9 +532,10 @@ count 0→1，属于**创建**而非修改。
 
 ## 9. Bootstrap token：首次签发也走 CSR（进行中）
 
-> 状态（2026-07-20）：传输方向已定并已实现——**console 拨 agent，与续期、探测同向**（§9.3）。
-> 两侧代码都在，端到端测试跑通了完整链路。**但行为仍然零变化**：cloud-init 还在下发私钥，
-> 没有 qube 拿到过 token。剩下的一件见 §9.4，它有一个**必须整体落地**的约束。
+> 状态（2026-07-20）：**做完了，行为已经变了。** 传输方向已定并实现（§9.3，console 拨 agent），
+> 两侧代码都在，端到端测试跑通完整链路，扫描器和 cloud-init 改造都已落地。
+> cloud-init **不再下发私钥**——它送的是公开 CA + 单次 token，证书由 agent 自己生成密钥、
+> console 拨过去签 CSR 产生。剩下的是真机验证，见 §9.5。
 
 §7.1 的续期已经做到「私钥永不过网」，但**首次签发还没有**。今天 cloud-init 投递的是
 `/etc/qubes-air/agent-key.pem`，一把和证书同寿命（90 天）的私钥，它至少存在于三个不必要的地方：
@@ -644,10 +645,9 @@ agent   → 验证书链到那张 CA, Identity.Install 落盘
   跳过验证的 dial 复用到别处；`internal/transport/grpc/bootstrap_e2e_test.go` 的第二个测试
   就是钉住它的：外来 CA 的客户端和裸连接都必须在任何 token 移动前失败。
 
-### 9.4 还没接的：cloud-init（**必须整体落地**）
+### 9.4 已接完（2026-07-20）
 
-agent 侧和 console 侧都已就位，但**行为仍然零变化**——因为 cloud-init 还在下发私钥，
-没有任何 qube 拿到过 token，所以拨过去的 bootstrap 永远无事可做。剩下的是：
+按下面记的顺序落地了，**扫描先上、cloud-init 后切**：
 
 1. cloud-init 改造——送 token + CA，不送私钥（`internal/service/cloudinit.go:163` 是私钥那行）。
    连带 `CertIssuer.IssueFor` / `ReissueFor` 不再铸证书，改成铸 token。
@@ -657,17 +657,34 @@ agent 侧和 console 侧都已就位，但**行为仍然零变化**——因为 
    旧 token 早已过期，只在 `CreateQube` 铸 token 的话，resume 出来的 qube 拿到的是死 token
    ——又是一次「看起来正常、agent 起不来」。
 
-**这三件必须一起落地，顺序还不能反。** 第 1 件单独上线会让情况**比现在更糟**：qube 拿着
-token 起来了，但没有第 2 件就没人来拨，于是每台新 qube 都永远没有证书——正好又制造一次
-这份文档从头到尾在消灭的那个形状。安全的顺序是 **2 → 1**：扫描先上，此时没有任何 qube 带
-token，扫描扫到的是空集，完全无害；确认它在真机上稳定之后再切 cloud-init。
+**这三件必须一起落地，顺序还不能反**，当时是这么记的，也是这么做的：第 1 件单独上线会让
+情况**比现在更糟**——qube 拿着 token 起来了，但没有第 2 件就没人来拨，于是每台新 qube 都
+永远没有证书，正好又制造一次这份文档从头到尾在消灭的那个形状。所以扫描先上（那时没有任何
+qube 带 token，扫到的是空集，完全无害），再切 cloud-init。
+
+一个实现时才定下来的数字：**token TTL 取 1 小时**。§7.4 记过一次置备光 apt 就花了 14 分钟，
+凭直觉设的 5 分钟会在一次慢启动里过期，而这个失败要等 console 拨过去被拒才看得见——
+那时 apply 早就报成功了。
+
+### 9.5 还没做：真机验证
+
+代码全绿，但这套东西最擅长的失败方式就是「全绿而功能是死的」（§7.4 记了三次）。
+必须在真机上确认的：
+
+1. **qube 建出来时确实没有证书**，注册表里是空的，而扫描在一分钟内把它填上。
+2. **agent 首启进的是 bootstrap 模式**——`NewPendingIdentity` 认的是「一对文件完全不存在」，
+   而真机上模板可能留下别的东西。
+3. **装完之后 agent 不重启就换上真证书**（`CertSource` 那条路），下一次探测直接绿。
+4. **token 文件被抹掉**，且重启后 agent 走的是普通模式而不是再 bootstrap 一次。
+5. **`ProtectSystem=full` + `ReadWritePaths=/etc/qubes-air` 对 bootstrap 写入同样成立**——
+   §7.4 那条就是「测试写临时目录、没有 systemd 沙箱」才漏掉的，bootstrap 写的是同一个目录，
+   但它是**新的写入方**，没验过就不算数。
 
 两个接线时必须对准的数字：
 
-- **token TTL 要按实测置备时长定，不是按直觉。** §7.4 记过 apt 走公网让置备多花 14 分钟；
-  一个「很快过期」的 5 分钟 TTL 会让一次慢置备烧掉 token，而这个失败要等 console 拨过去
-  才看得见。TTL 至少要盖住「apply 开始 → agent 首启完成」的最坏观测值再留余量。
-- **`DeleteSpent` 还没有任何调用方**，接线时记得挂上定时清理，否则表只进不出。
+- token TTL 取了 1 小时，理由见上。
+- `DeleteSpent` 现在在启动时跑一次，保留 30 天。表按每次置备一行增长，是人的速度，
+  不值得为它单开一个 goroutine。
 
 连带好处：`terraform/modules/remote-qube-base/providers/gcp/main.tf:106` 现在硬性要求
 identity bucket 必须私有，理由就是「身份文档含 agent 私钥」。换成 token 之后，
