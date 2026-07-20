@@ -40,6 +40,85 @@
 >
 > 现有 SSHProxy 骨架（[runbook-remotevm.md](runbook-remotevm.md)）作为过渡参考保留。契约见 [`console/backend/proto/relay_transport.proto`](../console/backend/proto/relay_transport.proto)。
 
+## 0. 2026-07 真机跑通：console-as-relay 每调用桥（`relay-call`）
+
+> **状态：传输机制已在硬件上端到端验证（拿到 `pong`）。qrexec 接线是一个待人工监督执行的部署步骤（见 §0.4）。**
+
+本节记录的是**实际已在真机跑通**的那条路，它比本文其余部分描述的「独立 Relay + 常驻
+`relay-client` 守护进程 + vault 下发证书」的守护模型**更简单**，且**不需要**那套尚不存在的
+Relay 证书下发设施。两条路可以并存；这条是当下能用的。
+
+### 0.1 已经验证的事实（无需再假设）
+
+- console 每隔数秒就对每个 qube 拨其 agent 的 mTLS gRPC 端口（`:8443`）调 `qubesair.Ping`
+  做健康探测——即 `agent_health: healthy`。**传输机制本身早已在真机工作。**
+  （反例佐证：探测器会把「没人监听」与「握手被拒」区分开，见 `remote-dev-1` 的
+  `agent_last_error: nothing is listening ... connect: no route to host`。）
+- 缺的从来不是机制，而是**一座 qrexec 桥**：本地 qube 的
+  `qrexec-client-vm remote-reg2 qubesair.Ping` 会被 dom0 改写成对 RemoteVM 的
+  `transport_rpc`（`qubesair.SSHProxy`）的调用，而 SSHProxy 会 `ssh` 到一台**没有 qrexec**
+  的 KVM agent 宿主机——于是永远到不了那条能用的 gRPC 路。
+
+### 0.2 `relay-call`：桥的内核（`console/backend/cmd/relay-call`）
+
+在 **relay 上每次调用跑一次**的一次性客户端。它做的正是 console 健康探测做的事，只是
+面向任意服务、且目标地址从 console 数据库解析而来：
+
+1. 按名字在 console 库里解析目标 qube 的 `<ip>:8443`；
+2. 用 console CA（库中加密存放）现签一张客户端证书——**复用 CA 是关键**：它绕开了独立
+   `relay-client` 才需要、但尚不存在的 Relay 证书下发；
+3. 拨远端 agent 的 mTLS gRPC，调一次服务，把**原始应答字节**写到 stdout 交给 qrexec 回传。
+
+TLS 校验说明（回应安全评审）：`InsecureSkipVerify: true` 配合 `VerifyConnection` —— 校验
+不是被关掉而是被**搬进回调**：`VerifyConnection` 拿 agent 证书对**钉死的 console CA 池**做完整
+链校验，不链到该 CA 的一律拒。跳过的只是 SAN/主机名匹配，因为 agent 是按裸 IP 拨的、证书里
+没有对应 SAN。这与 console 自身健康探测（`pingcheck`）**逐字一致**，含刻意用
+`VerifyConnection`（而非会话复用时被跳过的 `VerifyPeerCertificate`）。
+
+**真机结果（2026-07-20）：** 把 `relay-call` 交叉编译成 linux/amd64（CGO，因 sqlite），放到
+`qubesair-console` qube 上执行 `relay-call remote-reg2 qubesair.Ping` →
+`pong remote-reg2 <ts>`，exit 0。即：从 relay 位置用**每调用**客户端拨通了远端 agent。
+
+### 0.3 架构取舍：为什么 relay 是 console qube 本身
+
+- **console qube 是唯一同时持有 CA 私钥与 qube→IP 映射的地方。** 让它当 relay，`relay-call`
+  就能现签证书、零额外下发。独立 Relay（mgmt-jump / sys-relay-*）要当 gRPC relay，必须先有
+  一套把 Relay 证书下发到它的设施（vault `qubesair.GetCredential` handler 或 salt 下发
+  cert）——**这套目前不存在**（见 §4、`grpc-relay.sls:64`）。
+- **代价 / 待 owner 确认：** 现有 salt-config 与 policy 刻意把 relay 与 console **分开**（console
+  持 CA + PVE token + terraform state，见 `salt/qubesair/README.md`「Why not just reuse
+  mgmt-jump」）。console-as-relay 让本地 qube 能经 dom0 policy 触发 console 去拨 agent。该
+  handler **不泄露 CA/token**，只代拨一次 RPC；但这确实是对既有设计的偏离。**迁移到独立
+  Relay 的前提就是把上面那套证书下发建起来。** 这是一个需要 owner 拍板的架构决定，因此
+  §0.4 的接线没有在无人监督下擅自落到 dom0。
+
+### 0.4 待人工监督执行的接线（reversible，逐条给命令）
+
+桥的内核（`relay-call`）已验证；把它接成「本地 qube 一条 qrexec 就到远端」还差三步，都
+**可逆**，建议有人看着做（会动到最敏感的 console qube 的 root 与 dom0 policy）：
+
+1. **在 console qube 上装 handler + 二进制**（root）：
+   `/usr/local/bin/relay-call`（0755）、`/etc/qubes-rpc/qubesair.GrpcProxy`
+   （本仓库 `relay/transport/qubesair.GrpcProxy`，0755）。正式做法走 salt（见 §7 TODO：
+   新增一个 console-as-relay 的 state，像 console 二进制一样按 SHA 钉 `relay-call`）。
+2. **dom0 policy**（新建 `/etc/qubes/policy.d/25-qubes-air-grpc.policy`，排在 `30-` 的兜底
+   deny 之前）：
+   ```
+   qubesair.Ping        *  <caller>    remote-reg2       allow   # A: 触发 RemoteVM 改写
+   qubesair.GrpcProxy   *  <caller>    qubesair-console  allow   # B: 改写后落到 console relay
+   qubesair.GrpcProxy   *  @anyvm      @anyvm            deny
+   ```
+3. **改 remote-reg2 的属性**（可逆，改回 `qubesair.SSHProxy` 即恢复）：
+   `qvm-prefs remote-reg2 transport_rpc qubesair.GrpcProxy`、
+   `qvm-prefs remote-reg2 relayvm qubesair-console`。
+
+   验收：从 `<caller>` 跑 `qrexec-client-vm remote-reg2 qubesair.Ping` → 应回 `pong`。
+
+**未决 [C1]：** 改写后 B 段调用的 SOURCE 是原始本地 qube 还是 dom0/relay，R4.3 实测才能定
+（本文 §5、`30-qubes-air.policy` 的 [C1] 注同此）。先按原始 caller 写；若被拒，据实测放宽。
+
+---
+
 ## 1. 目标与约束
 
 把本地 `sys-relay` 与远端 `Remote-Relay` 之间的跨机传输，从 SSHProxy（autossh + `ssh -R`）改为 **gRPC 双向流**。
