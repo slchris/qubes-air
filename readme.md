@@ -659,17 +659,11 @@ qubes-air/
 |   |-- providers/
 |   |   |-- proxmox/ | gcp/ | aws/   #    仅声明 provider，未实例化 compute
 |   |-- environments/                #    (空)
-|-- salt/                            # [已实现] sys-remote 网关 states 真实可用
+|-- salt/                            # [已退役] 见 salt/qubes-air/README.md
 |   |-- qubes-air/
-|   |   |-- top.sls
-|   |   |-- common/base.sls
-|   |   |-- sys-remote/
-|   |   |   |-- wireguard.sls        #    WireGuard 隧道（可用）
-|   |   |   |-- gateway.sls          #    网关配置（可用）
-|   |   |   |-- firewall.sls         #    防火墙（可用）
-|   |   |   |-- files/wg0.conf.j2
-|   |-- pillar/
-|   |   |-- top.sls | default.sls | secrets.sls   # secrets.sls 为占位模板
+|   |   |-- README.md                #    退役说明 + 旧→新对照表
+|   |   |-- vault-cloud/             #    唯一保留的 formula (无网络 AppVM)
+|   |-- pillar/                      #    残留, 无 state 消费; secrets.sls 是占位模板
 |-- ansible/                         # [部分实现] 独立 playbook，未被控制台调用
 |   |-- ansible.cfg
 |   |-- inventory/hosts.yaml
@@ -1055,7 +1049,10 @@ graph TB
 - [x] 项目架构设计 (基于官方 Qubes Air 愿景)
 - [x] 管理控制台骨架（Go/Gin 后端 + Svelte 前端，CRUD + 测试 + CI）
 - [x] 凭据 AES-256-GCM 加密存储
-- [x] Salt States 基础框架（sys-remote WireGuard/网关/防火墙，真实可用）
+- [-] ~~Salt States 基础框架（sys-remote WireGuard/网关/防火墙）~~ —— **已删除**。
+      `sys-remote` 方案被评审否决（`provides_network` + `ip_forward` 把 relay 当本地网关，
+      违反平面分离），states 随之删除；真正在跑的 states 在 `qubes-salt-config` 仓库。
+      见 `salt/qubes-air/README.md` 与 `docs/bootstrap-design.md` §11.1
 - [~] Terraform modules 骨架（结构就绪，但**不创建真实资源**）
 - [~] qrexec 客户端（代码实现，但**未接入 service**）
 - [ ] **打通一条真实端到端链路**（建议 Proxmox：控制台 → 真实 provision → 状态回写）
