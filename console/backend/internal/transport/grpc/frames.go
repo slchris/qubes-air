@@ -2,8 +2,9 @@ package grpc
 
 import (
 	"fmt"
-	pb "github.com/slchris/qubes-air/console/internal/transport/relaypb"
 	"sort"
+
+	pb "github.com/slchris/qubes-air/console/internal/transport/relaypb"
 )
 
 // frames.go — shared Frame construction helpers for client and server.

@@ -56,7 +56,7 @@ type LocalInvoker struct {
 	ServiceDir string
 	// Allowed, when non-empty, restricts which services may run.
 	//
-	// This is DEFENCE IN DEPTH, NOT A SECURITY BOUNDARY. The agent runs on an
+	// This is DEFENSE IN DEPTH, NOT A SECURITY BOUNDARY. The agent runs on an
 	// untrusted host: whoever compromises it can replace this binary and skip
 	// the check entirely. Authorization belongs to the local dom0 policy, which
 	// decided before the call ever left the trusted side. What this does buy is
@@ -98,6 +98,11 @@ func NewLocalInvoker(remoteName string, allowed []string) *LocalInvoker {
 // The name arrives over the network and becomes a path element, so it is
 // restricted to a conservative character set and must contain no separator.
 // Rejecting "..", "/" and "" is what stops a request escaping ServiceDir.
+// A character allow-list: each branch is one permitted class. gocyclo counts
+// the classes, but there is no decomposition that makes this safer to read —
+// splitting it would spread the guard against qrexec injection across files.
+//
+//nolint:gocyclo // an allow-list, not a decision tree
 func validServiceName(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false

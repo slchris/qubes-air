@@ -79,8 +79,11 @@ func main() {
 	log.Printf("starting: endpoint=%s relay=%s remote=%s reverse_target=%q vault_certs=%v",
 		tc.RemoteEndpoint, tc.RelayName, tc.RemoteName, tc.ReverseLocalTarget, tc.VaultCerts)
 
-	// Start blocks until ctx is cancelled (signal), maintaining the tunnel.
+	// Start blocks until ctx is canceled (signal), maintaining the tunnel.
 	if err := client.Start(ctx); err != nil && ctx.Err() == nil {
+		// Same as the agent: the only deferred work is detaching the signal
+		// handler, which the process exit makes moot.
+		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit
 		log.Fatalf("client stopped: %v", err)
 	}
 	log.Printf("shutdown")

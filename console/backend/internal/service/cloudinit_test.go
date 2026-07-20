@@ -370,7 +370,7 @@ func runInstallerWithStates(t *testing.T, userData, systemctlExit, states string
 }
 
 // writeStubs provides the guest tools the installer calls. sha256sum is the
-// only one that does real work: verification is the behaviour under test, so
+// only one that does real work: verification is the behavior under test, so
 // stubbing it into always-succeeding would test nothing.
 func writeStubs(t *testing.T, dir string) string {
 	t.Helper()

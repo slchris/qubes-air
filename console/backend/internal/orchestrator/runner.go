@@ -81,7 +81,7 @@ var (
 // One worker is the mutual exclusion: terraform's local backend takes a
 // non-blocking fcntl lock on the state file, so a second concurrent process
 // does not wait its turn — it fails outright with "Error acquiring the state
-// lock". A mutex would also serialize, but it cannot be cancelled, gives no
+// lock". A mutex would also serialize, but it cannot be canceled, gives no
 // backpressure, and offers no way to report what is happening; with operations
 // measured in minutes those matter. A queue additionally guarantees submission
 // order, so a Stop immediately followed by a Start cannot execute in reverse.
@@ -275,7 +275,7 @@ func (r *Runner) run(job *Job) {
 // Shutdown stops accepting work and waits for the in-flight job, up to the
 // given grace period.
 //
-// Cancelling the base context signals terraform (SIGINT, not SIGKILL) so it can
+// Canceling the base context signals terraform (SIGINT, not SIGKILL) so it can
 // finish its current operation and persist state. Cutting that short is what
 // strands infrastructure, so prefer a grace period longer than a typical apply.
 func (r *Runner) Shutdown(grace time.Duration) {
@@ -294,11 +294,11 @@ func (r *Runner) Shutdown(grace time.Duration) {
 
 		select {
 		case <-done:
-			// Drained cleanly; nothing is running, so cancelling is free.
+			// Drained cleanly; nothing is running, so canceling is free.
 			r.cancel()
 		case <-time.After(grace):
 			log.Printf("orchestrator: shutdown grace of %s elapsed with a job still running; "+
-				"signalling terraform to stop", grace)
+				"signaling terraform to stop", grace)
 			r.cancel()
 			<-done
 		}

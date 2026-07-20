@@ -96,8 +96,8 @@ func NewClient(cfg ClientConfig, reverse transport.ReverseHandler) *Client {
 }
 
 // Start dials outbound and keeps the Tunnel alive (reconnect + keepalive) until
-// ctx is cancelled. Blocks; run it in its own goroutine. It returns ctx.Err()
-// when the context is cancelled.
+// ctx is canceled. Blocks; run it in its own goroutine. It returns ctx.Err()
+// when the context is canceled.
 func (c *Client) Start(ctx context.Context) error {
 	backoff := c.cfg.ReconnectMin
 	for {
@@ -125,7 +125,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 // runOnce dials, opens the Tunnel, sends the handshake, and pumps frames until
-// the connection drops or ctx is cancelled. It always tears down inflight calls
+// the connection drops or ctx is canceled. It always tears down inflight calls
 // before returning so no caller is left hanging.
 // resolveTLS returns the mTLS config for a connection attempt: the TLSProvider
 // (fresh, for rotation) if set, else the static TLS. mTLS is mandatory — a nil
@@ -179,13 +179,13 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 
 	// Keepalive ticker runs alongside recvLoop; both stop when streamCtx is done.
-	go c.keepAliveLoop(streamCtx, stream)
+	go c.keepAliveLoop(streamCtx)
 
 	// recvLoop blocks until the stream errors (drop) or ctx cancels.
 	return c.recvLoop(streamCtx, stream)
 }
 
-func (c *Client) keepAliveLoop(ctx context.Context, stream pb.RelayTransport_TunnelClient) {
+func (c *Client) keepAliveLoop(ctx context.Context) {
 	t := time.NewTicker(c.cfg.KeepAlive)
 	defer t.Stop()
 	for {
@@ -254,7 +254,10 @@ func (c *Client) Call(ctx context.Context, target, service string, in []byte) ([
 
 // recvLoop reads frames and dispatches by request_id: forward responses wake
 // the inflight waiter; REMOTE_TO_LOCAL requests go to c.reverse (→ local dom0).
-// It returns when the stream errors (drop) or ctx is cancelled.
+// It returns when the stream errors (drop) or ctx is canceled.
+// A dispatch over frame types. Flat by nature; each arm is independent.
+//
+//nolint:gocyclo // frame-type dispatch
 func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelClient) error {
 	// reverse accumulates inbound reverse-request bodies by request_id.
 	reverseBuf := make(map[string]*reverseCall)
@@ -304,7 +307,7 @@ func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelCl
 				// Inbound reverse request fully received → route to local dom0.
 				if rc, ok := reverseBuf[reqID]; ok {
 					delete(reverseBuf, reqID)
-					go c.handleReverse(ctx, stream, reqID, rc)
+					go c.handleReverse(ctx, reqID, rc)
 				}
 			}
 
@@ -326,7 +329,7 @@ type reverseCall struct {
 // handleReverse routes a completed inbound reverse request to the local dom0 via
 // c.reverse (policy C: ask), then streams the result back on the same request_id.
 // It NEVER decides authorization — c.reverse does that through dom0.
-func (c *Client) handleReverse(ctx context.Context, stream pb.RelayTransport_TunnelClient, reqID string, rc *reverseCall) {
+func (c *Client) handleReverse(ctx context.Context, reqID string, rc *reverseCall) {
 	if c.reverse == nil {
 		_ = c.send(errorFrame(reqID, codeInternal, "no reverse handler"))
 		return

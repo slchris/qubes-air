@@ -99,7 +99,7 @@ func (f *fakeProber) ProbeAgent(ctx context.Context, q *models.Qube, phase Agent
 	f.mu.Unlock()
 
 	res := f.fn(n, q, phase)
-	// The prober is what honours the caller's context in production; mirror
+	// The prober is what honors the caller's context in production; mirror
 	// that so a shutdown test actually exercises cancellation.
 	if ctx.Err() != nil {
 		res.Reachable = false
@@ -164,7 +164,7 @@ func waitFor(t *testing.T, within time.Duration, what string, cond func() bool) 
 
 // --- settle: retry then give up ---------------------------------------------
 
-// TestSettle_RetriesThenGivesUp is the core of the post-provision behaviour.
+// TestSettle_RetriesThenGivesUp is the core of the post-provision behavior.
 //
 // A single immediate probe would report every healthy qube unreachable, because
 // cloud-init installs the agent only after terraform has finished. So the
@@ -376,7 +376,7 @@ func TestShutdown_ReturnsPromptlyWithASettleInFlight(t *testing.T) {
 	m := NewAgentHealthMonitor(qubes, prober, AgentHealthConfig{
 		Interval: 50 * time.Millisecond,
 		// Far longer than the test: if Shutdown waited for the budget rather
-		// than cancelling it, this would hang instead of failing.
+		// than canceling it, this would hang instead of failing.
 		SettleBudget: time.Hour,
 		SettleRetry:  30 * time.Minute,
 	})

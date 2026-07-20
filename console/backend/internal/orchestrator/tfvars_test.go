@@ -64,7 +64,7 @@ func TestVarFileOrdering(t *testing.T) {
 }
 
 // TestRequireKeyRejectsUnknownQube is the guard against terraform's most
-// dangerous behaviour here: a -target that matches nothing exits 0 with "No
+// dangerous behavior here: a -target that matches nothing exits 0 with "No
 // changes". Without this check the caller reads that as success and records a
 // qube as running when no infrastructure was ever created.
 func TestRequireKeyRejectsUnknownQube(t *testing.T) {
@@ -114,7 +114,7 @@ func TestStatusDoesNotRequireKey(t *testing.T) {
 	}
 }
 
-// TestRenderEmptyMapIsExplicit guards a subtle terraform behaviour: a variable
+// TestRenderEmptyMapIsExplicit guards a subtle terraform behavior: a variable
 // ABSENT from the last -var-file falls through to the earlier file rather than
 // being reset. So "no qubes" must serialize as an explicit empty map, otherwise
 // a console with zero qubes would silently inherit the operator's stale set.

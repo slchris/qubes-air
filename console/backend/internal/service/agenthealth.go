@@ -3,10 +3,11 @@ package service
 import (
 	"context"
 	"errors"
-	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/slchris/qubes-air/console/internal/orchestrator"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 )
@@ -134,7 +135,7 @@ type AgentHealthMonitor struct {
 	closing bool
 }
 
-// AgentHealthOption customises a monitor at construction.
+// AgentHealthOption customizes a monitor at construction.
 type AgentHealthOption func(*AgentHealthMonitor)
 
 // WithAgentAddressReader lets the monitor refresh a qube's IP address from the
@@ -228,7 +229,7 @@ func (m *AgentHealthMonitor) settleLoop() {
 	defer m.wg.Done()
 	// Ranging over the queue (rather than selecting on base.Done) is what lets
 	// Shutdown close the channel and have the worker exit on its own. The
-	// cancelled base is checked as well, so a shutdown mid-burst does not have
+	// canceled base is checked as well, so a shutdown mid-burst does not have
 	// to wait out the whole backlog.
 	for req := range m.queue {
 		if m.base.Err() != nil {
@@ -415,14 +416,14 @@ func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qu
 
 // Shutdown stops probing and waits for the workers, up to grace.
 //
-// The base context is cancelled BEFORE waiting, unlike orchestrator.Runner
+// The base context is canceled BEFORE waiting, unlike orchestrator.Runner
 // which waits first. The asymmetry is intentional: an abandoned terraform apply
 // strands real infrastructure, while an abandoned probe leaves nothing behind
 // at all. A settle worker can be mid-sleep in a five-minute budget, and waiting
 // that out would turn every restart into a five-minute outage.
 //
 // Both the cancel and the channel close are needed. Closing alone would leave a
-// worker sleeping inside settle; cancelling alone would leave settleLoop parked
+// worker sleeping inside settle; canceling alone would leave settleLoop parked
 // on a receive that never completes — this codebase already had a shutdown
 // deadlock from waiting on a worker that only exits on cancel.
 func (m *AgentHealthMonitor) Shutdown(grace time.Duration) {

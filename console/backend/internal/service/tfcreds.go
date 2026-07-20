@@ -137,6 +137,27 @@ func sshEnv(username, privateKey string) []string {
 // unexpected) is far worse than a startup-time refusal. Supporting more than
 // one cluster needs provider aliases in the root module, which do not exist.
 func singleProxmoxZone(ctx context.Context, zoneRepo repository.ZoneRepository) (*models.Zone, error) {
+	return singleCredentialedZone(ctx, zoneRepo,
+		func(z *models.Zone) bool {
+			return z.Type == models.ZoneTypeProxmox && z.Config.Proxmox != nil &&
+				z.Config.Proxmox.CredentialID != ""
+		},
+		"%d proxmox zones have credentials (%v) but the terraform root module declares a single "+
+			"provider and cannot target more than one cluster; leave a credential_id on only one")
+}
+
+// singleCredentialedZone returns the one zone matching wants, nil if there is
+// none, or an error built from ambiguous when several match.
+//
+// Shared by the per-provider lookups because they differ only in the predicate
+// and the wording: the rule they enforce — one provider block, so one zone — is
+// identical, and having it in two places is how the two would drift.
+func singleCredentialedZone(
+	ctx context.Context,
+	zoneRepo repository.ZoneRepository,
+	wants func(*models.Zone) bool,
+	ambiguous string,
+) (*models.Zone, error) {
 	opts := repository.DefaultZoneListOptions()
 	opts.Limit = 1000
 	zones, err := zoneRepo.List(ctx, opts)
@@ -146,7 +167,7 @@ func singleProxmoxZone(ctx context.Context, zoneRepo repository.ZoneRepository) 
 
 	var found []*models.Zone
 	for _, z := range zones {
-		if z.Type == models.ZoneTypeProxmox && z.Config.Proxmox != nil && z.Config.Proxmox.CredentialID != "" {
+		if wants(z) {
 			found = append(found, z)
 		}
 	}
@@ -161,10 +182,7 @@ func singleProxmoxZone(ctx context.Context, zoneRepo repository.ZoneRepository) 
 		for _, z := range found {
 			names = append(names, z.Name)
 		}
-		return nil, fmt.Errorf(
-			"%d proxmox zones have credentials (%v) but the terraform root module declares a single "+
-				"provider and cannot target more than one cluster; leave a credential_id on only one",
-			len(found), names)
+		return nil, fmt.Errorf(ambiguous, len(found), names)
 	}
 }
 
@@ -220,33 +238,11 @@ func gcpEnvFor(
 // module means one authenticated project, so two credentialed GCP zones are a
 // hard failure rather than an arbitrary pick.
 func singleGCPZone(ctx context.Context, zoneRepo repository.ZoneRepository) (*models.Zone, error) {
-	opts := repository.DefaultZoneListOptions()
-	opts.Limit = 1000
-	zones, err := zoneRepo.List(ctx, opts)
-	if err != nil {
-		return nil, fmt.Errorf("list zones: %w", err)
-	}
-
-	var found []*models.Zone
-	for _, z := range zones {
-		if z.Type == models.ZoneTypeGCP && z.Config.GCP != nil && z.Config.GCP.CredentialID != "" {
-			found = append(found, z)
-		}
-	}
-
-	switch len(found) {
-	case 0:
-		return nil, nil
-	case 1:
-		return found[0], nil
-	default:
-		names := make([]string, 0, len(found))
-		for _, z := range found {
-			names = append(names, z.Name)
-		}
-		return nil, fmt.Errorf(
-			"%d gcp zones have credentials (%v) but the terraform root module declares a single "+
-				"google provider and cannot target more than one project; leave a credential_id on only one",
-			len(found), names)
-	}
+	return singleCredentialedZone(ctx, zoneRepo,
+		func(z *models.Zone) bool {
+			return z.Type == models.ZoneTypeGCP && z.Config.GCP != nil &&
+				z.Config.GCP.CredentialID != ""
+		},
+		"%d gcp zones have credentials (%v) but the terraform root module declares a single "+
+			"google provider and cannot target more than one project; leave a credential_id on only one")
 }

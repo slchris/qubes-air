@@ -44,7 +44,7 @@ func (s *InfraService) Delete(ctx context.Context, id string) error {
 
 // Connect connects to an infrastructure provider.
 func (s *InfraService) Connect(ctx context.Context, id string) (*models.InfraProvider, error) {
-	if err := s.repo.UpdateStatus(ctx, id, "connected"); err != nil {
+	if err := s.repo.UpdateStatus(ctx, id, models.ZoneStatusConnected); err != nil {
 		return nil, err
 	}
 	return s.repo.GetByID(ctx, id)
@@ -52,7 +52,7 @@ func (s *InfraService) Connect(ctx context.Context, id string) (*models.InfraPro
 
 // Disconnect disconnects from an infrastructure provider.
 func (s *InfraService) Disconnect(ctx context.Context, id string) (*models.InfraProvider, error) {
-	if err := s.repo.UpdateStatus(ctx, id, "disconnected"); err != nil {
+	if err := s.repo.UpdateStatus(ctx, id, models.ZoneStatusDisconnected); err != nil {
 		return nil, err
 	}
 	return s.repo.GetByID(ctx, id)

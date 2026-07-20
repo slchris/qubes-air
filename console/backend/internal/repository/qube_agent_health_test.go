@@ -135,7 +135,7 @@ func TestAgentHealthRecoveryClearsTheError(t *testing.T) {
 	}
 }
 
-// TestUpdateAgentHealthRejectsUnknownValue — an unrecognised value would be
+// TestUpdateAgentHealthRejectsUnknownValue — an unrecognized value would be
 // persisted and rendered verbatim, showing up as a mystery state in the UI
 // instead of as a visible failure at the call site.
 func TestUpdateAgentHealthRejectsUnknownValue(t *testing.T) {

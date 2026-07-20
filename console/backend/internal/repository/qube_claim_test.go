@@ -83,7 +83,7 @@ func TestClaimTransitionIsAtomicUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			<-start // release everyone at once to maximise overlap
+			<-start // release everyone at once to maximize overlap
 			err := repo.ClaimTransition(ctx, id,
 				[]models.QubeStatus{models.QubeStatusSuspended},
 				models.QubeStatusResuming)

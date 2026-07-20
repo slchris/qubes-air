@@ -20,7 +20,7 @@ type ZoneHandler struct {
 	capacity service.CapacityReader
 }
 
-// ZoneHandlerOption customises a ZoneHandler.
+// ZoneHandlerOption customizes a ZoneHandler.
 type ZoneHandlerOption func(*ZoneHandler)
 
 // WithCapacityReader enables the cluster capacity endpoint.

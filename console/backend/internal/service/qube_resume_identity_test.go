@@ -139,7 +139,7 @@ func TestStart_ResumeIssuesAFreshIdentity(t *testing.T) {
 	// credential the agent never receives.
 	path := f.issuer.IdentityPath(f.qubeName)
 	require.NotEmpty(t, path)
-	rendered, err := os.ReadFile(path) //nolint:gosec // path is produced by the fixture
+	rendered, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(rendered), "BEGIN CERTIFICATE",
 		"resume must rewrite the cloud-init identity document, not just the registry")

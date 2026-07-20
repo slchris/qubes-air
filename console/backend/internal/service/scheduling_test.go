@@ -159,7 +159,7 @@ func TestCapacityCloudZoneIsNotANodePool(t *testing.T) {
 	}
 }
 
-// TestCapacityUnknownZoneType — an unrecognised provider says so instead of
+// TestCapacityUnknownZoneType — an unrecognized provider says so instead of
 // silently presenting as one of the known models.
 func TestCapacityUnknownZoneType(t *testing.T) {
 	zone := &models.Zone{ID: "z", Name: "weird", Type: models.ZoneType("kubevirt")}

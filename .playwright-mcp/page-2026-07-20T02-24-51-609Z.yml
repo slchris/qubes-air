@@ -1,0 +1,89 @@
+- generic [ref=f1e181]:
+  - banner [ref=f1e182]:
+    - generic [ref=f1e183]:
+      - generic [ref=f1e184]: ◇
+      - generic [ref=f1e185]: Qubes Air
+    - generic [ref=f1e186]: Connected
+    - generic [ref=f1e189]: v0.1.0
+  - generic [ref=f1e190]:
+    - complementary [ref=f1e191]:
+      - navigation [ref=f1e192]:
+        - button "◎ Dashboard" [ref=f1e193] [cursor=pointer]:
+          - generic [ref=f1e194]: ◎
+          - generic [ref=f1e195]: Dashboard
+        - button "□ Qubes" [ref=f1e196] [cursor=pointer]:
+          - generic [ref=f1e197]: □
+          - generic [ref=f1e198]: Qubes
+        - button "◈ Zones" [ref=f1e199] [cursor=pointer]:
+          - generic [ref=f1e200]: ◈
+          - generic [ref=f1e201]: Zones
+        - button "≡ Jobs" [ref=f1e202] [cursor=pointer]:
+          - generic [ref=f1e203]: ≡
+          - generic [ref=f1e204]: Jobs
+        - button "⚿ Credentials" [ref=f1e205] [cursor=pointer]:
+          - generic [ref=f1e206]: ⚿
+          - generic [ref=f1e207]: Credentials
+        - button "$ Billing" [ref=f1e208] [cursor=pointer]:
+          - generic [ref=f1e209]: $
+          - generic [ref=f1e210]: Billing
+        - button "◉ Monitoring" [ref=f1e211] [cursor=pointer]:
+          - generic [ref=f1e212]: ◉
+          - generic [ref=f1e213]: Monitoring
+        - button "⚙ Settings" [ref=f1e214] [cursor=pointer]:
+          - generic [ref=f1e215]: ⚙
+          - generic [ref=f1e216]: Settings
+    - main [ref=f1e217]:
+      - generic [ref=f1e218]:
+        - generic [ref=f1e219]:
+          - heading "Remote Qubes" [level=2] [ref=f1e220]
+          - button "+ Create Qube" [ref=f1e221] [cursor=pointer]
+        - table [ref=f1e222]:
+          - row "Name Status Agent Zone / node Spec Address" [ref=f1e223]:
+            - generic [ref=f1e224]: Name
+            - generic [ref=f1e225]: Status
+            - generic [ref=f1e226]: Agent
+            - generic [ref=f1e227]: Zone / node
+            - generic [ref=f1e228]: Spec
+            - generic [ref=f1e229]: Address
+          - row "running remote-gamma dev running unknown dev-zone· node1 2c / 2048M / 20G+10G — Suspend Edit Release" [ref=f1e231]:
+            - generic [ref=f1e232]:
+              - generic "running" [ref=f1e233]
+              - generic [ref=f1e234]: remote-gamma
+              - code [ref=f1e235]: dev
+            - generic [ref=f1e236]: running
+            - generic "qube \"remote-gamma\" has no IP address yet, so there is nothing to probe" [ref=f1e238]: unknown
+            - generic [ref=f1e239]: dev-zone· node1
+            - generic [ref=f1e240]: 2c / 2048M / 20G+10G
+            - generic [ref=f1e241]: —
+            - generic [ref=f1e242]:
+              - button "Suspend" [ref=f1e243] [cursor=pointer]
+              - button "Edit" [ref=f1e244] [cursor=pointer]
+              - button "Release" [ref=f1e245] [cursor=pointer]
+          - row "running remote-beta dev running unknown dev-zone· node1 2c / 2048M / 20G+10G — Suspend Edit Release" [ref=f1e247]:
+            - generic [ref=f1e248]:
+              - generic "running" [ref=f1e249]
+              - generic [ref=f1e250]: remote-beta
+              - code [ref=f1e251]: dev
+            - generic [ref=f1e252]: running
+            - generic "qube \"remote-beta\" has no IP address yet, so there is nothing to probe" [ref=f1e254]: unknown
+            - generic [ref=f1e255]: dev-zone· node1
+            - generic [ref=f1e256]: 2c / 2048M / 20G+10G
+            - generic [ref=f1e257]: —
+            - generic [ref=f1e258]:
+              - button "Suspend" [ref=f1e259] [cursor=pointer]
+              - button "Edit" [ref=f1e260] [cursor=pointer]
+              - button "Release" [ref=f1e261] [cursor=pointer]
+          - row "running remote-alpha dev running unknown dev-zone· node1 2c / 2048M / 20G+10G — Suspend Edit Release" [ref=f1e263]:
+            - generic [ref=f1e264]:
+              - generic "running" [ref=f1e265]
+              - generic [ref=f1e266]: remote-alpha
+              - code [ref=f1e267]: dev
+            - generic [ref=f1e268]: running
+            - generic "qube \"remote-alpha\" has no IP address yet, so there is nothing to probe" [ref=f1e270]: unknown
+            - generic [ref=f1e271]: dev-zone· node1
+            - generic [ref=f1e272]: 2c / 2048M / 20G+10G
+            - generic [ref=f1e273]: —
+            - generic [ref=f1e274]:
+              - button "Suspend" [ref=f1e275] [cursor=pointer]
+              - button "Edit" [ref=f1e276] [cursor=pointer]
+              - button "Release" [ref=f1e277] [cursor=pointer]

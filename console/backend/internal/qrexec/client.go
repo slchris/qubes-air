@@ -67,6 +67,13 @@ func NewClient(opts ...Option) *Client {
 // Allow-list: [A-Za-z0-9._+-], non-empty. Prevents command injection.
 func ValidArg(arg string) bool {
 	for _, r := range arg {
+		// staticcheck offers De Morgan's law here. Declining deliberately: the
+		// current shape reads as "reject anything not in the allow-list", which
+		// is the security property. The transformed version is a conjunction of
+		// six negated range checks, where a single flipped comparison silently
+		// widens what this accepts — and this function is the guard against
+		// qrexec command injection.
+		//nolint:staticcheck // QF1001: the allow-list reads correctly as written
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
 			r == '-' || r == '_' || r == '.' || r == '+') {
 			return false

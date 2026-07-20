@@ -58,7 +58,7 @@ func New(keys map[int][]byte, primary int) (*Keyring, error) {
 
 // NewSingle builds a Keyring with a single key at version 1 (the default
 // version for legacy rows). This preserves the pre-rotation single-key
-// behaviour.
+// behavior.
 func NewSingle(key []byte) (*Keyring, error) {
 	return New(map[int][]byte{1: key}, 1)
 }

@@ -232,7 +232,7 @@ func (c *ClusterScheduler) Place(ctx context.Context, zoneID string, req schedul
 	return c.sched.Select(ctx, nodes, req)
 }
 
-// resolvePlacement decides where a qube runs, honouring an explicit pin.
+// resolvePlacement decides where a qube runs, honoring an explicit pin.
 //
 // Precedence is: the qube's own node, then the scheduler, then the zone
 // default. An explicit pin always wins — automatic placement is a convenience,

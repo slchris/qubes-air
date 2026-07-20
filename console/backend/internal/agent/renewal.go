@@ -173,11 +173,11 @@ func (r *RenewalService) Begin(_ context.Context, _ string, _ []byte) ([]byte, e
 
 	// The subject is copied from the certificate we currently hold. The agent
 	// does not get to choose its own name: the console verifies the peer's
-	// common name against the qube it dialled, so asking for anything else
+	// common name against the qube it dialed, so asking for anything else
 	// would either be refused or produce an identity the console can no longer
-	// recognise.
+	// recognize.
 	//
-	// RawSubject rather than Subject, so the copy is exact. Re-marshalling a
+	// RawSubject rather than Subject, so the copy is exact. Re-marshaling a
 	// parsed pkix.Name silently drops any attribute Go has no struct field for,
 	// which would make the renewed certificate subtly different from the one it
 	// replaces — a difference that only shows up wherever something compares
@@ -249,7 +249,7 @@ func (r *RenewalService) Complete(_ context.Context, _ string, in []byte) ([]byt
 
 	// The identity must not change. The console holds the peer's common name to
 	// "agent-<qube name>" (service.verifyAgentChain); installing a certificate
-	// with any other name would make this agent unrecognisable to the probe
+	// with any other name would make this agent unrecognizable to the probe
 	// that is supposed to notice it is unhealthy.
 	current, err := r.id.Leaf()
 	if err != nil {

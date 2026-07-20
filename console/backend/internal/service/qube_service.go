@@ -47,7 +47,7 @@ var (
 const pingService = "qubesair.Ping"
 
 // QubeService defines qube business logic operations.
-type QubeService interface { //nolint:dupl
+type QubeService interface {
 	// Create records the qube and enqueues a provision job. The infrastructure
 	// does not exist when this returns — poll the job.
 	Create(ctx context.Context, req *models.QubeCreateRequest) (*Operation, error)
@@ -95,7 +95,7 @@ type QubeServiceImpl struct {
 	zoneRepo repository.ZoneRepository
 	// executor triggers real infrastructure actions (terraform suspend/resume).
 	// It is never nil: when no executor is injected a NoopExecutor is used so
-	// existing behaviour and tests are preserved.
+	// existing behavior and tests are preserved.
 	executor orchestrator.Executor
 	// transport forwards cross-machine qrexec calls to remote qubes over the
 	// gRPC tunnel. Never nil: defaults to NoopTransport (CheckReachable then
@@ -117,7 +117,7 @@ type QubeServiceImpl struct {
 	// scheduling, in which case placement falls back to the zone default.
 	placer PlacementDecider
 	// submitter queues terraform work. When nil the service runs the executor
-	// inline, which preserves the previous synchronous behaviour for tests and
+	// inline, which preserves the previous synchronous behavior for tests and
 	// for deployments with no orchestration configured.
 	submitter JobSubmitter
 	// renewals reports certificates that are failing to renew, so a probe can
@@ -715,7 +715,7 @@ func (s *QubeServiceImpl) verifyZoneConnected(ctx context.Context, zoneID string
 		return ErrZoneNotFound
 	}
 
-	if zone.Status != "connected" {
+	if zone.Status != models.ZoneStatusConnected {
 		return ErrZoneDisconnected
 	}
 
@@ -891,7 +891,7 @@ func (s *QubeServiceImpl) recordAgentHealth(
 	}
 
 	// Detached from the caller's deadline: the observation already exists, and
-	// dropping it because an HTTP request was cancelled a millisecond later
+	// dropping it because an HTTP request was canceled a millisecond later
 	// would leave the console reporting a health reading it has disproved.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -921,7 +921,7 @@ func (s *QubeServiceImpl) renewalWarning(qubeID string) string {
 // The mapping lives in exactly one place on purpose: an endpoint and a
 // background loop that classified the same probe differently would put two
 // contradictory readings into the same column.
-// agentHealthForResult maps a whole probe result, honouring authority.
+// agentHealthForResult maps a whole probe result, honoring authority.
 //
 // A non-authoritative success must NOT become healthy. The global transport is
 // pinned to one endpoint whose invoker ignores the target name (see

@@ -20,7 +20,7 @@ var (
 )
 
 // ZoneService defines zone business logic operations.
-type ZoneService interface { //nolint:dupl
+type ZoneService interface {
 	Create(ctx context.Context, req *models.ZoneCreateRequest) (*models.Zone, error)
 	GetByID(ctx context.Context, id string) (*models.Zone, error)
 	List(ctx context.Context, opts repository.ZoneListOptions) ([]*models.Zone, error)
@@ -54,7 +54,7 @@ func (s *ZoneServiceImpl) Create(ctx context.Context, req *models.ZoneCreateRequ
 		ID:        uuid.New().String(),
 		Name:      strings.TrimSpace(req.Name),
 		Type:      req.Type,
-		Status:    "disconnected",
+		Status:    models.ZoneStatusDisconnected,
 		Config:    req.Config,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -157,7 +157,7 @@ func (s *ZoneServiceImpl) Connect(ctx context.Context, id string) (*models.Zone,
 		return nil, ErrZoneNotFound
 	}
 
-	if err := s.zoneRepo.UpdateStatus(ctx, id, "connected"); err != nil {
+	if err := s.zoneRepo.UpdateStatus(ctx, id, models.ZoneStatusConnected); err != nil {
 		return nil, err
 	}
 
@@ -170,7 +170,7 @@ func (s *ZoneServiceImpl) Disconnect(ctx context.Context, id string) (*models.Zo
 		return nil, ErrZoneNotFound
 	}
 
-	if err := s.zoneRepo.UpdateStatus(ctx, id, "disconnected"); err != nil {
+	if err := s.zoneRepo.UpdateStatus(ctx, id, models.ZoneStatusDisconnected); err != nil {
 		return nil, err
 	}
 

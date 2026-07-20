@@ -54,7 +54,7 @@ const (
 	// agent to probe. Suspend DESTROYS the instance and keeps the data disk, so
 	// this is the ordinary resting state of a parked qube, not a fault.
 	//
-	// Nothing is dialled in this state, for a second reason: the address on the
+	// Nothing is dialed in this state, for a second reason: the address on the
 	// row belonged to an instance that no longer exists, and DHCP may well have
 	// handed it to somebody else by now. A probe would then be answered — or
 	// refused — by a machine that has nothing to do with this qube.
@@ -140,7 +140,7 @@ type AgentProbeResult struct {
 
 	QubeID   string `json:"qube_id"`
 	QubeName string `json:"qube_name"`
-	// Address is what was dialled, empty when there was nothing to dial.
+	// Address is what was dialed, empty when there was nothing to dial.
 	Address string `json:"address,omitempty"`
 	// Reachable is the single boolean answer: did the agent respond.
 	Reachable bool             `json:"reachable"`
@@ -217,6 +217,12 @@ func NewAgentProber(ca CAProvider, certs LastSeenRecorder, agentListen string, t
 // must NOT fail provisioning: the VM exists and the job did its work. What must
 // never happen is the failure being swallowed, so every non-ok outcome is
 // logged here as well as returned.
+// The branches each produce a DISTINCT diagnosis an operator acts on — "the
+// port is closed" versus "TLS was rejected by the wrong certificate" versus
+// "the handshake worked but the service did not answer". Collapsing them to
+// satisfy the metric would collapse the messages, which are the whole point.
+//
+//nolint:gocyclo // each branch is a separate operator-facing diagnosis
 func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeResult {
 	started := time.Now()
 	res := AgentProbeResult{
@@ -378,7 +384,7 @@ func (p *AgentProber) ping(ctx context.Context, addr string, tlsCfg *tls.Config,
 		TLS: tlsCfg.Clone(),
 	}, nil)
 
-	// Start blocks and owns the tunnel. ctx is already bounded and cancelled on
+	// Start blocks and owns the tunnel. ctx is already bounded and canceled on
 	// return, so this goroutine cannot outlive the probe that spawned it —
 	// otherwise every probe would leak a reconnect loop against a dead host.
 	go func() { _ = cli.Start(ctx) }()
@@ -504,7 +510,7 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		},
 		// VerifyConnection as well, and not for symmetry: Go does NOT call
 		// VerifyPeerCertificate on a RESUMED session, so a config that grew a
-		// session cache — gRPC owns the dialling here, not us — would silently
+		// session cache — gRPC owns the dialing here, not us — would silently
 		// stop running the check above and accept any peer at all. This callback
 		// runs on every handshake, resumed or not, so the chain is verified even
 		// if that happens.
@@ -536,7 +542,7 @@ func verifyAgentChain(pool *x509.CertPool, certs []*x509.Certificate, wantCN str
 	}
 
 	// Chain-to-CA answers "is this OUR fleet"; it does NOT answer "is this the
-	// qube we dialled". Every qube holds a CA-signed certificate, so without
+	// qube we dialed". Every qube holds a CA-signed certificate, so without
 	// this check any one of them authenticates as any other.
 	//
 	// That gap is reachable, not theoretical: qubes share an L2 bridge, so a

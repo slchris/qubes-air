@@ -76,7 +76,7 @@ func (r *InfraRepository) Create(ctx context.Context, req *models.InfraCreateReq
 		ID:            uuid.New().String(),
 		Name:          req.Name,
 		Type:          req.Type,
-		Status:        "disconnected",
+		Status:        models.ZoneStatusDisconnected,
 		Region:        req.Region,
 		Config:        req.Config,
 		ResourceCount: 0,
