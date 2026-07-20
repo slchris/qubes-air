@@ -244,6 +244,22 @@ type OrchestratorConfig struct {
 	// mean every certificate is born already overdue.
 	// Env: QUBES_AIR_AGENT_CERT_RENEW_THRESHOLD_PERCENT.
 	AgentCertRenewThresholdPercent int `yaml:"agent_cert_renew_threshold_percent"`
+	// AgentBootstrapIntervalSeconds is how often running qubes that hold no
+	// certificate are dialed to be issued their first one (default 60). Zero or
+	// negative DISABLES bootstrap.
+	//
+	// Much faster than the renewal sweep, and for the opposite reason. Renewal
+	// has weeks of runway; bootstrap is on the path of "I just created a qube
+	// and it is not reachable yet", so the interval is roughly how long a new
+	// qube spends looking broken before it works. It is cheap to run often:
+	// a sweep that finds every qube already certified does one query and stops.
+	//
+	// Disabling it means a qube provisioned under the token design NEVER
+	// receives a certificate — it boots, looks provisioned, and its agent
+	// refuses to serve. Nothing else reports that, which is why this is logged
+	// loudly at startup rather than left to be discovered.
+	// Env: QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS.
+	AgentBootstrapIntervalSeconds int `yaml:"agent_bootstrap_interval_seconds"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -420,6 +436,7 @@ func DefaultConfig() *Config {
 			// console that has not renewed anything on the day it matters.
 			AgentCertRenewIntervalSeconds:  3600,
 			AgentCertRenewThresholdPercent: 33,
+			AgentBootstrapIntervalSeconds:  60,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -588,6 +605,11 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_CERT_RENEW_THRESHOLD_PERCENT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentCertRenewThresholdPercent = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.AgentBootstrapIntervalSeconds = n
 		}
 	}
 
