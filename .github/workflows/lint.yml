@@ -11,7 +11,7 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.25'
   NODE_VERSION: '20'
 
 jobs:
@@ -33,10 +33,15 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: console/backend/go.sum
 
+      # v1.64 is built with go1.24 and cannot typecheck this module (go.mod says
+      # 1.25), which made every run fail with "package requires newer Go version"
+      # plus a cascade of bogus undefined-symbol errors from vendored grpc code —
+      # noise that hid the real findings entirely. The linter's own toolchain has
+      # to be at least as new as the module it reads.
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.64
+          version: v2.12.2
           working-directory: console/backend
           args: --timeout=5m
 
