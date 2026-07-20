@@ -73,6 +73,8 @@ variable "qube_config" {
     network_bridge       = optional(string, "vmbr0")
     ssh_public_keys      = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
     agent_user_data_file = optional(string, "")       # agent 身份 user-data 的本地路径
+    # 共享存储上身份 snippet 的卷 ID。非空时取代上面那个路径, terraform 只引用不上传。
+    agent_user_data_volume_id = optional(string, "")
 
     # ---- GCP 特定 ----
     # gcp_zone 是必填 (实例与数据盘必须同 zone 才挂得上), 但这里给 null 默认值:
@@ -162,12 +164,13 @@ module "proxmox" {
   # function call" pointing at this line rather than at the missing setting.
   # Empty is a legitimate value here: it means "the template lives on the node
   # the clone is called against".
-  template_node_name   = var.qube_config.template_node_name == null ? "" : var.qube_config.template_node_name
-  datastore_id         = var.qube_config.datastore_id
-  network_bridge       = var.qube_config.network_bridge
-  ssh_public_keys      = var.qube_config.ssh_public_keys
-  agent_user_data_file = var.qube_config.agent_user_data_file
-  qube_type            = var.qube_config.type
+  template_node_name        = var.qube_config.template_node_name == null ? "" : var.qube_config.template_node_name
+  datastore_id              = var.qube_config.datastore_id
+  network_bridge            = var.qube_config.network_bridge
+  ssh_public_keys           = var.qube_config.ssh_public_keys
+  agent_user_data_file      = var.qube_config.agent_user_data_file
+  agent_user_data_volume_id = var.qube_config.agent_user_data_volume_id
+  qube_type                 = var.qube_config.type
 }
 
 module "gcp" {

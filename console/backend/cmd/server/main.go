@@ -228,7 +228,15 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 			URL:               cfg.Orchestrator.AgentPackageURL,
 			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
 			Version:           cfg.Orchestrator.AgentPackageVersion,
-		})
+		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore)
+	if ds := cfg.Orchestrator.AgentSnippetDatastore; ds != "" {
+		// Said at startup because the two delivery paths are invisible from the
+		// outside once running, and they fail in completely different places: a
+		// broken SFTP path fails the apply, a broken share fails the VM's boot.
+		log.Printf("pki: delivering agent identities through datastore %q on %s; "+
+			"terraform will not upload snippets and needs no SSH to a node",
+			ds, cfg.Orchestrator.AgentIdentityDir)
+	}
 	if cfg.Orchestrator.AgentPackageURL == "" {
 		log.Printf("WARNING: orchestrator.agent_package_url is not set; " +
 			"new qubes will boot without an agent (set QUBES_AIR_AGENT_PACKAGE_URL and _SHA256)")

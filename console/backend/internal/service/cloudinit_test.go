@@ -164,12 +164,41 @@ func TestRenderRejectsIncompleteInput(t *testing.T) {
 // TestSnippetVolumeIDFormat — Proxmox resolves a snippet by this exact shape,
 // and the datastore must declare the snippets content type or the volume is
 // not found even with the file present.
+//
+// SnippetVolumeID takes the FILE NAME, not the qube name, because under
+// shared-storage delivery the name carries a content hash.
 func TestSnippetVolumeIDFormat(t *testing.T) {
-	assert.Equal(t, "local:snippets/qubes-air-dev-work.yaml", SnippetVolumeID("local", "dev-work"))
-	assert.Equal(t, "local:snippets/qubes-air-x.yaml", SnippetVolumeID("", "x"),
-		"an unset datastore falls back to local")
+	assert.Equal(t, "local:snippets/qubes-air-dev-work.yaml",
+		SnippetVolumeID("local", SnippetFileName("dev-work")))
+	assert.Equal(t, "local:snippets/qubes-air-x.yaml",
+		SnippetVolumeID("", SnippetFileName("x")), "an unset datastore falls back to local")
 	assert.Equal(t, "qubes-air-dev-work.yaml", SnippetFileName("dev-work"),
 		"the on-disk name must match the volume id")
+	assert.Equal(t, "cephfs:snippets/qubes-air-dev-work-abc123abc123.yaml",
+		SnippetVolumeID("cephfs", "qubes-air-dev-work-abc123abc123.yaml"),
+		"a content-addressed name passes through unchanged")
+}
+
+// The property the whole shared-storage path rests on: the name changes when
+// the content changes, and only then.
+//
+// This replaces `checksum = filesha256(...)` on the terraform file resource,
+// which is what makes terraform depend on content today. Lose this and a
+// re-rendered identity keeps the same volume id, the VM is never rebuilt, and
+// certificate rotation silently never lands while every apply reports success —
+// the failure docs/bootstrap-design.md §7 was written about.
+func TestContentAddressedNameTracksContent(t *testing.T) {
+	a := ContentAddressedSnippetName("dev-work", "#cloud-config\nfoo: 1\n")
+	b := ContentAddressedSnippetName("dev-work", "#cloud-config\nfoo: 2\n")
+	same := ContentAddressedSnippetName("dev-work", "#cloud-config\nfoo: 1\n")
+
+	assert.NotEqual(t, a, b, "different content produced the same name; identity updates would never be delivered")
+	assert.Equal(t, a, same, "identical content produced different names; every render would rebuild the VM")
+	assert.True(t, strings.HasPrefix(a, "qubes-air-dev-work-"), "name does not identify its qube: %s", a)
+	assert.True(t, strings.HasSuffix(a, ".yaml"), "PVE resolves snippets by extension: %s", a)
+
+	// Different qubes must never collide even with byte-identical documents.
+	assert.NotEqual(t, a, ContentAddressedSnippetName("prod-work", "#cloud-config\nfoo: 1\n"))
 }
 
 // TestUserDataInstallsGuestAgent — setting user-data REPLACES a template's own

@@ -87,6 +87,25 @@ variable "agent_user_data_file" {
   default     = ""
 }
 
+variable "agent_user_data_volume_id" {
+  description = <<-EOT
+    共享存储上身份 snippet 的 Proxmox 卷 ID, 形如
+    `cephfs:snippets/qubes-air-<name>-<hash>.yaml`。
+
+    非空时**取代** agent_user_data_file: 文件已经躺在所有节点都能读到的共享存储上,
+    terraform 只需要引用它, 不需要上传 —— 于是 provider 的 ssh 块在置备路径上
+    不再是必需的。这正是这条路存在的理由 (见 docs/bootstrap-design.md §4.4)。
+
+    **文件名里的哈希是承重的, 不是装饰。** 走上传那条路时, 是资源上的
+    `checksum = filesha256(...)` 让 terraform 依赖内容; 这里没有资源可挂 checksum,
+    换成内容变→文件名变→卷 ID 变, 而 user_data_file_id 在 VM 上是 ForceNew。
+    如果哪天有人把哈希从文件名里拿掉, 身份更新会**静默传不下去**, 而每次 apply
+    都报成功 —— §7 记的就是这个故障。
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "ssh_public_keys" {
   description = "cloud-init 注入的 SSH **公钥** 列表 (绝不含私钥; 私钥留在控制端 dom0)"
   type        = list(string)
@@ -159,7 +178,9 @@ resource "proxmox_virtual_environment_vm" "storage" {
 # ============================================
 
 resource "proxmox_virtual_environment_file" "agent_identity" {
-  count = var.compute_running && var.agent_user_data_file != "" ? 1 : 0
+  # 共享存储模式 (agent_user_data_volume_id 非空) 下**不建这个资源**: 文件已经在位,
+  # 再上传一份等于把节点 SSH 又请回置备路径。
+  count = var.compute_running && var.agent_user_data_file != "" && var.agent_user_data_volume_id == "" ? 1 : 0
 
   content_type = "snippets"
   datastore_id = "local" # snippets 需要文件系统型存储; RBD 只支持 images
@@ -256,10 +277,14 @@ resource "proxmox_virtual_environment_vm" "compute" {
   initialization {
     datastore_id = var.datastore_id
 
-    # agent 身份 (证书 + 私钥) 经 user_data 投递。仅传卷 ID, 内容不进 state。
-    user_data_file_id = length(proxmox_virtual_environment_file.agent_identity) > 0 ? (
-      proxmox_virtual_environment_file.agent_identity[0].id
-    ) : null
+    # agent 身份经 user_data 投递。两条路都只传卷 ID, 内容不进 state。
+    #
+    # 共享存储上的卷 ID 优先: 那条路里文件已经在位, 上面那个资源根本没建。
+    user_data_file_id = var.agent_user_data_volume_id != "" ? var.agent_user_data_volume_id : (
+      length(proxmox_virtual_environment_file.agent_identity) > 0 ? (
+        proxmox_virtual_environment_file.agent_identity[0].id
+      ) : null
+    )
 
     ip_config {
       ipv4 {

@@ -134,6 +134,10 @@ variable "remote_qubes" {
     # agent_user_data_file: Console 渲染的 cloud-init user-data 的本地路径,
     # 内含该 agent 的 mTLS 身份。传路径而非内容, 使私钥不进 state。
     agent_user_data_file = optional(string, "")
+    # agent_user_data_volume_id: 共享存储上同一份身份的 Proxmox 卷 ID。
+    # 非空时取代上面那条路径 —— 文件已在所有节点可读的共享存储上, terraform 只引用,
+    # 不再 SFTP 到节点。文件名里带内容哈希, 见 docs/bootstrap-design.md §4.4。
+    agent_user_data_volume_id = optional(string, "")
   }))
   default = {}
 }

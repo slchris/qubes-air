@@ -10,9 +10,17 @@ import (
 	"github.com/slchris/qubes-air/console/internal/repository"
 )
 
-// IdentityLocator reports where a qube's rendered agent identity file lives.
+// IdentityLocator reports where a qube's rendered agent identity lives.
+//
+// Two answers, and exactly one is non-empty for a given console. IdentityPath
+// is a local path terraform uploads FROM over SFTP; IdentityVolumeID is a
+// Proxmox volume id for a file that already sits on shared storage, which
+// terraform only references. Emitting both would have terraform upload a copy
+// of a file the nodes can already see, putting node SSH back on the path that
+// shared storage exists to take it off.
 type IdentityLocator interface {
 	IdentityPath(qubeName string) string
+	IdentityVolumeID(qubeName string) string
 }
 
 // zoneNameForProvider maps a zone type onto the terraform zone key that
@@ -82,6 +90,14 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 			if identity != nil {
 				if path := identity.IdentityPath(q.Name); path != "" {
 					entry["agent_user_data_file"] = path
+				}
+				// Shared storage: hand terraform the volume id of a file that
+				// is already in place. The name embeds a hash of the content,
+				// so a re-rendered identity produces a different id — which is
+				// what makes the compute VM rebuild and read it. See
+				// ContentAddressedSnippetName for why that substitution matters.
+				if volID := identity.IdentityVolumeID(q.Name); volID != "" {
+					entry["agent_user_data_volume_id"] = volID
 				}
 			}
 			// The NAME is the terraform map key, but names are not unique across

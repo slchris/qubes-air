@@ -1,7 +1,10 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -363,21 +366,69 @@ func writeFile(b *strings.Builder, path, mode, content string) {
 	}
 }
 
-// SnippetVolumeID is the terraform user_data_file_id for a qube's snippet.
+// SnippetVolumeID is the terraform user_data_file_id for a snippet file.
 //
 // Proxmox addresses a snippet as "<datastore>:snippets/<file>". The datastore
 // must declare the "snippets" content type, or PVE will not resolve the volume
 // even when the file is present on disk.
-func SnippetVolumeID(datastore, qubeName string) string {
+//
+// Takes the FILE NAME rather than the qube name, because under shared-storage
+// delivery the name carries a content hash — see ContentAddressedSnippetName.
+func SnippetVolumeID(datastore, fileName string) string {
 	if datastore == "" {
 		datastore = "local"
 	}
-	return fmt.Sprintf("%s:snippets/qubes-air-%s.yaml", datastore, qubeName)
+	return fmt.Sprintf("%s:snippets/%s", datastore, fileName)
 }
 
-// SnippetFileName is the on-disk name matching SnippetVolumeID.
+// SnippetFileName is the on-disk name used by the SFTP delivery path, where
+// terraform owns the upload and tracks content through its own checksum.
 func SnippetFileName(qubeName string) string {
 	return fmt.Sprintf("qubes-air-%s.yaml", qubeName)
+}
+
+// snippetHashLen is how much of the content digest goes in the file name.
+// 12 hex characters is 48 bits — far past accidental collision for a fleet,
+// and short enough that the name stays readable in a log line.
+const snippetHashLen = 12
+
+// ContentAddressedSnippetName names a snippet after the qube AND the bytes it
+// contains.
+//
+// This is what keeps the shared-storage delivery path correct, and it replaces
+// a guarantee rather than adding one. On the SFTP path, terraform's
+// `checksum = filesha256(...)` is what makes the file resource depend on
+// CONTENT; without it terraform tracks only the path, and a re-rendered
+// identity at the same path is invisible — apply reports success while the node
+// keeps the old file. That was observed on real hardware, and its worse form is
+// that certificate rotation can never land while every apply looks green (see
+// docs/bootstrap-design.md §7).
+//
+// Shared storage deletes that resource, and a bare volume-ID string has nowhere
+// to hang a checksum. So the digest moves into the name: different content
+// yields a different file name, hence a different volume id, and
+// user_data_file_id is ForceNew on the VM — the compute instance rebuilds and
+// cloud-init reads the new document. Same end behavior as today, but derived
+// from the content by construction instead of by remembering to pass a
+// checksum.
+//
+// It also makes identities content-addressed rather than overwritten in place,
+// so a superseded document is never silently replaced under a running VM.
+func ContentAddressedSnippetName(qubeName, userData string) string {
+	sum := sha256.Sum256([]byte(userData))
+	return fmt.Sprintf("qubes-air-%s-%s.yaml", qubeName, hex.EncodeToString(sum[:])[:snippetHashLen])
+}
+
+// snippetNamePattern matches any snippet this console has ever written for a
+// qube, in either naming scheme. Used to collect superseded versions.
+//
+// Anchored on both ends and with the hash restricted to hex so that a qube
+// named "web" cannot match files belonging to "web-01": the separator alone
+// would not distinguish them, but "web-01-<hash>" fails the hex check for the
+// segment that would have to be "01-<hash>".
+func snippetNamePattern(qubeName string) *regexp.Regexp {
+	return regexp.MustCompile(
+		`^qubes-air-` + regexp.QuoteMeta(qubeName) + `(-[0-9a-f]{` + fmt.Sprint(snippetHashLen) + `})?\.yaml$`)
 }
 
 // WriteAgentUserData persists rendered user-data where terraform can upload it.
@@ -425,19 +476,173 @@ func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 	return path, nil
 }
 
-// RemoveAgentUserData deletes a qube's identity file from the console.
+// WriteSharedAgentUserData writes a content-addressed identity into the
+// directory PVE nodes read snippets from, and returns the file name.
 //
-// Called when a qube is purged. The copy on the Proxmox node is removed by
-// terraform along with the compute VM; this removes the console's own.
+// This is the shared-storage delivery path: the console writes where the
+// hypervisors can already see, so nothing has to SFTP into a node — which is
+// the entire point, since snippet upload is the one thing the PVE API cannot
+// do (docs/bootstrap-design.md §4.1).
+//
+// Writing the CURRENT file before reaping the old ones is deliberate and is
+// the only safe order. The reverse would open a window in which a qube's
+// identity does not exist on the share at all, and a VM starting in that
+// window gets a cicustom volume PVE cannot resolve.
+//
+// Mode 0644, not 0600: the PVE nodes read this file as a different user
+// entirely. Confidentiality here comes from who can mount the share, not from
+// the file bits — which is exactly why this path must only ever carry the
+// bootstrap token and the public CA, never a private key.
+func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
+	if dir == "" {
+		return "", fmt.Errorf("no directory configured for agent identity files")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create snippet dir: %w", err)
+	}
+
+	name := ContentAddressedSnippetName(qubeName, userData)
+	if err := writeSnippetAtomic(dir, name, userData); err != nil {
+		return "", err
+	}
+
+	// Best effort: a leftover old version is inert (nothing references it) and
+	// failing the provision over it would trade a working qube for tidiness.
+	if err := reapSupersededSnippets(dir, qubeName, name); err != nil {
+		log.Printf("cloudinit: could not remove superseded snippets for %q: %v", qubeName, err)
+	}
+	return name, nil
+}
+
+// writeSnippetAtomic places one snippet via a temp file and a rename, so a node
+// can never read a half-written identity.
+func writeSnippetAtomic(dir, name, userData string) error {
+	tmp, err := os.CreateTemp(dir, ".identity-*.yaml")
+	if err != nil {
+		return fmt.Errorf("create temp identity: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+
+	if _, err := tmp.WriteString(userData); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write identity: %w", err)
+	}
+	// Flush before the rename. On a network filesystem the rename can be
+	// visible to another client while the bytes are not, and a node that reads
+	// an empty snippet boots a qube with no identity at all.
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync identity: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close identity: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("chmod identity: %w", err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {
+		return fmt.Errorf("place identity: %w", err)
+	}
+	return nil
+}
+
+// FindSharedAgentUserData returns the name of a qube's current identity
+// snippet on the share, or "" when it has none.
+//
+// The share is the source of truth for which document a qube is running,
+// because the name encodes the content and nothing else can reconstruct it.
+//
+// More than one match is an ERROR rather than a pick. Two content-addressed
+// files mean two different identities exist for one qube and there is no
+// evidence here about which the VM actually booted with — choosing would be a
+// coin flip that silently rebuilds a healthy qube with the wrong document.
+// WriteSharedAgentUserData reaps superseded versions, so this state means that
+// reaping failed, and an operator should see that rather than have it papered
+// over.
+func FindSharedAgentUserData(dir, qubeName string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	pattern := snippetNamePattern(qubeName)
+	var found []string
+	for _, e := range entries {
+		if !e.IsDir() && pattern.MatchString(e.Name()) {
+			found = append(found, e.Name())
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", nil
+	case 1:
+		return found[0], nil
+	default:
+		return "", fmt.Errorf(
+			"qube %q has %d identity snippets on the share (%s); superseded ones were not removed, "+
+				"and picking between them could rebuild the qube with an identity it never had",
+			qubeName, len(found), strings.Join(found, ", "))
+	}
+}
+
+// reapSupersededSnippets removes a qube's older identity documents, keeping the
+// one named by keep.
+//
+// Content addressing means every re-render leaves a new file behind, so
+// something has to collect them or the share grows without bound. Scoped to one
+// qube's own files by construction: a pattern that could match another qube's
+// name would delete an identity belonging to a running VM.
+func reapSupersededSnippets(dir, qubeName, keep string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	pattern := snippetNamePattern(qubeName)
+	var firstErr error
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == keep || !pattern.MatchString(name) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// RemoveAgentUserData deletes a qube's identity files from the console.
+//
+// Called when a qube is purged. On the SFTP path the copy on the Proxmox node
+// is removed by terraform along with the compute VM; this removes the console's
+// own. On the shared path there is only one copy and this is what removes it,
+// so every content-addressed version is swept, not just the current name —
+// which the caller does not know once the qube's config is gone.
 func RemoveAgentUserData(dir, qubeName string) error {
 	if dir == "" {
 		return nil
 	}
-	err := os.Remove(filepath.Join(dir, SnippetFileName(qubeName)))
-	if os.IsNotExist(err) {
-		return nil
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
-	return err
+	pattern := snippetNamePattern(qubeName)
+	var firstErr error
+	for _, e := range entries {
+		if e.IsDir() || !pattern.MatchString(e.Name()) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // writeAptMirror emits the apt stanza pointing the guest at a local mirror.

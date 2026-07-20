@@ -106,19 +106,48 @@ type OrchestratorConfig struct {
 	// Terraform is given the PATH of a file, never its content: source_file
 	// records only the path and volume id in state, while inlining the content
 	// would put a private key into state in plaintext.
+	//
+	// With AgentSnippetDatastore set this is instead a MOUNT of the shared
+	// storage the PVE nodes read snippets from, and the modes above change
+	// accordingly — see that field.
 	// Env: QUBES_AIR_AGENT_IDENTITY_DIR.
 	AgentIdentityDir string `yaml:"agent_identity_dir"`
+	// AgentSnippetDatastore names the Proxmox datastore that AgentIdentityDir
+	// is a mount of — e.g. "cephfs". Setting it switches identity delivery from
+	// "terraform uploads over SFTP" to "the console writes where the nodes
+	// already read", which is what takes node root SSH off the provisioning
+	// path (docs/bootstrap-design.md §4.4).
+	//
+	// Empty keeps the SFTP path, which is the one proven on real hardware.
+	// Both are kept because this changes how every qube is provisioned, and a
+	// switch that cannot be flipped back would make a bad night unrecoverable.
+	//
+	// The datastore MUST declare the "snippets" content type. Note that a
+	// datastore can appear to work without declaring it — `pvesm path` may
+	// still resolve the volume — so verify with a real VM rather than a path
+	// lookup.
+	//
+	// The directory is shared with the hypervisors, so files there are 0644 and
+	// confidentiality comes from who can mount the share. Only ever put the
+	// bootstrap token and the public CA on this path, never a private key.
+	// Env: QUBES_AIR_AGENT_SNIPPET_DATASTORE.
+	AgentSnippetDatastore string `yaml:"agent_snippet_datastore"`
 	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
 	// Env: QUBES_AIR_AGENT_LISTEN.
 	AgentListen string `yaml:"agent_listen"`
 	// ProxmoxSSHKeyFile is the private key the terraform provider uses to SSH
 	// into PVE nodes, and ProxmoxSSHUsername the login (default "root").
 	//
-	// Required for provisioning, not optional: uploading a cloud-init snippet
-	// writes /var/lib/vz/snippets/ on the node over SSH and the PVE API has no
-	// endpoint for it. That snippet carries the per-qube agent identity, so
-	// without this every provision fails partway — after the VM has been
-	// cloned, which leaves a half-built qube behind.
+	// Required for provisioning UNLESS AgentSnippetDatastore is set: uploading a
+	// cloud-init snippet writes /var/lib/vz/snippets/ on the node over SSH and
+	// the PVE API has no endpoint for it (still true in PVE 9.2 — see
+	// docs/bootstrap-design.md §4.1). That snippet carries the per-qube agent
+	// identity, so without this every provision fails partway — after the VM
+	// has been cloned, which leaves a half-built qube behind.
+	//
+	// With shared-storage delivery the console writes the snippet itself and
+	// terraform only references it, so nothing in the provisioning path needs
+	// to log into a node and this may be left empty.
 	//
 	// A PATH, not the key itself: the content is read at call time and passed
 	// to terraform as a TF_VAR_, so it never lands in the terraform root or in
@@ -548,6 +577,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if genVarFile := os.Getenv("QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE"); genVarFile != "" {
 		c.Orchestrator.GeneratedVarFile = genVarFile
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_SNIPPET_DATASTORE"); v != "" {
+		c.Orchestrator.AgentSnippetDatastore = v
 	}
 	if dir := os.Getenv("QUBES_AIR_AGENT_IDENTITY_DIR"); dir != "" {
 		c.Orchestrator.AgentIdentityDir = dir

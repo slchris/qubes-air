@@ -39,10 +39,22 @@ const (
 type CertIssuer struct {
 	creds CredentialStore
 	certs *repository.AgentCertRepository
-	// identityDir is where rendered cloud-init identity files are written for
-	// terraform to upload. Empty disables delivery: certificates are still
-	// issued and registered, but never reach the remote.
+	// identityDir is where rendered cloud-init identity files are written.
+	// Empty disables delivery: certificates are still issued and registered,
+	// but never reach the remote.
+	//
+	// Its meaning depends on snippetDatastore: with it empty, this is a private
+	// staging directory terraform uploads FROM over SFTP; with it set, this is
+	// a mount of the shared storage the PVE nodes read snippets from directly.
 	identityDir string
+	// snippetDatastore names the Proxmox datastore backing identityDir, and
+	// switching it on is what removes node SSH from the provisioning path.
+	//
+	// Empty keeps the SFTP path, which is the one proven on real hardware. The
+	// two are kept side by side deliberately: shared storage changes how every
+	// qube is provisioned, and a mode that cannot be turned back off would make
+	// a bad night unrecoverable.
+	snippetDatastore string
 	// agentListen is the address the agent binds on the remote.
 	agentListen string
 	// agentPkg pins the .deb that installs the agent binary on the remote.
@@ -75,13 +87,59 @@ func NewCertIssuer(creds CredentialStore, certs *repository.AgentCertRepository,
 	}
 }
 
+// WithSnippetDatastore switches identity delivery onto shared storage backed by
+// the named Proxmox datastore, taking node SSH off the provisioning path.
+//
+// An option rather than a constructor argument so that every existing caller
+// keeps the SFTP behavior it has today: this changes how every qube is
+// provisioned, and it should be something a deployment opts into, not something
+// a forgotten empty string decides.
+func (c *CertIssuer) WithSnippetDatastore(datastore string) *CertIssuer {
+	c.snippetDatastore = strings.TrimSpace(datastore)
+	return c
+}
+
 // IdentityPath returns where a qube's rendered identity file lives, or "" when
-// delivery is not configured.
+// delivery is not configured or runs over shared storage.
+//
+// Empty in shared-storage mode on purpose: this path exists so terraform can
+// UPLOAD the file over SFTP, and in that mode terraform must not upload
+// anything — the file is already where the nodes read it. Returning a path
+// there would make terraform re-upload it into node-local storage and
+// reintroduce the SSH requirement the mode exists to remove.
 func (c *CertIssuer) IdentityPath(qubeName string) string {
-	if c.identityDir == "" {
+	if c.identityDir == "" || c.snippetDatastore != "" {
 		return ""
 	}
 	return filepath.Join(c.identityDir, SnippetFileName(qubeName))
+}
+
+// IdentityVolumeID returns the Proxmox volume id of a qube's identity snippet,
+// or "" when delivery is not over shared storage or no identity exists.
+//
+// Read from the SHARE rather than remembered in the process, and that is the
+// load-bearing choice. The file name carries a hash of its own content
+// (ContentAddressedSnippetName), so it cannot be recomputed from the qube name
+// — which makes an in-memory map tempting, and wrong: a console restart would
+// lose every name, tfvars would render qubes with no identity, and terraform
+// would happily rebuild running VMs without one. The share is where the file
+// actually is, so the share is what gets asked.
+func (c *CertIssuer) IdentityVolumeID(qubeName string) string {
+	if c.snippetDatastore == "" || c.identityDir == "" {
+		return ""
+	}
+	name, err := FindSharedAgentUserData(c.identityDir, qubeName)
+	if err != nil {
+		// Reported, not guessed. A fabricated volume id is a cicustom entry PVE
+		// cannot resolve, and the VM then fails to start with an error three
+		// layers from the cause; an empty one is visibly "no identity yet".
+		log.Printf("pki: cannot determine the identity snippet for %q on the share: %v", qubeName, err)
+		return ""
+	}
+	if name == "" {
+		return ""
+	}
+	return SnippetVolumeID(c.snippetDatastore, name)
 }
 
 // IssueFor mints a client certificate for a qube's agent and registers it.
@@ -124,11 +182,22 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) (*pki.Bund
 		if err != nil {
 			return nil, fmt.Errorf("render identity for %q: %w", qube.Name, err)
 		}
-		path, err := WriteAgentUserData(c.identityDir, qube.Name, userData)
-		if err != nil {
-			return nil, fmt.Errorf("persist identity for %q: %w", qube.Name, err)
+		if c.snippetDatastore != "" {
+			// Shared storage: the console writes where the nodes already read,
+			// so terraform uploads nothing and needs no SSH to a hypervisor.
+			name, err := WriteSharedAgentUserData(c.identityDir, qube.Name, userData)
+			if err != nil {
+				return nil, fmt.Errorf("persist identity for %q on the share: %w", qube.Name, err)
+			}
+			log.Printf("pki: wrote agent identity for %q to %s",
+				qube.Name, SnippetVolumeID(c.snippetDatastore, name))
+		} else {
+			path, err := WriteAgentUserData(c.identityDir, qube.Name, userData)
+			if err != nil {
+				return nil, fmt.Errorf("persist identity for %q: %w", qube.Name, err)
+			}
+			log.Printf("pki: wrote agent identity for %q to %s", qube.Name, path)
 		}
-		log.Printf("pki: wrote agent identity for %q to %s", qube.Name, path)
 	}
 
 	log.Printf("pki: issued certificate %s for qube %q (expires %s)",
