@@ -10,7 +10,6 @@
   import Header from './components/Header.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import QubeList from './components/QubeList.svelte'
-  import InfraList from './components/InfraList.svelte'
   import CredentialList from './components/CredentialList.svelte'
   import BillingView from './components/BillingView.svelte'
   import MonitoringView from './components/MonitoringView.svelte'
@@ -24,7 +23,7 @@
   // 从 URL hash 获取当前视图，支持页面刷新保持状态
   function getViewFromHash(): string {
     const hash = window.location.hash.slice(1); // 移除 #
-    const validViews = ['dashboard', 'qubes', 'zones', 'jobs', 'infrastructure', 'credentials', 'billing', 'monitoring', 'settings'];
+    const validViews = ['dashboard', 'qubes', 'zones', 'jobs', 'credentials', 'billing', 'monitoring', 'settings'];
     // Dashboard is the landing view: opening straight onto the qube list answers
     // "what exists" but not "is anything wrong", and the two facts that matter
     // most on arrival — an unreachable agent and a failed job — were the ones
@@ -83,8 +82,6 @@
         <JobsView />
       {:else if currentView === 'zones'}
         <ZonesView />
-      {:else if currentView === 'infrastructure'}
-        <InfraList />
       {:else if currentView === 'credentials'}
         <CredentialList />
       {:else if currentView === 'billing'}

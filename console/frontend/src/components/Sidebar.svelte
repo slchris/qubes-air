@@ -15,7 +15,6 @@
     { id: 'qubes', label: 'Qubes', icon: '□' },
     { id: 'zones', label: 'Zones', icon: '◈' },
     { id: 'jobs', label: 'Jobs', icon: '≡' },
-    { id: 'infrastructure', label: 'Infrastructure', icon: '⬡' },
     { id: 'credentials', label: 'Credentials', icon: '⚿' },
     { id: 'billing', label: 'Billing', icon: '$' },
     { id: 'monitoring', label: 'Monitoring', icon: '◉' },

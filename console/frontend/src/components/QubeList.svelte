@@ -322,89 +322,81 @@
       <p class="hint">Click "+ Create Qube" to create your first qube</p>
     </div>
   {:else}
-    <div class="qube-grid">
+    <!-- A list, not a card grid. A fleet is scanned down a column — status,
+         agent health, address — and cards force that comparison to happen
+         across two dimensions. The row stays one line; its job log expands
+         underneath on demand. -->
+    <div class="qube-table" role="table">
+      <div class="qhead" role="row">
+        <span class="c-name">Name</span>
+        <span class="c-status">Status</span>
+        <span class="c-agent">Agent</span>
+        <span class="c-zone">Zone / node</span>
+        <span class="c-spec">Spec</span>
+        <span class="c-ip">Address</span>
+        <span class="c-act"></span>
+      </div>
+
       {#each qubeState.qubes as qube (qube.id)}
-        <div class="qube-card">
-          <div class="qube-header">
-            <span class="qube-name">{qube.name}</span>
-            <span
-              class="status-dot"
-              style="background: {getStatusColor(qube.status)}"
-              title={getStatusLabel(qube.status)}
-            ></span>
+        <div class="qrow-wrap" class:has-log={!!qubeState.jobs[qube.id]}>
+          <div class="qrow" role="row">
+            <span class="c-name">
+              <span class="status-dot" style="background: {getStatusColor(qube.status)}"
+                    title={getStatusLabel(qube.status)}></span>
+              <span class="nm">{qube.name}</span>
+              <code class="ty">{qube.type}</code>
+            </span>
+
+            <span class="c-status">{getStatusLabel(qube.status)}</span>
+
+            <span class="c-agent">
+              <span class="agent {qube.agent_health ?? 'unknown'}"
+                    title={qube.agent_last_error || ''}>{agentLabel(qube.agent_health)}</span>
+              {#if qube.agent_health === 'unhealthy' && qube.agent_last_error}
+                <span class="agent-err" title={qube.agent_last_error}>{qube.agent_last_error}</span>
+              {/if}
+            </span>
+
+            <span class="c-zone">
+              {getZoneName(qube.zone_id)}{#if qube.spec.node}<span class="dim"> · {qube.spec.node}</span>{/if}
+            </span>
+
+            <span class="c-spec">
+              {qube.spec.vcpu}c / {qube.spec.memory}M / {qube.spec.disk}G{#if qube.spec.data_disk_gb}<span class="dim"> +{qube.spec.data_disk_gb}G</span>{/if}
+            </span>
+
+            <span class="c-ip mono">{qube.ip_address || '—'}</span>
+
+            <span class="c-act">
+              {#if isTransientStatus(qube.status)}
+                <!-- An operation is in flight. The backend refuses a second one,
+                     so this is disabled rather than offering a click that comes
+                     back 409. -->
+                <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
+              {:else if canStart(qube.status)}
+                <button class="btn" onclick={() => handleStart(qube)}>
+                  {qube.status === 'suspended' || qube.status === 'released' ? 'Resume' : 'Start'}
+                </button>
+              {:else if qube.status === 'running'}
+                <button class="btn" onclick={() => handleStop(qube)}
+                        title="Destroy the compute instance and keep the data disk">Suspend</button>
+              {:else}
+                <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
+              {/if}
+              <button class="btn btn-secondary" onclick={() => openEditModal(qube)}
+                      disabled={isTransientStatus(qube.status)}>Edit</button>
+              <button class="btn btn-danger" onclick={() => handleDelete(qube)}
+                      disabled={isTransientStatus(qube.status) || qube.status === 'released'}
+                      title="Release the compute instance. The data disk is kept and can be purged separately."
+              >Release</button>
+            </span>
           </div>
 
-          <div class="qube-info">
-            <div class="info-row">
-              <span class="label">Zone:</span>
-              <span>{getZoneName(qube.zone_id)}{#if qube.spec.node} · {qube.spec.node}{/if}</span>
-            </div>
-            <div class="info-row">
-              <span class="label">Type:</span>
-              <code>{qube.type}</code>
-            </div>
-            <div class="info-row">
-              <span class="label">Spec:</span>
-              <span>{qube.spec.vcpu} vCPU, {qube.spec.memory}MB, {qube.spec.disk}G{#if qube.spec.data_disk_gb} +{qube.spec.data_disk_gb}G data{/if}</span>
-            </div>
-            {#if qube.ip_address}
-              <div class="info-row">
-                <span class="label">IP:</span>
-                <code>{qube.ip_address}</code>
-              </div>
-            {/if}
-            <div class="info-row">
-              <span class="label">Agent:</span>
-              <span class="agent {qube.agent_health ?? 'unknown'}" title={qube.agent_last_error || ''}>
-                {agentLabel(qube.agent_health)}
-              </span>
-            </div>
-            {#if qube.agent_health === 'unhealthy' && qube.agent_last_error}
-              <div class="info-row agent-err">
-                <span class="label"></span>
-                <span title={qube.agent_last_error}>{qube.agent_last_error}</span>
-              </div>
-            {/if}
-          </div>
-
-          <!-- The provisioning/failure story. Shown while the qube is in a
-               transient state, or whenever we have a job id for it (so a
-               finished failure keeps its reason). -->
           {#if qubeState.jobs[qube.id]}
-            <JobLog jobId={qubeState.jobs[qube.id]} active={isTransientStatus(qube.status)} />
+            <div class="qrow-log">
+              <JobLog jobId={qubeState.jobs[qube.id]} active={isTransientStatus(qube.status)} />
+            </div>
           {/if}
-
-          <div class="qube-actions">
-            {#if isTransientStatus(qube.status)}
-              <!-- An operation is in flight. The backend refuses a second one,
-                   so the buttons are disabled rather than offering a click that
-                   would come back 409. -->
-              <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
-            {:else if canStart(qube.status)}
-              <button class="btn" onclick={() => handleStart(qube)}>
-                {qube.status === 'suspended' || qube.status === 'released' ? 'Resume' : 'Start'}
-              </button>
-            {:else if qube.status === 'running'}
-              <button class="btn" onclick={() => handleStop(qube)} title="Destroy the compute instance and keep the data disk">
-                Suspend
-              </button>
-            {:else}
-              <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
-            {/if}
-            <button
-              class="btn btn-secondary"
-              onclick={() => openEditModal(qube)}
-              disabled={isTransientStatus(qube.status)}
-            >Edit</button>
-            <button
-              class="btn btn-danger"
-              onclick={() => handleDelete(qube)}
-              disabled={isTransientStatus(qube.status) || qube.status === 'released'}
-              title="Release the compute instance. The data disk is kept and can be purged separately."
-            >
-              Release
-            </button>
-          </div>
         </div>
       {/each}
     </div>
@@ -596,6 +588,124 @@
 <style>
   .qube-list {
     max-width: 1200px;
+  }
+
+  /* --- list layout ---------------------------------------------------------
+     One grid template shared by the header and every row, so columns line up
+     without a <table> (rows need to expand into a log panel, which a table row
+     cannot contain cleanly). */
+  .qube-table {
+    --surface: #ffffff;
+    --text: #1a1a1a;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    /* Safety net: if a column set ever exceeds the container again, the row
+       scrolls instead of hiding its controls. */
+    overflow-x: auto;
+    color: var(--text);
+  }
+  @media (prefers-color-scheme: dark) {
+    .qube-table {
+      --surface: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #374151;
+    }
+  }
+
+  .qhead, .qrow {
+    display: grid;
+    /* Minimums kept small on purpose. The first version summed to more than the
+       content area (a 1000px window minus the 200px sidebar), so the grid
+       overflowed a container with overflow:hidden and the action buttons were
+       not merely cramped — they were unreachable. */
+    grid-template-columns:
+      minmax(7rem, 1.3fr)   /* name */
+      minmax(4.5rem, 0.8fr) /* status */
+      minmax(4.5rem, 0.8fr) /* agent */
+      minmax(5rem, 0.9fr)   /* zone/node */
+      minmax(6rem, 1fr)     /* spec */
+      minmax(5rem, 0.8fr)   /* address */
+      auto;                 /* actions */
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.5rem 0.8rem;
+  }
+  .qhead {
+    background: color-mix(in srgb, var(--text) 5%, var(--surface));
+    color: var(--muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .qrow-wrap { border-top: 1px solid var(--border); background: var(--surface); }
+  .qrow-wrap:first-of-type { border-top: none; }
+  .qrow { font-size: 0.85rem; }
+  .qrow-log { padding: 0 0.8rem 0.6rem; }
+
+  .c-name { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+  .c-name .nm { font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+  .c-name .ty {
+    font-size: 0.7rem; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 0.25rem;
+  }
+  .c-status, .c-zone, .c-spec, .c-ip { color: var(--text); min-width: 0; }
+  .c-ip { font-size: 0.8rem; }
+  .dim { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .c-act { display: flex; gap: 0.35rem; justify-content: flex-end; }
+  .c-agent { display: flex; flex-direction: column; min-width: 0; }
+  .agent-err {
+    font-size: 0.7rem; color: #b91c1c;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Below this the seven columns stop being readable; each row becomes a
+     stacked block with its own labels rather than a squeezed grid. */
+  /* Progressive disclosure rather than one hard switch to stacked blocks.
+     Stacking at the first sign of pressure turned a 1000px window — an ordinary
+     desktop size — into three screen-filling blocks, which is the opposite of a
+     list. Spec is the first column to go because it is the one nobody scans
+     down; the columns that answer "is this thing healthy and where is it" stay
+     until there is genuinely no room. */
+  @media (max-width: 1080px) {
+    .qhead, .qrow { grid-template-columns:
+      minmax(7rem, 1.3fr) minmax(4.5rem, 0.8fr) minmax(4.5rem, 0.8fr)
+      minmax(5rem, 0.9fr) minmax(5rem, 0.8fr) auto; }
+    .c-spec { display: none; }
+  }
+
+  @media (max-width: 820px) {
+    .qhead { display: none; }
+    .qrow {
+      grid-template-columns: 1fr;
+      gap: 0.3rem;
+      padding: 0.7rem 0.8rem;
+    }
+    .c-spec { display: block; }
+    .c-act { justify-content: flex-start; margin-top: 0.5rem; }
+    /* Labels, because without the header row a bare value says nothing. */
+    .c-status::before { content: 'Status: '; color: var(--muted); }
+    .c-agent::before { content: 'Agent: '; color: var(--muted); }
+    .c-zone::before { content: 'Zone: '; color: var(--muted); }
+    .c-spec::before { content: 'Spec: '; color: var(--muted); }
+    .c-ip::before { content: 'Address: '; color: var(--muted); }
+    /* The stacked agent cell is a column; the label needs to sit inline with
+       the value rather than above it. */
+    .c-agent { flex-direction: row; gap: 0.3rem; align-items: baseline; flex-wrap: wrap; }
+  }
+
+  /* Compact controls: three full-width buttons per row read as three separate
+     calls to action, when they are one row's controls. */
+  .c-act .btn {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+  @media (max-width: 820px) {
+    .c-act .btn { flex: 0 0 auto; }
   }
 
   .agent { font-weight: 500; }
