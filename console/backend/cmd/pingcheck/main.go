@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -32,13 +33,16 @@ func main() {
 	remote := flag.String("remote", "", "remote name the agent reports")
 	flag.Parse()
 
+	// Checked before the database is opened: this needs no connection, and
+	// bailing out afterwards would skip the deferred Close.
+	if encKey == "" {
+		log.Fatal("  ✗ 需要 QUBES_AIR_ENCRYPTION_KEY")
+	}
+
 	db, err := database.New(&database.Config{DSN: *dsn})
 	must(err)
 	defer db.Close()
 
-	if encKey == "" {
-		log.Fatal("  ✗ 需要 QUBES_AIR_ENCRYPTION_KEY")
-	}
 	kr, err := keyring.NewSingle([]byte(encKey))
 	must(err)
 	creds := repository.NewCredentialRepository(db, kr)
@@ -63,6 +67,9 @@ func main() {
 	must(err)
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM([]byte(bundle.CAPEM)) {
+		// gocritic: the deferred cancel() is skipped. Accepted — the process is
+		// exiting, and the context it would cancel dies with it.
+		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit
 		log.Fatal("  ✗ CA 无法解析")
 	}
 
@@ -76,13 +83,18 @@ func main() {
 			MinVersion:   tls.VersionTLS13,
 			// The agent's certificate carries no SAN for this address, so verify
 			// the chain by hand rather than skipping verification outright.
-			InsecureSkipVerify: true, //nolint:gosec // chain checked in VerifyPeerCertificate
-			VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
-				leaf, err := x509.ParseCertificate(raw[0])
-				if err != nil {
-					return err
+			InsecureSkipVerify: true, //nolint:gosec // chain checked in VerifyConnection
+			// VerifyConnection, not VerifyPeerCertificate: the latter is skipped
+			// on a resumed session, so a check that lives there can be bypassed
+			// by a client that reconnects with a cached ticket. PeerCertificates
+			// rather than VerifiedChains because InsecureSkipVerify leaves the
+			// chain unverified by the stack — verifying it is this callback's job.
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return errors.New("agent presented no certificate")
 				}
-				_, err = leaf.Verify(x509.VerifyOptions{Roots: pool,
+				leaf := cs.PeerCertificates[0]
+				_, err := leaf.Verify(x509.VerifyOptions{Roots: pool,
 					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
 				if err == nil {
 					fmt.Printf("  agent 证书  : CN=%s (由本 CA 签发 ✓)\n", leaf.Subject.CommonName)

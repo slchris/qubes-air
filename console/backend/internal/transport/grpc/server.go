@@ -17,8 +17,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/slchris/qubes-air/console/internal/repository"
 	"sync"
+
+	"github.com/slchris/qubes-air/console/internal/repository"
 
 	"github.com/slchris/qubes-air/console/internal/transport"
 	pb "github.com/slchris/qubes-air/console/internal/transport/relaypb"
@@ -78,7 +79,7 @@ const reauthorizeInterval = time.Minute
 // NOTE: an earlier comment here said calls arrive "AFTER the remote dom0/policy
 // has re-checked it". A non-Qubes remote has no dom0 (see
 // docs/remote-agent-design.md); the implementation's own name allow-listing is
-// defence in depth, not an authorization boundary.
+// defense in depth, not an authorization boundary.
 type QrexecInvoker interface {
 	Invoke(ctx context.Context, target, service string, in []byte) ([]byte, error)
 }
@@ -108,11 +109,25 @@ func NewServerWithQrexec(cfg ServerConfig) *Server {
 	return NewServer(cfg, NewQrexecInvoker())
 }
 
-// verifyRegisteredPeer authorizes a client certificate against the registry.
+// verifyRegisteredConnection authorizes a connection's client certificate
+// against the registry.
 //
-// Runs after the standard chain verification, so the certificate is already
-// known to be CA-signed and in date; this adds "and we still permit it".
-func (s *Server) verifyRegisteredPeer(rawCerts [][]byte, chains [][]*x509.Certificate) error {
+// This hangs off VerifyConnection rather than VerifyPeerCertificate, and the
+// difference is the whole revocation story. VerifyPeerCertificate runs only
+// during a FULL handshake; a client that resumes a session (TLS 1.3 PSK, or a
+// 1.2 session ticket) skips certificate verification entirely and has its peer
+// certificate restored from the cached session. A revoked agent could therefore
+// keep reconnecting for the lifetime of its ticket — precisely the permanent
+// access the registry exists to take away. VerifyConnection runs on every
+// handshake, resumed or not, so revocation takes effect on the next connection
+// as the design intends.
+func (s *Server) verifyRegisteredConnection(cs tls.ConnectionState) error {
+	return s.authorizeChain(cs.VerifiedChains)
+}
+
+// authorizeChain adds "and we still permit it" to a chain the TLS stack has
+// already verified as CA-signed and in date.
+func (s *Server) authorizeChain(chains [][]*x509.Certificate) error {
 	if len(chains) == 0 || len(chains[0]) == 0 {
 		return fmt.Errorf("no verified certificate chain")
 	}
@@ -219,7 +234,7 @@ func (s *Server) applyCertSource() {
 }
 
 // Serve starts the gRPC server with mTLS and blocks until it stops. When ctx is
-// cancelled the server is gracefully stopped and Serve returns nil.
+// canceled the server is gracefully stopped and Serve returns nil.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.cfg.TLS == nil {
 		return fmt.Errorf("grpc server: nil TLS config (mTLS is required)")
@@ -238,7 +253,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	// silently fail. Without a registry configured, any CA-signed certificate is
 	// accepted forever, which is worth saying out loud.
 	if s.cfg.CertRegistry != nil {
-		s.cfg.TLS.VerifyPeerCertificate = s.verifyRegisteredPeer
+		s.cfg.TLS.VerifyConnection = s.verifyRegisteredConnection
 	} else {
 		log.Printf("grpc server: WARNING no certificate registry configured — " +
 			"any CA-signed client certificate is accepted and CANNOT be revoked")
@@ -246,7 +261,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.applyCertSource()
 
-	lis, err := net.Listen("tcp", s.cfg.Listen)
+	// ListenConfig rather than net.Listen so the socket is bound under the
+	// server's context and a cancellation during startup is honored.
+	var lc net.ListenConfig
+	lis, err := lc.Listen(ctx, "tcp", s.cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("grpc server: listen %q: %w", s.cfg.Listen, err)
 	}
@@ -296,6 +314,11 @@ func (s *Server) Stop() {
 // this process). Reverse (REMOTE_TO_LOCAL) frames are only relayed back to the
 // local relay; their authorization is the LOCAL dom0 policy C (ask), enforced
 // on the client side — this handler must not let them skip that.
+// Frame dispatch plus the tunnel lifecycle (authorize, reauthorize, teardown).
+// Worth revisiting if it grows again; splitting it today would separate the
+// teardown paths from the branches that trigger them.
+//
+//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately
 func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) error {
 	ctx, cancelTunnel := context.WithCancel(stream.Context())
 	defer cancelTunnel()
