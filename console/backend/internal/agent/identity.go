@@ -96,6 +96,60 @@ type Identity struct {
 // this process goes on to serve is the one the renewal decided on, not the
 // superseded one that happened to still be in the file.
 func LoadIdentity(certPath, keyPath, caPath string) (*Identity, error) {
+	id, err := newIdentityWithCA(certPath, keyPath, caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	pair, err := loadPair(certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	id.current.Store(pair)
+	return id, nil
+}
+
+// NewPendingIdentity builds an identity that knows its paths and trusts its CA
+// but may not hold a certificate yet — the state a first boot is in before
+// bootstrap has run (docs/bootstrap-design.md §9). Install is what turns it
+// into a working identity, exactly as it does for a renewal.
+//
+// Only a pair that is entirely ABSENT yields a pending identity. A pair that
+// exists but cannot be loaded is an error, same as LoadIdentity: it describes
+// a host that HAD an identity and lost the ability to use it, and pretending
+// that is a fresh boot would spend a bootstrap token (if one is even still
+// valid) to paper over corruption an operator needs to hear about.
+//
+// Interrupted-install recovery runs before the pair is probed, so a bootstrap
+// or renewal that crashed between commit and materialize comes back as an
+// identity that is already installed, not as a second bootstrap attempt whose
+// token was spent by the first.
+func NewPendingIdentity(certPath, keyPath, caPath string) (*Identity, error) {
+	id, err := newIdentityWithCA(certPath, keyPath, caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	if errors.Is(certErr, fs.ErrNotExist) && errors.Is(keyErr, fs.ErrNotExist) {
+		return id, nil
+	}
+
+	pair, err := loadPair(certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	id.current.Store(pair)
+	return id, nil
+}
+
+// HasCertificate reports whether an identity is installed and serving.
+func (id *Identity) HasCertificate() bool { return id.current.Load() != nil }
+
+// newIdentityWithCA loads the trust root and finishes any interrupted install,
+// the half of construction LoadIdentity and NewPendingIdentity share.
+func newIdentityWithCA(certPath, keyPath, caPath string) (*Identity, error) {
 	if certPath == "" || keyPath == "" || caPath == "" {
 		return nil, errors.New("agent identity needs a certificate, a key and a CA")
 	}
@@ -120,12 +174,6 @@ func LoadIdentity(certPath, keyPath, caPath string) (*Identity, error) {
 	}
 
 	id.recoverCommitted()
-
-	pair, err := loadPair(certPath, keyPath)
-	if err != nil {
-		return nil, err
-	}
-	id.current.Store(pair)
 	return id, nil
 }
 

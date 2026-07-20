@@ -295,23 +295,9 @@ func (r *RenewalService) Complete(_ context.Context, _ string, in []byte) ([]byt
 }
 
 // checkOfferedCA refuses CA material the agent does not already trust.
+// The decision itself is shared with bootstrap — see verifyOfferedCA.
 func (r *RenewalService) checkOfferedCA(caPEM string) error {
-	if caPEM == "" {
-		return nil
-	}
-	offered, err := parseCertificates([]byte(caPEM))
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUntrustedRenewalCA, err)
-	}
-	if len(offered) == 0 {
-		return fmt.Errorf("%w: ca_pem contains no certificate", ErrUntrustedRenewalCA)
-	}
-	for _, c := range offered {
-		if !r.id.TrustsCA(c.Raw) {
-			return fmt.Errorf("%w: %q", ErrUntrustedRenewalCA, c.Subject.CommonName)
-		}
-	}
-	return nil
+	return verifyOfferedCA(r.id, caPEM)
 }
 
 // store records a pending key, refusing to grow past the cap.

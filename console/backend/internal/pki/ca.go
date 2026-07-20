@@ -190,6 +190,18 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 // it to the expected name would produce a working certificate and destroy the
 // only evidence that something asked for another agent's identity — which is an
 // attempt to move sideways through the fleet, not a typo to be helpful about.
+// AgentCommonName is the subject common name an agent certificate carries for
+// a qube.
+//
+// It lives HERE, in the one package both sides already import, because both
+// sides compute it independently: the console derives it from the qube it
+// dialed (or the token it redeemed) and refuses to sign a CSR that disagrees,
+// while the agent writes it into the CSR it generates at bootstrap. Two
+// definitions would eventually disagree, and the symptom would be every
+// bootstrap failing with a CN mismatch that neither side can see is a naming
+// drift.
+func AgentCommonName(qubeName string) string { return "agent-" + qubeName }
+
 func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*SignedCert, error) {
 	if ca == nil || ca.Cert == nil || ca.Key == nil {
 		return nil, ErrNoCA

@@ -64,13 +64,15 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	var (
-		listen      = flag.String("listen", "0.0.0.0:8443", "host:port to listen on")
-		remoteName  = flag.String("remote-name", "", "this remote's name (aligns with RemoteVM remote_name)")
-		serviceDir  = flag.String("service-dir", agent.DefaultServiceDir, "directory holding qrexec service implementations")
-		allowedCSV  = flag.String("allow", strings.Join(defaultAllowedServices, ","), "comma-separated services this agent may run")
-		caFile      = flag.String("ca", "", "PEM CA bundle used to verify the relay's client certificate (required)")
-		certFile    = flag.String("cert", "", "PEM server certificate (required)")
-		keyFile     = flag.String("key", "", "PEM server private key (required)")
+		listen     = flag.String("listen", "0.0.0.0:8443", "host:port to listen on")
+		remoteName = flag.String("remote-name", "", "this remote's name (aligns with RemoteVM remote_name)")
+		serviceDir = flag.String("service-dir", agent.DefaultServiceDir, "directory holding qrexec service implementations")
+		allowedCSV = flag.String("allow", strings.Join(defaultAllowedServices, ","), "comma-separated services this agent may run")
+		caFile     = flag.String("ca", "", "PEM CA bundle used to verify the relay's client certificate (required)")
+		certFile   = flag.String("cert", "", "PEM server certificate (required)")
+		keyFile    = flag.String("key", "", "PEM server private key (required)")
+		tokenFile  = flag.String("bootstrap-token", "/etc/qubes-air/bootstrap-token",
+			"path to the one-shot bootstrap token; consulted only when no identity is installed yet")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -95,16 +97,23 @@ func main() {
 	if *caFile == "" || *certFile == "" || *keyFile == "" {
 		// Running without mTLS would mean anyone who can reach the port may
 		// execute this host's qrexec services, and on a LAN that is everyone —
-		// so a missing file is a startup failure, not a warning.
+		// so a missing file is a startup failure, not a warning. The cert and
+		// key may not EXIST yet — that is what bootstrap is for — but their
+		// paths must be known, because bootstrap's job is to fill them.
 		log.Fatalf("--ca, --cert and --key are all required (mTLS is mandatory)")
 	}
-	identity, err := agent.LoadIdentity(*certFile, *keyFile, *caFile)
+	// Pending rather than loaded: a first boot has the CA (cloud-init delivers
+	// it) but no certificate yet. Anything other than a cleanly absent pair —
+	// corrupt files, unreadable key, half a pair — still fails startup here.
+	identity, err := agent.NewPendingIdentity(*certFile, *keyFile, *caFile)
 	if err != nil {
 		log.Fatalf("TLS identity: %v", err)
 	}
 
 	inv := agent.NewLocalInvoker(*remoteName, splitCSV(*allowedCSV))
 	inv.ServiceDir = *serviceDir
+
+	bootstrap := armBootstrapIfPending(identity, inv, *remoteName, *certFile, *tokenFile)
 
 	// Certificate renewal. Without it the only way to replace an expiring
 	// certificate is to rebuild the VM, because cloud-init delivers user-data
@@ -128,8 +137,18 @@ func main() {
 		// expire; this is the cheapest place to see it on one host.
 		log.Printf("  identity    : %s (expires %s)",
 			leaf.Subject.CommonName, leaf.NotAfter.UTC().Format(time.RFC3339))
+	} else {
+		log.Printf("  identity    : none installed; bootstrap pending")
 	}
 	warnMissingServices(inv, inv.ServiceDir, splitCSV(*allowedCSV))
+
+	// In bootstrap mode the certificate source falls back to the placeholder
+	// until Install succeeds; afterwards, and in every ordinary start, it is
+	// the identity itself.
+	var certSource transportgrpc.ServerCertSource = identity
+	if bootstrap != nil {
+		certSource = bootstrap
+	}
 
 	srv := transportgrpc.NewServer(transportgrpc.ServerConfig{
 		Listen: *listen,
@@ -137,7 +156,7 @@ func main() {
 		// Certificate selection per handshake, so a renewal takes effect on the
 		// next connection instead of the next restart — and without dropping
 		// the tunnels that are already up.
-		CertSource: identity,
+		CertSource: certSource,
 		// No CertRegistry here: the registry lives with the issuer, on the
 		// trusted side. This agent verifies that the peer's certificate chains
 		// to the CA; deciding whether a given relay is still permitted is not
@@ -155,6 +174,51 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Printf("qubes-air-agent stopped")
+}
+
+// armBootstrapIfPending puts the process into BOOTSTRAP mode when no identity
+// is installed, and returns nil when one is.
+//
+// In bootstrap mode the listener presents a self-signed placeholder, still
+// demands a client certificate chaining to the cloud-init CA, and serves two
+// extra builtins through which the console — the only party that CA vouches
+// for — trades the one-shot token for this host's first certificate. No
+// restart follows: Install hands the listener the real certificate the same
+// way a renewal does, on the next handshake.
+//
+// Fatal on any misconfiguration, like the rest of startup: a host with no
+// identity AND no token has no way to ever become reachable, and dying loudly
+// beats listening forever as a port nobody can authenticate to.
+func armBootstrapIfPending(identity *agent.Identity, inv *agent.LocalInvoker, remoteName, certFile, tokenFile string) *agent.BootstrapService {
+	if identity.HasCertificate() {
+		return nil
+	}
+
+	tokenBytes, err := os.ReadFile(tokenFile) // #nosec G304 -- operator-supplied path
+	if err != nil {
+		log.Fatalf("no identity at %q and no bootstrap token at %q: %v — "+
+			"this host was provisioned with neither credentials nor a way to obtain them",
+			certFile, tokenFile, err)
+	}
+	bootstrap, err := agent.NewBootstrapService(
+		identity, remoteName, strings.TrimSpace(string(tokenBytes)),
+		func() {
+			// The token authorized exactly one issuance and the console has
+			// redeemed it; the file is now inert, but scrubbing it keeps a
+			// later image or backup of this disk from carrying a credential
+			// that LOOKS live.
+			if rmErr := os.Remove(tokenFile); rmErr != nil {
+				log.Printf("bootstrap: could not remove spent token file %q: %v", tokenFile, rmErr)
+			}
+		})
+	if err != nil {
+		log.Fatalf("bootstrap mode: %v", err)
+	}
+	if err := bootstrap.RegisterBuiltins(inv); err != nil {
+		log.Fatalf("register bootstrap services: %v", err)
+	}
+	log.Printf("no identity installed; awaiting bootstrap (token from %s)", tokenFile)
+	return bootstrap
 }
 
 // warnMissingServices reports allowed services with no implementation.

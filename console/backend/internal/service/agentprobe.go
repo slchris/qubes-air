@@ -122,11 +122,11 @@ type CertAuthorizer interface {
 // AgentCommonName is the common name a qube's agent certificate carries.
 //
 // Exported and used by every path that mints, renews, verifies or bootstraps an
-// identity. It is one function because a disagreement about this string is not a
-// cosmetic bug: the certificate would be issued and registered successfully and
-// then refused at the handshake, which reads as a network fault rather than a
-// naming one.
-func AgentCommonName(qubeName string) string { return "agent-" + qubeName }
+// identity. The derivation itself now lives in pki, because the AGENT computes
+// the same name when it writes its bootstrap CSR — see pki.AgentCommonName for
+// why the two sides must share one definition. This alias stays so the many
+// console-side callers keep reading naturally.
+func AgentCommonName(qubeName string) string { return pki.AgentCommonName(qubeName) }
 
 // AgentProbeResult is everything one probe learned about one qube's agent.
 //
