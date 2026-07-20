@@ -676,8 +676,8 @@ qubes-air/
 |   |-- playbooks/
 |   |   |-- bootstrap-zone.yaml
 |   |   |-- setup-sys-remote.yaml
-|-- packer/                          # [部分实现] 单个模板 (不再负责装 agent)
-|   |-- templates/fedora.pkr.hcl
+|-- packer/                          # [未实现] 模板构建。fedora.pkr.hcl 已删除, 见 bootstrap-design.md §6.5
+|   |-- scripts/install-agent.sh     #    已废弃, 执行即报错 (agent 改由 .deb 安装)
 |-- packaging/agent-deb/             # [已实现] agent .deb 打包 (唯一的 unit 来源)
 |   |-- Dockerfile                   #    交叉编译 amd64 + dpkg-deb
 |   |-- qubes-air-agent.service

@@ -182,9 +182,16 @@ func (c *ClusterScheduler) Capacity(ctx context.Context, zoneID string) (*ZoneCa
 		// UI to hide node selection entirely instead of showing an empty picker.
 		//
 		// Wiring real numbers means querying each provider's quota and billing
-		// APIs. That is deliberately not done while the GCP/AWS terraform
-		// modules are still skeletons that create no resources: there is no
-		// usage to report yet.
+		// APIs, and it has not been done. AWS is still a skeleton that creates
+		// no resources, so there is genuinely nothing to report there.
+		//
+		// GCP is NOT — that module builds real instances and disks. This
+		// comment used to claim both were skeletons, and that staleness was
+		// doing harm: it read as "GCP has not started", which hid the fact that
+		// GCP qubes provision successfully and are then unreachable forever
+		// (the module records a VPC-private address and nothing builds the
+		// private path its own comments assume). See
+		// docs/bootstrap-design.md §10.2.
 		return &ZoneCapacity{
 			Kind: CapacityKindQuota,
 			Note: "usage and quota reporting is not implemented for this provider yet; " +

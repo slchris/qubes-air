@@ -395,7 +395,17 @@ artifact store → HTTP → qube                                ← 不可信通
 又是这次改造要消灭的那类静默失败。
 
 所以 agent 的分发彻底不再经过 packer：镜像里只留 debian-12 + `qemu-guest-agent`。
-`packer/templates/fedora.pkr.hcl` 里对应的 provisioner 已移除，原因就写在那一行的注释里。
+
+**`packer/templates/fedora.pkr.hcl` 已于 2026-07-20 删除**，因为它不只是没用，而是个陷阱：
+Fedora 39（现网模板是 `debian-12-cloudimg-template`）、`iso_checksum` 至今是 `sha256:xxxxx`
+所以根本跑不起来，而且——最要命的——**它不装 `qemu-guest-agent`**。也就是说把前两个问题修好
+反而更糟：会产出一个看起来构建成功、但 terraform 永远等不到 IP、apply 挂到超时的镜像，
+正是本节开头说「这次验证实测过」的那个故障。
+
+没有删 `packer/scripts/install-agent.sh`，理由相反：还有东西可能引用它，留着硬失败才拦得住。
+模板文件没有任何引用，删掉不会让任何构建「静默成功」。
+
+镜像构建目前**没有**自动化路径（§2 的前提表里「模板 VM」那行仍是「不存在 / 系统生成」）。
 
 ## 7. 身份投递必须按内容钉，不能按路径
 

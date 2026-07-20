@@ -14,8 +14,12 @@
 #
 # 本模块把 provider 差异下沉到 providers/<name> 子模块, 三家 (proxmox/gcp/aws)
 # 对外接口一致: 同样的 compute_running 开关, 同样的独立 data 盘, 同样的输出契约。
-#   - proxmox: 真实可 apply (bpg/proxmox 真实 resource)
-#   - gcp/aws: 结构对齐的骨架 (TODO), 接口与 proxmox 完全一致
+#   - proxmox: 真实可 apply (bpg/proxmox 真实 resource), 真机验证过
+#   - gcp:     **也是真实资源**, 不是骨架 —— 但建出来的 qube 控制台够不着,
+#              见 docs/bootstrap-design.md §10.2。这一行以前写着「骨架 (TODO)」,
+#              那个过时描述本身有害: 它让人以为 GCP 还没开始, 从而掩盖了
+#              「置备成功 → 永远不可达」这个更难查的故障。
+#   - aws:     结构对齐的骨架 (TODO), 所有 resource 都还注释着, 什么都不建
 
 terraform {
   required_version = ">= 1.5.0"
