@@ -75,6 +75,84 @@ cloud-init 里那句 `systemctl enable --now qubes-air-agent` 一直在空转。
 
 **建议：先 (a)，之后 (d)。** (b) 和 (c) 是死路，写在这里是为了让后来者不用再想一遍。
 
+### 4.1 更新（2026-07-20）：上面这份清单不完整，(c) 的结论也过时了
+
+> 起因是一个直接的质疑：「一定要 SFTP 吗，这么 SSH 过去不够优雅」。查完之后：
+> **SSH 确实是 snippet 的唯一路径，但 snippet 不是唯一的投递路径。**
+
+**先确认坏消息。** PVE 至今没有 snippet 上传 API，**升级到 PVE 9 也没有**：
+
+- Bugzilla #2208（「新增管理 snippets 的 API 端点」）2019 年提出，至今 UNDECIDED。
+- 最新的 PVE **9.2**（2026-05）roadmap 里搜不到任何 snippet 相关条目。
+- bpg 的对应 issue #2112 已经 **closed as wontfix**——provider 补不了 API 缺的东西。
+
+所以「为了去掉 SSH 而升 PVE 9」是白升。（本集群另有一层：node4 还在 8.0.3、其余 8.2.2，
+升 9 之前得先全部拉到 8.4，那本身是个独立工程。）
+
+**但 (c) 的判断错了，因为它只考虑了 cloud-init drive 的原生字段。** bpg 文档写得很明确：
+
+> `iso`、`vztmpl`、`import` 三种 content type **always use the HTTP API**；
+> `snippets` 和 `backup` 才需要 SSH。
+
+也就是说——**「PVE API 不能传任意文件」是假的，只有 snippet 这一种内容不能传。**
+于是多出三条 §4 当初没想到的路：
+
+- **(e) 自己造 NoCloud ISO，走 `content_type = "iso"` 经 API 上传，当 CD 挂上去。**
+  这正是 PVE 内部的做法——cicustom 也只是「拿 snippet 的内容去生成同一个 cidata ISO」，
+  PVE 9 roadmap 里那句 "Enable Joliet for cloud-init disks to avoid issues with the
+  nocloud ISO format" 就是在说这个 ISO。
+  代价：console 要能生成 ISO9660（Go 库或 `xorriso`）；而且**必须摘掉模板带来的
+  cloud-init 盘**，否则两个 `cidata` 卷同时在，cloud-init 选哪个是不确定的。
+  本集群这条反而比现状更稳：`local` 声明了 `iso`，却**没有**声明 `snippets`
+  （现在能用纯属 `pvesm path` 恰好解析得出来）。
+- **(f) 把 snippets 放到 console 能写的共享文件存储**（NFS/CIFS）。console 直接写文件，
+  节点只读。代价：本集群目前只有 RBD（block，仅 `images`）和节点本地 dir，没有文件型共享存储，
+  等于新增一套基础设施。附带好处：PVE 要求 cicustom 文件在**所有可能迁移到的节点**上都存在，
+  而现在 snippet 躺在节点本地 `local` 上——这条今天就是潜在的坑。
+- **(g) 经 QEMU guest agent 写文件**：`POST /nodes/{node}/qemu/{vmid}/agent/file-write`，
+  纯 API，权限只要 `/vms/{vmid}` 上的 `VM.Monitor`，内容上限约 60 KB（pveproxy 的 post 上限）。
+  限制是**只能开机后写**——但在 token 设计下这不是问题，反而是优点，见下。
+
+### 4.2 (g) 值得单独说：它能让 SSH 从「每次置备」降级成「装集群时一次」
+
+token 设计把每台 qube 独有的秘密缩到了 `{token, ca.pem}`，而 cloud-init 里剩下的东西
+（agent 包 URL + SHA256、安装脚本、`agent.env`）**对整个车队是同一份**。于是可以拆开：
+
+```
+一份静态 vendor snippet（全车队共用，装集群时传一次）
+        ↓  cicustom vendor=local:snippets/qubes-air-vendor.yaml
+   装 agent、写 agent.env、起服务
+        ↓
+console 经 API file-write 把 {token, ca.pem} 写进 VMID N   ← 每台一份, 无 SSH
+        ↓
+console 拨过去跑 bootstrap
+```
+
+几个性质刚好对上：
+
+- **VMID 就是绑定关系。** console 通过 hypervisor API 把 token 写给「VMID N」，
+  这本身就是「这个 token 属于哪台机器」的凭据——正是 token 需要的绑定。
+- **qemu-guest-agent 不是新依赖**，terraform 本来就要靠它拿 IP（§6）。
+- **agent 名字不需要每台定制**：`cmd/qubes-air-agent/main.go:87` 已经在没有
+  `--remote-name` 时回退到 hostname，而 hostname 可以走 PVE 原生 cloud-init 字段。
+
+代价也要说清楚：置备从「一次声明式 apply」变成「apply → 等 guest agent → 推 token → 拨」的
+多步编排；QGA 的 `guest-file-write` 在某些发行版的默认配置里是被 block 掉的，得实测；
+而且 60 KB 上限对 `{token, ca.pem}`（约 2 KB）绰绰有余，但这条路上永远不能塞大东西。
+
+### 4.3 现在的判断
+
+**SSH 的「疼」已经比 §4 写的时候小了一个量级**：它运的从「90 天私钥」变成了
+「公开的 CA + 一个单次、短时效、绑定单机的 token」。拿到 snippet 不再等于拿到车队身份。
+
+排序建议改为：**(a) 立刻做**（成本最低，今天就能收窄）；**(g) 是真正的方向**
+（把 SSH 降到装集群时一次，且和 token 设计天然契合）；**(e) 是备选**
+（不引入新基础设施，但要写 ISO 生成）；**(f)** 只在已经有文件型共享存储时才划算；
+**(d)** 在 (g) 成立后就没必要了。
+
+**(c) 原来的结论作废**——它当年只看了 cloud-init drive 的原生字段，漏掉了
+「API 能传 ISO」和「API 能经 guest agent 写文件」这两件事。
+
 ## 5. SSH 密钥：两件事，别混
 
 代码里 `ssh_public_keys` 这个字段容易让人以为 SSH 只有一种。实际有两种，用途和信任域都不同：
