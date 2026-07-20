@@ -180,6 +180,10 @@ type AgentProbeResult struct {
 type AgentProber struct {
 	ca    CAProvider
 	certs LastSeenRecorder
+	// dialer decides HOW this qube is reached. Shared with renewal and
+	// bootstrap so the three cannot disagree about reachability — see
+	// agentdial.go.
+	dialer AgentDialer
 	// authz refuses revoked, expired and unregistered certificates. Nil disables
 	// the check, which is only correct in tests that have no registry at all.
 	authz CertAuthorizer
@@ -209,6 +213,7 @@ func NewAgentProber(ca CAProvider, certs LastSeenRecorder, agentListen string, t
 		ca:      ca,
 		certs:   certs,
 		authz:   authz,
+		dialer:  NewDirectDialer(agentListen),
 		port:    agentPortFrom(agentListen),
 		timeout: timeout,
 	}
@@ -269,7 +274,7 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 		return done(AgentProbeNoAddress,
 			"qube %q has no IP address yet, so there is nothing to probe", qube.Name)
 	}
-	addr := net.JoinHostPort(host, p.port)
+	addr := p.dialer.Address(qube)
 	res.Address = addr
 
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
@@ -301,7 +306,7 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 	// dial call do both would leave us guessing from an error string whether
 	// nobody was listening or somebody rejected our certificate — the two
 	// failures that need the most different responses.
-	leaf, status, reason := p.connect(ctx, addr, tlsCfg)
+	leaf, status, reason := p.connect(ctx, qube, addr, tlsCfg)
 	if leaf != nil {
 		res.AgentCertFingerprint = pki.FingerprintOf(leaf)
 	}
@@ -313,7 +318,7 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 	// is the part that a "running" status derived from intent can never tell
 	// you: the package can be missing, the unit dead, the service script absent,
 	// and everything up to this line still succeeds.
-	out, err := p.ping(ctx, addr, tlsCfg, qube.Name)
+	out, err := p.ping(ctx, qube, addr, tlsCfg, qube.Name)
 	if err != nil {
 		return done(AgentProbeRPCFailed,
 			"mTLS to %s succeeded but %s did not answer: %v", addr, pingService, err)
@@ -342,8 +347,8 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 // The split is what makes classification honest: a TCP failure is the agent not
 // listening, a handshake failure is a trust problem on a host that is otherwise
 // up. Returns AgentProbeOK with a nil reason when both succeeded.
-func (p *AgentProber) connect(ctx context.Context, addr string, tlsCfg *tls.Config) (*x509.Certificate, AgentProbeStatus, string) {
-	raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+func (p *AgentProber) connect(ctx context.Context, qube *models.Qube, addr string, tlsCfg *tls.Config) (*x509.Certificate, AgentProbeStatus, string) {
+	raw, err := p.dialer.DialAgent(ctx, qube)
 	if err != nil {
 		return nil, AgentProbeUnreachable, fmt.Sprintf(
 			"nothing is listening on %s: %v (the agent unit is not running, or the port is filtered)", addr, err)
@@ -375,11 +380,12 @@ func (p *AgentProber) connect(ctx context.Context, addr string, tlsCfg *tls.Conf
 }
 
 // ping runs qubesair.Ping over a tunnel to this one qube.
-func (p *AgentProber) ping(ctx context.Context, addr string, tlsCfg *tls.Config, remoteName string) ([]byte, error) {
+func (p *AgentProber) ping(ctx context.Context, qube *models.Qube, addr string, tlsCfg *tls.Config, remoteName string) ([]byte, error) {
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: addr,
 		RelayName:      probeRelayName,
 		RemoteName:     remoteName,
+		Dialer:         dialFuncFor(p.dialer, qube),
 		// Tight reconnect bounds: the whole probe lives inside one timeout, so a
 		// backoff measured in seconds would spend the budget waiting to retry.
 		ReconnectMin: 20 * time.Millisecond,

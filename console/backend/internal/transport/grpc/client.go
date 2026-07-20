@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
 
@@ -40,6 +41,16 @@ type ClientConfig struct {
 	// restart: after vault rotates the relay cert, the next reconnect fetches the
 	// new one. When nil, the static TLS above is used on every connect.
 	TLSProvider func() (*tls.Config, error)
+	// Dialer, if set, replaces the default TCP dial with a caller-supplied one.
+	//
+	// This is the hook for reaching a remote that has no route to it — GCP IAP
+	// or AWS SSM forwarding open a per-connection tunnel to a private instance
+	// with no inbound rule (see service/agentdial.go). Those are not addresses
+	// anything can dial, so RemoteEndpoint stays a label and this does the work.
+	//
+	// Nil keeps gRPC's own dialing, byte for byte: the option below is only
+	// applied when this is set, so the routed path is untouched by the seam.
+	Dialer func(ctx context.Context, addr string) (net.Conn, error)
 }
 
 // withDefaults returns a copy of cfg with sane defaults filled in.
@@ -155,7 +166,11 @@ func (c *Client) runOnce(ctx context.Context) error {
 		return fmt.Errorf("resolve mTLS: %w", err)
 	}
 	creds := credentials.NewTLS(tlsCfg)
-	conn, err := grpc.NewClient(c.cfg.RemoteEndpoint, grpc.WithTransportCredentials(creds))
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if c.cfg.Dialer != nil {
+		opts = append(opts, grpc.WithContextDialer(c.cfg.Dialer))
+	}
+	conn, err := grpc.NewClient(c.cfg.RemoteEndpoint, opts...)
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", c.cfg.RemoteEndpoint, err)
 	}

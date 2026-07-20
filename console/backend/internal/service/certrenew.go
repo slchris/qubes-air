@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -336,6 +335,10 @@ func (c *CertIssuer) SignAgentCSR(
 // rather than a security parameter — and if nobody noticed, every qube in the
 // fleet would go dark on the same day.
 type CertRenewer struct {
+	// dialer decides HOW a qube is reached; shared with probing and bootstrap
+	// so the three cannot disagree about reachability (see agentdial.go).
+	dialer AgentDialer
+
 	ca     CAProvider
 	signer CSRSigner
 	// registrar records the new certificate before the agent is told to install
@@ -396,6 +399,7 @@ func NewCertRenewer(
 
 	return &CertRenewer{
 		ca:        ca,
+		dialer:    NewDirectDialer(agentListen),
 		signer:    signer,
 		registrar: registrar,
 		recorder:  recorder,
@@ -462,7 +466,7 @@ func (r *CertRenewer) Renew(ctx context.Context, qube *models.Qube) CertRenewalR
 		return done(CertRenewalUnreachable,
 			"qube %q has no IP address, so its agent cannot be reached to renew", qube.Name)
 	}
-	addr := net.JoinHostPort(host, r.port)
+	addr := r.dialer.Address(qube)
 
 	// Recorded before anything can fail so a failure report can say WHEN this
 	// qube goes dark, not merely that renewal did not work.
@@ -481,7 +485,7 @@ func (r *CertRenewer) Renew(ctx context.Context, qube *models.Qube) CertRenewalR
 	// with, not whatever the registry currently ranks highest for this qube.
 	peer := &verifiedPeer{}
 
-	sess, err := r.dial(ctx, qube.Name, addr, peer)
+	sess, err := r.dial(ctx, qube, addr, peer)
 	if err != nil {
 		return done(CertRenewalUnreachable, "%s%s", err.Error(), clockSkewHint(err))
 	}
@@ -955,7 +959,8 @@ func (s *agentSession) call(ctx context.Context, target, service string, in []by
 // does, so "nothing is listening" and "the handshake was rejected" stay
 // distinguishable — a renewal that fails because the current certificate is
 // already unusable must not read as a dead VM.
-func (r *CertRenewer) dial(ctx context.Context, qubeName, addr string, peer *verifiedPeer) (*agentSession, error) {
+func (r *CertRenewer) dial(ctx context.Context, qube *models.Qube, addr string, peer *verifiedPeer) (*agentSession, error) {
+	qubeName := qube.Name
 	ca, err := r.ca.CA(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("no usable CA to authenticate to %s: %w", addr, err)
@@ -978,6 +983,7 @@ func (r *CertRenewer) dial(ctx context.Context, qubeName, addr string, peer *ver
 		RemoteEndpoint: addr,
 		RelayName:      renewRelayName,
 		RemoteName:     qubeName,
+		Dialer:         dialFuncFor(r.dialer, qube),
 		ReconnectMin:   20 * time.Millisecond,
 		ReconnectMax:   200 * time.Millisecond,
 		// Clone: gRPC's credentials take ownership of the config.
@@ -1052,7 +1058,7 @@ func (r *CertRenewer) discardUninstalled(
 	// that makes the scheduler think this qube is fresh — bad, and the reason
 	// this function exists, but recoverable the moment anyone looks. When we
 	// cannot tell them apart, we take the recoverable one.
-	held, err := r.certificateHeldBy(ctx, qube.Name, addr)
+	held, err := r.certificateHeldBy(ctx, qube, addr)
 	if err != nil {
 		log.Printf("certrenew: qube %q: NOT revoking certificate %s — could not confirm what the agent holds (%v); "+
 			"revoking an installed certificate would lock the qube out permanently",
@@ -1147,7 +1153,8 @@ func clockSkewHint(err error) string {
 // certificate from BEFORE the exchange, and the whole question here is whether
 // the agent swapped to the new one during it. Reusing that value would answer
 // the wrong question and answer it confidently.
-func (r *CertRenewer) certificateHeldBy(ctx context.Context, qubeName, addr string) (string, error) {
+func (r *CertRenewer) certificateHeldBy(ctx context.Context, qube *models.Qube, addr string) (string, error) {
+	qubeName := qube.Name
 	// Anything missing here means we cannot ask, and "cannot ask" must never be
 	// read as "the agent does not have it" — that is the reading that revokes an
 	// installed certificate and bricks the qube.
@@ -1161,7 +1168,7 @@ func (r *CertRenewer) certificateHeldBy(ctx context.Context, qubeName, addr stri
 	defer cancel()
 
 	peer := &verifiedPeer{}
-	sess, err := r.dial(ctx, qubeName, addr, peer)
+	sess, err := r.dial(ctx, qube, addr, peer)
 	if err != nil {
 		return "", err
 	}

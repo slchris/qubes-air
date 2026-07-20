@@ -37,7 +37,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"strings"
 	"time"
 
@@ -136,7 +135,10 @@ type FirstCertificateIssuer interface {
 
 // AgentBootstrapper runs bootstrap against qubes that have no identity yet.
 type AgentBootstrapper struct {
-	ca      CAProvider
+	ca CAProvider
+	// dialer decides HOW a qube is reached; shared with probing and renewal
+	// so the three cannot disagree about reachability (see agentdial.go).
+	dialer  AgentDialer
 	issuer  FirstCertificateIssuer
 	port    string
 	timeout time.Duration
@@ -149,6 +151,7 @@ func NewAgentBootstrapper(ca CAProvider, issuer FirstCertificateIssuer, agentLis
 	}
 	return &AgentBootstrapper{
 		ca:      ca,
+		dialer:  NewDirectDialer(agentListen),
 		issuer:  issuer,
 		port:    agentPortFrom(agentListen),
 		timeout: timeout,
@@ -210,12 +213,16 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 		return done(BootstrapUnreachable,
 			"qube %q has no IP address, so its agent cannot be reached to bootstrap", qube.Name)
 	}
-	addr := net.JoinHostPort(host, b.port)
+	// The LABEL comes from the dialer too, not from host:port computed here.
+	// It is what gRPC uses as authority and what every error message names, and
+	// under a per-connection dialer (IAP, SSM) there is no IP to build it from —
+	// a caller that formats its own address is a caller the seam does not cover.
+	addr := b.dialer.Address(qube)
 
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	sess, err := b.dial(ctx, qube.Name, addr)
+	sess, err := b.dial(ctx, qube, addr)
 	if err != nil {
 		return done(BootstrapUnreachable, "%v", err)
 	}
@@ -343,7 +350,8 @@ func (b *AgentBootstrapper) exchange(
 // confined to hosts that have no identity to verify. Once bootstrap succeeds,
 // every later conversation with this qube runs through the prober's and
 // renewer's fully verified paths.
-func (b *AgentBootstrapper) dial(ctx context.Context, qubeName, addr string) (*agentSession, error) {
+func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr string) (*agentSession, error) {
+	qubeName := qube.Name
 	ca, err := b.ca.CA(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("no usable CA to authenticate to %s: %w", addr, err)
@@ -369,6 +377,7 @@ func (b *AgentBootstrapper) dial(ctx context.Context, qubeName, addr string) (*a
 		RemoteEndpoint: addr,
 		RelayName:      bootstrapRelayName,
 		RemoteName:     qubeName,
+		Dialer:         dialFuncFor(b.dialer, qube),
 		ReconnectMin:   20 * time.Millisecond,
 		ReconnectMax:   200 * time.Millisecond,
 		TLS:            tlsCfg,
