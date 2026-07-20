@@ -113,6 +113,15 @@ cloud-init 里那句 `systemctl enable --now qubes-air-agent` 一直在空转。
   纯 API，权限只要 `/vms/{vmid}` 上的 `VM.Monitor`，内容上限约 60 KB（pveproxy 的 post 上限）。
   限制是**只能开机后写**——但在 token 设计下这不是问题，反而是优点，见下。
 
+**还有一条必须写下来的、比「要 SSH」更强的约束**：bpg README 那句容易被略过的话是
+「snippet 上传需要 **PAM 账号**（真实 Linux 账号）」。也就是说 **API token 无论授多大权限
+都做不了这件事**——它是文件系统写入，不是 API 调用。所以 §4 那句「console 需要每台
+hypervisor 的 root」不只是权限大，而是**认证轴都不同**：api_token 和 SSH 私钥是两套凭证，
+前者永远替代不了后者。这也解释了为什么 bpg 的 issue #2112 只能 wontfix。
+
+顺带一个佐证：bpg 3793 行 changelog 里，snippet 的传输方式**只在 SSH 内部演进过**
+（shell 管道 → 0.105.0 的正式 SFTP），从未出现过任何 API 路径。
+
 ### 4.2 (g) 值得单独说：它能让 SSH 从「每次置备」降级成「装集群时一次」
 
 token 设计把每台 qube 独有的秘密缩到了 `{token, ca.pem}`，而 cloud-init 里剩下的东西
@@ -136,9 +145,20 @@ console 拨过去跑 bootstrap
 - **agent 名字不需要每台定制**：`cmd/qubes-air-agent/main.go:87` 已经在没有
   `--remote-name` 时回退到 hostname，而 hostname 可以走 PVE 原生 cloud-init 字段。
 
+**一个看起来会否掉 (g) 的先有鸡还是先有蛋，其实不成立。** 直觉上「QGA 是 snippet 装的，
+所以没 snippet 就没 QGA」——但 §6 早就要求**镜像里必须有 `qemu-guest-agent`**
+（没有它 terraform 等不到 IP，apply 会挂到超时，真机实测过）。cloud-init 里那行
+`packages: - qemu-guest-agent` 是防御性的重装，不是唯一来源，`cloudinit.go` 自己的注释
+写着「The image normally has it」。所以 (g) 依赖的是镜像里本来就该有的东西。
+
 代价也要说清楚：置备从「一次声明式 apply」变成「apply → 等 guest agent → 推 token → 拨」的
 多步编排；QGA 的 `guest-file-write` 在某些发行版的默认配置里是被 block 掉的，得实测；
 而且 60 KB 上限对 `{token, ca.pem}`（约 2 KB）绰绰有余，但这条路上永远不能塞大东西。
+
+**另有一个今天就存在、(e)(f)(g) 都能顺手修掉的隐患**：`main.tf:288` 对 `node_name`
+做了 `ignore_changes`，好让 PVE 的 HA/CRS 自由迁移 VM；而 snippet 躺在**迁移前那个节点**的
+本地 `local` 上。首启之后无害（cloud-init 只读一次），但**重新 provision 会踩到**——
+PVE 自己的文档也要求 cicustom 文件在所有可能迁移到的节点上都存在。
 
 ### 4.3 现在的判断
 
