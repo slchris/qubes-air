@@ -104,14 +104,18 @@ func NewBootstrapToken(qubeName string, ttl time.Duration) (secret string, rec *
 
 	return secret, &BootstrapRecord{
 		QubeName:   qubeName,
-		SecretHash: hashBootstrapSecret(secret),
+		SecretHash: HashBootstrapSecret(secret),
 		NotAfter:   time.Now().UTC().Add(ttl),
 	}, nil
 }
 
-// hashBootstrapSecret is the one place the digest is computed, so a change here
-// cannot leave minting and verification disagreeing.
-func hashBootstrapSecret(secret string) string {
+// HashBootstrapSecret is the one place the digest is computed, so a change here
+// cannot leave minting, storage and verification disagreeing.
+//
+// Exported because the durable store looks a token up BY this digest: single-use
+// has to be enforced by the database in one statement, not by a read here
+// followed by a write there.
+func HashBootstrapSecret(secret string) string {
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:])
 }
@@ -139,7 +143,7 @@ func (r *BootstrapRecord) Verify(secret, qubeName string, now time.Time) error {
 	// for a different qube.
 	nameOK := subtle.ConstantTimeCompare([]byte(r.QubeName), []byte(qubeName)) == 1
 	hashOK := subtle.ConstantTimeCompare(
-		[]byte(r.SecretHash), []byte(hashBootstrapSecret(secret))) == 1
+		[]byte(r.SecretHash), []byte(HashBootstrapSecret(secret))) == 1
 
 	// Both checks always run: returning early on the first failure would make
 	// the two distinguishable by timing.

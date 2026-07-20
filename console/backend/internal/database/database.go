@@ -95,6 +95,7 @@ func (d *DB) migrate() error {
 		createSettingsTable,
 		createJobsTable,
 		createAgentCertsTable,
+		createBootstrapTokensTable,
 	}
 
 	for _, m := range migrations {
@@ -286,6 +287,35 @@ CREATE TABLE IF NOT EXISTS agent_certs (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_certs_qube_id ON agent_certs(qube_id);
 CREATE INDEX IF NOT EXISTS idx_agent_certs_revoked ON agent_certs(revoked_at)`
+
+// createBootstrapTokensTable holds the one-shot credentials that let an agent
+// obtain its first certificate without the console shipping it a private key.
+//
+// The row stores the token's HASH, never the token: a leaked database yields
+// nothing usable, the same reason a password store keeps digests. secret_hash is
+// the primary key because that is the lookup path — an agent presents a secret
+// and nothing else, so the digest is what identifies the row.
+//
+// qube_id is carried alongside qube_name because the two answer different
+// questions: the name derives the certificate's common name, the id is what the
+// issued certificate is registered against. Storing both means redemption needs
+// no second lookup, and the pair recorded at mint time is the pair used at
+// redemption — a rename between the two cannot retarget the certificate.
+//
+// redeemed_at is what makes the token single-use, and it is set by the same
+// statement that authorizes the redemption. See BootstrapTokenRepository.Redeem
+// for why that has to be one statement.
+const createBootstrapTokensTable = `
+CREATE TABLE IF NOT EXISTS bootstrap_tokens (
+	secret_hash TEXT PRIMARY KEY,
+	qube_id     TEXT NOT NULL,
+	qube_name   TEXT NOT NULL,
+	created_at  DATETIME NOT NULL,
+	not_after   DATETIME NOT NULL,
+	redeemed_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_qube_id ON bootstrap_tokens(qube_id);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_not_after ON bootstrap_tokens(not_after)`
 
 const createCredentialsTable = `
 CREATE TABLE IF NOT EXISTS credentials (
