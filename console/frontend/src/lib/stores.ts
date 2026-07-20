@@ -194,6 +194,26 @@ function createQubeStore() {
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Failed to load qubes';
         update(s => ({ ...s, error: message, loading: false }));
+        return;
+      }
+
+      // Seed each qube's latest job from the server so its log is viewable even
+      // for a qube this browser session did not create — after a reload, or for
+      // one provisioned through the API. Without this the card only knew about
+      // jobs it kicked off itself, so a succeeded qube showed no log at all.
+      // One list call, mapped newest-first (the API returns newest first, so the
+      // first id seen per qube is the latest). Session-noted jobs win over this,
+      // since they are the operation the user just started.
+      try {
+        const jobs = await api.listJobs(undefined, 100);
+        const latest: Record<string, string> = {};
+        for (const j of jobs.jobs ?? []) {
+          if (!latest[j.qube_id]) latest[j.qube_id] = j.id;
+        }
+        update(s => ({ ...s, jobs: { ...latest, ...s.jobs } }));
+      } catch {
+        // A missing job history is not worth failing the qube list over; the
+        // cards simply show no log until the next mutation records one.
       }
     },
 

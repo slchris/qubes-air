@@ -63,9 +63,10 @@
     if (el && atBottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
   }
 
-  // Stream first, poll as the fallback. The stream gives line-by-line output;
-  // when it ends — its own duration cap, or a dropped qrexec forward — control
-  // falls through to polling from the last offset, so nothing is missed.
+  // Stream first while the job runs, poll as the fallback. The stream gives
+  // line-by-line output; when it ends — its own duration cap, or a dropped
+  // qrexec forward — control falls through to polling from the last offset, so
+  // nothing is missed.
   async function feed(): Promise<void> {
     controller = new AbortController();
     while (running && jobId === current) {
@@ -84,6 +85,15 @@
       }
       streaming = false;
       if (!running) break;
+    }
+
+    // A job that was ALREADY finished when this panel opened never entered the
+    // stream loop, so its log has not been fetched. Do one plain read — the log
+    // still exists on the server long after the job ended, and without this a
+    // succeeded job shows an empty panel even though its full output is there.
+    if (jobId === current && !text) {
+      await poll();
+      return;
     }
     await finish();
   }
