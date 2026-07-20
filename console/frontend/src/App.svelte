@@ -15,15 +15,21 @@
   import BillingView from './components/BillingView.svelte'
   import MonitoringView from './components/MonitoringView.svelte'
   import SettingsView from './components/SettingsView.svelte'
+  import Dashboard from './components/Dashboard.svelte'
   import ZonesView from './components/ZonesView.svelte'
+  import JobsView from './components/JobsView.svelte'
   import LoginGate from './components/LoginGate.svelte'
   import { auth } from './lib/auth.svelte'
   
   // 从 URL hash 获取当前视图，支持页面刷新保持状态
   function getViewFromHash(): string {
     const hash = window.location.hash.slice(1); // 移除 #
-    const validViews = ['qubes', 'zones', 'infrastructure', 'credentials', 'billing', 'monitoring', 'settings'];
-    return validViews.includes(hash) ? hash : 'qubes';
+    const validViews = ['dashboard', 'qubes', 'zones', 'jobs', 'infrastructure', 'credentials', 'billing', 'monitoring', 'settings'];
+    // Dashboard is the landing view: opening straight onto the qube list answers
+    // "what exists" but not "is anything wrong", and the two facts that matter
+    // most on arrival — an unreachable agent and a failed job — were the ones
+    // that took the most clicks to find.
+    return validViews.includes(hash) ? hash : 'dashboard';
   }
 
   let currentView = $state(getViewFromHash());
@@ -69,8 +75,12 @@
     <Sidebar {currentView} onViewChange={handleViewChange} isOpen={sidebarOpen} />
     
     <main class="content">
-      {#if currentView === 'qubes'}
+      {#if currentView === 'dashboard'}
+        <Dashboard onViewChange={handleViewChange} />
+      {:else if currentView === 'qubes'}
         <QubeList />
+      {:else if currentView === 'jobs'}
+        <JobsView />
       {:else if currentView === 'zones'}
         <ZonesView />
       {:else if currentView === 'infrastructure'}

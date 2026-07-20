@@ -25,10 +25,14 @@
   let error = $state<string | null>(null);
   let showModal = $state(false);
   let editingId = $state<string | null>(null);
-  let formData = $state<FormData>({ name: '', type: 'aws', region: 'us-east-1' });
+  let formData = $state<FormData>({ name: '', type: 'proxmox', region: 'us-east-1' });
   let formError = $state<string | null>(null);
 
-  const providerTypes = ['aws', 'gcp', 'azure', 'kubernetes', 'docker', 'other'];
+  // The three providers this project actually integrates with. Azure,
+  // kubernetes and docker were offered here but nothing in the backend, the
+  // terraform modules or the zone model knows about them — offering a choice
+  // that cannot provision anything is worse than not offering it.
+  const providerTypes = ['proxmox', 'gcp', 'aws'];
   const regions = ['us-east-1', 'us-west-2', 'eu-west-1', 'eu-central-1', 'ap-southeast-1', 'ap-northeast-1'];
 
   async function loadProviders() {
@@ -53,7 +57,7 @@
 
   function openAddModal() {
     editingId = null;
-    formData = { name: '', type: 'aws', region: 'us-east-1' };
+    formData = { name: '', type: 'proxmox', region: 'us-east-1' };
     formError = null;
     showModal = true;
   }
