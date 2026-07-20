@@ -45,7 +45,11 @@ linters:
       # where a stray copy is a real bug, so that is what this now looks for.
       min-len: 6
       min-occurrences: 5
-      ignore-string-values: '^(error|total|note|version|status|message|count|provider)$'
+      # Regexes, and this must be a list — a bare string passes `run` with only
+      # a deprecation warning but fails `config verify`, which is what the
+      # GitHub action executes before linting.
+      ignore-string-values:
+        - '^(error|total|note|version|status|message|count|provider)$'
     gocyclo:
       min-complexity: 15
     gosec:
