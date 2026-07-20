@@ -191,3 +191,8 @@ terraform/identities/
 
 # scripts/build-agent-deb.sh 的输出 (.deb 是构建产物, 分发走 artifact store)
 dist/
+
+# Browser-automation artifacts from local WebUI debugging. These are scratch
+# output of a debugging session, not part of the project.
+.playwright-mcp/
+gate-*.png
