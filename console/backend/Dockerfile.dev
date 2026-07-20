@@ -1,0 +1,34 @@
+# Development image for the console backend.
+#
+# Not the production artifact — that is built by .github/workflows/release.yml
+# and shipped as a release asset. This exists so `docker compose up` gives a
+# working backend on any machine without a local Go toolchain, and so the
+# frontend has something to talk to.
+#
+# The golang image (not alpine) is deliberate: the console links
+# mattn/go-sqlite3, which is cgo. A CGO_ENABLED=0 build compiles cleanly and
+# then fails at runtime with `unknown driver "sqlite3"` — a binary that cannot
+# open its own database. Alpine would additionally need musl-vs-glibc handling
+# for the same package, so the Debian-based image keeps the failure surface
+# small.
+FROM golang:1.25-bookworm
+
+WORKDIR /src/console/backend
+
+# Warm the module cache as its own layer so editing source does not re-download
+# the world on every rebuild. The compose file also mounts a named volume over
+# GOPATH/pkg/mod, which keeps it warm across container recreation.
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Source is bind-mounted by compose, so nothing is copied here: the point is to
+# run what is on the developer's disk, not a snapshot of it.
+
+ENV CGO_ENABLED=1
+
+EXPOSE 8080
+
+# `go run` rather than a prebuilt binary: a restart picks up edited source with
+# no rebuild step to remember. Compilation happens on start, which costs a few
+# seconds and removes a whole class of "I changed it but it did not change".
+CMD ["go", "run", "./cmd/server"]

@@ -1,0 +1,86 @@
+# Local development stack for the Qubes Air console.
+#
+#   docker compose up            backend + frontend with hot reload
+#   docker compose up --build    after changing a Dockerfile or dependencies
+#   docker compose down          stop
+#   docker compose down -v       stop and discard the dev database
+#
+# Then open http://127.0.0.1:5173 and paste the API token below into Settings.
+#
+# This is a DEVELOPMENT stack, not a deployment. The real console runs as a
+# systemd service in a dedicated Qubes AppVM (salt/qubesair in qubes-salt-config)
+# with a generated token and a real encryption key; what runs here is the same
+# code with throwaway credentials and a throwaway database, so a mistake costs a
+# `docker compose down -v` rather than a fleet.
+
+services:
+  backend:
+    build:
+      context: ./console/backend
+      dockerfile: Dockerfile.dev
+    working_dir: /src/console/backend
+    volumes:
+      - ./console/backend:/src/console/backend
+      # Named volumes, not bind mounts: the module and build caches must be
+      # linux/amd64 artifacts that survive container recreation. Sharing the
+      # host's would mix architectures and make every `up` a cold build.
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+      # The dev database lives in a volume so `docker compose down` keeps it and
+      # `down -v` deliberately does not.
+      - devdata:/data
+    environment:
+      QUBES_AIR_HOST: 0.0.0.0
+      QUBES_AIR_PORT: "8080"
+      QUBES_AIR_DATABASE_DSN: /data/dev.db
+      # Dev-only credentials. The 32-byte key is what the console validates at
+      # startup; a short one is a fail-fast, not a warning. Never reuse these
+      # anywhere real — they are in git.
+      QUBES_AIR_ENCRYPTION_KEY: "0123456789abcdef0123456789abcdef"
+      QUBES_AIR_API_TOKEN: "devtoken"
+      # The browser talks to vite, which proxies /api here, so the allowed
+      # origin is the dev server rather than this service.
+      QUBES_AIR_CORS_ORIGINS: "http://127.0.0.1:5173,http://localhost:5173"
+      # Orchestration off: it would shell out to terraform against a real
+      # cluster. Turn it on deliberately, with credentials you meant to use.
+      QUBES_AIR_ORCHESTRATOR_ENABLED: "false"
+    ports:
+      # 8098 on the host because 8080 is a popular default and is often already
+      # taken (OrbStack binds it on this machine). Inside the network the
+      # service is plain :8080.
+      - "${BACKEND_PORT:-8098}:8080"
+    healthcheck:
+      # /health is unauthenticated by design (liveness probes), so it needs no
+      # token here.
+      test: ["CMD", "sh", "-c", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      # go run compiles on start; without this the first probes fail and the
+      # frontend gives up before the backend has finished building.
+      start_period: 180s
+
+  frontend:
+    build:
+      context: ./console/frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./console/frontend:/app
+      # Keeps the container's linux node_modules instead of the host's macOS
+      # ones — see Dockerfile.dev.
+      - nodemods:/app/node_modules
+    environment:
+      # Service name, not localhost: inside the container localhost is the
+      # container itself.
+      VITE_API_TARGET: http://backend:8080
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  gomod:
+  gocache:
+  nodemods:
+  devdata:
