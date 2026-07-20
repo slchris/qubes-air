@@ -23,11 +23,16 @@
     # 基础系统配置
     # ==========================================
 
-    - name: Update system packages
+    # Deliberately NOT a blanket "upgrade everything". A full upgrade on a
+    # gateway during bootstrap can pull in a kernel and leave the machine
+    # needing a reboot mid-play, and the previous form only ran on RedHat
+    # anyway — a leftover from when this project assumed Fedora, which the
+    # fleet has not used for some time. Refreshing the package index is what
+    # the installs below actually need.
+    - name: Refresh package index
       ansible.builtin.package:
-        name: "*"
-        state: latest
-      when: ansible_os_family == "RedHat"
+        update_cache: true
+      changed_when: false
 
     - name: Install required packages
       ansible.builtin.package:
@@ -51,25 +56,44 @@
         state: directory
         mode: '0700'
 
-    - name: Generate WireGuard private key
+    # The private key is generated on the target and never read back.
+    #
+    # This task used to end in `cat /etc/wireguard/private.key` with
+    # `register: wg_private_key`, and nothing ever used that variable. It put
+    # the key into Ansible's result data for no benefit: `-v` prints it, and any
+    # callback plugin or log captures it. The whole point of generating on the
+    # target (see terraform/modules/zone-base/main.tf, which removed an earlier
+    # attempt to generate keys in terraform because they landed in state) is
+    # that the key never leaves the machine — reading it back defeats that just
+    # as thoroughly as generating it elsewhere would have.
+    #
+    # umask rather than a follow-up chmod: the file must never exist, even
+    # briefly, with default permissions.
+    - name: Generate WireGuard private key (stays on the target)
       ansible.builtin.shell: |
+        set -eu
+        umask 077
         if [ ! -f /etc/wireguard/private.key ]; then
           wg genkey > /etc/wireguard/private.key
-          chmod 600 /etc/wireguard/private.key
         fi
-        cat /etc/wireguard/private.key
-      register: wg_private_key
-      changed_when: false
+      args:
+        creates: /etc/wireguard/private.key
 
-    - name: Generate WireGuard public key
+    # Only the PUBLIC key comes back. It is what terraform's
+    # zone-base var.wireguard_pubkey expects, and it is public by nature.
+    - name: Derive WireGuard public key
       ansible.builtin.shell: |
-        cat /etc/wireguard/private.key | wg pubkey
+        set -eu
+        wg pubkey < /etc/wireguard/private.key
       register: wg_public_key
       changed_when: false
 
     - name: Display WireGuard public key
       ansible.builtin.debug:
-        msg: "WireGuard Public Key: {{ wg_public_key.stdout }}"
+        msg: >-
+          WireGuard public key for {{ zone_name }}: {{ wg_public_key.stdout }}
+          -- feed this into the zone's wireguard_pubkey. Nothing does that
+          automatically yet; see docs/bootstrap-design.md section 11.
 
     # ==========================================
     # Salt Master 安装 (可选)
@@ -98,8 +122,13 @@
         - /opt/qubes-air/etc
         - /opt/qubes-air/log
 
-  handlers:
-    - name: Restart WireGuard
-      ansible.builtin.service:
-        name: wg-quick@wg0
-        state: restarted
+  # No handlers. There was a "Restart WireGuard" handler for wg-quick@wg0 that
+  # no task ever notified, so it could not fire — and it could not have helped
+  # if it had: this play writes no /etc/wireguard/wg0.conf at all. It installs
+  # the tools and generates a key, and that is the whole of it.
+  #
+  # Bringing an interface up needs the peer set, addresses and AllowedIPs, and
+  # those depend on decisions this play cannot make alone (see
+  # docs/bootstrap-design.md section 11). A handler that restarts a unit with no
+  # config would report success and leave the tunnel down, which is the failure
+  # shape this project keeps having to remove.
