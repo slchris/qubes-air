@@ -2,7 +2,9 @@
   Qubes Air Console - Monitoring View Component
 -->
 <script lang="ts">
-  import { apiFetch } from '../lib/api';
+  import { apiFetch, getZoneCapacity, listZones } from '../lib/api';
+  import type { Zone, ZoneCapacity } from '../lib/types';
+  import { SCHEDULER_HEADROOM } from '../lib/types';
 
   interface MetricPoint {
     timestamp: string;
@@ -42,6 +44,52 @@
     return (Math.max(0, Math.min(100, v ?? 0))).toFixed(2);
   }
 
+  // Real fleet data. /monitoring describes the console's own Go runtime; the
+  // numbers that say anything about the infrastructure come per-zone from
+  // /zones/:id/capacity, which was already implemented and only ever consumed
+  // inside the create-qube modal.
+  interface ZoneCap { zone: Zone; cap: ZoneCapacity | null; error: string | null }
+  let zoneCaps = $state<ZoneCap[]>([]);
+  let loadingCaps = $state(false);
+
+  async function loadCapacity() {
+    loadingCaps = true;
+    try {
+      const zr = await listZones();
+      const zones = zr.zones ?? [];
+      zoneCaps = await Promise.all(zones.map(async (z) => {
+        try {
+          return { zone: z, cap: await getZoneCapacity(z.id), error: null };
+        } catch (e) {
+          // 503 (unreachable / no credential) and 501 (no scheduler) are
+          // expected states, not faults — a disconnected zone simply has no
+          // capacity to report.
+          // "Service Unavailable" is the HTTP reason phrase, not an
+          // explanation. A zone reports no capacity for a small number of
+          // reasons and each is actionable, so name the reason.
+          const raw = e instanceof Error ? e.message : '';
+          const reason = z.status !== 'connected'
+            ? 'not connected'
+            : /501|not implemented/i.test(raw)
+              ? 'provider reports no capacity'
+              : 'cluster unreachable — check the endpoint and credential';
+          return { zone: z, cap: null, error: reason };
+        }
+      }));
+    } catch {
+      zoneCaps = [];
+    } finally {
+      loadingCaps = false;
+    }
+  }
+
+  function gib(bytes: number): string {
+    return (bytes / 1024 ** 3).toFixed(1);
+  }
+  function memPct(n: { mem_used_bytes: number; mem_total_bytes: number }): number {
+    return n.mem_total_bytes ? (n.mem_used_bytes / n.mem_total_bytes) * 100 : 0;
+  }
+
   async function loadMonitoring() {
     loading = true;
     error = null;
@@ -64,6 +112,7 @@
 
   $effect(() => {
     loadMonitoring();
+    loadCapacity();
   });
 
   function getSeverityClass(severity: string): string {
@@ -97,6 +146,64 @@
       <button onclick={loadMonitoring}>Retry</button>
     </div>
   {:else}
+
+    <!-- Real numbers first. Everything below this section describes the console
+         process, not the fleet, and leading with it was how "Disk 0%" came to
+         be read as a measurement. -->
+    <section class="capacity">
+      <h3>Cluster capacity</h3>
+      {#if loadingCaps}
+        <p class="muted">Loading…</p>
+      {:else if zoneCaps.length === 0}
+        <p class="muted">No zones configured.</p>
+      {:else}
+        {#each zoneCaps as zc (zc.zone.id)}
+          <div class="zone-cap">
+            <div class="zc-head">
+              <span class="zc-name">{zc.zone.name}</span>
+              <span class="zc-type">{zc.zone.type}</span>
+              {#if zc.error}
+                <span class="zc-err">{zc.error}</span>
+              {/if}
+            </div>
+
+            {#if zc.cap?.nodes?.length}
+              <table class="nodes">
+                <thead>
+                  <tr>
+                    <th>Node</th><th>CPU</th><th>Memory</th><th>Free</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each zc.cap.nodes as n (n.name)}
+                    <tr class:offline={!n.online}>
+                      <td>{n.name}{#if !n.online} <span class="muted">offline</span>{/if}</td>
+                      <td>{(n.cpu_usage * 100).toFixed(1)}% <span class="muted">of {n.max_cpu}c</span></td>
+                      <td>
+                        <span class="bar"><span class="fill" style="width:{memPct(n).toFixed(1)}%"></span></span>
+                        {memPct(n).toFixed(1)}%
+                      </td>
+                      <td>{gib(n.mem_free_bytes)} GiB</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              <p class="muted small">
+                The scheduler keeps {(SCHEDULER_HEADROOM * 100).toFixed(0)}% of a node's memory
+                unused, so a node with less than that free will not take another qube.
+              </p>
+            {:else if zc.cap?.quota}
+              <p class="muted">
+                Elastic provider — usage against quota rather than a node pool.
+              </p>
+            {:else if !zc.error}
+              <p class="muted">No capacity reported.</p>
+            {/if}
+          </div>
+        {/each}
+      {/if}
+    </section>
+
     {#if placeholder}
       <div class="placeholder-banner">
         <strong>Placeholder metrics.</strong>
@@ -105,6 +212,7 @@
       </div>
     {/if}
 
+    <h3 class="ph-head">Console process</h3>
     <div class="metrics-grid">
       <div class="metric-card">
         <span class="metric-label">CPU Usage</span>
@@ -165,6 +273,39 @@
 </div>
 
 <style>
+  .capacity { margin-bottom: 32px; }
+  .capacity h3, .ph-head { margin: 0 0 12px; font: var(--title-2-emphasized); }
+  .ph-head { margin-top: 8px; }
+  .muted { color: var(--systemSecondary); font: var(--body); margin: 0; }
+  .muted.small { font: var(--callout); margin-top: 8px; }
+
+  .zone-cap {
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-small);
+    background: var(--pageBG);
+    padding: 12px 16px;
+    margin-bottom: 12px;
+  }
+  .zc-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+  .zc-name { font: var(--title-3-emphasized); }
+  .zc-type { font: var(--subhead); color: var(--systemSecondary); }
+  .zc-err { font: var(--callout); color: var(--systemOrange); margin-left: auto; }
+
+  .nodes { width: 100%; border-collapse: collapse; font: var(--body); }
+  .nodes th {
+    text-align: left; font: var(--subhead-emphasized); color: var(--systemSecondary);
+    text-transform: uppercase; letter-spacing: 0;
+    padding: 4px 8px 6px 0; border-bottom: 1px solid var(--systemQuaternary);
+  }
+  .nodes td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--systemQuinary); }
+  .nodes tr.offline td { color: var(--systemTertiary); }
+
+  .bar {
+    display: inline-block; width: 90px; height: 6px; vertical-align: middle;
+    background: var(--systemQuinary); border-radius: 3px; overflow: hidden; margin-right: 6px;
+  }
+  .bar .fill { display: block; height: 100%; background: var(--keyColor); }
+
   .placeholder-banner {
     margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: var(--global-border-radius-xsmall);
     border: 1px solid var(--systemOrange); background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG)); color: var(--systemRed);

@@ -21,6 +21,12 @@
   let summary = $state<BillingSummary | null>(null);
   let usage = $state<UsageItem[]>([]);
   let loading = $state(true);
+  // The backend flags this data as placeholder and explains why: there is no
+  // cost source wired, and a bare $0.00 reads as "you owe nothing" rather than
+  // "nothing is being measured". Dropping the flag is what made it read as a
+  // figure.
+  let placeholder = $state(false);
+  let note = $state<string | null>(null);
   let error = $state<string | null>(null);
 
   async function loadBilling() {
@@ -30,6 +36,8 @@
       const response = await apiFetch(`/billing`);
       if (!response.ok) throw new Error('Failed to load billing');
       const data = await response.json();
+      placeholder = data.placeholder === true;
+      note = data.note || null;
       summary = data.summary || null;
       usage = data.usage || [];
     } catch (e) {
@@ -66,6 +74,12 @@
       <button onclick={loadBilling}>Retry</button>
     </div>
   {:else}
+    {#if placeholder}
+      <div class="placeholder-banner">
+        <strong>Not a bill.</strong>
+        {note || 'No cost source is connected; these figures are placeholders, not measurements.'}
+      </div>
+    {/if}
     <div class="summary-cards">
       <div class="summary-card">
         <span class="card-label">Current Month</span>
@@ -110,6 +124,14 @@
 </div>
 
 <style>
+  .placeholder-banner {
+    margin-bottom: 16px; padding: 10px 12px;
+    border-radius: var(--global-border-radius-xsmall);
+    border: 1px solid var(--systemOrange);
+    background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG));
+    color: var(--systemPrimary); font: var(--body); line-height: 1.5;
+  }
+
   .billing-view {
     max-width: 1000px;
   }
