@@ -25,6 +25,10 @@ terraform {
       source  = "bpg/proxmox"
       version = ">= 0.60.0"
     }
+    google = {
+      source  = "hashicorp/google"
+      version = ">= 5.0"
+    }
   }
 }
 
@@ -69,6 +73,19 @@ variable "qube_config" {
     network_bridge       = optional(string, "vmbr0")
     ssh_public_keys      = optional(list(string), []) # cloud-init 注入的**公钥** (绝不含私钥)
     agent_user_data_file = optional(string, "")       # agent 身份 user-data 的本地路径
+
+    # ---- GCP 特定 ----
+    # gcp_zone 是必填 (实例与数据盘必须同 zone 才挂得上), 但这里给 null 默认值:
+    # 一个 proxmox qube 不该因为缺 GCP 字段而渲染失败。缺失在 GCP 子模块里报错。
+    gcp_zone     = optional(string)
+    source_image = optional(string, "debian-cloud/debian-12")
+    # 身份文档经私有 GCS bucket 投递 —— 放 metadata 会把 agent 私钥写进 state。
+    identity_bucket       = optional(string, "")
+    service_account_email = optional(string, "")
+    network               = optional(string, "default")
+    subnetwork            = optional(string)
+    # 默认不给公网 IP: 控制台经私有路径 (WireGuard) 拨 agent。
+    assign_public_ip = optional(bool, false)
   })
 }
 
@@ -167,6 +184,19 @@ module "gcp" {
   gpu_type        = var.qube_config.gpu_type
   gpu_count       = var.qube_config.gpu_count
   ssh_public_keys = var.qube_config.ssh_public_keys
+
+  # The agent identity was never passed to GCP at all, so a GCP qube had no way
+  # to authenticate even once the module built something. Same value the proxmox
+  # branch gets; how it reaches the VM differs (GCS object vs snippet) because
+  # putting it in GCP instance metadata would write the private key into state.
+  zone                  = var.qube_config.gcp_zone
+  source_image          = var.qube_config.source_image
+  agent_user_data_file  = var.qube_config.agent_user_data_file
+  identity_bucket       = var.qube_config.identity_bucket
+  service_account_email = var.qube_config.service_account_email
+  network               = var.qube_config.network
+  subnetwork            = var.qube_config.subnetwork
+  assign_public_ip      = var.qube_config.assign_public_ip
 }
 
 module "aws" {

@@ -98,11 +98,26 @@ variable "proxmox_ssh_private_key" {
 }
 
 # ============================================
-# GCP / AWS Provider —— 阶段1 为骨架, 暂不在根模块配置。
+# GCP Provider
 #
-# GCP/AWS 子模块目前不建真实资源 (纯占位输出), 因此无需配置 provider,
-# validate 也能通过。待阶段2 落地真实资源时, 在此启用对应 provider 块,
-# 凭据同样只经环境变量注入:
-#   GCP: GOOGLE_APPLICATION_CREDENTIALS / gcloud ADC
+# 凭据**只经环境变量**注入, 与 proxmox 同一条路 —— 作为 terraform 变量传会被
+# 明文写进 state, 而 state 里不得出现长期凭据。google provider 按序读:
+#   GOOGLE_CREDENTIALS (可直接是 SA key 的 JSON 内容) -> GOOGLE_APPLICATION_CREDENTIALS
+#   (指向 key 文件) -> ADC
+#
+# 注意 provider **不依赖 gcloud CLI**: 一个 service account key 就够了, `gcloud
+# auth application-default login` 只是填充 ADC 的一种方式。控制台侧因此不需要
+# 一台专门跑 gcloud 的机器 —— 与 PROXMOX_VE_* 完全同构。
+#
+# project/region 走变量 (非机密), 由 tfvars 提供。
+# ============================================
+
+provider "google" {
+  project = var.gcp_config.project
+  region  = var.gcp_config.region
+}
+
+# ============================================
+# AWS Provider —— 仍为骨架, 暂不在根模块配置。
 #   AWS: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY / IAM Role
 # ============================================
