@@ -133,11 +133,11 @@ type Dependencies struct {
 	settingsHandler   *handler.SettingsHandler
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
-	// bootstrapIssuer issues a first certificate against a one-shot token.
-	// No HTTP route serves it: the console DIALS the agent to run bootstrap,
-	// same direction as renewal and probing (docs/bootstrap-design.md §9.3).
-	// The dialer that consumes this is the next wiring step.
-	bootstrapIssuer *service.BootstrapIssuer
+	// bootstrapper dials qubes that have no identity yet and trades their
+	// one-shot token for a first certificate. No HTTP route is involved: the
+	// console DIALS the agent, same direction as renewal and probing
+	// (docs/bootstrap-design.md §9.3).
+	bootstrapper *service.AgentBootstrapper
 	// bootstrapTokens mints the tokens cloud-init delivers.
 	bootstrapTokens *repository.BootstrapTokenRepository
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
@@ -256,15 +256,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// agent health on every probe — a renewal failure recorded only once would be
 	// erased by the next successful probe, leaving the fleet reading healthy
 	// until the day its certificates ran out.
-	certRenewals := service.NewCertRenewalMonitor(
-		qubeRepo, agentCertRepo,
-		service.NewCertRenewer(certIssuer, certIssuer, agentCertRepo, agentCertRepo,
-			cfg.Orchestrator.AgentListen, service.DefaultCertRenewalTimeout),
-		qubeRepo,
-		service.CertRenewalConfig{
-			Interval:  time.Duration(cfg.Orchestrator.AgentCertRenewIntervalSeconds) * time.Second,
-			Threshold: float64(cfg.Orchestrator.AgentCertRenewThresholdPercent) / 100,
-		})
+	certRenewals := buildCertRenewals(cfg, certIssuer, qubeRepo, agentCertRepo)
+	bootstrapper := buildBootstrapper(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo)
 
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
@@ -315,13 +308,12 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
-		bootstrapIssuer: service.NewBootstrapIssuer(
-			bootstrapTokenRepo, certIssuer, agentCertRepo),
-		bootstrapTokens: bootstrapTokenRepo,
-		transport:       xport,
-		runner:          runner,
-		agents:          agents,
-		certRenewals:    certRenewals,
+		bootstrapper:      bootstrapper,
+		bootstrapTokens:   bootstrapTokenRepo,
+		transport:         xport,
+		runner:            runner,
+		agents:            agents,
+		certRenewals:      certRenewals,
 	}, nil
 }
 
@@ -654,6 +646,44 @@ func loadClientMTLS(cfg config.TransportConfig) (*tls.Config, error) {
 		tlsCfg.RootCAs = pool
 	}
 	return tlsCfg, nil
+}
+
+// buildCertRenewals wires background certificate renewal.
+func buildCertRenewals(
+	cfg *config.Config,
+	certIssuer *service.CertIssuer,
+	qubeRepo repository.QubeRepository,
+	certs *repository.AgentCertRepository,
+) *service.CertRenewalMonitor {
+	return service.NewCertRenewalMonitor(
+		qubeRepo, certs,
+		service.NewCertRenewer(certIssuer, certIssuer, certs, certs,
+			cfg.Orchestrator.AgentListen, service.DefaultCertRenewalTimeout),
+		qubeRepo,
+		service.CertRenewalConfig{
+			Interval:  time.Duration(cfg.Orchestrator.AgentCertRenewIntervalSeconds) * time.Second,
+			Threshold: float64(cfg.Orchestrator.AgentCertRenewThresholdPercent) / 100,
+		})
+}
+
+// buildBootstrapper wires first-certificate issuance.
+//
+// The console dials a qube that has no identity yet and trades its one-shot
+// token for a certificate, so no private key is ever shipped in cloud-init.
+// It shares the CA and the certificate registry with renewal, because a
+// bootstrapped certificate and a renewed one must be indistinguishable to
+// everything downstream — the prober, the registry, the revocation path.
+func buildBootstrapper(
+	cfg *config.Config,
+	certIssuer *service.CertIssuer,
+	tokens *repository.BootstrapTokenRepository,
+	certs *repository.AgentCertRepository,
+) *service.AgentBootstrapper {
+	return service.NewAgentBootstrapper(
+		certIssuer,
+		service.NewBootstrapIssuer(tokens, certIssuer, certs),
+		cfg.Orchestrator.AgentListen,
+		service.DefaultBootstrapTimeout)
 }
 
 // setupRouter creates and configures the Gin router.
