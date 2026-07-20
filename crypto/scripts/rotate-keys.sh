@@ -17,9 +17,8 @@
 #
 # 用法:
 #   rotate-keys.sh age            # 只轮换 age 并重加密 SOPS 文件
-#   rotate-keys.sh wg             # 只轮换 WireGuard
 #   rotate-keys.sh ssh            # 只轮换 relay transport SSH key
-#   rotate-keys.sh all            # 三者都轮换
+#   rotate-keys.sh all            # 两者都轮换 (wg 子命令已删除, 见文件中段说明)
 #   DRY_RUN=1 rotate-keys.sh age  # 只打印将做什么, 不改动
 #
 # 环境变量:
@@ -230,9 +229,12 @@ main() {
 
     case "$target" in
         age)  rotate_age ;;
-        wg)   rotate_wg ;;
+        wg)   log_error "wg 子命令已删除 —— 它把明文私钥写进 \$KEY_DIR, 并指示重应用一个"
+              log_error "已被删除的 salt state。密钥该在持有它的那一侧生成, 由 console 编排。"
+              log_error "见 crypto/README.md 与 docs/bootstrap-design.md §12.1"
+              exit 1 ;;
         ssh)  rotate_ssh ;;
-        all)  rotate_age; rotate_wg; rotate_ssh ;;
+        all)  rotate_age; rotate_ssh ;;
         -h|--help) usage; exit 0 ;;
         *) log_error "未知目标: $target"; usage; exit 1 ;;
     esac

@@ -1,151 +1,54 @@
 #!/bin/bash
-# Qubes Air - 管理脚本
+# Qubes Air - 管理脚本 —— **已废弃, 不要再用**
 #
-# 用于管理 sys-remote 和远程 Qube 的快捷命令
-# 使用方法: sudo bash manage-qubes-air.sh [command] [args]
+# 这个脚本的每一条命令 (list / start / stop / vpn-status / connect / disconnect /
+# exec) 操作的都是 `sys-remote-<zone>` qube 和它里面的 `wg-quick@wg0`。
+#
+# 那套东西**被评审否决并已删除**:
+#   - `sys-remote` 开 `ip_forward` + `provides_network` 把 Relay 当本地网关,
+#     违反平面分离; `qubes-air.Remote` 是任意命令通道, 反模式。
+#     见 salt/qubes-air/README.md 与 docs/architecture.md (整篇标着 DEPRECATED)。
+#   - 对应的 salt states (sys-remote/wireguard.sls / gateway.sls / firewall.sls)
+#     已随之删除。
+#
+# 所以这些命令操作的 qube 和服务**都不存在**。同目录的 init-qubes-air.sh 自己就写着
+# 「WireGuard 方案已废弃, 改用 SSH transport」—— 两个脚本互相矛盾, 这次以那句为准。
+#
+# 为什么是报错退出而不是直接删掉:
+# `vpn-status` 原来在 qube 不存在时打印 "WireGuard not configured" 然后**返回 0**,
+# `disconnect` 更是整条带 `|| true`。也就是说凭肌肉记忆敲下来会「成功」, 而什么都没发生
+# —— 正是这个项目一直在消灭的那类静默失败。留在这里硬失败, 是为了让人**立刻撞墙**
+# 并看到下面该用什么。
+#
+# 现在的等价操作:
+#   列出远端            qvm-ls --class RemoteVM
+#   创建 RemoteVM       bash create-remotevm.sh --name <n> --relay <relay> --remote-name <rn>
+#   自检可达            qrexec-client-vm <remotevm> qubesair.Ping
+#   下线一个 zone       bash decommission-zone.sh
+#   (RemoteVM 是纯元数据 qube, 不能 qvm-start)
+#
+# 传输不再是 WireGuard: 本地 relay 主动出站, 见 docs/roadmap-to-production.md 阶段 T
+# 与 docs/remotevm-alignment.md。
 
 set -euo pipefail
 
-# 颜色
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+cat >&2 <<'EOF'
+==============================================================
+dom0-scripts/manage-qubes-air.sh 已废弃, 拒绝执行。
 
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+这个脚本的每条命令都操作 sys-remote-<zone> 及其中的 wg-quick@wg0。
+sys-remote 方案已被评审否决 (违反平面分离), 相关 qube 与 salt states
+都已删除 —— 这些命令的目标**不存在**。
 
-# 命令: 列出所有 sys-remote
-cmd_list() {
-    log_info "Listing sys-remote Qubes:"
-    qvm-ls --tags sys-remote 2>/dev/null || qvm-ls | grep -E "^sys-remote" || echo "No sys-remote found"
-}
+改用:
+  qvm-ls --class RemoteVM                     列出远端
+  bash create-remotevm.sh --name ... --relay ...   创建
+  qrexec-client-vm <remotevm> qubesair.Ping   自检可达
+  bash decommission-zone.sh                   下线 zone
 
-# 命令: 启动 sys-remote
-cmd_start() {
-    local name="${1:-sys-remote-pve}"
-    log_info "Starting $name..."
-    qvm-start "$name"
-}
-
-# 命令: 停止 sys-remote
-cmd_stop() {
-    local name="${1:-sys-remote-pve}"
-    log_info "Stopping $name..."
-    qvm-shutdown "$name"
-}
-
-# 命令: 检查 VPN 状态
-cmd_vpn_status() {
-    local name="${1:-sys-remote-pve}"
-    log_info "VPN status for $name:"
-    qvm-run -p "$name" "wg show" 2>/dev/null || echo "WireGuard not configured"
-}
-
-# 命令: 连接远程 Zone
-cmd_connect() {
-    local zone="${1:-}"
-    if [ -z "$zone" ]; then
-        log_error "Usage: $0 connect <zone-name>"
-        exit 1
-    fi
-    
-    local sys_remote="sys-remote-$zone"
-    
-    log_info "Connecting to zone: $zone via $sys_remote"
-    
-    # 启动 sys-remote
-    qvm-start "$sys_remote" 2>/dev/null || true
-    
-    # 启动 WireGuard
-    qvm-run -p "$sys_remote" "sudo systemctl start wg-quick@wg0"
-    
-    # 检查连接
-    sleep 2
-    qvm-run -p "$sys_remote" "wg show wg0 | head -5"
-    
-    log_info "Connected to $zone"
-}
-
-# 命令: 断开远程 Zone
-cmd_disconnect() {
-    local zone="${1:-}"
-    if [ -z "$zone" ]; then
-        log_error "Usage: $0 disconnect <zone-name>"
-        exit 1
-    fi
-    
-    local sys_remote="sys-remote-$zone"
-    
-    log_info "Disconnecting from zone: $zone"
-    qvm-run -p "$sys_remote" "sudo systemctl stop wg-quick@wg0" || true
-    log_info "Disconnected"
-}
-
-# 命令: 执行远程命令
-cmd_remote_exec() {
-    local zone="${1:-}"
-    shift || true
-    local command="$*"
-    
-    if [ -z "$zone" ] || [ -z "$command" ]; then
-        log_error "Usage: $0 exec <zone-name> <command>"
-        exit 1
-    fi
-    
-    local sys_remote="sys-remote-$zone"
-    log_info "Executing on $zone: $command"
-    
-    # 通过 qrexec 执行远程命令
-    qrexec-client -d "$sys_remote" "DEFAULT:QUBESRPC qubes-air.Remote" <<< "$command"
-}
-
-# 帮助信息
-cmd_help() {
-    cat << EOF
-Qubes Air Management Script
-
-Usage: $0 <command> [args]
-
-Commands:
-  list                    List all sys-remote Qubes
-  start [name]            Start a sys-remote (default: sys-remote-pve)
-  stop [name]             Stop a sys-remote
-  vpn-status [name]       Show VPN status
-  connect <zone>          Connect to a remote zone
-  disconnect <zone>       Disconnect from a remote zone
-  exec <zone> <command>   Execute command on remote zone
-  help                    Show this help
-
-Examples:
-  $0 list
-  $0 start sys-remote-gcp
-  $0 connect proxmox
-  $0 exec proxmox "terraform plan"
+背景: salt/qubes-air/README.md, docs/architecture.md (DEPRECATED),
+      docs/remotevm-alignment.md
+==============================================================
 EOF
-}
 
-# 主入口
-main() {
-    local command="${1:-help}"
-    shift || true
-    
-    case "$command" in
-        list)        cmd_list "$@" ;;
-        start)       cmd_start "$@" ;;
-        stop)        cmd_stop "$@" ;;
-        vpn-status)  cmd_vpn_status "$@" ;;
-        connect)     cmd_connect "$@" ;;
-        disconnect)  cmd_disconnect "$@" ;;
-        exec)        cmd_remote_exec "$@" ;;
-        help|--help|-h) cmd_help ;;
-        *)
-            log_error "Unknown command: $command"
-            cmd_help
-            exit 1
-            ;;
-    esac
-}
-
-main "$@"
+exit 1

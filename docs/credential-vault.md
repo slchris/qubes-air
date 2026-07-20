@@ -255,7 +255,7 @@ cd console/backend && go build ./... && go test ./...
 
 ```bash
 bash crypto/scripts/rotate-keys.sh age    # 换 age 并用新公钥重加密 SOPS 文件
-bash crypto/scripts/rotate-keys.sh wg     # 换 WireGuard, 出新公钥
+# (wg 子命令已删除, 见 crypto/README.md 与 bootstrap-design.md §12.1)
 bash crypto/scripts/rotate-keys.sh ssh    # 换 relay transport SSH, 出新公钥
 DRY_RUN=1 bash crypto/scripts/rotate-keys.sh all
 ```

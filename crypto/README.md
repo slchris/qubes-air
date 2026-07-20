@@ -48,9 +48,6 @@ bash scripts/encrypt-secrets.sh decrypt salt/pillar/secrets.sls.enc
 # 轮换 age 私钥并用新公钥重加密所有 SOPS 文件 (旧密钥先解后重加, 原子逐文件替换)
 bash scripts/rotate-keys.sh age
 
-# 轮换 WireGuard 私钥, 打印新公钥供分发 (私钥不外传)
-bash scripts/rotate-keys.sh wg
-
 # 轮换 relay transport SSH 私钥, 打印新公钥供追加到远端 authorized_keys
 bash scripts/rotate-keys.sh ssh
 
@@ -70,7 +67,13 @@ DRY_RUN=1 bash scripts/rotate-keys.sh all
 
 轮换后需人工完成的分发 (脚本会提示):
 - age: 更新 `sops/.sops.yaml` 的 age 收件人为新公钥并提交 (公钥可入 git); 确认新密钥可解后销毁旧备份。
-- WireGuard: 把新公钥告知对端 peer; 更新经 SOPS 加密的 `secrets.sls` 里本机 private_key; 重应用 salt。
+- ~~WireGuard~~: **`rotate-keys.sh wg` 已删除** (2026-07-20)。它把明文私钥写进
+  `$KEY_DIR`, 并指示「重应用 salt sys-remote.wireguard」—— 那个 state 已随
+  `sys-remote/` 删除, 所以那条指示指向不存在的东西, 而脚本本身会「成功」。
+  更根本的问题是形状: console 已经有加密凭据库 (版本化密钥 + `cmd/rotate-key`),
+  vault-cloud 已经是存凭据的无网络 qube, 再往 home 目录写一份明文私钥是第三套机制。
+  该做成 `CertRenewer` 的形状 —— console 发起, 密钥在持有它的那一侧生成, 只有公钥出来。
+  见 docs/bootstrap-design.md §12.1。
 - SSH: 把新公钥追加到远端 Remote-Relay 的 authorized_keys; 私钥放 vault-cloud ~/.ssh 并 ssh-add;
   切换后重启 autossh 隧道。
 
