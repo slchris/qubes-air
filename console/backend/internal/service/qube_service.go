@@ -514,6 +514,15 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
 			return nil, err
 		}
+		// Mirror the async completion hook: a destroyed compute VM's IP is stale,
+		// and a resume draws a fresh DHCP lease, so clear it and let the address
+		// reader re-learn the real one. Without this a resumed qube is dialed at a
+		// dead address forever. See makeCompletionHook in cmd/server.
+		if ComputeDestroyingAction(action) {
+			if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
+				return nil, err
+			}
+		}
 		updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
 		if err != nil {
 			return nil, err
@@ -579,6 +588,22 @@ func terminalStatusFor(action orchestrator.Action) models.QubeStatus {
 		return models.QubeStatusReleased
 	default:
 		return models.QubeStatusError
+	}
+}
+
+// ComputeDestroyingAction reports whether an action tears down the compute VM,
+// which is exactly when the recorded IP stops being valid. Suspend and release
+// both set compute_running=false (the VM is destroyed, its disk retained), and
+// destroy removes the qube outright; a resume then rebuilds the VM with a new
+// MAC and a new DHCP lease. The stored address must be cleared on all three so
+// it is re-read from terraform rather than believed forever. Exported so the
+// async completion hook (cmd/server) and this inline path share one definition.
+func ComputeDestroyingAction(action orchestrator.Action) bool {
+	switch action {
+	case orchestrator.ActionSuspend, orchestrator.ActionRelease, orchestrator.ActionDestroy:
+		return true
+	default:
+		return false
 	}
 }
 

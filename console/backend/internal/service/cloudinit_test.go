@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +48,7 @@ func testIdentityDoc(t *testing.T) (AgentIdentityDoc, string) {
 func renderWith(t *testing.T, pkg AgentPackage) (string, AgentIdentityDoc) {
 	t.Helper()
 	id, _ := testIdentityDoc(t)
-	out, err := RenderAgentUserData("remote-dev", id, "0.0.0.0:8443", pkg)
+	out, err := RenderAgentUserData("remote-dev", id, "0.0.0.0:8443", pkg, false)
 	require.NoError(t, err)
 	return out, id
 }
@@ -95,8 +96,50 @@ func TestRenderedUserDataIsValidYAML(t *testing.T) {
 		"cloud-init requires the #cloud-config header to treat this as config")
 
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 4, "the CA, the bootstrap token, the env file and the package installer")
+	assert.Len(t, cc.WriteFiles, 6,
+		"the CA, the bootstrap token, the env file, the package installer, "+
+			"the data-mount script and its systemd unit")
 	assert.NotEmpty(t, cc.Runcmd)
+}
+
+// TestDataDiskMountIsDelivered guards the storage/compute split: the compute VM
+// is ephemeral, so anything written outside the retained data disk vanishes on
+// resume. The mount script and its unit are what make /data usable, and the
+// format-only-if-blank guard is what keeps a resume from wiping the disk it just
+// reattached. All three properties are asserted because losing any one silently
+// converts "persistent" into "gone on next resume" — a failure invisible until a
+// user loses data.
+func TestDataDiskMountIsDelivered(t *testing.T) {
+	out, _ := renderFixture(t)
+	cc := parseConfig(t, out)
+
+	script := fileContent(t, cc, "qubes-air-mount-data")
+	require.NotEmpty(t, script, "the data-mount script must be delivered")
+
+	// Resolve by stable scsi address, never by /dev/sdX (the OS disk can be sdb).
+	assert.Contains(t, script, "by-path/*-scsi-0:0:0:1",
+		"the data disk must be resolved by its stable scsi address")
+	assert.NotContains(t, script, "/dev/sdb",
+		"hard-coding /dev/sdb would eventually reformat the OS disk")
+
+	// The data-safety linchpin: mkfs only when blkid reports no filesystem.
+	assert.Contains(t, script, "blkid -o value -s TYPE",
+		"the script must probe for an existing filesystem before formatting")
+	assert.Contains(t, script, "mkfs.ext4",
+		"a blank disk must be formatted on first boot")
+	before := strings.Index(script, `if [ -z "$fstype" ]`)
+	mkfs := strings.Index(script, "mkfs.ext4")
+	require.Positive(t, before, "the blank-disk guard must be present")
+	assert.Less(t, before, mkfs, "mkfs must sit INSIDE the blank-disk guard, never unconditional")
+
+	unit := fileContent(t, cc, "qubes-air-data.service")
+	require.NotEmpty(t, unit, "the data-mount systemd unit must be delivered")
+	assert.Contains(t, unit, "ExecStart="+dataMountScriptPath)
+
+	// The unit is armed on this boot and every future one. Runcmd entries are
+	// YAML sequences ([]any), so flatten to text before scanning.
+	assert.Contains(t, fmt.Sprint(cc.Runcmd...), dataMountService,
+		"runcmd must enable the data-mount unit so it runs on first boot")
 }
 
 // TestCASurvivesYAMLRoundTrip is the one that would fail silently.
@@ -178,17 +221,45 @@ func TestNoPrivateKeyIsEverDelivered(t *testing.T) {
 func TestRenderRejectsIncompleteInput(t *testing.T) {
 	id, caPEM := testIdentityDoc(t)
 
-	_, err := RenderAgentUserData("remote", AgentIdentityDoc{}, "", testAgentPackage())
+	_, err := RenderAgentUserData("remote", AgentIdentityDoc{}, "", testAgentPackage(), false)
 	assert.Error(t, err, "an empty identity must fail")
 
-	_, err = RenderAgentUserData("remote", AgentIdentityDoc{CAPEM: caPEM}, "", testAgentPackage())
+	_, err = RenderAgentUserData("remote", AgentIdentityDoc{CAPEM: caPEM}, "", testAgentPackage(), false)
 	assert.Error(t, err, "a missing token must fail: the agent could never be issued a certificate")
 
-	_, err = RenderAgentUserData("remote", AgentIdentityDoc{BootstrapToken: "t"}, "", testAgentPackage())
+	_, err = RenderAgentUserData("remote", AgentIdentityDoc{BootstrapToken: "t"}, "", testAgentPackage(), false)
 	assert.Error(t, err, "a missing CA must fail: the agent could not verify the console")
 
-	_, err = RenderAgentUserData("", id, "", testAgentPackage())
+	_, err = RenderAgentUserData("", id, "", testAgentPackage(), false)
 	assert.Error(t, err, "a missing remote name must fail: qubesair.Ping reports it")
+}
+
+// TestEncryptedQubeDeliversNoPlaintextMount — with encryption on, the boot-time
+// plaintext mount must NOT ship: the disk is a LUKS container with no key on the
+// machine, so a boot mount could only fail or, worse, treat ciphertext as blank.
+// cryptsetup must ship instead, and the console opens /data via
+// qubesair.UnlockData once the agent is up.
+func TestEncryptedQubeDeliversNoPlaintextMount(t *testing.T) {
+	id, _ := testIdentityDoc(t)
+	out, err := RenderAgentUserData("remote-enc", id, "0.0.0.0:8443", testAgentPackage(), true)
+	require.NoError(t, err)
+	cc := parseConfig(t, out)
+
+	assert.Contains(t, out, "- cryptsetup", "an encrypted qube must install cryptsetup")
+
+	assert.Empty(t, fileContent(t, cc, "qubes-air-mount-data"),
+		"the plaintext mount script must NOT ship for an encrypted qube")
+	assert.Empty(t, fileContent(t, cc, "qubes-air-data.service"),
+		"the plaintext mount unit must NOT ship for an encrypted qube")
+	assert.NotContains(t, fmt.Sprint(cc.Runcmd...), dataMountService,
+		"runcmd must NOT enable the plaintext mount for an encrypted qube")
+
+	// Sanity: the plaintext path (encrypt=false) still ships it — guards against
+	// a change that drops the mount for everyone.
+	plain, err := RenderAgentUserData("remote-plain", id, "0.0.0.0:8443", testAgentPackage(), false)
+	require.NoError(t, err)
+	assert.NotEmpty(t, fileContent(t, parseConfig(t, plain), "qubes-air-mount-data"),
+		"the plaintext path must still deliver the mount")
 }
 
 // The whole point of the redesign, checked at the renderer.
@@ -343,7 +414,9 @@ func TestUnsafePackageURLIsNeverEmbedded(t *testing.T) {
 func TestUnpinnedConsoleDegradesSafely(t *testing.T) {
 	out, _ := renderWith(t, AgentPackage{})
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 4, "the document stays complete when no package is pinned")
+	assert.Len(t, cc.WriteFiles, 6,
+		"the document stays complete when no package is pinned "+
+			"(CA, token, env, installer, data-mount script and unit)")
 
 	installer := fileContent(t, cc, agentInstallerPath)
 	assert.Contains(t, installer, "PKG_URL=''")

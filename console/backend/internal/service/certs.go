@@ -219,7 +219,7 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
 		userData, err := RenderAgentUserData(qube.Name, AgentIdentityDoc{
 			CAPEM:          pki.EncodeCACertPEM(ca),
 			BootstrapToken: token,
-		}, c.agentListen, c.agentPkg)
+		}, c.agentListen, c.agentPkg, qube.Spec.EncryptData)
 		if err != nil {
 			return fmt.Errorf("render identity for %q: %w", qube.Name, err)
 		}

@@ -24,6 +24,21 @@ const (
 	agentFailureMarker = agentInstallDir + "/AGENT-INSTALL-FAILED"
 )
 
+// dataMountScriptPath and dataMountUnitPath install the persistent-data disk
+// mount. The compute VM is ephemeral — every resume rebuilds it from the
+// template and throws its root disk away — while the data disk is a separate,
+// retained volume (the storage-holder VM owns it; see
+// terraform/modules/remote-qube-base) that gets reattached as scsi1 on every
+// boot. Without this, anything a user writes lands on the ephemeral root and
+// vanishes on the next resume, which defeats the entire storage/compute split.
+const (
+	dataMountScriptPath = "/usr/local/sbin/qubes-air-mount-data"
+	dataMountUnitPath   = "/etc/systemd/system/qubes-air-data.service"
+	dataMountService    = "qubes-air-data.service"
+	dataMountPoint      = "/data"
+	dataDiskLabel       = "qubesair-data"
+)
+
 // AgentPackage pins the .deb that puts the agent binary on a booting qube.
 //
 // The binary is deliberately not baked into the VM image; it is fetched at
@@ -134,7 +149,7 @@ func (d AgentIdentityDoc) validate() error {
 // write_files is declarative, idempotent, and sets permissions atomically —
 // a shell script doing the same has to get ordering and umask right, and gets
 // them wrong quietly.
-func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, pkg AgentPackage) (string, error) {
+func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, pkg AgentPackage, encryptData bool) (string, error) {
 	if err := id.validate(); err != nil {
 		return "", err
 	}
@@ -198,6 +213,11 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 	// removes the branch where it does not, and costs nothing when it is
 	// already installed.
 	b.WriteString("  - curl\n")
+	if encryptData {
+		// cryptsetup is what qubesair.UnlockData drives. Named here so a blank
+		// image can still open its LUKS disk; the console pushes the key later.
+		b.WriteString("  - cryptsetup\n")
+	}
 	b.WriteString("write_files:\n")
 
 	// The CA is public — it is what the agent verifies the console WITH, not a
@@ -221,6 +241,22 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 	// 0700: it is the thing that installs a root-owned service.
 	writeFile(&b, agentInstallerPath, "0700", agentInstallerScript(pkg))
 
+	// Persistent-data disk mount: a script plus a systemd unit that runs it on
+	// every boot. It resolves the data disk by its stable scsi address, formats
+	// it ONLY on the first ever boot, and mounts it at /data — the mechanism that
+	// makes the retained data disk actually usable. Delivered here (rather than in
+	// the VM image) so it ships with the same document as the rest of the agent
+	// contract and needs no template change. 0700: it mounts filesystems as root.
+	//
+	// Skipped entirely for an encrypted qube: the disk is a LUKS container with
+	// no key on the machine, so a boot-time mount could only fail (or, worse,
+	// mistake the ciphertext for a blank disk). The console opens it via
+	// qubesair.UnlockData after bootstrap instead.
+	if !encryptData {
+		writeFile(&b, dataMountScriptPath, "0700", dataDiskMountScript())
+		writeFile(&b, dataMountUnitPath, "0644", dataDiskMountUnit())
+	}
+
 	// Start the agent only after the files exist. cloud-init runs runcmd after
 	// write_files, so the ordering is guaranteed rather than hoped for.
 	b.WriteString("runcmd:\n")
@@ -235,6 +271,15 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 	// terraform waiting for an IP the guest never reports, and the apply sits
 	// there until it times out. That happened once already.
 	b.WriteString("  - [ systemctl, enable, --now, qemu-guest-agent ]\n")
+	// Mount the persistent data disk before the agent (and before any workload)
+	// can write to /data. --now runs it immediately on this boot; the unit's
+	// WantedBy also arms it for later reboots. On resume, cloud-init re-runs and
+	// re-enables it, and the script's format-only-if-blank guard means the data
+	// already on the reattached disk is mounted, never wiped. Skipped for an
+	// encrypted qube — the console opens /data via qubesair.UnlockData instead.
+	if !encryptData {
+		b.WriteString("  - [ systemctl, enable, --now, " + dataMountService + " ]\n")
+	}
 	// Downloads, verifies and installs the agent package, then proves the unit
 	// is actually running. Its non-zero exit is deliberate: it surfaces in
 	// "cloud-init status --long" instead of leaving a dead agent looking like a
@@ -260,6 +305,97 @@ func agentInstallerScript(pkg AgentPackage) string {
 		"@MARKER@", agentFailureMarker,
 	).Replace(agentInstallerTemplate)
 }
+
+// dataDiskMountScript renders the boot-time data-disk mount.
+//
+// It resolves the data disk by its stable scsi address (scsi1 -> LUN 1) rather
+// than by /dev/sdX. Device letters are assigned in probe order and are NOT
+// stable: on this hardware the OS disk has come up as /dev/sdb, so a script that
+// hard-codes /dev/sdb for the data disk would eventually reformat the OS. The
+// by-path glob matches only the whole data disk — the OS disk (…0:0:0:0) and any
+// partition (…-part*) never match.
+//
+// It formats the disk ONLY when it carries no filesystem yet — its first ever
+// boot. On every resume thereafter the reattached disk already holds ext4, so
+// mkfs is skipped and the data is mounted untouched. That one guard is what makes
+// "the data disk is retained" mean anything to a user.
+func dataDiskMountScript() string {
+	return strings.NewReplacer(
+		"@BYPATH@", "/dev/disk/by-path/*-scsi-0:0:0:1",
+		"@MOUNT@", dataMountPoint,
+		"@LABEL@", dataDiskLabel,
+	).Replace(dataDiskMountTemplate)
+}
+
+// dataDiskMountUnit renders the systemd unit that runs the mount script. It is a
+// oneshot with RemainAfterExit so cloud-init's "enable --now" both arms it for
+// future reboots and runs it now, and Before=qubes-air-agent.service keeps /data
+// present before the agent (and anything it launches) can write there.
+func dataDiskMountUnit() string {
+	return strings.NewReplacer("@SCRIPT@", dataMountScriptPath).Replace(dataDiskMountUnitTemplate)
+}
+
+// dataDiskMountTemplate is the mount script body. Placeholders are substituted by
+// dataDiskMountScript; none of the substituted values are attacker-controlled
+// (they are compile-time constants), so no quoting dance is required.
+const dataDiskMountTemplate = `#!/bin/sh
+# qubes-air-mount-data — format-if-blank and mount the persistent data disk.
+# Managed by the Qubes Air console; delivered via cloud-init. See cloudinit.go.
+set -eu
+
+# Resolve the data disk by its stable scsi address (scsi1). Wait briefly for the
+# by-path symlink in case udev has not settled; a genuinely diskless qube falls
+# through the loop and the script becomes a no-op.
+dev=""
+i=0
+while [ "$i" -lt 15 ]; do
+    for p in @BYPATH@; do
+        [ -e "$p" ] || continue
+        dev="$(readlink -f "$p")"
+        break
+    done
+    [ -n "$dev" ] && break
+    i=$((i + 1))
+    sleep 1
+done
+if [ -z "$dev" ]; then
+    echo "qubes-air-mount-data: no data disk (scsi1) attached; nothing to mount" >&2
+    exit 0
+fi
+
+# Format ONLY a blank disk. blkid prints an existing filesystem's type and
+# nothing for a blank disk, so an empty result — and only an empty result —
+# triggers mkfs. Whole-disk ext4 (no partition table) keeps reattach trivial.
+fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
+if [ -z "$fstype" ]; then
+    echo "qubes-air-mount-data: $dev is blank; creating ext4 (first boot)" >&2
+    mkfs.ext4 -q -L @LABEL@ "$dev"
+fi
+
+mkdir -p @MOUNT@
+if mountpoint -q @MOUNT@; then
+    echo "qubes-air-mount-data: @MOUNT@ already mounted" >&2
+else
+    mount "$dev" @MOUNT@
+    echo "qubes-air-mount-data: mounted $dev at @MOUNT@" >&2
+fi
+`
+
+// dataDiskMountUnitTemplate is the systemd unit body. @SCRIPT@ is a compile-time
+// constant path, so it needs no escaping.
+const dataDiskMountUnitTemplate = `[Unit]
+Description=Mount the Qubes Air persistent data disk
+After=local-fs.target
+Before=qubes-air-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@SCRIPT@
+
+[Install]
+WantedBy=multi-user.target
+`
 
 // dropShellQuoting strips characters that would break out of the single quotes
 // the installer wraps these values in. Only the advisory version string needs

@@ -307,6 +307,81 @@ Ping/Exec/FileCopy 不受影响。
 交互式 GUI 会话是长连接:`-timeout` 给到 12h,VNC/Xpra 客户端经本地 socat 桥(§0.9 recipe)接
 `qubesair.ConnectTCP`,server 只绑 localhost + 自带口令 —— 双重保险。
 
+### 0.12 存算分离真机闭环:数据盘持久 + resume 可达 + /data 自动挂载(2026-07,真机验收)
+
+计算与存储分离(`terraform/modules/remote-qube-base/providers/proxmox`):**storage VM**
+(`<name>-storage`,带 `lifecycle.prevent_destroy`)独占 data 盘;**compute VM**(`count =
+compute_running ? 1 : 0`)一次性,root 盘随实例销毁重建,data 盘经 `path_in_datastore` 挂回同一块。
+release/suspend → compute 销毁、storage+data 盘留存;resume → compute 重建、挂回同一块 data 盘。
+
+**① 数据盘持久(真机验收,remote-gui2):** 在 data 盘写标记后 release,再 resume。Proxmox 侧:
+compute VM 117 被销毁 → resume 建出**新的 compute VM 122**(全新 ephemeral root `vm-122-disk-0`),
+其 `scsi1` 仍是 `vm-115-disk-0`(storage VM 115 的盘);guest 侧 data 盘 UUID 与标记文件**逐字节不变**。
+存算分离在硬件上成立。
+
+**② 发现并修复:resume 后 qube 不可达(stale IP)。** compute VM 重建换了新 MAC → 新 DHCP 租约 →
+**IP 变了**(实测 .150 → .129/.206),但 console 一直用旧 IP:`agenthealth.refreshAddress` 只在
+`ip_address==""` 时才回读 terraform,于是老地址被**永远相信**,console 一直往死地址探测/bootstrap,
+agent 卡在 bootstrap-pending、qube 永不可达。**修复**:compute 被销毁的动作(suspend/release/destroy,
+`service.ComputeDestroyingAction`)后**清空 `ip_address`** —— 异步完成钩子(`cmd/server` `makeCompletionHook`)
+与内联路径(`qube_service`)两处,resume 时健康监控自然回读新地址。
+
+**③ 数据盘自动挂载(cloud-init)。** 之前 data 盘 reattach 回来是**空白未挂载**的,写在普通根盘的数据
+resume 就丢。新增 `qubesair-mount-data` 脚本 + `qubes-air-data.service`(oneshot,每次启动都跑):按
+**稳定的 scsi 地址** `/dev/disk/by-path/*-scsi-0:0:0:1` 解析 data 盘(**不认 `/dev/sdX`** —— 本硬件上
+OS 盘会是 `sdb`,盘符不稳定),**仅当空白**才 `mkfs.ext4 -L qubesair-data`(在 resume 上永不重格),
+`mount /data`。见 `console/backend/internal/service/cloudinit.go`。
+
+**全链路真机闭环(remote-stage2,新 console 二进制 SHA `4b97e82b…`):** 建 qube → 首启 `/data`
+**自动格式化+挂载**(`qubesair-data` 标记,`Result=success`)→ 写标记 → suspend(`ip_address` 被清空)→
+resume → console **回读到新 IP**(.206 → .207)、**agent 变 healthy**(不再像修复前那样卡死)→ `/data`
+**自动挂回、标记逐字节还在** —— 全程零手工。**且这次 data 盘回来是 `/dev/sda`(上次是 `/dev/sdb`)** ——
+盘符真的在两次启动间翻了,而 by-path 解析照样挂对:这正是当初不认 `/dev/sdX` 的原因。单测:
+`ComputeDestroyingAction`、`SuspendClearsStaleIP`(suspend 清 IP)、`DataDiskMountIsDelivered`(by-path 解析 +
+mkfs 只在空白分支内 + runcmd 起用)。
+
+> 旁证:`remote-dev-1` 在部署前就 `unreachable`,极可能是**修复前**某次 resume 留下的 stale-IP 受害者
+> (console 记的 IP 已不是它现在的地址)。本次修复不会追溯修好它,但对它做一次 suspend→resume 即可自愈。
+
+### 0.13 数据盘 LUKS 加密:密钥永不到远端(2026-07)
+
+存算分离让数据在 release/resume 间存活,但盘上是**明文 ext4**,不可信的 Proxmox/Ceph 管理员能直接读
+RBD 卷。0.13 把数据盘做成 **LUKS 容器**,而**密钥永不落到远端**。
+
+**威胁边界(诚实):** 挡得住盘级读取 —— Ceph RBD、盘/备份被偷、cloud-init snippet(经 Proxmox API 可读)。
+**挡不住** dump 活 VM 内存的 Proxmox root(密钥与明文都在 guest RAM)—— 那需要 SEV/TDX 机密计算,另记。
+
+**密钥管理(`internal/pki/luks.go` + `internal/service/datakey.go`):** console 在自己的加密凭据库里
+(与 CA 私钥同等保护,AES-256-GCM)存**一个** 256-bit master secret,**永不离开 console**。每个 qube 的
+LUKS 口令 = `HKDF-SHA256(master, qube_id)` —— 确定性(同 id 永远同口令,所以 resume 出的新 compute VM
+解得开同一个容器)、且互相隔离(拿到一个 qube 的派生口令推不出别人的)。
+
+**下发(console → agent,`internal/service/agentunlock.go`):** bootstrap 在**首次 provision 和每次 resume**
+都会跑(resume 重签身份),所以在 **bootstrap 成功后**(`BootstrapMonitor.WithAfterBootstrap` 钩子)console
+经**已验证**的 mTLS(校验 agent 证书 CN=agent-<qube>,不同于 bootstrap 那条不校验的通道 —— 秘密绝不走不校验的通道)
+调 agent 的 **`qubesair.UnlockData`**,把派生口令放 stdin 推过去。
+
+**agent 端(`remote/qubes-rpc/qubesair.UnlockData`):** 口令只在 RAM(shell 变量 + 进程替换管道,**绝不落盘**);
+按 by-path 定位数据盘;`cryptsetup isLuks` 判断:已是 LUKS 就 `luksOpen`,空白盘才 `luksFormat`(luks2,
+pbkdf2 最小迭代 —— 口令本就是 256-bit,慢 KDF 无意义)。**只格式化真正空白的盘**,带非 LUKS 文件系统的盘一律
+**拒绝、不覆盖**;幂等(已开已挂 → no-op);经 `systemd-run` 逃 agent 沙箱。cloud-init 对加密 qube 装 `cryptsetup`
+且**不发**明文自动挂载(盘上无钥,开机挂载只会失败或误判空白),/data 由 console 解锁后才出现。
+
+**加固 TODO:** agent 目前接受任何 CA 签的客户端证书,真正的授权是"持正确派生口令"(错口令 luksOpen 直接失败)。
+唯一残余竞争:fleet 内某方在 console 之前对一块**空白**盘 `luksFormat`。把 `qubesair.UnlockData` 限定只接受
+console 客户端证书的 CN 即可关闭 —— 待办。
+
+**真机验收(remote-enc1,console SHA `e945cdac…` + agent `0.0.0+luks+f56b42e`):** 建加密 qube → 首启
+**console 自动下发密钥**、agent `luksFormat`+`luksOpen`+`mkfs`+挂载,**零手工**:裸盘 `/dev/sdb` blkid=
+**`crypto_LUKS`**,映射 LUKS2/aes-xts-plain64/512-bit,`/data` ← `/dev/mapper/qubesair-data`(ext4)。写标记
+`qubes-air-luks-proof-Z9` → suspend(IP 清空)→ resume:新 compute VM、新 IP(.189→.184)、**console 用同一
+派生密钥重开同一容器**(裸盘 UUID `e0e6d7d5` 不变、仍 `crypto_LUKS`,这次回来是 `/dev/sda` —— 盘符又翻了)、
+`/data` 自动挂回、**标记逐字节还在**。全程裸盘只有密文。三层(IP 回读 + 存算分离 + LUKS)叠加成立。
+
+单测:`DeriveDataKey`(确定性/隔离/拒弱输入)、`DataKeyManager`(master 只铸一次、跨实例稳定)、
+`EncryptedQubeDeliversNoPlaintextMount`(加密 qube 不发明文挂载、装 cryptsetup)、`UnlockDataSkipsNonEncryptedQube`
+(明文 qube 绝不派生/下发密钥)。
+
 ---
 
 ## 1. 目标与约束

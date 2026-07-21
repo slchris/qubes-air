@@ -7,6 +7,7 @@ import (
 
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -285,6 +286,67 @@ func TestQubeService_Stop(t *testing.T) {
 	qubeOp, err := qubeSvc.Stop(ctx, createdOp.Qube.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, models.QubeStatusSuspended, qubeOp.Qube.Status)
+}
+
+// TestComputeDestroyingAction pins the contract the IP-clearing depends on: the
+// actions that tear down the compute VM (and thus invalidate its address) are
+// exactly suspend, release and destroy — never provision or resume.
+func TestComputeDestroyingAction(t *testing.T) {
+	for _, a := range []orchestrator.Action{
+		orchestrator.ActionSuspend, orchestrator.ActionRelease, orchestrator.ActionDestroy,
+	} {
+		assert.True(t, ComputeDestroyingAction(a), "%q tears down the compute VM", a)
+	}
+	for _, a := range []orchestrator.Action{
+		orchestrator.ActionProvision, orchestrator.ActionResume,
+	} {
+		assert.False(t, ComputeDestroyingAction(a), "%q keeps the compute VM", a)
+	}
+}
+
+// TestQubeService_SuspendClearsStaleIP is the regression guard for a bug found on
+// hardware: a resume rebuilds the compute VM with a new MAC and a new DHCP lease,
+// so the IP recorded while the qube ran is stale the instant it is suspended. The
+// health monitor only re-reads an address when the stored one is empty, so if
+// suspend/release does not clear it the console dials the dead address forever
+// and the resumed qube never becomes reachable. Suspend must clear it.
+func TestQubeService_SuspendClearsStaleIP(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "qube-ip-clear-*.db")
+	require.NoError(t, err)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	cfg := database.DefaultConfig()
+	cfg.DSN = tmpFile.Name()
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	zoneRepo := repository.NewZoneRepository(db)
+	qubeRepo := repository.NewQubeRepository(db)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	qubeSvc := NewQubeService(qubeRepo, zoneRepo)
+
+	ctx := context.Background()
+	zone := createConnectedZone(t, zoneSvc)
+
+	created, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name: "ip-clear-qube", Type: models.QubeTypeApp, ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, models.QubeStatusRunning, created.Qube.Status)
+
+	// Stand in for the health monitor having learned an address while it ran.
+	require.NoError(t, qubeRepo.UpdateIPAddress(ctx, created.Qube.ID, "10.31.0.150"))
+
+	op, err := qubeSvc.Stop(ctx, created.Qube.ID)
+	require.NoError(t, err)
+	require.Equal(t, models.QubeStatusSuspended, op.Qube.Status)
+	assert.Empty(t, op.Qube.IPAddress, "suspend must clear the stale IP in the returned qube")
+
+	reloaded, err := qubeRepo.GetByID(ctx, created.Qube.ID)
+	require.NoError(t, err)
+	assert.Empty(t, reloaded.IPAddress, "suspend must clear the stale IP in the database")
 }
 
 func TestQubeService_Start_ZoneDisconnected(t *testing.T) {

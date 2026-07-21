@@ -271,6 +271,17 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	certRenewals := buildCertRenewals(cfg, certIssuer, qubeRepo, agentCertRepo)
 	bootstraps := buildBootstrapMonitor(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo, qubeRepo)
 
+	// Data-disk unlocking rides on bootstrap: after a qube installs its identity
+	// (first provision, and again on every resume) the console derives the qube's
+	// LUKS key from its master secret and pushes it over verified mTLS to open
+	// /data. The master lives in the same encrypted credential store as the CA
+	// key and never leaves the console, so an encrypted qube's disk is only ever
+	// ciphertext on the remote. Non-encrypted qubes never trigger it.
+	dataUnlocker := service.NewAgentDataUnlocker(
+		certIssuer, service.NewDataKeyManager(credentialRepo),
+		cfg.Orchestrator.AgentListen, service.DefaultDataUnlockTimeout)
+	bootstraps.WithAfterBootstrap(dataUnlocker.UnlockData)
+
 	qubeSvcOpts := []service.QubeServiceOption{
 		service.WithExecutor(exec),
 		service.WithTransport(xport),
@@ -487,6 +498,23 @@ func makeCompletionHook(
 		if err := qubeRepo.UpdateStatus(ctx, j.QubeID, status); err != nil {
 			log.Printf("orchestrator: job %s finished (%s) but recording status %q failed: %v",
 				j.ID, j.State, status, err)
+		}
+
+		// The compute VM is gone after a suspend, release or destroy, so the
+		// recorded IP now points at nothing — and on resume terraform rebuilds
+		// the VM with a new MAC that draws a fresh DHCP lease, so the address
+		// genuinely changes. Clear it here. The health monitor only re-reads an
+		// address from terraform when the stored one is empty (asking terraform
+		// costs a subprocess per probe), so without this the console keeps
+		// probing — and bootstrapping — the dead address forever, and a resumed
+		// qube never becomes reachable even though its agent is up. Measured on
+		// real hardware: a resume moved the qube from .150 to .129 while the
+		// console kept dialing .150 and reported "no route to host".
+		if j.State == orchestrator.JobSucceeded && service.ComputeDestroyingAction(j.Action) {
+			if err := qubeRepo.UpdateIPAddress(ctx, j.QubeID, ""); err != nil {
+				log.Printf("orchestrator: job %s cleared status but clearing the stale IP failed: %v",
+					j.ID, err)
+			}
 		}
 
 		// Only a successful provision or resume produces a VM that should have

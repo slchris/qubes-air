@@ -97,6 +97,14 @@ type BootstrapMonitor struct {
 	mu    sync.Mutex
 	state map[string]*bootstrapState
 
+	// afterBootstrap, when set, runs after a qube installs its first certificate.
+	// It is where data-disk unlocking hangs: bootstrap is the one event that
+	// fires on both first provision AND every resume (a resume re-mints the
+	// identity), which is exactly when a freshly built compute VM needs its
+	// encrypted disk opened. Optional, so a console without encryption wires
+	// nothing.
+	afterBootstrap func(context.Context, *models.Qube)
+
 	// now is injectable so backoff can be tested without sleeping.
 	now func() time.Time
 }
@@ -116,6 +124,13 @@ func NewBootstrapMonitor(
 		state:        map[string]*bootstrapState{},
 		now:          func() time.Time { return time.Now().UTC() },
 	}
+}
+
+// WithAfterBootstrap sets the hook run after a qube installs its first
+// certificate (see the field's doc). Returns the monitor for chaining.
+func (m *BootstrapMonitor) WithAfterBootstrap(fn func(context.Context, *models.Qube)) *BootstrapMonitor {
+	m.afterBootstrap = fn
+	return m
 }
 
 // Start spawns the sweep loop.
@@ -247,6 +262,12 @@ func (m *BootstrapMonitor) Sweep(ctx context.Context) {
 		case BootstrapOK:
 			issued++
 			m.clear(qube.ID)
+			// The qube just proved it holds its identity and is reachable over
+			// verified mTLS. If it has an encrypted data disk, this is the moment
+			// to push the key and open it — before anything tries to use /data.
+			if m.afterBootstrap != nil {
+				m.afterBootstrap(ctx, qube)
+			}
 		case BootstrapAlreadyDone:
 			// The agent holds an identity this console's registry does not know
 			// about. That should be impossible — registration happens before

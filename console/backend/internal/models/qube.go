@@ -208,6 +208,15 @@ type QubeSpec struct {
 	Node string   `json:"node,omitempty"`
 	GPU  *GPUSpec `json:"gpu,omitempty"`
 
+	// EncryptData makes the data disk a LUKS container. The passphrase is
+	// derived by the console and pushed to the agent over verified mTLS only
+	// when the disk needs opening, so nothing on the untrusted remote — disk,
+	// cloud-init, or backup — ever holds a key. The compute VM then boots
+	// without /data until the console unlocks it. Off keeps the plaintext
+	// auto-mount. Cannot be flipped on a qube that already has a plaintext data
+	// disk; the agent refuses to overwrite existing data.
+	EncryptData bool `json:"encrypt_data,omitempty"`
+
 	// NOTE: a Template string field used to live here. It was never consumed —
 	// only the zone's TemplateVMID selects an image — so it implied an OS choice
 	// the code did not make. Removed rather than left to mislead.

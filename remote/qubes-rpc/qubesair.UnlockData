@@ -1,0 +1,121 @@
+#!/bin/bash
+# qubesair.UnlockData — unlock (and, on first boot, create) the encrypted data disk.
+# =====================================================================================
+# The data disk on this untrusted remote is a LUKS container. The passphrase NEVER
+# lives here: the console derives it (HKDF over its master secret + this qube's id) and
+# pushes it over the agent's mTLS channel only when the disk needs opening. This service
+# receives that passphrase on stdin, opens the container, and mounts /data — the key
+# stays in RAM (a shell var and a pipe), is never written to any disk, and is gone when
+# this process exits.
+#
+# Contract:
+#   stdin  : the LUKS passphrase (raw bytes, no framing). Pushed by the console.
+#   stdout : one JSON line {"unlocked":bool,"detail":"..."}. ALWAYS exit 0 so the
+#            invoker returns our stdout instead of swallowing it on a non-zero exit
+#            (same reason qubesair.Exec exits 0 — see internal/agent/invoker.go).
+#
+# Safety:
+#   - Formats ONLY a genuinely blank disk. A disk that already carries a non-LUKS
+#     filesystem is REFUSED, never overwritten — that guards a plaintext disk that was
+#     never meant to be encrypted from being wiped.
+#   - Idempotent: an already-open, already-mounted /data returns success and does nothing.
+#   - Runs the privileged part under systemd-run: the agent unit's sandbox
+#     (ProtectSystem=full, PrivateTmp, restricted caps) is inherited by children and
+#     would break cryptsetup/mount. systemd-run re-enters PID 1's namespace as root.
+#
+# NOTE (hardening TODO): the agent accepts any CA-signed client cert, so possession of
+# the correct derived key is what actually authorizes an unlock (a wrong key just fails
+# luksOpen). The one race is a fleet-internal actor luksFormat-ing a BLANK disk before
+# the console does. Restricting this service to the console's client-cert CN closes it;
+# tracked in docs/grpc-transport-design.md.
+# =====================================================================================
+set +e
+
+SELF="/etc/qubes-rpc/qubesair.UnlockData"
+
+# ---- privileged inner half: runs under systemd-run, key on its stdin ----
+if [ "${1:-}" = "__unlock" ]; then
+    key="$(cat)"
+
+    dev=""
+    for p in /dev/disk/by-path/*-scsi-0:0:0:1; do
+        [ -e "$p" ] || continue
+        dev="$(readlink -f "$p")"
+        break
+    done
+    if [ -z "$dev" ]; then
+        printf '{"unlocked":false,"detail":"no data disk (scsi1) attached"}\n'
+        exit 0
+    fi
+
+    mapper="qubesair-data"
+    mapped="/dev/mapper/$mapper"
+
+    # Idempotent: already open and mounted -> nothing to do.
+    if [ -e "$mapped" ] && mountpoint -q /data; then
+        printf '{"unlocked":true,"detail":"already unlocked and mounted"}\n'
+        exit 0
+    fi
+
+    # The passphrase is fed through a process substitution (a pipe, in RAM) so it never
+    # lands on a disk. printf %s emits exactly the key bytes — no trailing newline — so
+    # luksFormat and luksOpen agree on the passphrase byte-for-byte. --pbkdf pbkdf2 with
+    # the minimum iterations keeps format/open fast and low-memory on a 2 GB VM: the
+    # passphrase is 256 bits of HKDF output, so there is nothing for a slow KDF to defend.
+    if cryptsetup isLuks "$dev"; then
+        if [ ! -e "$mapped" ]; then
+            if ! cryptsetup luksOpen --key-file=<(printf %s "$key") "$dev" "$mapper" >&2; then
+                printf '{"unlocked":false,"detail":"luksOpen failed (wrong key?)"}\n'
+                exit 0
+            fi
+        fi
+    else
+        fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null)"
+        if [ -n "$fstype" ]; then
+            printf '{"unlocked":false,"detail":"disk carries a %s filesystem, not LUKS; refusing to overwrite"}\n' "$fstype"
+            exit 0
+        fi
+        if ! cryptsetup luksFormat --type luks2 --batch-mode \
+                --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+                --key-file=<(printf %s "$key") "$dev" >&2; then
+            printf '{"unlocked":false,"detail":"luksFormat failed"}\n'
+            exit 0
+        fi
+        if ! cryptsetup luksOpen --key-file=<(printf %s "$key") "$dev" "$mapper" >&2; then
+            printf '{"unlocked":false,"detail":"luksOpen after format failed"}\n'
+            exit 0
+        fi
+    fi
+
+    # Make sure the container holds a filesystem (first ever open is blank), then mount.
+    if [ -z "$(blkid -o value -s TYPE "$mapped" 2>/dev/null)" ]; then
+        mkfs.ext4 -q -L qubesair-data "$mapped" >&2
+    fi
+    mkdir -p /data
+    if ! mountpoint -q /data; then
+        mount "$mapped" /data >&2
+    fi
+
+    if mountpoint -q /data; then
+        printf '{"unlocked":true,"detail":"unlocked and mounted"}\n'
+    else
+        printf '{"unlocked":false,"detail":"opened but mount failed"}\n'
+    fi
+    exit 0
+fi
+
+# ---- outer half: sandboxed. Read key, re-exec the inner under systemd-run. ----
+key="$(cat)"
+if [ -z "$key" ]; then
+    printf '{"unlocked":false,"detail":"empty passphrase"}\n'
+    exit 0
+fi
+
+if command -v systemd-run >/dev/null 2>&1; then
+    printf %s "$key" | systemd-run --pipe --wait --collect --quiet -- "$SELF" __unlock 2>/dev/null
+else
+    # No systemd (rare): run directly. cryptsetup/mount may hit the sandbox, but a
+    # clear failure JSON beats silently doing nothing.
+    printf %s "$key" | "$SELF" __unlock
+fi
+exit 0
