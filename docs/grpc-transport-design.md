@@ -189,9 +189,24 @@ salt 实现(qubes-salt-config):`mgmt.remotevm.grpc-console`(console 装 issuer +
 加 `refresh-endpoints.sh` + `endpoints.timer`(+ boot.sh 开机拉一次);`grpc-policy` 放行
 relay→console 的 `qubesair.RemoteEndpoints`。
 
-**仍未做:** 真正「用」机器的服务(`qubesair.Exec` 跑命令、文件拷贝、GUI)——agent 现在只开
-`qubesair.Ping`,但 `--service-dir /etc/qubes-rpc` + `--allow` 的机制已在,加服务脚本 + 白名单
-+ dom0 policy 即可。这是下一步。
+### 0.7 能干活:`qubesair.Exec`(2026-07,真机验收)
+
+机器从「能探活」变成「能干活」。agent 加了 `qubesair.Exec`:stdin 收命令(像
+`qubes.VMShell`),跑完回合并的 stdout+stderr;因为 invoker 在服务非零退出时会丢弃 stdout,
+Exec **恒退 0**、把命令真实退出码以 `[qubesair.Exec: exit=N]` trailer 报告。经 unit 的
+`--allow "${QUBESAIR_ALLOW}"`(默认 `qubesair.Ping,qubesair.Exec`)开启;agent 现在**空
+allowlist 即拒绝启动**(空清单被 invoker 当放行一切)。dom0 policy 对 `qubesair.Exec` 默认
+`ask`(每次远端执行弹窗确认),`remotevm.grpc.csr.exec_action=allow` 可对可信 caller 关掉弹窗。
+
+**端到端(新机器,零手工):** console 建 `remote-exec1` → 自动注册 RemoteVM(GrpcProxy + 打
+`remote-zone` tag)→ relay 自动学到端点 → `@tag:remote-zone` policy 覆盖 → 本地 qube
+`qrexec-client-vm remote-exec1 qubesair.Ping` 回 pong;`qubesair.Exec` 经 relay 直连实测
+`uname -a; id` 回真实输出、非零退出保留输出并报 `exit=7`。
+
+RemoteVM 现在由 `qubesair.RegisterRemoteVM` 打 `remote-zone` tag,dom0 policy 用
+`@tag:remote-zone` 覆盖所有 RemoteVM,新 qube 无需改 policy。
+
+**再往后:** 文件拷贝(`qubesair.FileCopy`)、GUI(远端非 Qubes,无 GUI agent,需单独设计)。
 
 ---
 
