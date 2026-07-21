@@ -216,8 +216,35 @@ RemoteVM 现在由 `qubesair.RegisterRemoteVM` 打 `remote-zone` tag,dom0 policy
 **真机验收(remote-fc1):** push 一个含中文的文件回 `OK push 40 da7dc857…`,pull 回来
 byte-exact、sha 一致。
 
-**再往后:** GUI(远端非 Qubes、无 GUI agent,需单独设计)。这一层不做的话,这些机器已经能:
-探活(Ping)、跑命令(Exec)、传文件(FileCopy)——覆盖了绝大多数「用远端机器」的场景。
+### 0.9 GUI 转发:`qubesair.ConnectTCP`(原始 TCP 隧道)
+
+GUI(VNC/Xpra/X11)与 agent 的其它服务**结构不同**:它需要一条**持久双向 TCP 流**,而
+agent 的 invoker 是缓冲式请求/应答,装不下。所以 GUI 不走 agent 的 gRPC,而是由 relay 直接
+socat 到远端 IP:端口 —— qrexec 的 stdin/stdout 本身就是全双工管道。
+
+- **`qubesair.ConnectTCP`(relay 侧)**:`qrexec-client-vm <relay> qubesair.ConnectTCP+<remote>+<port>`
+  → 从端点表取 remote 的 IP,`socat` 双向接到 `IP:port`。**不经 RemoteVM 改写**(改写恒走
+  GrpcProxy)。安全:端口白名单(默认只放 5900-5910 / 10000-10010,防止借道 relay 连 agent
+  的 8443、ssh 等),remote 必须在端点表里,dom0 policy 把关调用方。
+- **真机验收(remote-fc1)**:在远端起 `python3 -m http.server 10001`,从本地 qube 经隧道
+  `GET /` **回完整 HTTP 200 响应**;连非白名单端口 22 被**拒(126)**。即隧道确实承载任意
+  双向 TCP 流,VNC/Xpra 与 HTTP 无异。
+
+**接客户端(recipe):**
+1. 远端起 GUI server(经 `qubesair.Exec`,示例 Xpra):
+   `xpra start --bind-tcp=0.0.0.0:10000 --html=on --start=xterm --daemon=yes`
+   (或 x11vnc:`Xvfb :9 & DISPLAY=:9 xterm & x11vnc -display :9 -rfbport 5900 -nopw`)
+2. 本地 qube 把一个本地端口桥到隧道:
+   `socat TCP-LISTEN:5900,fork,bind=127.0.0.1 EXEC:'qrexec-client-vm <relay> qubesair.ConnectTCP+remote-fc1+5900'`
+3. `vncviewer 127.0.0.1:5900`(或浏览器开 Xpra 的 HTML5 端口)即见远端窗口。
+
+**当前阻塞(非本层问题):** 远端装 x11vnc/xpra 需要 apt,而这些测试 qube 的内网镜像
+(10.31.0.2)对 bookworm-security 的 `+deb12u1` 快照不完整(见 §0.8 排查记录),任何
+`apt install` 都被 `gcc-12-base` 依赖冲突挡住 —— GUI **传输层**已验证,只等镜像修好后装上
+server 即可。GUI server 端应自带鉴权(VNC 密码 / Xpra auth),并把该端口防火墙到只放 relay。
+
+至此这些机器能:探活(Ping)、跑命令(Exec)、传文件(FileCopy)、转 GUI/任意 TCP
+(ConnectTCP)——覆盖了「用远端机器」的绝大多数场景。
 
 ---
 
