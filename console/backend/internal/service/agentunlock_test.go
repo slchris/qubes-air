@@ -35,10 +35,11 @@ func TestUnlockDataSkipsNonEncryptedQube(t *testing.T) {
 
 	// A plaintext qube must not derive a key or dial anything — the whole point
 	// is that no key exists for a disk that was never meant to be encrypted.
+	no := false
 	u.UnlockData(context.Background(), &models.Qube{
 		Name:      "remote-plain",
 		IPAddress: "10.0.0.5",
-		Spec:      models.QubeSpec{EncryptData: false},
+		Spec:      models.QubeSpec{EncryptData: &no},
 	})
 	assert.False(t, keys.called, "a non-encrypted qube must never derive a data key")
 
@@ -52,9 +53,10 @@ func TestUnlockRefusesWithoutAddress(t *testing.T) {
 
 	// No address means nothing to dial; it must fail cleanly BEFORE deriving the
 	// key (no point handing a key to a host we cannot reach).
+	yes := true
 	_, err := u.Unlock(context.Background(), &models.Qube{
 		Name: "remote-enc",
-		Spec: models.QubeSpec{EncryptData: true},
+		Spec: models.QubeSpec{EncryptData: &yes},
 	})
 	require.Error(t, err)
 	assert.False(t, keys.called, "must not derive a key when there is no address to dial")

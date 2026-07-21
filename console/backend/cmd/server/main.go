@@ -298,6 +298,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		// Mint each agent's client certificate at qube creation. The CA lives in
 		// the credential store and is created on first use.
 		service.WithCertIssuer(certIssuer),
+		// Fleet default for encrypt_data when a create request omits it. Config
+		// decides, so flipping the fleet from plaintext to encrypted (or back)
+		// is a config change, not a code change.
+		service.WithEncryptDataDefault(cfg.Orchestrator.EncryptDataDefault),
 	}
 
 	jobRepo := repository.NewJobRepository(db)

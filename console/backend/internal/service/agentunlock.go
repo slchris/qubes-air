@@ -165,7 +165,7 @@ func callWhenConnected(
 // never returns an error the sweep would have to handle — a failed unlock leaves
 // the data safe (still encrypted) and is retried on the next resume.
 func (u *AgentDataUnlocker) UnlockData(ctx context.Context, qube *models.Qube) {
-	if qube == nil || !qube.Spec.EncryptData {
+	if qube == nil || !qube.Spec.EncryptsData() {
 		return
 	}
 	res, err := u.Unlock(ctx, qube)

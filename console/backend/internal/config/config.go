@@ -168,6 +168,13 @@ type OrchestratorConfig struct {
 	// operator to ignore the log.
 	// Env: QUBES_AIR_REGISTER_REMOTEVM.
 	RegisterRemoteVM bool `yaml:"register_remotevm"`
+	// EncryptDataDefault is the fleet default for a create request that does not
+	// specify encrypt_data: true makes new qubes' data disks LUKS-encrypted
+	// unless a request explicitly opts out. Off (the zero value) keeps the
+	// historical plaintext default, so a console that never sets it is unchanged
+	// — and flipping it back to off is the rollback, no code change needed.
+	// Env: QUBES_AIR_ENCRYPT_DATA_DEFAULT.
+	EncryptDataDefault bool `yaml:"encrypt_data_default"`
 	// AptMirror is the base URL of a Debian mirror for provisioned qubes, e.g.
 	// "http://10.31.0.2/debian". Empty leaves the image's own sources alone.
 	//
@@ -597,6 +604,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if v := os.Getenv("QUBES_AIR_REGISTER_REMOTEVM"); v != "" {
 		c.Orchestrator.RegisterRemoteVM = strings.ToLower(v) == "true"
+	}
+	if v := os.Getenv("QUBES_AIR_ENCRYPT_DATA_DEFAULT"); v != "" {
+		c.Orchestrator.EncryptDataDefault = strings.ToLower(v) == "true"
 	}
 	if v := os.Getenv("QUBES_AIR_APT_MIRROR"); v != "" {
 		c.Orchestrator.AptMirror = v

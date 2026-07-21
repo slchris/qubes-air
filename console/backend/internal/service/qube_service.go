@@ -123,6 +123,11 @@ type QubeServiceImpl struct {
 	// renewals reports certificates that are failing to renew, so a probe can
 	// carry that warning alongside its own result. Nil simply omits it.
 	renewals RenewalWatch
+	// encryptDataDefault is the fleet default for a create request that does not
+	// specify encrypt_data. false (the zero value) preserves the historical
+	// behavior — plaintext unless asked — so a console that never sets it is
+	// unchanged. A create can always override it explicitly either way.
+	encryptDataDefault bool
 }
 
 // RenewalWatch reports an outstanding certificate-renewal problem for a qube.
@@ -148,6 +153,12 @@ type Operation struct {
 // NewQubeService backward compatible: existing callers that pass only the two
 // repositories still compile and get a NoopExecutor.
 type QubeServiceOption func(*QubeServiceImpl)
+
+// WithEncryptDataDefault sets the fleet default for a create request that does
+// not specify encrypt_data. Off preserves the plaintext-unless-asked behavior.
+func WithEncryptDataDefault(on bool) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.encryptDataDefault = on }
+}
 
 // WithExecutor injects the orchestration executor used by Start/Stop. Passing a
 // nil executor is ignored (the NoopExecutor default is kept).
@@ -236,6 +247,13 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 
 	qube := buildNewQube(req)
 	applyDefaultSpec(qube)
+	// Resolve encryption: a request that left encrypt_data unset (nil) inherits
+	// the fleet default; an explicit true/false is honored. After this the stored
+	// value is always concrete, so readers never see nil for a created qube.
+	if qube.Spec.EncryptData == nil {
+		d := s.encryptDataDefault
+		qube.Spec.EncryptData = &d
+	}
 	// Start in pending so the claim below has a defined source status.
 	qube.Status = models.QubeStatusPending
 

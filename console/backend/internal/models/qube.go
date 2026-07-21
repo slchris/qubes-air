@@ -215,11 +215,26 @@ type QubeSpec struct {
 	// without /data until the console unlocks it. Off keeps the plaintext
 	// auto-mount. Cannot be flipped on a qube that already has a plaintext data
 	// disk; the agent refuses to overwrite existing data.
-	EncryptData bool `json:"encrypt_data,omitempty"`
+	//
+	// A POINTER, not a bool, so a create request can leave it UNSET (nil) and
+	// pick up the console's fleet default. nil and false both mean plaintext to
+	// a reader (use EncryptsData); the distinction only matters at create, where
+	// nil defers to the default and an explicit false opts out of an
+	// encrypt-by-default fleet.
+	EncryptData *bool `json:"encrypt_data,omitempty"`
 
 	// NOTE: a Template string field used to live here. It was never consumed —
 	// only the zone's TemplateVMID selects an image — so it implied an OS choice
 	// the code did not make. Removed rather than left to mislead.
+}
+
+// EncryptsData reports whether this qube's data disk should be a LUKS
+// container. It collapses the tri-state EncryptData pointer for readers: unset
+// (nil) and explicit false both mean plaintext. Callers that need to
+// distinguish "unset" from "false" — only the create path — look at the pointer
+// directly.
+func (s QubeSpec) EncryptsData() bool {
+	return s.EncryptData != nil && *s.EncryptData
 }
 
 // GPUSpec defines GPU configuration.

@@ -288,6 +288,54 @@ func TestQubeService_Stop(t *testing.T) {
 	assert.Equal(t, models.QubeStatusSuspended, qubeOp.Qube.Status)
 }
 
+// TestCreateAppliesEncryptDataFleetDefault covers the tri-state: an omitted
+// encrypt_data inherits the fleet default, while an explicit value always wins —
+// so a fleet can default to encrypted and still let one qube opt out (and the
+// reverse). Without the pointer, an omitted field would be indistinguishable
+// from false and "default on" could never work.
+func TestCreateAppliesEncryptDataFleetDefault(t *testing.T) {
+	ptr := func(b bool) *bool { return &b }
+	cases := []struct {
+		name       string
+		fleet      bool
+		reqEncrypt *bool
+		want       bool
+	}{
+		{"default-on, unset -> encrypted", true, nil, true},
+		{"default-off, unset -> plaintext", false, nil, false},
+		{"default-on, explicit false -> opt out", true, ptr(false), false},
+		{"default-off, explicit true -> opt in", false, ptr(true), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp, err := os.CreateTemp("", "enc-default-*.db")
+			require.NoError(t, err)
+			tmp.Close()
+			defer os.Remove(tmp.Name())
+			cfg := database.DefaultConfig()
+			cfg.DSN = tmp.Name()
+			db, err := database.New(cfg)
+			require.NoError(t, err)
+			defer db.Close()
+
+			zoneRepo := repository.NewZoneRepository(db)
+			qubeRepo := repository.NewQubeRepository(db)
+			zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+			qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithEncryptDataDefault(tc.fleet))
+
+			ctx := context.Background()
+			zone := createConnectedZone(t, zoneSvc)
+			op, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+				Name: "enc-default-qube", Type: models.QubeTypeApp, ZoneID: zone.ID,
+				Spec: models.QubeSpec{EncryptData: tc.reqEncrypt},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, op.Qube.Spec.EncryptData, "resolved value must be concrete, never nil")
+			assert.Equal(t, tc.want, op.Qube.Spec.EncryptsData())
+		})
+	}
+}
+
 // TestComputeDestroyingAction pins the contract the IP-clearing depends on: the
 // actions that tear down the compute VM (and thus invalidate its address) are
 // exactly suspend, release and destroy — never provision or resume.
