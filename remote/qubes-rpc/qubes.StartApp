@@ -1,0 +1,56 @@
+#!/bin/bash
+# qubes.StartApp — launch one of this remote's apps so its window forwards to the
+# local desktop.
+# =====================================================================================
+# dom0's menu (and qvm-run) invoke this over the RemoteVM transport (rewritten via
+# transport_rpc to the relay, then to this agent) when you click a remote app. The
+# qrexec service ARGUMENT is the app id — the .desktop basename qubes.GetAppmenus
+# emitted (with or without the .desktop suffix).
+#
+# The app is started under the per-user Xpra server's display, NOT the agent's, so the
+# window travels to the local Xpra client (over the §0.11 mTLS stream) and appears as a
+# native window on the caller's desktop — the seamless half of docs §0.14. Runs via
+# systemd-run to escape the agent sandbox, as the desktop user, exactly like
+# qubesair.Exec. Always exits 0 so the invoker returns our stdout.
+# =====================================================================================
+set -uo pipefail
+
+app="${1:-}"
+if [ -z "$app" ]; then
+    echo "qubes.StartApp: missing app id (pass it as the qrexec service argument)"
+    exit 0
+fi
+# The id becomes an argument to qubes-desktop-run; keep it to safe .desktop-name chars
+# so nothing shell-hostile reaches the launcher.
+case "$app" in
+    *[!a-zA-Z0-9._+-]*) echo "qubes.StartApp: refusing suspicious app id '$app'"; exit 0 ;;
+esac
+
+# The Xpra display and desktop user. :100 is the server qubes-air-xpra.service binds
+# (see docs §0.14). The user is the first regular login account (uid 1000) — the same
+# one the Xpra server runs as.
+XPRA_DISPLAY="${QUBESAIR_XPRA_DISPLAY:-:100}"
+runuser_name="$(getent passwd 1000 | cut -d: -f1)"
+: "${runuser_name:=user}"
+home="$(getent passwd "$runuser_name" | cut -d: -f6)"
+: "${home:=/home/$runuser_name}"
+
+launch() {
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --collect --quiet \
+            --uid="$runuser_name" \
+            --setenv=HOME="$home" \
+            --setenv=DISPLAY="$XPRA_DISPLAY" \
+            --setenv=XDG_RUNTIME_DIR="/run/user/$(id -u "$runuser_name")" \
+            -- qubes-desktop-run "$app" 2>&1
+    else
+        DISPLAY="$XPRA_DISPLAY" HOME="$home" runuser -u "$runuser_name" -- qubes-desktop-run "$app" 2>&1
+    fi
+}
+
+if out="$(launch)"; then
+    echo "qubes.StartApp: launched '$app' on $XPRA_DISPLAY"
+else
+    echo "qubes.StartApp: failed to launch '$app' on $XPRA_DISPLAY: $out"
+fi
+exit 0

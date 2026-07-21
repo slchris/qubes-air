@@ -28,13 +28,15 @@ if [[ -z "$arg" ]]; then
     exit 1
 fi
 # dom0 rewrites as transport_rpc+<target>+<service>+<原参数>; with no original
-# argument that leaves a TRAILING '+', so take the service as the SECOND field
-# rather than "everything after the first +" — otherwise it becomes "Ping+" and
-# the agent rejects it. Any real trailing argument is dropped: the gRPC call
-# carries its body on stdin, not as a qrexec service argument.
+# argument that leaves a TRAILING '+'. Strip exactly that one trailing '+' and keep
+# the rest INCLUDING any real argument: "Ping+" -> "Ping" (agent would reject "Ping+"),
+# but "StartApp+galculator" stays intact so services that take a qrexec argument
+# (qubes.StartApp needs the app id) actually receive it. The bare service name is kept
+# separately for validation and per-service timeout.
 target="${arg%%+*}"      # 第一个 + 之前
-rest="${arg#*+}"         # 第一个 + 之后 (可能形如 "service+" 或 "service+arg")
-service="${rest%%+*}"    # 第二个字段, 丢掉改写附加的空/多余参数
+rest="${arg#*+}"         # 第一个 + 之后: "service" / "service+" / "service+arg"
+svcarg="${rest%+}"       # 服务名(+参数), 去掉改写附加的一个空 '+'
+service="${svcarg%%+*}"  # 裸服务名, 供校验与超时判断
 
 if [[ -z "$target" || -z "$service" || "$target" == "$arg" ]]; then
     log "参数格式错误, 期望 'target+service[+arg]', 实得: '$arg'"
@@ -80,7 +82,7 @@ if [[ -r "$RELAY_DIR/relay.crt" && -r "$RELAY_DIR/relay.key" && -r "$RELAY_DIR/c
     fi
     exec /usr/local/bin/relay-call -timeout "$tmo" \
         -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
-        -addr "$endpoint" "$target" "$service"
+        -addr "$endpoint" "$target" "$svcarg"
 fi
 
 # ---- 3b. mint 模式回退: 本 qube 是 console, 现签 + 从库解析端点 ----
@@ -89,7 +91,7 @@ if [[ -r "$CONSOLE_DIR/secrets.env" ]]; then
     # shellcheck disable=SC1091
     . "$CONSOLE_DIR/secrets.env"
     set +a
-    exec /usr/local/bin/relay-call -timeout "$tmo" -db "$CONSOLE_DIR/qubes-air.db" "$target" "$service"
+    exec /usr/local/bin/relay-call -timeout "$tmo" -db "$CONSOLE_DIR/qubes-air.db" "$target" "$svcarg"
 fi
 
 log "既无 $RELAY_DIR 下的下发证书, 也无 $CONSOLE_DIR/secrets.env —— 本服务未正确部署"

@@ -1,0 +1,68 @@
+#!/bin/bash
+# qubes.GetAppmenus — enumerate this remote's GUI applications for the Qubes menu.
+# =====================================================================================
+# dom0's qvm-sync-appmenus calls this over the RemoteVM transport (rewritten via
+# transport_rpc to the relay, then to this agent). It emits, per .desktop file, lines
+#   <file>:<Key>=<Value>
+# with Exec rewritten to `qubes-desktop-run <file>` — the exact shape the native
+# qubes-core-agent produces, so Qubes' own menu machinery builds the start-menu entries
+# for this remote with no changes on the dom0 side.
+#
+# A plain Debian remote has no qubes-core-agent, so this is the minimal stand-in for its
+# qubes.GetAppmenus. Deliberately implemented in pure bash: the native version uses
+# gawk-only features (BEGINFILE/ENDFILE/nextfile), but Debian ships mawk, under which
+# that script fails SILENTLY and returns an empty menu. The entry is later launched
+# (under Xpra, so the window forwards) by qubes.StartApp; the app id is the .desktop
+# basename.
+#
+# Runs as the agent (root); scans the system app dirs plus every real user's per-user
+# apps. Read-only: it lists, it never launches.
+# =====================================================================================
+set -uo pipefail
+
+# Emit one .desktop file's fields, or nothing if it is hidden. Buffered so a NoDisplay
+# or Screensaver line seen anywhere in the entry discards the whole file, matching the
+# native behavior.
+emit() {
+    local file="$1" rel="$2"
+    local in_entry=0 skip=0 buf="" line key
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        case "$line" in
+        '[Desktop Entry]') in_entry=1; continue ;;
+        '['*) in_entry=0; continue ;;
+        esac
+        [ "$in_entry" = 1 ] || continue
+        # Collapse "Key = value" to "Key=value" for the couple of fields we test on.
+        key="${line%%=*}"
+        key="${key%"${key##*[![:space:]]}"}" # rstrip the key
+        case "$key" in
+        NoDisplay)
+            [ "$(printf '%s' "${line#*=}" | tr -d '[:space:]')" = "true" ] && skip=1 ;;
+        Categories)
+            case "${line#*=}" in *Screensaver*) skip=1 ;; esac ;;
+        Exec)
+            buf+="$rel:Exec=qubes-desktop-run $rel"$'\n' ;;
+        *)
+            case "$line" in *=*) buf+="$rel:$line"$'\n' ;; esac ;;
+        esac
+    done <"$file"
+    [ "$skip" = 0 ] && printf '%s' "$buf"
+}
+
+dirs=(/usr/share/applications /usr/local/share/applications)
+for h in /home/*; do
+    [ -d "$h/.local/share/applications" ] && dirs+=("$h/.local/share/applications")
+done
+
+for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    # -print0 so filenames with spaces are safe; rel is the path under $d with slashes
+    # flattened to dashes, exactly as the native menu id.
+    while IFS= read -r -d '' f; do
+        rel="${f#"$d"/}"
+        rel="${rel//\//-}"
+        emit "$f" "$rel"
+    done < <(find "$d" -name '*.desktop' -type f -print0 2>/dev/null)
+done
+exit 0

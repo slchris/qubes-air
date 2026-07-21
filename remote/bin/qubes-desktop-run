@@ -1,0 +1,42 @@
+#!/bin/bash
+# qubes-desktop-run <file.desktop> — launch the app a .desktop file defines.
+# =====================================================================================
+# Minimal stand-in for qubes-core-agent's qubes-desktop-run: a plain Debian remote has
+# no `qubesagent` Python module, but qubes.GetAppmenus rewrites every menu entry's Exec
+# to `qubes-desktop-run <file>`, and qubes.StartApp calls the same thing — so this is
+# what actually starts the program.
+#
+# It finds the .desktop by name across the XDG app dirs, extracts Exec=, strips the
+# field codes (%U %F %u %f %i %c %k ...), and execs it. The window lands wherever
+# DISPLAY points; qubes.StartApp sets DISPLAY to the Xpra server so it forwards to the
+# local desktop (see docs/grpc-transport-design.md §0.14).
+# =====================================================================================
+set -euo pipefail
+
+name="${1:?usage: qubes-desktop-run <file.desktop>}"
+case "$name" in *.desktop) ;; *) name="$name.desktop" ;; esac
+
+for base in \
+    "${HOME:-/root}/.local/share/applications" \
+    /usr/local/share/applications \
+    /usr/share/applications
+do
+    f="$base/$name"
+    [ -f "$f" ] || continue
+    # First Exec= line inside [Desktop Entry].
+    exec_line="$(awk '
+        /^\[Desktop Entry\]/ { in_entry = 1; next }
+        /^\[/               { in_entry = 0 }
+        in_entry && /^Exec=/ { sub(/^Exec=/, ""); print; exit }
+    ' "$f")"
+    if [ -z "$exec_line" ]; then
+        echo "qubes-desktop-run: $name has no Exec" >&2
+        exit 1
+    fi
+    # Drop desktop field codes; collapse the whitespace they leave behind.
+    cmd="$(printf '%s' "$exec_line" | sed -E 's/%[a-zA-Z]//g; s/  +/ /g; s/ +$//')"
+    exec bash -lc "$cmd"
+done
+
+echo "qubes-desktop-run: $name not found in the XDG application dirs" >&2
+exit 1

@@ -382,6 +382,61 @@ console 客户端证书的 CN 即可关闭 —— 待办。
 `EncryptedQubeDeliversNoPlaintextMount`(加密 qube 不发明文挂载、装 cryptsetup)、`UnlockDataSkipsNonEncryptedQube`
 (明文 qube 绝不派生/下发密钥)。
 
+### 0.14 无缝桌面:remote 应用进启动菜单 + 单击即开(Xpra seamless,设计中)
+
+目标(用户原话):在 Qubes 启动菜单里看到自己的 remote qube、看到它的应用、**点一下直接就打开**。
+
+**为什么天然不通:** Qubes 启动菜单是**每 qube 的 appmenus**——dom0 用 `qubes.GetAppmenus`
+(`qvm-sync-appmenus`)问 qube 要 `.desktop`,生成菜单项;点击跑 `qvm-run <vm> <app>`,窗口由
+`qubes-guid` 经**本地 Xen 共享内存**渲染。RemoteVM 有两处断:(1) 远端是普通 Debian 云镜像,没有
+qubes-core-agent,也就没有 `qubes.GetAppmenus`;(2) 窗口没法走本地 Xen 共享内存,得**跨网络**。
+
+**利好:** dom0 侧 RemoteVM 是 **R4.3 原生 class**(`qvm-create --class RemoteVM`,带 `relayvm`/
+`transport_rpc`/`remote_name`,见 qubesair.RegisterRemoteVM),qrexec 调 `qubes.*` 会经 transport_rpc
+改写到 relay→agent。所以只要 agent 会说 `qubes.GetAppmenus`/`qubes.StartApp`,Qubes 自己的菜单机器就能用。
+
+**三阶段(全走已建的 mTLS 传输):**
+- **Stage 1 应用进菜单:** agent 的 `qubes.GetAppmenus` 按**原生格式**(`<file>:Key=Value`,Exec 改写成
+  `qubes-desktop-run <file>`,跳过 NoDisplay/Screensaver)枚举 `.desktop`。`qvm-sync-appmenus <remote>`
+  即把远端应用填进启动菜单。远端无 qubesagent,故另配一个 `qubes-desktop-run` 垫片。
+- **Stage 2 无缝 GUI(核心/最难):** 远端跑 **Xpra server**(每用户、只绑 localhost);`qubes.StartApp`
+  把应用**启到该 server 的 DISPLAY 下**;本地跑 **Xpra client 的 seamless/rootless 模式**,经
+  `qubesair.ConnectTCP`(§0.11 的 mTLS 流)连远端 Xpra 端口——于是**每个远端应用是本地一扇原生窗口**
+  (剪贴板/缩放齐全),而非整桌面一块矩形。端口取 ConnectTCP 白名单段(10000-10010)。
+- **Stage 3 单击即开:** 菜单项 = 「确保本地 Xpra client 已连 + 启动该 app」。dom0 侧 appmenu 同步 + policy
+  (remote-zone 放行 GetAppmenus/StartApp),本地每-remote 的 Xpra-attach helper,agent-deb/cloud-init
+  投放 Xpra server + app 服务。
+
+**验证法:** 无头环境用 mgmt-jump(有显示的 Qubes AppVM)跑 Xpra client,`scrot` 截屏拉回来肉眼确认窗口。
+选 Xpra 而非整桌面 VNC / 移植原生 qubes-gui-over-net:前者是唯一务实的「单应用窗口融进本地桌面」方案,
+且复用现成传输。
+
+**进度(2026-07-21,真机):**
+- Stage 1 agent 核心 ✓:`qubes.GetAppmenus`(纯 bash,不依赖 gawk —— 原生版用 gawk-only 的
+  BEGINFILE/ENDFILE,而 Debian 是 mawk,会**静默返回空菜单**;这是踩到的坑)在 remote-gui-dev 上正确
+  按原生格式枚举 galculator/xterm/vim/xpra。另配 `remote/bin/qubes-desktop-run` 垫片。
+- Stage 2 **全链路 ✓(真机,2026-07-21)**:两侧统一到 **xpra 6.5.1**(远端 bookworm 原本 v3.1.3、
+  mgmt-jump trixie 默认源无 xpra —— 都换成 xpra.org 的 6.5.1)。远端跑 seamless server(`:100`,只绑
+  `127.0.0.1:10000`),galculator 启入;mgmt-jump 用 `socat` 桥到 `relay-call -stream`(§0.11 的 mTLS 流)接
+  xpra client `xpra attach`,DISPLAY=:0。**截屏确认:galculator 以一扇本地原生窗口出现在 mgmt-jump 桌面上**
+  ——运行在远端、渲染在本地,全程走 agent mTLS,LAN 零暴露端口。xpra 版本在两侧一致是硬前提(v3↔v6 不通)。
+- **交付踩坑(值得记):** 折腾很久其实是一颗**截断的 deb**——第一次下载超时,`xpra-common`/`xpra-server`
+  只下了一部分(1.3MB/7.7MB),而「文件已存在就跳过」的逻辑把半截文件一路带了下去;镜像、FileCopy、
+  mTLS 流都**忠实地**把这半截文件传到了远端(端到端 SHA 一致),apt 才在 data.tar 上炸。**更正:FileCopy 与
+  流都是二进制干净的**(先前「FileCopy 损坏二进制」的判断是错的);教训是**按 Packages 的 Size 校验下载完整性**。
+- Stage 1 + Stage 3 launch **原语真机 ✓(2026-07-21)**:agent 加 `qubes.GetAppmenus`/`qubes.StartApp` 进
+  allowlist(远端 runtime 改 agent.env + 重启;**注意不能在 Exec 里重启 agent —— 会自杀**,那条 Exec 走的就是
+  agent);dom0 policy(`grpc-policy.sls`)加两服务的 allow(remote-zone 段 + `@adminvm` 给 qvm-sync-appmenus)。
+  经 mTLS 实测:`qubes.GetAppmenus` 列出全部应用;**`qubes.StartApp+debian-xterm` 经传输启动 → xterm(`debian@
+  remote-gui-dev`)以本地原生窗口弹出**(截屏为证)——这正是「菜单点一下」调的原语。
+  (旁注:relay(mgmt-jump)本身不是合法 caller,`qrexec-client-vm <remote> <svc>` 从 relay 发会 `Request refused`;
+  真正的 caller 是 console/UI qube 和 dom0。)
+- 待办:把 GetAppmenus/StartApp/qubes-desktop-run 收进 **agent-deb**(remote/qubes-rpc/ 自动打包 + service unit 的
+  allowlist);dom0 跑 `qvm-sync-appmenus <remote>` 把应用**真进启动菜单**;投放 **Xpra server systemd unit** +
+  本地每-remote 的 attach helper;把 **xpra 6.5.1 交付生产化**(远端 cloud-init / 本地 template);Stage 3 单击闭环。
+- 待办:agent-deb/allowlist 收编 GetAppmenus/StartApp;dom0 policy + qvm-sync-appmenus(remote-zone);
+  投放 Xpra server systemd unit;本地 template 装 xpra client + 每-remote attach helper;Stage 3 单击闭环。
+
 ---
 
 ## 1. 目标与约束
