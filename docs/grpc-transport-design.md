@@ -152,14 +152,23 @@ qube,dom0 已经不可伪造地告诉 console 谁在调用,以此认证。
 `/remote/<target>`(沿用 SSHProxy 的 `/remote/` 约定,只是值改成 `ip:port`),console 不进
 数据面。
 
-**已完成(Go + 单测,已提交):** `issue-relay-cert`、`relay-bootstrap`、`relay-call`
-provisioned 模式、`qubesair.IssueRelayCert` handler、`RelayCommonName`。
-**待硬件部署(有人监督):** 把 `issue-relay-cert`/`relay-bootstrap` 交叉编译发布;salt 在
-console 装 CLI + `qubesair.IssueRelayCert`、在 relay 装 `relay-bootstrap`(+timer)/`relay-call`/
-`qubesair.GrpcProxy`;dom0 policy(`qubesair.IssueRelayCert * <relay> qubesair-console allow`
-+ §0.4 的 A/B 段,DESTINATION relay 改成独立 relay qube);dom0 写 QubesDB 端点映射。
-验收:relay 上跑 `relay-bootstrap` 拿到证书 → 从本地 qube `qrexec-client-vm remote-reg2
-qubesair.Ping` 回 `pong`。
+**已在真机跑通(2026-07-20,经 salt 管线部署 + 验收):**
+`qrexec-client-vm remote-reg2 qubesair.Ping`(从 `qubesair-console` 发起)→ dom0 改写到独立
+relay(mgmt-jump)→ `qubesair.GrpcProxy` → provisioned `relay-call` → 远端 agent → **`pong`**。
+relay 持 console 下发的证书(`relay.key` 0600 `user:user`,私钥未出 relay),console 只签证书、
+不进数据面。
+
+salt 实现(qubes-salt-config):`mgmt.remotevm.grpc-console`(console 装 issuer + 服务)、
+`.grpc-csr-relay`(relay 装 `relay-bootstrap`/`relay-call`/`qubesair.GrpcProxy` + 续期 timer,
+全部 /rw 持久 + rc.local 每次开机重链并刷新证书)、`.grpc-policy`(dom0 的 25- policy)。
+
+**真机踩到并已修的两个坑:**
+- **改写附加空参 → 服务名尾随 `+`。** dom0 改写为 `transport_rpc+<target>+<service>+<原参>`,
+  原参为空时留下尾随 `+`,handler 原来把「首个 + 之后全部」当 service 得到 `qubesair.Ping+`,
+  agent 拒。改成取**第二个 `+` 字段**(`service="${rest%%+*}"`)。
+- **改写后的调用不吃 policy 的 `user=root`,以 `user` 运行。** 因此把 relay 身份改成
+  **`user` 属主**(relay-bootstrap 以 `user` 跑、`relay.key` 归 `user`),qrexec 服务(默认 `user`)
+  才读得到,而不是依赖 `user=root`。
 
 ---
 

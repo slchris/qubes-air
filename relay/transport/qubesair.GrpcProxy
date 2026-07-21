@@ -27,8 +27,14 @@ if [[ -z "$arg" ]]; then
     log "用法: 经 qrexec 以 <target+service> 调用"
     exit 1
 fi
+# dom0 rewrites as transport_rpc+<target>+<service>+<原参数>; with no original
+# argument that leaves a TRAILING '+', so take the service as the SECOND field
+# rather than "everything after the first +" — otherwise it becomes "Ping+" and
+# the agent rejects it. Any real trailing argument is dropped: the gRPC call
+# carries its body on stdin, not as a qrexec service argument.
 target="${arg%%+*}"      # 第一个 + 之前
-service="${arg#*+}"      # 第一个 + 之后 (保留后续 +arg, 交给 agent 解释)
+rest="${arg#*+}"         # 第一个 + 之后 (可能形如 "service+" 或 "service+arg")
+service="${rest%%+*}"    # 第二个字段, 丢掉改写附加的空/多余参数
 
 if [[ -z "$target" || -z "$service" || "$target" == "$arg" ]]; then
     log "参数格式错误, 期望 'target+service[+arg]', 实得: '$arg'"
