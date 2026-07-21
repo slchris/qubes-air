@@ -59,19 +59,31 @@ func main() {
 	// `apt-get install` easily outruns a short deadline. The deadline is
 	// propagated to the agent, which caps a single call at its own timeout.
 	timeout := flag.Duration("timeout", 180*time.Second, "overall deadline")
+	// Stream mode: a raw bidirectional TCP proxy to a loopback port on the remote
+	// (qubesair.ConnectTCP uses this for GUI). The positional service becomes the
+	// PORT, and stdin/stdout are piped live rather than buffered.
+	stream := flag.Bool("stream", false, "raw TCP stream to a remote loopback port (service arg is the port)")
 	flag.Parse()
 
 	args := flag.Args()
 	if len(args) < 2 {
-		log.Fatal("usage: relay-call [flags] <target> <service>")
+		log.Fatal("usage: relay-call [flags] <target> <service>   (or -stream <target> <port>)")
 	}
 	target := args[0]
 	service := args[1]
+	if *stream {
+		// The agent side dials 127.0.0.1:<port>; the service name carries the port.
+		service = "qubesair.StreamTCP+" + args[1]
+	}
 
-	// The caller's request body arrives on stdin (empty for Ping). Read it all
-	// before dialing so a slow reader cannot hold the tunnel open.
-	body, err := io.ReadAll(os.Stdin)
-	must(err)
+	// Buffered calls take their request body from stdin; a stream pipes stdin live
+	// (do NOT drain it here) inside dialAndStream.
+	var body []byte
+	if !*stream {
+		var err error
+		body, err = io.ReadAll(os.Stdin)
+		must(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -115,7 +127,14 @@ func main() {
 		pair, pool = mintFromCA(ca)
 	}
 
-	log.Printf("target=%s service=%s endpoint=%s", target, service, endpoint)
+	log.Printf("target=%s service=%s endpoint=%s stream=%v", target, service, endpoint, *stream)
+	if *stream {
+		// Pipe stdin ↔ remote loopback port ↔ stdout over mTLS; no LAN port.
+		if err := dialAndStream(ctx, pair, pool, endpoint, target, service); err != nil {
+			log.Fatalf("stream failed: %v", err)
+		}
+		return
+	}
 	out, err := dialAndCall(ctx, pair, pool, endpoint, target, service, body)
 	if err != nil {
 		log.Fatalf("call failed: %v", err)
@@ -188,8 +207,38 @@ func resolveAgent(ctx context.Context, repo repository.QubeRepository, target, p
 // been minted from the CA (console-as-relay) or loaded from disk (separate
 // relay) — dialing does not care which.
 func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) ([]byte, error) {
+	cli := newClient(pair, pool, endpoint, remoteName)
+	go func() { _ = cli.Start(ctx) }()
+
+	// The tunnel comes up asynchronously, so retry ONLY while it is not yet
+	// connected. Once a call has been dispatched, any error is returned as-is:
+	// retrying could re-run a command with side effects (apt-get install, a
+	// script that appends to a file), and a slow command must be waited on, not
+	// retried. This also stops a mid-call deadline from being masked by a
+	// trailing "tunnel not connected".
+	var out []byte
 	var err error
-	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
+	for {
+		out, err = cli.Call(ctx, remoteName, service, in)
+		if err == nil {
+			return out, nil
+		}
+		if !errors.Is(err, transportgrpc.ErrNotConnected) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// newClient builds the transport client with the console health-probe TLS setup:
+// the agent's certificate has no SAN for a bare IP, so the chain is verified by
+// hand in VerifyConnection.
+func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName string) *transportgrpc.Client {
+	return transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: endpoint,
 		RelayName:      "console-relay",
 		RemoteName:     remoteName,
@@ -210,27 +259,25 @@ func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool,
 			},
 		},
 	}, nil)
+}
 
+// dialAndStream proxies a raw bidirectional stream: os.Stdin → the remote's
+// loopback port → os.Stdout, over the agent's mTLS Tunnel (service
+// qubesair.StreamTCP+<port>). This is how GUI rides mTLS with no port exposed on
+// the remote's LAN. Waits for the tunnel, then streams until either side closes.
+func dialAndStream(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string) error {
+	cli := newClient(pair, pool, endpoint, remoteName)
 	go func() { _ = cli.Start(ctx) }()
-
-	// The tunnel comes up asynchronously, so retry ONLY while it is not yet
-	// connected. Once a call has been dispatched, any error is returned as-is:
-	// retrying could re-run a command with side effects (apt-get install, a
-	// script that appends to a file), and a slow command must be waited on, not
-	// retried. This also stops a mid-call deadline from being masked by a
-	// trailing "tunnel not connected".
-	var out []byte
 	for {
-		out, err = cli.Call(ctx, remoteName, service, in)
-		if err == nil {
-			return out, nil
-		}
+		// CallStream returns ErrNotConnected without touching stdin until the
+		// tunnel is up, so retrying it is safe.
+		err := cli.CallStream(ctx, remoteName, service, os.Stdin, os.Stdout)
 		if !errors.Is(err, transportgrpc.ErrNotConnected) {
-			return nil, err
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
+			return fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

@@ -2,17 +2,17 @@
 # qubesair.ConnectTCP — 到某 RemoteVM 一个 TCP 端口的**原始双向隧道**。
 # =====================================================================
 # 部署在 relay 的 /etc/qubes-rpc/。GUI(VNC/Xpra)、数据库、Web UI 这类**流式**协议需要一条
-# 持久双向 TCP 流,而 agent 的 gRPC invoker 是缓冲式请求/应答,装不下。所以这条路**不走
-# agent**,由 relay 直接 socat 到远端 IP:端口 —— qrexec 的 stdin/stdout 本身就是全双工管道。
+# 持久双向 TCP 流。本服务用 `relay-call -stream` 把它**经 agent 的 mTLS gRPC 隧道**送到远端
+# agent,由 agent 代理到远端的 `127.0.0.1:<port>` —— 于是远端 GUI server 只绑 localhost、
+# LAN 上零暴露端口,认证加密复用 agent 的 mTLS(见 docs §0.11)。
 #
 # 与 RPC 服务(GrpcProxy)不同,本服务**不经 RemoteVM 改写**(改写恒走 transport_rpc=
 # GrpcProxy)。调用方直接调 relay:
 #     qrexec-client-vm <relay> qubesair.ConnectTCP+<remote-name>+<port>
 # 本地用它接 VNC/Xpra 客户端的办法见 docs(用本地 socat listener 桥到这条隧道)。
 #
-# 安全:端口白名单(默认只放 GUI 段)防止借道 relay 乱连远端(如 agent 的 8443、ssh);
-# 远端必须在端点表里;dom0 policy 把关调用方。远端的 GUI server 仍应自带鉴权(VNC 密码 /
-# Xpra auth),并尽量把该端口防火墙到只放 relay。
+# 安全:端口白名单在**本 handler 与 agent server 两处**都校验(只放 GUI 段);远端必须在端点
+# 表里;dom0 policy 把关调用方;整条走 mTLS。远端 GUI server 仍应自带鉴权(VNC 密码/Xpra auth)。
 # =====================================================================
 set -uo pipefail
 
@@ -39,13 +39,19 @@ if ! { [ "$port" -ge 5900 ] && [ "$port" -le 5910 ]; } \
     log "拒绝: 端口 $port 不在允许的 GUI 段 (5900-5910 / 10000-10010)"; exit 126
 fi
 
-# 端点表由 relay 的 refresh-endpoints 从 console 拉取,值形如 ip:8443;取其中的 IP。
+# 端点表由 relay 的 refresh-endpoints 从 console 拉取,值形如 ip:8443(agent 的 mTLS 端口)。
 ep="$(qubesdb-read "/remote-endpoint/$remote" 2>/dev/null || true)"
-ip="${ep%%:*}"
-if [[ ! "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+if [[ ! "$ep" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]]; then
     log "拒绝: 端点表里没有 $remote 的地址(relay 是否已刷新?)"; exit 1
 fi
 
-log "隧道: ${QREXEC_REMOTE_DOMAIN:-?} -> $remote($ip):$port"
-# -T300: 双向都空闲 300s 才断,给交互式 GUI 留足余量。STDIO 与 qrexec 管道对接。
-exec socat -T300 STDIO "TCP:$ip:$port,connect-timeout=10"
+RELAY_DIR="${QUBES_AIR_RELAY_DIR:-/rw/config/qubesair-relay}"
+if [[ ! -r "$RELAY_DIR/relay.crt" ]]; then
+    log "读不到 $RELAY_DIR/relay.crt —— relay 是否已 bootstrap?"; exit 1
+fi
+
+log "隧道(mTLS): ${QREXEC_REMOTE_DOMAIN:-?} -> $remote agent($ep) -> 127.0.0.1:$port"
+# 经 agent mTLS gRPC 流,agent 端代理到远端 127.0.0.1:$port。-timeout 长一点给交互式 GUI。
+exec /usr/local/bin/relay-call -stream -timeout 12h \
+    -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
+    -addr "$ep" "$remote" "$port"

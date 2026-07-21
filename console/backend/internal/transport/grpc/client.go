@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"sync"
@@ -75,6 +76,7 @@ type Client struct {
 
 	mu       sync.Mutex
 	inflight map[string]*pendingCall        // request_id → waiter (forward calls we originated)
+	streams  map[string]*pendingStream      // request_id → live stream (CallStream, e.g. GUI)
 	stream   pb.RelayTransport_TunnelClient // the live bidi stream (nil when disconnected)
 	sendMu   sync.Mutex                     // serializes Send: gRPC streams forbid concurrent Send
 }
@@ -83,6 +85,15 @@ type Client struct {
 type pendingCall struct {
 	buf  []byte
 	done chan callResult
+}
+
+// pendingStream carries a streaming (unbuffered) forward call's response chunks
+// as they arrive, rather than accumulating them. recv is closed on EOS or error;
+// err (set before the close) distinguishes a clean end from a failure. Used by
+// CallStream to proxy a raw TCP stream (GUI/VNC) over the Tunnel.
+type pendingStream struct {
+	recv chan []byte
+	err  error
 }
 
 type callResult struct {
@@ -103,6 +114,7 @@ func NewClient(cfg ClientConfig, reverse transport.ReverseHandler) *Client {
 		cfg:      cfg.withDefaults(),
 		reverse:  reverse,
 		inflight: make(map[string]*pendingCall),
+		streams:  make(map[string]*pendingStream),
 	}
 }
 
@@ -267,6 +279,76 @@ func (c *Client) Call(ctx context.Context, target, service string, in []byte) ([
 	}
 }
 
+// CallStream runs a bidirectional forward call: stdin is streamed to the remote
+// as request chunks and response chunks are written to stdout as they arrive,
+// unbuffered. This is what carries a raw TCP stream (GUI/VNC over the agent's
+// mTLS) — the remote server side (qubesair.StreamTCP+<port>) proxies to a
+// loopback port, so nothing is exposed on the remote's LAN. Like Call, the call
+// has already passed local dom0 policy before reaching here.
+func (c *Client) CallStream(ctx context.Context, target, service string, stdin io.Reader, stdout io.Writer) error {
+	if !transport.ValidName(target) || !transport.ValidName(service) {
+		return transport.ErrInvalidName
+	}
+
+	reqID := uuid.NewString()
+	ps := &pendingStream{recv: make(chan []byte, 16)}
+
+	c.mu.Lock()
+	if c.stream == nil {
+		c.mu.Unlock()
+		return ErrNotConnected
+	}
+	c.streams[reqID] = ps
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		delete(c.streams, reqID)
+		c.mu.Unlock()
+	}()
+
+	var deadlineMs int64
+	if dl, ok := ctx.Deadline(); ok {
+		deadlineMs = dl.UnixMilli()
+	}
+	if err := c.send(requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
+		return fmt.Errorf("send header: %w", err)
+	}
+
+	// stdin → request data frames, EOS when it ends. A send error means the
+	// tunnel died; the recv side observes that too and returns.
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := stdin.Read(buf)
+			if n > 0 {
+				chunk := append([]byte(nil), buf[:n]...)
+				if err := c.send(dataFrame(reqID, streamRequest, chunk)); err != nil {
+					return
+				}
+			}
+			if rerr != nil {
+				_ = c.send(eosFrame(reqID, streamRequest))
+				return
+			}
+		}
+	}()
+
+	// response chunks → stdout until EOS (recv closed) or ctx cancels.
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case chunk, ok := <-ps.recv:
+			if !ok {
+				return ps.err
+			}
+			if _, err := stdout.Write(chunk); err != nil {
+				return err
+			}
+		}
+	}
+}
+
 // recvLoop reads frames and dispatches by request_id: forward responses wake
 // the inflight waiter; REMOTE_TO_LOCAL requests go to c.reverse (→ local dom0).
 // It returns when the stream errors (drop) or ctx is canceled.
@@ -362,23 +444,43 @@ func (c *Client) handleReverse(ctx context.Context, reqID string, rc *reverseCal
 	_ = c.send(eosFrame(reqID, streamResponse))
 }
 
-// appendForward buffers a response chunk for a forward call.
+// appendForward delivers a response chunk: to a streaming call as it arrives, or
+// buffered into a plain forward call. The stream send blocks under back-pressure,
+// which is fine because relay-call gives each streaming call its own tunnel.
 func (c *Client) appendForward(reqID string, payload []byte) {
 	c.mu.Lock()
-	if pc := c.inflight[reqID]; pc != nil {
-		pc.buf = append(pc.buf, payload...)
-	}
+	ps := c.streams[reqID]
+	pc := c.inflight[reqID]
 	c.mu.Unlock()
+	if ps != nil {
+		ps.recv <- payload
+		return
+	}
+	if pc != nil {
+		c.mu.Lock()
+		pc.buf = append(pc.buf, payload...)
+		c.mu.Unlock()
+	}
 }
 
-// completeForward delivers the final result (or error) to a forward-call waiter.
+// completeForward delivers the final result (or error) to a forward-call waiter,
+// or ends a streaming call by closing its recv channel (err set first).
 func (c *Client) completeForward(reqID string, err error) {
 	c.mu.Lock()
+	ps := c.streams[reqID]
 	pc := c.inflight[reqID]
+	if ps != nil {
+		delete(c.streams, reqID)
+	}
 	if pc != nil {
 		delete(c.inflight, reqID)
 	}
 	c.mu.Unlock()
+	if ps != nil {
+		ps.err = err
+		close(ps.recv)
+		return
+	}
 	if pc == nil {
 		return
 	}
@@ -403,9 +505,15 @@ func (c *Client) clearStream(cause error) {
 	c.stream = nil
 	pending := c.inflight
 	c.inflight = make(map[string]*pendingCall)
+	streams := c.streams
+	c.streams = make(map[string]*pendingStream)
 	c.mu.Unlock()
 	for _, pc := range pending {
 		pc.done <- callResult{err: fmt.Errorf("%s: %w", codeUnavailable, cause)}
+	}
+	for _, ps := range streams {
+		ps.err = fmt.Errorf("%s: %w", codeUnavailable, cause)
+		close(ps.recv)
 	}
 }
 

@@ -15,6 +15,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"sync"
@@ -391,6 +393,18 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 	var pendMu sync.Mutex
 	pend := make(map[string]*pending)
 
+	// Live TCP-proxy streams (GUI, etc.), by request_id. Separate from pend: a
+	// stream's request bytes go straight to its socket, not into a buffer.
+	var streamMu sync.Mutex
+	streamsByReq := make(map[string]*serverStream)
+	defer func() {
+		streamMu.Lock()
+		for _, ss := range streamsByReq {
+			_ = ss.conn.Close()
+		}
+		streamMu.Unlock()
+	}()
+
 	// Track in-flight worker goroutines so we can wait for them on return.
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -416,6 +430,26 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 			hdr := k.RequestHeader
 			switch hdr.GetDirection() {
 			case pb.Direction_LOCAL_TO_REMOTE:
+				if strings.HasPrefix(hdr.GetQrexecService(), streamServicePrefix) {
+					// TCP-proxy stream (GUI). A stream-prefixed request with a port
+					// outside the allowed range is REFUSED here — never routed to
+					// qrexec — so the tunnel can only reach the whitelisted loopback
+					// GUI ports.
+					port, ok := streamLocalPort(hdr.GetQrexecService())
+					if !ok {
+						_ = send(errorFrame(reqID, codeInvalid, "stream port not allowed"))
+						break
+					}
+					ss, derr := s.startStream(ctx, reqID, port, send)
+					if derr != nil {
+						_ = send(errorFrame(reqID, codeUnavailable, "stream dial: "+derr.Error()))
+						break
+					}
+					streamMu.Lock()
+					streamsByReq[reqID] = ss
+					streamMu.Unlock()
+					break
+				}
 				// Forward call: begin accumulating its request body.
 				pendMu.Lock()
 				pend[reqID] = &pending{header: hdr}
@@ -436,6 +470,23 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 
 		case *pb.Frame_Data:
 			reqID := frame.GetRequestId()
+			// A live TCP-proxy stream: write the request bytes straight to its
+			// socket. On write error the loopback side is gone — report and drop.
+			streamMu.Lock()
+			ss, isStream := streamsByReq[reqID]
+			streamMu.Unlock()
+			if isStream {
+				if k.Data.GetStreamId() == streamRequest {
+					if _, werr := ss.conn.Write(k.Data.GetPayload()); werr != nil {
+						_ = send(errorFrame(reqID, codeUnavailable, "stream write: "+werr.Error()))
+						_ = ss.conn.Close()
+						streamMu.Lock()
+						delete(streamsByReq, reqID)
+						streamMu.Unlock()
+					}
+				}
+				break
+			}
 			pendMu.Lock()
 			p, ok := pend[reqID]
 			pendMu.Unlock()
@@ -456,6 +507,19 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 
 		case *pb.Frame_Eos:
 			reqID := frame.GetRequestId()
+			// Stream: the client is done sending. Half-close the socket's write
+			// side so the loopback server sees EOF, but keep reading its response.
+			streamMu.Lock()
+			ss, isStream := streamsByReq[reqID]
+			streamMu.Unlock()
+			if isStream {
+				if k.Eos.GetStreamId() == streamRequest {
+					if cw, ok := ss.conn.(interface{ CloseWrite() error }); ok {
+						_ = cw.CloseWrite()
+					}
+				}
+				break
+			}
 			if k.Eos.GetStreamId() != streamRequest {
 				// EOS for a non-request stream: relay through (reverse path).
 				pendMu.Lock()
@@ -489,6 +553,13 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 			// A call-level error reported by the peer. Relay reverse-path errors
 			// back; forward-path errors just drop the pending accumulation.
 			reqID := frame.GetRequestId()
+			// If it names a live stream, tear that stream's socket down.
+			streamMu.Lock()
+			if ss, isStream := streamsByReq[reqID]; isStream {
+				_ = ss.conn.Close()
+				delete(streamsByReq, reqID)
+			}
+			streamMu.Unlock()
 			pendMu.Lock()
 			_, isForward := pend[reqID]
 			if isForward {
@@ -535,4 +606,63 @@ func (s *Server) handleForward(ctx context.Context, reqID string, hdr *pb.Reques
 		}
 	}
 	_ = send(eosFrame(reqID, streamResponse))
+}
+
+// streamServicePrefix marks a request that should be TCP-proxied to a loopback
+// port on THIS host rather than dispatched to a qrexec service. The port follows
+// the '+', e.g. "qubesair.StreamTCP+5900". This is how GUI (VNC/Xpra) rides the
+// agent's mTLS Tunnel without any port exposed on the remote's LAN.
+const streamServicePrefix = "qubesair.StreamTCP+"
+
+// streamLocalPort parses a stream service into its loopback port, if the service
+// is one and the port is in an allowed GUI range. The server dials only
+// 127.0.0.1:<port>, and only for these ports, so an authenticated relay cannot
+// use the tunnel to reach arbitrary local services (a database, the metadata
+// endpoint, ...). Widen the ranges here if a use case needs it.
+func streamLocalPort(service string) (int, bool) {
+	if !strings.HasPrefix(service, streamServicePrefix) {
+		return 0, false
+	}
+	p, err := strconv.Atoi(service[len(streamServicePrefix):])
+	if err != nil {
+		return 0, false
+	}
+	if (p >= 5900 && p <= 5910) || (p >= 10000 && p <= 10010) {
+		return p, true
+	}
+	return 0, false
+}
+
+// serverStream is one live TCP proxy: the Tunnel side writes request bytes to
+// conn, and a reader goroutine turns conn's output into response frames.
+type serverStream struct {
+	conn net.Conn
+}
+
+// startStream dials 127.0.0.1:<port> and starts pumping its output back as
+// streamResponse frames. Request bytes arrive later via serverStream.conn.Write.
+func (s *Server) startStream(ctx context.Context, reqID string, port int, send func(*pb.Frame) error) (*serverStream, error) {
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := conn.Read(buf)
+			if n > 0 {
+				if serr := send(dataFrame(reqID, streamResponse, append([]byte(nil), buf[:n]...))); serr != nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			if rerr != nil {
+				_ = send(eosFrame(reqID, streamResponse))
+				_ = conn.Close()
+				return
+			}
+		}
+	}()
+	return &serverStream{conn: conn}, nil
 }
