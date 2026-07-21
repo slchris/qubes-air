@@ -282,21 +282,30 @@ PID 1 在宿主命名空间跑**,绕开沙箱 —— 这是用户自己的机器
 (已损坏的 qube 需一次性 `dpkg --configure -a; apt-get -f -y install` 修复;用修好的 Exec 从
 干净模板新建的 qube 首次 apt 即在可写 `/usr` 上跑,不会再损坏。)
 
-### 0.11 [TODO] GUI/流式走 agent mTLS(消除 LAN 暴露端口)
+### 0.11 GUI/流式走 agent mTLS(消除 LAN 暴露端口)—— 已实现并真机验证
 
-`qubesair.ConnectTCP`(§0.9)是 GUI 的**能用**版,但它把远端端口暴露在 LAN 上,只能靠 GUI
-server 自身口令兜底(§0.9 安全模型)。**推荐的最终形态**是让流式(GUI/DB/任意 TCP)也走
-agent 的 mTLS 通道,彻底不在 LAN 上开端口:
+§0.9 的 ConnectTCP 早期版把远端端口暴露在 LAN 上(靠 GUI server 口令兜底)。现在流式
+(GUI/DB/任意 TCP)**改走 agent 的 mTLS 通道**,LAN 上零暴露端口:
 
-- 远端 GUI server 只绑 `127.0.0.1:5900`(不暴露)。
-- agent 加一个**流式** handler:收到"代理到 localhost:PORT"的请求后,开一条到 `127.0.0.1:PORT`
-  的 TCP,把 gRPC `Tunnel` 的双向帧与这条 TCP 双向对拷(而不是现在 invoker 的缓冲式一问一答)。
-- `relay-call` 加一个**流式模式**(不缓冲、边收边转),`qubesair.ConnectTCP` 改成调它。
-- 认证/加密复用 agent 的 mTLS(relay 的 console 签发证书),端口白名单仍在。
+- 远端 GUI server 只绑 `127.0.0.1:<port>`(不暴露)。
+- **agent server 加了流式 handler**:请求服务名形如 `qubesair.StreamTCP+<port>` 时,不走缓冲式
+  invoker,而是 dial `127.0.0.1:<port>`,把 gRPC `Tunnel` 的 DataChunk 帧与这条 TCP 双向对拷
+  (复用协议里已有的 request_id/DataChunk/EOS)。端口在**白名单**内(GUI 段),白名单外的端口
+  **直接拒**、绝不落到 qrexec。
+- **client 加了 `CallStream`**(不缓冲、边收边转);**relay-call 加了 `-stream` 模式**(把
+  stdin/stdout 直接对接);**`qubesair.ConnectTCP` 改成 exec `relay-call -stream`** 到 agent 的
+  mTLS 端点,不再 socat 到 LAN。
+- 认证/加密复用 agent mTLS(relay 持 console 下发的证书),端口白名单**双处**(handler + agent)。
 
-好处:LAN 上零暴露端口、认证加密与数据面一致、不依赖 GUI server 的口令强度。代价:传输层要从
-"缓冲式请求/应答"扩出"流式"这一路(帧里已有 request_id 多路复用,是可扩的)。这是把 GUI 从
-"能用且带口令"提升到"零暴露"的一步,规模中等,单列一个课题。
+**真机验收(remote-gui2,stream agent):** 远端 `x11vnc -localhost -rfbauth`(只绑 127.0.0.1
++ 口令)。① 从本地 qube 经 `qubesair.ConnectTCP+remote-gui2+5900` 读到 VNC **`RFB 003.008`
+握手**(GUI 经 mTLS 通了);② relay 直接 socat 到 `remote-gui2:5900/10001` **被拒(rc=1)** ——
+LAN 上确实零暴露端口;③ `relay-call -stream` 直连回完整 HTTP 响应(流式对拷正确)。单测:
+in-process CallStream ↔ StreamTCP handler ↔ 回环 echo 双向对通,白名单外端口被拒,缓冲式
+Ping/Exec/FileCopy 不受影响。
+
+交互式 GUI 会话是长连接:`-timeout` 给到 12h,VNC/Xpra 客户端经本地 socat 桥(§0.9 recipe)接
+`qubesair.ConnectTCP`,server 只绑 localhost + 自带口令 —— 双重保险。
 
 ---
 
