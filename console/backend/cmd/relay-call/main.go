@@ -55,7 +55,10 @@ func main() {
 	certFile := flag.String("cert", "", "client certificate PEM (provisioned mode)")
 	keyFile := flag.String("key", "", "client key PEM (provisioned mode)")
 	caFile := flag.String("ca", "", "CA certificate PEM (provisioned mode)")
-	timeout := flag.Duration("timeout", 45*time.Second, "overall deadline")
+	// Generous by default: this carries qubesair.Exec, and a command like
+	// `apt-get install` easily outruns a short deadline. The deadline is
+	// propagated to the agent, which caps a single call at its own timeout.
+	timeout := flag.Duration("timeout", 180*time.Second, "overall deadline")
 	flag.Parse()
 
 	args := flag.Args()
@@ -210,18 +213,25 @@ func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool,
 
 	go func() { _ = cli.Start(ctx) }()
 
-	// The tunnel comes up asynchronously; retry Call until it does or the
-	// deadline passes.
+	// The tunnel comes up asynchronously, so retry ONLY while it is not yet
+	// connected. Once a call has been dispatched, any error is returned as-is:
+	// retrying could re-run a command with side effects (apt-get install, a
+	// script that appends to a file), and a slow command must be waited on, not
+	// retried. This also stops a mid-call deadline from being masked by a
+	// trailing "tunnel not connected".
 	var out []byte
 	for {
 		out, err = cli.Call(ctx, remoteName, service, in)
 		if err == nil {
 			return out, nil
 		}
+		if !errors.Is(err, transportgrpc.ErrNotConnected) {
+			return nil, err
+		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%w (last: %v)", ctx.Err(), err)
-		case <-time.After(500 * time.Millisecond):
+			return nil, fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
 		}
 	}
 }

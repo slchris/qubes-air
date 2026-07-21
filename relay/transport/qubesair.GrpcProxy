@@ -58,6 +58,12 @@ CONSOLE_DIR="${QUBES_AIR_DATA_DIR:-/rw/config/qubesair}"
 
 log "转发: source=${QREXEC_REMOTE_DOMAIN:-?} target=$target service=$service"
 
+# 读类服务(探活/状态)应快速失败;能跑命令/传文件的服务要有耐心(apt-get 之类会久)。
+tmo="180s"
+case "${service%%+*}" in
+    qubesair.Ping|qubesair.Status) tmo="20s" ;;
+esac
+
 # ---- 3a. provisioned 模式: 独立 relay, 加载已下发证书, 端点从 QubesDB ----
 # 端点键用专用的 /remote-endpoint/<名> (值为 ip:port), 与 SSHProxy 复用的 /remote/<名>
 # (值为远端原始名) 区分开。由 relay 的 refresh-endpoints 从 console 拉取后写入。
@@ -72,7 +78,7 @@ if [[ -r "$RELAY_DIR/relay.crt" && -r "$RELAY_DIR/relay.key" && -r "$RELAY_DIR/c
         log "拒绝: /remote/$target 的端点 '$endpoint' 不是合法 ip:port"
         exit 126
     fi
-    exec /usr/local/bin/relay-call \
+    exec /usr/local/bin/relay-call -timeout "$tmo" \
         -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
         -addr "$endpoint" "$target" "$service"
 fi
@@ -83,7 +89,7 @@ if [[ -r "$CONSOLE_DIR/secrets.env" ]]; then
     # shellcheck disable=SC1091
     . "$CONSOLE_DIR/secrets.env"
     set +a
-    exec /usr/local/bin/relay-call -db "$CONSOLE_DIR/qubes-air.db" "$target" "$service"
+    exec /usr/local/bin/relay-call -timeout "$tmo" -db "$CONSOLE_DIR/qubes-air.db" "$target" "$service"
 fi
 
 log "既无 $RELAY_DIR 下的下发证书, 也无 $CONSOLE_DIR/secrets.env —— 本服务未正确部署"
