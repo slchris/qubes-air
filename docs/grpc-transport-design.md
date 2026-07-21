@@ -170,6 +170,29 @@ salt 实现(qubes-salt-config):`mgmt.remotevm.grpc-console`(console 装 issuer +
   **`user` 属主**(relay-bootstrap 以 `user` 跑、`relay.key` 归 `user`),qrexec 服务(默认 `user`)
   才读得到,而不是依赖 `user=root`。
 
+### 0.6 开箱即用:端点自动下发 + 默认走 gRPC(2026-07,真机验收)
+
+让新建 qube 无需任何手工步骤就能走这条链路:
+
+- **端点自动下发(A)。** relay 不再靠手工 `qubesdb-write`。console 开一个只读服务
+  `qubesair.RemoteEndpoints`(`cmd/list-endpoints`,只吐 `<名> <ip:port>`、不碰凭据),relay
+  定时(`*:0/2`)+ 开机从 console 拉一次,写进**自己的** QubesDB `/remote-endpoint/<名>`
+  (实测 VM 可写自身 QubesDB,`user` 亦可)。`qubesair.GrpcProxy` 从该键解析地址——console
+  因此**不进每次调用的数据面**,只在刷新时被拉。重启自愈,新 qube 最多 2 分钟可达。
+  端点键用专用的 `/remote-endpoint/`,与 SSHProxy 复用的 `/remote/`(值为远端原始名)区分。
+- **默认走 gRPC(B)。** `config.jinja` 的 `remotevm.transport_rpc` 改成 `qubesair.GrpcProxy`;
+  dom0 的 `qubesair.RegisterRemoteVM` 服务据此把新注册的 RemoteVM 直接设成
+  `transport_rpc=qubesair.GrpcProxy` + `relayvm=<relay>`。真机验证:`register` 一个新名字,
+  输出即 `... via mgmt-jump (qubesair.GrpcProxy)`。
+
+新增 salt:`grpc-console` 加装 `list-endpoints` + `qubesair.RemoteEndpoints`;`grpc-csr-relay`
+加 `refresh-endpoints.sh` + `endpoints.timer`(+ boot.sh 开机拉一次);`grpc-policy` 放行
+relay→console 的 `qubesair.RemoteEndpoints`。
+
+**仍未做:** 真正「用」机器的服务(`qubesair.Exec` 跑命令、文件拷贝、GUI)——agent 现在只开
+`qubesair.Ping`,但 `--service-dir /etc/qubes-rpc` + `--allow` 的机制已在,加服务脚本 + 白名单
++ dom0 policy 即可。这是下一步。
+
 ---
 
 ## 1. 目标与约束

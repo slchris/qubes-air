@@ -59,10 +59,12 @@ CONSOLE_DIR="${QUBES_AIR_DATA_DIR:-/rw/config/qubesair}"
 log "转发: source=${QREXEC_REMOTE_DOMAIN:-?} target=$target service=$service"
 
 # ---- 3a. provisioned 模式: 独立 relay, 加载已下发证书, 端点从 QubesDB ----
+# 端点键用专用的 /remote-endpoint/<名> (值为 ip:port), 与 SSHProxy 复用的 /remote/<名>
+# (值为远端原始名) 区分开。由 relay 的 refresh-endpoints 从 console 拉取后写入。
 if [[ -r "$RELAY_DIR/relay.crt" && -r "$RELAY_DIR/relay.key" && -r "$RELAY_DIR/ca.crt" ]]; then
-    endpoint="$(qubesdb-read "/remote/$target" 2>/dev/null || true)"
+    endpoint="$(qubesdb-read "/remote-endpoint/$target" 2>/dev/null || true)"
     if [[ -z "$endpoint" ]]; then
-        log "QubesDB /remote/$target 未设置 —— dom0 注册时是否写了端点映射?"
+        log "QubesDB /remote-endpoint/$target 未设置 —— relay 是否已从 console 刷新端点?"
         exit 1
     fi
     # 端点必须是 ip:port; QubesDB 的值不可拿去当命令拼接, 这里严格白名单。

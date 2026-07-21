@@ -1,0 +1,17 @@
+#!/bin/bash
+# qubesair.RemoteEndpoints —— 远端端点清单服务 (部署在 CONSOLE qube 的 /etc/qubes-rpc/)
+# =====================================================================
+# 分离式 relay 传输的端点下发的 console 半边 (docs/grpc-transport-design.md §0.5)。
+#
+# relay 定时调用本服务, 拿到「<RemoteVM名> <ip:port>」清单, 写进 relay 自己的 QubesDB
+# (/remote-endpoint/<名>), 供 qubesair.GrpcProxy 解析目标地址 —— 于是 console 不进每次
+# 调用的数据面, 只在 relay 刷新时被拉一次。
+#
+# 只吐名字与地址, 不涉及任何凭据, 因此不 source secrets.env, 也不需要加密密钥, 只读库。
+# dom0 policy 只放行 relay 调本服务。
+# =====================================================================
+
+set -euo pipefail
+
+DATA_DIR="${QUBES_AIR_DATA_DIR:-/rw/config/qubesair}"
+exec /usr/local/bin/list-endpoints -db "$DATA_DIR/qubes-air.db"
