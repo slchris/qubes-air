@@ -51,7 +51,7 @@ Environment=QUBESAIR_LISTEN=0.0.0.0:8443
 # agent down (e.g. QUBESAIR_ALLOW=qubesair.Ping). It must be NON-EMPTY: an empty
 # allowlist is treated as allow-all by the invoker, so the default here is what
 # keeps that footgun unreachable in practice.
-Environment=QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec
+Environment=QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec,qubesair.FileCopy
 
 # No leading '-' on purpose: if /etc/qubes-air/agent.env is absent the unit must
 # fail with "Failed to load environment files" rather than start with empty

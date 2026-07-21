@@ -1,0 +1,54 @@
+#!/bin/bash
+# qubesair.FileCopy — 往/从本远端传一个文件。
+#
+# 由 RemoteVM agent 在收到 qrexec 服务名 "qubesair.FileCopy" 时执行。协议**全走 stdin**:
+# qrexec 服务参数字符集装不下路径 (无 '/'), 所以方向与路径也从 stdin 头一行读。
+#
+#   stdin 第一行 : "push <绝对路径>" 或 "pull <绝对路径>"
+#   push         : 头一行之后是文件内容 -> 原子写到 <路径>; stdout 回
+#                  "OK push <字节数> <sha256> <路径>"
+#   pull         : stdout 回 <路径> 的原始内容
+#
+# 上限: agent 一次应答最多 16 MiB (invoker.maxResponseBytes)、2 分钟 (DefaultCallTimeout),
+# 适合配置/脚本类中小文件, 不是大文件流式传输。
+#
+# 授权同 qubesair.Exec: agent allowlist + 调用方 mTLS 证书 + dom0 policy (默认 ask)。
+# 恒退 0: invoker 在服务非零退出时丢弃 stdout, 所以错误也以文本回到 stdout。
+set -uo pipefail
+
+IFS= read -r header || { echo "FileCopy: 空请求 (stdin 头一行应为 'push|pull <绝对路径>')"; exit 0; }
+op="${header%% *}"
+path="${header#* }"
+
+case "$op" in
+    push|pull) ;;
+    *) echo "FileCopy: 未知操作 '$op' (要 push 或 pull)"; exit 0 ;;
+esac
+
+# 只收绝对路径, 且不含 '..' (挡目录穿越)。头一行按行读, 换行不会混进 path。
+if [[ "$path" != /* || "$path" == *".."* || -z "$path" || "$path" == "$header" ]]; then
+    echo "FileCopy: 非法或缺失路径 '$path' (需绝对路径)"; exit 0
+fi
+
+case "$op" in
+push)
+    dir="$(dirname -- "$path")"
+    [ -d "$dir" ] || { echo "FileCopy: 目标目录不存在 '$dir'"; exit 0; }
+    tmp="$(mktemp -- "$path.XXXXXX.part" 2>/dev/null)" \
+        || { echo "FileCopy: 目标目录不可写 '$dir'"; exit 0; }
+    # 头一行之后的 stdin 全部是内容。
+    cat > "$tmp"
+    sz="$(wc -c < "$tmp")"
+    sum="$(sha256sum < "$tmp" | cut -d' ' -f1)"
+    if ! mv -f -- "$tmp" "$path"; then
+        rm -f -- "$tmp"; echo "FileCopy: 写入失败 '$path'"; exit 0
+    fi
+    echo "OK push $sz $sum $path"
+    ;;
+pull)
+    [ -f "$path" ] || { echo "FileCopy: 不存在或非普通文件 '$path'"; exit 0; }
+    [ -r "$path" ] || { echo "FileCopy: 不可读 '$path'"; exit 0; }
+    cat -- "$path"
+    ;;
+esac
+exit 0
