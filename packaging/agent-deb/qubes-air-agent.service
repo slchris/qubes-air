@@ -45,6 +45,14 @@ Type=simple
 # partially rendered agent.env still yields a listenable address.
 Environment=QUBESAIR_LISTEN=0.0.0.0:8443
 
+# Services this agent will run, comma-separated. Defaults to the reachability
+# probe plus qubesair.Exec (run a command), which is what makes a provisioned
+# machine usable rather than only pingable. Override in agent.env to lock an
+# agent down (e.g. QUBESAIR_ALLOW=qubesair.Ping). It must be NON-EMPTY: an empty
+# allowlist is treated as allow-all by the invoker, so the default here is what
+# keeps that footgun unreachable in practice.
+Environment=QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec
+
 # No leading '-' on purpose: if /etc/qubes-air/agent.env is absent the unit must
 # fail with "Failed to load environment files" rather than start with empty
 # flags and pick surprising defaults.
@@ -63,6 +71,7 @@ ExecStart=/usr/bin/qubes-air-agent \
     --listen "${QUBESAIR_LISTEN}" \
     --remote-name "${QUBESAIR_REMOTE_NAME}" \
     --service-dir /etc/qubes-rpc \
+    --allow "${QUBESAIR_ALLOW}" \
     --ca /etc/qubes-air/ca.pem \
     --cert /etc/qubes-air/agent.pem \
     --key /etc/qubes-air/agent-key.pem

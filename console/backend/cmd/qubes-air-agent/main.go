@@ -110,7 +110,15 @@ func main() {
 		log.Fatalf("TLS identity: %v", err)
 	}
 
-	inv := agent.NewLocalInvoker(*remoteName, splitCSV(*allowedCSV))
+	// An empty allowlist is treated as allow-all by the invoker (len==0 skips the
+	// check), so refuse to start with one rather than silently exposing every
+	// service in ServiceDir. A locked-down agent sets --allow explicitly.
+	allowed := splitCSV(*allowedCSV)
+	if len(allowed) == 0 {
+		log.Fatal("--allow is empty: refusing to start (an empty allowlist would allow every service)")
+	}
+
+	inv := agent.NewLocalInvoker(*remoteName, allowed)
 	inv.ServiceDir = *serviceDir
 
 	bootstrap := armBootstrapIfPending(identity, inv, *remoteName, *certFile, *tokenFile)

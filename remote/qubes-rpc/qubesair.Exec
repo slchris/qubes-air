@@ -1,0 +1,31 @@
+#!/bin/bash
+# qubesair.Exec — 在本远端跑一条命令, 回结果。
+#
+# 由 RemoteVM agent 在收到 qrexec 服务名 "qubesair.Exec" 时执行, 是把这些机器从"只能
+# 探活"变成"能干活"的最小原语 (相当于跨机的 qubes.VMShell)。授权分三层: (1) agent 只
+# 在 --allow 里列了本服务才放行; (2) 调用方必须持 console CA 签的客户端证书才能过 agent
+# 的 mTLS; (3) dom0 policy 对本地 AppVM -> RemoteVM 的调用把关 (建议 ask)。
+#
+# 契约:
+#   stdin  : 要执行的命令 (像 qubes.VMShell 那样从 stdin 读整条命令)
+#   stdout : 命令的 stdout+stderr 合并; 命令非零退出时追加一行 "[qubesair.Exec: exit=N]"
+#   exit   : 恒为 0
+#
+# 为什么恒 0: agent 的 invoker 在服务非零退出时会**丢弃 stdout**、只把 stderr 塞进错误里
+# (internal/agent/invoker.go)。若把命令退出码透传上去, 命令的输出就没了。因此这里吞掉
+# 退出码、把它以 trailer 形式报告, 保证调用方总能拿到输出。
+set +e
+
+cmd="$(cat)"
+if [ -z "$cmd" ]; then
+    echo "qubesair.Exec: 空命令 (命令应从 stdin 传入)"
+    exit 0
+fi
+
+# 合并 stderr, 让失败的诊断也回到调用方。命令在默认 shell 里跑, 不额外拼接。
+bash -c "$cmd" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    printf '\n[qubesair.Exec: exit=%d]\n' "$rc"
+fi
+exit 0
