@@ -206,7 +206,18 @@ allowlist 即拒绝启动**(空清单被 invoker 当放行一切)。dom0 policy 
 RemoteVM 现在由 `qubesair.RegisterRemoteVM` 打 `remote-zone` tag,dom0 policy 用
 `@tag:remote-zone` 覆盖所有 RemoteVM,新 qube 无需改 policy。
 
-**再往后:** 文件拷贝(`qubesair.FileCopy`)、GUI(远端非 Qubes,无 GUI agent,需单独设计)。
+### 0.8 传文件:`qubesair.FileCopy`(2026-07,真机验收)
+
+双向传文件。协议全走 stdin(qrexec 服务参数装不下 `/` 路径):头一行 `push <绝对路径>` 或
+`pull <绝对路径>`,push 后面跟内容。push 原子写(temp+rename)回 `OK push <字节> <sha256>
+<路径>`,pull 回文件内容。受 agent 一次应答 16 MiB / 2 分钟上限,适合配置/脚本类文件。默认经
+`QUBESAIR_ALLOW` 开启,dom0 policy 默认 `ask`(可用 `filecopy_action` 调)。
+
+**真机验收(remote-fc1):** push 一个含中文的文件回 `OK push 40 da7dc857…`,pull 回来
+byte-exact、sha 一致。
+
+**再往后:** GUI(远端非 Qubes、无 GUI agent,需单独设计)。这一层不做的话,这些机器已经能:
+探活(Ping)、跑命令(Exec)、传文件(FileCopy)——覆盖了绝大多数「用远端机器」的场景。
 
 ---
 
