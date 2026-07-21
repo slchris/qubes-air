@@ -14,6 +14,12 @@
 # 为什么恒 0: agent 的 invoker 在服务非零退出时会**丢弃 stdout**、只把 stderr 塞进错误里
 # (internal/agent/invoker.go)。若把命令退出码透传上去, 命令的输出就没了。因此这里吞掉
 # 退出码、把它以 trailer 形式报告, 保证调用方总能拿到输出。
+#
+# 为什么用 systemd-run: agent unit 有 ProtectSystem=full(/usr、/etc 只读)、PrivateTmp
+# (私有 /tmp)、ProtectHome(挡 /home)等沙箱, 这些**会被子进程继承**。命令是 agent 的
+# 子进程, 直接跑就写不了 /usr(`apt install` 报 "Read-only file system")、看不到真实
+# /tmp、动不了 /home。systemd-run 让 PID 1 在**宿主命名空间**起命令, 绕开沙箱 —— 这是
+# 用户自己的机器, 命令本就该有完整访问权。agent 自身仍受沙箱保护, 只有它启动的命令不受。
 set +e
 
 cmd="$(cat)"
@@ -22,9 +28,16 @@ if [ -z "$cmd" ]; then
     exit 0
 fi
 
-# 合并 stderr, 让失败的诊断也回到调用方。命令在默认 shell 里跑, 不额外拼接。
-bash -c "$cmd" 2>&1
-rc=$?
+if command -v systemd-run >/dev/null 2>&1; then
+    # --pipe 接 stdio, --wait 等命令跑完并透传其退出码, --collect 跑完清理瞬态单元。
+    systemd-run --pipe --wait --collect --quiet -- /bin/bash -lc "$cmd" 2>&1
+    rc=$?
+else
+    # 没有 systemd(极少见)时退回直接跑, 会受沙箱限制。
+    /bin/bash -lc "$cmd" 2>&1
+    rc=$?
+fi
+
 if [ "$rc" -ne 0 ]; then
     printf '\n[qubesair.Exec: exit=%d]\n' "$rc"
 fi

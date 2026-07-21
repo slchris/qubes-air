@@ -9,10 +9,11 @@
 #                  "OK push <字节数> <sha256> <路径>"
 #   pull         : stdout 回 <路径> 的原始内容
 #
-# 上限: agent 一次应答最多 16 MiB (invoker.maxResponseBytes)、2 分钟 (DefaultCallTimeout),
-# 适合配置/脚本类中小文件, 不是大文件流式传输。
+# 上限: agent 一次应答最多 16 MiB、2 分钟, 适合配置/脚本类中小文件。
 #
-# 授权同 qubesair.Exec: agent allowlist + 调用方 mTLS 证书 + dom0 policy (默认 ask)。
+# 文件读写经 systemd-run 在**宿主命名空间**做, 绕开 agent 的沙箱(ProtectSystem 只读 /usr、
+# /etc; PrivateTmp 私有 /tmp; ProtectHome 挡 /home)—— 否则往真实文件系统写会失败, 或写进
+# agent 私有视图里、真实系统看不到。理由同 qubesair.Exec。
 # 恒退 0: invoker 在服务非零退出时丢弃 stdout, 所以错误也以文本回到 stdout。
 set -uo pipefail
 
@@ -30,25 +31,37 @@ if [[ "$path" != /* || "$path" == *".."* || -z "$path" || "$path" == "$header" ]
     echo "FileCopy: 非法或缺失路径 '$path' (需绝对路径)"; exit 0
 fi
 
+# 在宿主命名空间跑 payload;路径经 --setenv 传, 不拼进脚本。stderr 并进 stdout, 让错误
+# 也回到调用方 (agent 非零退出会丢 stdout)。没有 systemd 时退回直接跑 (受沙箱限制)。
+host_run() {
+    if command -v systemd-run >/dev/null 2>&1; then
+        systemd-run --pipe --wait --collect --quiet --setenv=QA_PATH="$path" -- /bin/bash -c "$1" 2>&1
+    else
+        QA_PATH="$path" /bin/bash -c "$1" 2>&1
+    fi
+}
+
 case "$op" in
 push)
-    dir="$(dirname -- "$path")"
-    [ -d "$dir" ] || { echo "FileCopy: 目标目录不存在 '$dir'"; exit 0; }
-    tmp="$(mktemp -- "$path.XXXXXX.part" 2>/dev/null)" \
-        || { echo "FileCopy: 目标目录不可写 '$dir'"; exit 0; }
-    # 头一行之后的 stdin 全部是内容。
-    cat > "$tmp"
-    sz="$(wc -c < "$tmp")"
-    sum="$(sha256sum < "$tmp" | cut -d' ' -f1)"
-    if ! mv -f -- "$tmp" "$path"; then
-        rm -f -- "$tmp"; echo "FileCopy: 写入失败 '$path'"; exit 0
-    fi
-    echo "OK push $sz $sum $path"
+    # 头一行之后的 stdin 全部是内容, 经 --pipe 流进 cat。原子写: temp + rename。
+    host_run '
+        d="$(dirname -- "$QA_PATH")"
+        [ -d "$d" ] || { echo "FileCopy: 目标目录不存在 $d"; exit 0; }
+        [ -w "$d" ] || { echo "FileCopy: 目标目录不可写 $d"; exit 0; }
+        tmp="$(mktemp -- "$QA_PATH.XXXXXX.part")" || { echo "FileCopy: 建临时文件失败"; exit 0; }
+        cat > "$tmp"
+        sz="$(wc -c < "$tmp")"; sum="$(sha256sum < "$tmp" | cut -d" " -f1)"
+        if mv -f -- "$tmp" "$QA_PATH"; then
+            echo "OK push $sz $sum $QA_PATH"
+        else
+            rm -f -- "$tmp"; echo "FileCopy: 写入失败 $QA_PATH"
+        fi'
     ;;
 pull)
-    [ -f "$path" ] || { echo "FileCopy: 不存在或非普通文件 '$path'"; exit 0; }
-    [ -r "$path" ] || { echo "FileCopy: 不可读 '$path'"; exit 0; }
-    cat -- "$path"
+    host_run '
+        [ -f "$QA_PATH" ] || { echo "FileCopy: 不存在或非普通文件 $QA_PATH"; exit 0; }
+        [ -r "$QA_PATH" ] || { echo "FileCopy: 不可读 $QA_PATH"; exit 0; }
+        cat -- "$QA_PATH"'
     ;;
 esac
 exit 0
