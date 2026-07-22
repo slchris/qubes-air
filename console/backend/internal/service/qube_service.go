@@ -42,8 +42,7 @@ var (
 )
 
 // pingService is the qrexec service used by CheckReachable to probe a remote
-// qube's reachability over the tunnel. [TODO] provide qubesair.Ping on the
-// remote (a trivial qrexec service that returns "pong").
+// qube's reachability over the tunnel.
 const pingService = "qubesair.Ping"
 
 // QubeService defines qube business logic operations.

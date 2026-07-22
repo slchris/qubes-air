@@ -8,6 +8,7 @@
   once it ends.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { getJobLog, getJob, streamJobLog } from '../lib/api';
 
   interface Props {
@@ -21,10 +22,10 @@
 
   let text = $state('');
   let offset = $state(0);
-  let running = $state(active);
+  let running = $state(false);
   let jobState = $state<string | null>(null);
   let error = $state<string | null>(null);
-  let open = $state(active); // auto-expand while an apply is in flight
+  let open = $state(false); // auto-expanded from active when a job is attached
   let streaming = $state(false); // true while the live stream is attached
 
   let pre = $state<HTMLPreElement | null>(null);
@@ -34,7 +35,7 @@
   // Restart cleanly if the card is reused for a different job (Svelte may not
   // remount the component when only the prop changes). The AbortController tears
   // down any in-flight stream from the previous job.
-  let current = $state('');
+  let current = '';
   let controller: AbortController | null = null;
   $effect(() => {
     if (jobId === current) return;
@@ -42,9 +43,14 @@
     controller?.abort();
     text = '';
     offset = 0;
-    running = active;
+    // active is only the initial guess for a NEW job. Do not subscribe this
+    // effect to later prop changes: the stream's running flag is authoritative,
+    // and rerunning the effect would abort the active stream during a status
+    // transition without attaching a replacement.
+    const initiallyActive = untrack(() => active);
+    running = initiallyActive;
     error = null;
-    open = active;
+    open = initiallyActive;
     void feed();
     return () => controller?.abort();
   });

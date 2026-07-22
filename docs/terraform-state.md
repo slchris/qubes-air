@@ -50,7 +50,7 @@
 
 ### 3.1 生成并存入 passphrase（每台笔记本都要有同一个）
 
-passphrase 是"团队密钥"——所有笔记本共用同一个才能读写同一份加密 state。它是高价值机密，存进每台笔记本的 `vault-cloud`（阶段3 已建的无网络 qube），复用 `qubesair.GetCredential` 机制：
+passphrase 是"团队密钥"——所有笔记本共用同一个才能读写同一份加密 state。它是高价值机密，存进每台笔记本的无网络 `vault-cloud`，复用 `qubesair.GetCredential` 机制：
 
 ```bash
 # 在第一台笔记本上生成一个强 passphrase（只生成一次，然后安全地带到其他笔记本）
@@ -127,14 +127,7 @@ make tf-secure ARGS="destroy -var-file=environments/dev.tfvars -target=module.re
 
 > 纯本地 HCL 校验不需要 passphrase：`make tf-validate`（用 `-backend=false`，CI 可离线跑）。
 
-## 5. 从明文 state 迁移到加密 backend
-
-如果之前已有本地明文 `terraform.tfstate`：
-
-1. 先在 `encryption` 里临时用 `fallback` 允许读明文（`enforced=false`），跑一次 `tofu init -migrate-state` 把 state 推到远程 backend 并加密。
-2. 确认远程 state 可正常 `plan` 后，把 `enforced=true`（拒绝再读明文），删除本地明文副本（`shred`）。
-
-## 6. 谁能看到什么（诚实边界）
+## 5. 谁能看到什么（诚实边界）
 
 | 角色 | 看得到 | 看不到 |
 |---|---|---|
@@ -143,13 +136,13 @@ make tf-secure ARGS="destroy -var-file=environments/dev.tfvars -target=module.re
 
 **加密保护的是 state 文件内容**（谁连谁、密钥、变量），不是"隐藏你在用某云"——那是威胁模型的固有边界，加密逾越不了。
 
-## 7. 待实测 / 存疑（不要当已定论）
+## 6. 待实测 / 存疑（不要当已定论）
 
 1. **MinIO 上 `use_lockfile` 是否可靠**：MinIO 对 `If-None-Match: *` 条件写的支持与 AWS S3 不一致（官方 issue #20346 标记 "working as intended"，来源冲突）。选 MinIO 前**务必做并发 `apply` 冒烟测试**；若锁不可靠，改用 `pg`（自托管 Postgres）或 `http` backend 获得可靠锁。
 2. **`.tflock` 锁文件内容是否被 OpenTofu 加密**：官方未明说，可能泄露"谁在何时操作"的元数据。需实测。
 3. **OpenBao key provider 版本兼容**：若改用 OpenBao 而非 PBKDF2，注意它与 Vault ≥1.15（BUSL）不兼容。
 
-## 8. 参考
+## 7. 参考
 
 - OpenTofu state 加密：https://opentofu.org/docs/language/state/encryption/
 - S3 backend（`use_lockfile`、endpoints、SSE）：https://developer.hashicorp.com/terraform/language/backend/s3

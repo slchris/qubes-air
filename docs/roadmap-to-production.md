@@ -1,219 +1,81 @@
-# 落地路线图：从可运行骨架到真机端到端
+# 当前状态与路线图
 
-> 这份文档回答一个问题：**Qubes Air 要真正跑起来，从现在到"真机端到端跑通"，还差哪些步骤、依赖、风险？**
->
-> 定位：分阶段的可执行落地路线，每阶段有**目标 / 前置依赖 / 关键步骤 / 验收标准 / 风险**。诚实标注现状，不粉饰。
->
-> 配合阅读：[readme.md](../readme.md)（项目状态）、[docs/getting-started.md](getting-started.md)（上手四步）、[docs/architecture.md](architecture.md)（架构全貌）。
+更新时间：2026-07-22。这里同时记录当前能力、代码审查发现和下一步顺序；不维护旧环境兼容计划。
 
----
+## 已完成并真机验证
 
-## 传输架构决策（重要）
+- Proxmox UI 置备、流式 job log 和 agent 健康探测；
+- cloud-init 只投递公开 CA、单次 token 与 artifact digest，agent 私钥在 guest 生成；
+- agent CSR 签发、mTLS、自动续期与 bootstrap 重试；
+- compute/storage 分离，suspend/resume 挂回持久盘；
+- LUKS 数据盘，密钥不保存到远端；
+- Qubes R4.3 RemoteVM 自动注册；
+- 独立 Relay CSR、端点自动同步和 `qubesair.GrpcProxy`；
+- `Ping`、`Exec`、`FileCopy` 和 `ConnectTCP`；
+- 控制台凭据 AES-256-GCM、多版本原子轮换；
+- OpenTofu state 客户端加密和 S3/PostgreSQL backend 入口。
 
-**跨机传输从 SSHProxy 改为 gRPC 双向流。**
+## 代码审查结论
 
-- **旧（现有骨架）**：官方 RemoteVM 的 `qubesair.SSHProxy` transport —— autossh 出站 + `ssh -R` 反向回程。见 [docs/runbook-remotevm.md](runbook-remotevm.md)（现作为过渡参考）。
-- **新（目标）**：**gRPC 双向流**。本地 `sys-relay` 作为 gRPC 客户端主动**出站**建连到远端 Remote-Relay，建立一条长连接**双向流**；qrexec 请求转发和反向回程都复用这条流。零入站（只出站），家庭 NAT 后无需公网入站端口。
+### P0：先收紧远端信任边界
 
-**为什么改**：gRPC 双向流用一条应用层长连接同时承载正向调用与反向回程，天然满足"出站建连 + 双向 + 零入站"；相比裸 SSH 隧道，有结构化的服务定义、认证、流控与可观测性，也便于控制台统一接入（控制台已是 Go + REST，gRPC 同栈）。
-
-> **gRPC 传输 Go 实现已落地并接进业务（编译 + 单测 + mTLS 端到端集成测试通过），未真机验证。** proto、client/server、QrexecInvoker、ReverseHandler、证书经 vault 下发、config + main 装配均已实现并有测试；**`QubeService.CheckReachable` 已真正消费 Transport**（跨机 qrexec 探活，HTTP `GET /qubes/:id/reachable`）。**仍待做**：远端提供 `qubesair.Ping`、Salt/dom0 部署 states、**真机验证**、证书轮换对齐。详见 [grpc-transport-design.md](grpc-transport-design.md) 状态段。Salt/dom0 states 已在 **qubes-salt-config** 仓库落地（`salt/mgmt/remotevm/`）；本仓库的旧 SSHProxy 骨架 `salt/qubes-air/remotevm/*.sls` 已**删除**，见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)。
-
----
-
-## 现状快照（起点）
-
-| 能力 | 状态 | 说明 |
+| 不足 | 当前证据 | 完成标准 |
 |---|---|---|
-| 管理控制台（Go + Svelte） | ✅ 已实现 | `/api/v1` Bearer 认证、CORS 收敛、坏密钥 fail-fast、单测 + CI |
-| 存算分离 Terraform（Proxmox） | ✅ 真机 apply 过 | compute/storage 拆分、`compute_running` 开关、数据盘 `prevent_destroy`；2026-07 在 infra 集群真机 clone 模板 901、跑通完整 provision |
-| 控制台接真实 Suspend/Resume | ✅ 已实现 | 先落地再改状态、executor 可注入、qubeName 白名单 |
-| 凭据 vault + 密钥轮换 | ✅ 已实现 | vault-cloud 无网、qrexec ask 下发不落盘、AES-256-GCM、多版本原子轮换 |
-| 多机加密 state backend | ✅ 已实现 | OpenTofu 客户端加密（PBKDF2）+ S3/pg 双 backend |
-| 跨机传输（SSHProxy 骨架） | 🟡 骨架 | dom0 RemoteVM 创建、修正后的 qrexec policy、autossh/ssh -R 配置存在，**未真机验证** |
-| **gRPC 双向流传输** | 🟢 真机跑通（单机） | proto + client/server + invoker/反向/证书下发 + 集成测试；**真机验证：** 交叉编译 linux/amd64 在真 Qubes AppVM(mgmt-jump) 上跑通 mTLS Tunnel，relay-client 读 salt 渲染的 relay.env、与 gRPC server 建立 ESTABLISHED 连接。待跨两台机验证 + Salt 真机 apply |
-| 真机端到端 | 🟡 部分 | 2026-07 在 Proxmox 上跑通 provision + agent bootstrap 闭环（bootstrap-design.md §9.5）；尚未接真 console 进程, 云侧未验 |
-| GCP 真实资源 | 🟡 资源真实、不可达 | GCP 模块建真实 compute/disk/identity，但控制台够不到 VPC 私网地址（bootstrap-design.md §10.2）。AWS 仍是纯骨架 |
-| 监控 / 账单 | 🔴 占位 | 显式标注 placeholder，未接真实源 |
+| mTLS 只证明“同一 CA 签发”，没有证明调用方角色 | agent、Relay 和 Console 临时身份共用证书模板；agent server 未配置角色校验，`relay-call` 也未校验目标 agent 名称 | 为 agent server、Relay client、Console client 建立独立证书用途或带角色的 SAN；agent 只接受允许的调用方角色；客户端同时校验目标 Qube 身份 |
+| 远端管理服务权限过宽 | Debian unit 默认启用 `Exec`、`FileCopy`、`UnlockData`；前两者通过 `systemd-run` 以宿主 root 执行，`FileCopy` 可操作任意绝对路径 | 默认只启用 `Ping`；特权操作进入独立、窄接口的 helper；限制命令和文件路径；每次调用留下 caller、target、service 和结果审计 |
+| 证书同时被当作 client 和 server 使用 | 签发模板只有 `ClientAuth`，agent 作为 server 时靠 `ExtKeyUsageAny` 自定义验证 | 分离 server/client 身份并使用正确 EKU；删除为绕过用途校验而存在的宽松验证 |
 
----
+完成这些修复前，不应把“dom0 policy 是唯一强制授权边界”当作已经完全成立：持有 fleet 证书的
+内部节点目前可以直接连接另一个 agent。
 
-## 阶段总览
+### P1：修正数据销毁、身份与编排可靠性
 
-```
-阶段 0  真机环境就绪         →  一台 Qubes R4.3 + 一处 Proxmox，本地三 qube 建好
-阶段 T  gRPC 双向流传输       →  relay 出站建连、双向流承载调用与回程（替代 SSHProxy）
-阶段 1  第一条真机端到端       →  本地 AppVM 调通远端 Qube 的一个 qrexec 服务
-阶段 2  存算分离真机验证       →  Proxmox 上 suspend 释放计算 / resume 挂回数据盘
-阶段 3  凭据链真机闭环         →  vault 按需下发 + 密钥轮换在真机跑通
-阶段 4  多云真实资源          →  GCP、AWS 的 compute/storage 落地
-阶段 5  可观测与账单          →  监控、真实成本源接入
-```
+| 不足 | 当前证据 | 完成标准 |
+|---|---|---|
+| 单个 Qube 不能 crypto-shred | 所有 LUKS key 由同一个 `qubes-air-luks-master` 和 Qube ID 派生；删除记录后仍可重新派生 | 改为可独立删除的 per-Qube 随机 DEK/secret，并提供迁移、备份、恢复和轮换流程 |
+| “删除”只有 release，没有真正 purge | API DELETE 只销毁 compute 并保留数据盘、证书和数据库记录；`ActionDestroy` 没有用户入口 | 增加明确二次确认的 purge；销毁盘、撤销身份、清理 RemoteVM/endpoint/记录，并报告每一步结果 |
+| job queue 重启后无法自动对账 | queue 在内存中；启动时把 queued/running job 标记为 `outcome unknown`，没有基于 state/provider 的自动 reconciliation | 持久化可恢复队列和幂等键；启动时执行 refresh/plan 与动作级对账，区分“失败”和“结果未知” |
+| 响应大小限制在缓冲后才检查 | invoker 先把 stdout 全量写入 `bytes.Buffer`，再检查 16 MiB | 使用有界 writer/stream，在超限时中止服务，覆盖超量输出和取消测试 |
+| 更新接口绕过创建校验 | Qube rename/spec update 直接写库，没有复用名称和规格校验 | 更新前执行与创建相同的名称、规格和状态约束，防止把无效对象写进 Terraform source of truth |
 
-每阶段可独立验收；阶段 T 是阻塞阶段 1 的关键路径。
+### P2：控制台安全与产品语义
 
----
+- 当前只有一个静态 Bearer token；留空即关闭认证，前端还把 token 长期保存于 `localStorage`。
+  需要短期 session、HttpOnly/SameSite cookie、操作级授权和明确操作者审计。
+- 设置页中的 session timeout、2FA、邮件和 webhook 目前只保存配置，没有执行效果。实现前应隐藏或标记为
+  “未接入”，避免形成错误安全预期。
+- API 缺少统一的请求体上限、速率限制和 CSP/HSTS/frame 等安全响应头；生产模式应对空 token、宽
+  CORS、未加密 state 等关键配置 fail closed，而不只是打印 warning。
+- CORS 对不允许的 Origin 会返回 allowlist 第一项；应返回空并添加 `Vary: Origin`。
+- `Exec`/`FileCopy` 通过文本 trailer 表示失败且恒返回成功，调用方无法稳定区分 transport 成功和业务
+  失败。协议应分别传输 exit code、stdout 和 stderr。
 
-## 阶段 0 · 真机环境就绪
+### P3：补齐尚未完成的产品和工程能力
 
-**目标**：具备可执行真机验证的最小环境。
+- 无缝桌面仍需验收 appmenu、单击启动、多窗口、退出状态和断线恢复。
+- Proxmox 是唯一完整 provider；GCP 私网可达性未闭环，AWS 仍是占位实现，多 credential zone 也受
+  单 provider 实例限制。完成前不宣称多云等价。
+- 监控的 CPU/磁盘和账单 API 是 placeholder，GCP/AWS 容量查询未实现；UI 应隐藏占位结果或清楚标注。
+- SQLite、CA、credential store 和 job log 构成单控制台故障域；需要经过演练的加密备份/恢复、schema
+  migration 版本和 CA 灾难恢复流程。
+- CI 中 `gosec -no-fail`、`tfsec --soft-fail`、`govulncheck continue-on-error` 会放过安全失败；构建仍用
+  Terraform 1.5，而当前 state 加密路径要求 OpenTofu。关键扫描应阻断合并并固定 Action 版本。
+- Go 测试覆盖较完整，但前端没有单元/E2E 测试，远端 qrexec 脚本和真实多主机网络链路也缺少自动化
+  回归。补充前端交互、agent 包安装、超时/断线/重启和真机 smoke test。
+- 删除未使用的 transport、非现行 dom0 安装入口和失效源码注释；文档链接与“已实现后仍写 TODO”检查进入
+  CI。若项目按开源方式发布，还需要补充明确的仓库许可证和安全报告入口。
 
-**前置依赖**：
-- 一台兼容 Qubes OS 4.3 的机器（[HCL](https://www.qubes-os.org/hcl/)）
-- 一处远端算力：Proxmox VE（本地机房/家用服务器，推荐首选，因为 Terraform 已是真机可 apply）
-- 你自己的 Proxmox API token / SSH 密钥
+## 推荐执行顺序
 
-**关键步骤**：
-1. 装 Qubes OS 4.3，确认 `qvm-*`、Admin API 可用
-2. 在 dom0 跑 `dom0-scripts/init-qubes-air.sh`，建 `mgmt-air`、`sys-relay`、`vault-cloud`（见 [getting-started.md](getting-started.md) ①）
-3. 云凭据放进 `vault-cloud`（无网络，见 getting-started.md ②）
-4. Proxmox 侧准备好一个可 API 访问的节点
+1. 证书角色隔离、目标身份校验和 agent 侧调用方授权；
+2. 收紧默认远端服务，拆分 root helper，并修复有界输出；
+3. 实现 per-Qube key、真实 purge 和恢复/销毁演练；
+4. 补 job reconciliation、更新校验与 API 安全基线；
+5. 再完成桌面闭环、provider、监控账单和测试矩阵。
 
-**验收标准**：
-- [ ] `mgmt-air` 能联网、能跑 `terraform`
-- [ ] `vault-cloud` netvm=none（无网络），凭据文件就位
-- [ ] dom0 policy 目录（`dom0-scripts/policy.d/`）已就位
-- [ ] Proxmox API 从 mgmt-air 可达（凭据经 vault 下发）
+## 不在当前承诺内
 
-**风险**：兼容硬件难找（Qubes 老问题）；Proxmox `path_in_datastore` 是 experimental，首测前须验证挂载语义。
-
----
-
-## 阶段 T · gRPC 双向流传输（关键路径）
-
-**目标**：用 gRPC 双向流替代 SSHProxy，作为 relay 的跨机传输。
-
-**前置依赖**：阶段 0；Go 工具链（控制台已是 Go，同栈）。
-
-**关键步骤**：
-1. **[TODO] 定义 gRPC 服务**：`proto` 定义双向流 RPC（承载 qrexec 请求/响应帧、反向回程帧）。含请求 ID、方向、qrexec 服务名、payload。
-2. **[TODO] Remote-Relay 服务端**：远端跑 gRPC server，接受本地 relay 的出站连接；把收到的 qrexec 请求转给远端 `qrexec-client-vm`，响应回写流。
-3. **[TODO] 本地 relay 客户端**：`sys-relay` 跑 gRPC client，主动出站建连、维持长连接双向流；dom0 policy 改写后的 qrexec 请求经它编码进流；反向回程帧解码后经 qrexec 交回本地（policy C：ask）。
-4. **[TODO] 认证**：双向流用 mTLS（客户端证书 + 服务端证书），证书/私钥存 vault-cloud，用时经 qrexec ask 下发（替代原 relay SSH 私钥）。
-5. **[TODO] 断线重连 / 保活**：客户端出站重连、心跳保活（替代 autossh 的角色）。
-6. **[已实现] Salt states**：`salt/mgmt/remotevm/grpc-relay.sls` / `grpc-remote.sls` 在 **qubes-salt-config** 仓库（不在本仓库）部署 relay client / remote server 单元。本仓库的旧 `salt/qubes-air/remotevm/*` 已**删除**而非标 DEPRECATED 保留——见 [salt/qubes-air/README.md](../salt/qubes-air/README.md)。**仍待做**：真机验证。
-7. **[TODO] dom0 policy**：确认 gRPC 路径下 policy A/B/C 语义不变（Relay 不得直达 dom0、破坏性操作 ask）。
-
-**验收标准**：
-- [ ] 本地 relay 能出站建立 gRPC 双向流到 Remote-Relay，长连接稳定
-- [ ] 一个 qrexec 请求经双向流到达远端并拿到响应
-- [ ] 反向回程帧能经同一条流回到本地、经 dom0 policy C（ask）确认
-- [ ] 零入站验证：远端无需任何入站端口，家庭 NAT 后可用
-- [ ] 断线后自动重连，不丢在途语义
-
-**风险**：这是**从零实现的新传输层**，无真机难以完整测试；mTLS 证书轮换要和现有 vault 轮换机制对齐；要确保 gRPC 流的 qrexec 语义映射不破坏"两侧 dom0 各校验一次"的安全模型。
-
-> **过渡策略**：阶段 T 未完成前，可先用 SSHProxy 骨架（[runbook-remotevm.md](runbook-remotevm.md)）跑通阶段 1 的真机端到端，验证除传输外的其余链路；gRPC 就绪后切换传输、复测。
-
----
-
-## 阶段 1 · 第一条真机端到端
-
-**目标**：本地 AppVM 里发起一次跨机 qrexec 调用，调通远端 Qube 的一个服务。
-
-**前置依赖**：阶段 0；传输层（阶段 T 的 gRPC，或过渡期的 SSHProxy 骨架）。
-
-**关键步骤**：
-1. Terraform 在 Proxmox 建一台远端 VM（`terraform apply`）
-2. dom0 建 RemoteVM 元数据 qube（`qvm-create` + `relayvm`/`transport_rpc`/`remote_name`）——**[待真机确认] R4.3 的确切用法**
-3. 从本地 work qube 发起 `qrexec-client-vm remote-dev-1 <service>`
-4. 经 dom0 policy A/B → relay → 传输 → 远端 → 远端 policy 再校验 → 远端 Qube 执行
-5. 观察 dom0 改写后看到的调用来源 —— **[待真机确认]**
-
-**验收标准**：
-- [ ] 一次正向 qrexec 调用端到端调通、拿到结果
-- [ ] 两侧 dom0 各弹一次/校验一次（policy 生效）
-- [ ] Relay 不得直达 dom0（policy 拒绝验证）
-- [ ] 反向调用（远端→本地 vault）触发 dom0 policy C 的 ask 弹窗
-
-**风险**：`qvm-create` RemoteVM 确切用法、dom0 改写后的调用来源，都需 R4.3 实机确认（runbook 内已逐项标 `待真机确认`）。
-
----
-
-## 阶段 2 · 存算分离真机验证
-
-**目标**：在 Proxmox 上真机验证 suspend 释放计算 / resume 挂回数据盘。
-
-**关键步骤**：
-1. 控制台点「挂起」→ Terraform 销毁计算实例、数据盘 `prevent_destroy` 保留
-2. 控制台点「恢复」→ 拉起新实例、挂回同一数据盘
-3. 验证数据盘挂载语义（Proxmox `path_in_datastore` experimental）、storage VM 常关机
-
-**验收标准**：
-- [ ] 挂起后计算实例销毁、账单归零，数据盘留存
-- [ ] 恢复后数据原样回来、远端 Qube 可再次接回本地
-- [ ] 数据盘 LUKS 加密、密钥只在本地 vault（never-remote）
-
-**风险**：`path_in_datastore` experimental，挂载语义需首测验证。
-
----
-
-## 阶段 3 · 凭据链真机闭环
-
-**目标**：凭据 vault 按需下发 + 密钥轮换在真机跑通。
-
-**关键步骤**：
-1. mgmt-air 建机时经 qrexec 向 vault-cloud 要云凭据（dom0 ask）→ 用完即弃、不落盘
-2. gRPC mTLS 证书（阶段 T）经 vault 下发
-3. 用 `crypto/scripts/rotate-keys.sh` / `cmd/rotate-key` 真机轮换，验证旧值失效、在途不受影响
-
-**验收标准**：
-- [ ] 云凭据经 qrexec ask 下发、内存使用、不落盘
-- [ ] gRPC mTLS 证书轮换与 vault 轮换机制对齐
-- [ ] `never-remote` 凭据（LUKS 卷密钥）在 policy 层确实永不下发到远端
-
----
-
-## 阶段 4 · 多云真实资源
-
-**目标**：GCP、AWS 的 compute/storage 从骨架变真实资源。
-
-**关键步骤**：
-1. **[TODO]** 实现 GCP compute/storage Terraform 真实资源（当前是接口对齐骨架）
-2. **[TODO]** 实现 AWS compute/storage 真实资源
-3. 每个云 Zone 复用同一存算分离模型（compute_running 开关 + 数据盘 prevent_destroy）
-4. 诚实边界：无机密计算（如 AMD SEV-SNP）时云运营商仍能读 VM 内存 → 云 Zone 只承载低敏感/一次性负载
-
-**验收标准**：
-- [ ] GCP 上能建/挂起/恢复远程 Qube，端到端接回本地
-- [ ] AWS 同上
-- [ ] 三云 Zone 在控制台统一管理、状态一致
-
----
-
-## 阶段 5 · 可观测与账单
-
-**目标**：把监控、真实成本源从占位变真实。
-
-**关键步骤**：
-1. **[TODO]** 成本页接真实云账单 API（当前是占位估算）
-2. **[TODO]** 监控接真实指标源
-3. **[TODO]** 前端支持发送 Bearer token（控制台 API 已有认证，前端待接）
-4. **[蓝图]** gRPC（含传输）+ OAuth2/mTLS 更强身份 + 多租户 RBAC
-
-**验收标准**：
-- [ ] 成本页显示真实机时/存储账单，去掉"占位"标注
-- [ ] 监控显示真实远程 Qube 状态与资源用量
-
----
-
-## 关键路径与优先级
-
-```
-阶段 0 ──┬──→ 阶段 T（gRPC 传输，关键路径）──→ 阶段 1（端到端）──→ 阶段 2/3（并行）
-         └──→ （过渡：SSHProxy 骨架先跑阶段 1，验证非传输链路）
-                                                              阶段 4（多云）──→ 阶段 5（可观测）
-```
-
-- **最优先**：阶段 0 + 阶段 T + 阶段 1 —— 这三步决定"能不能真的跑通一条链路"
-- **过渡加速**：阶段 T 未完成时，用 SSHProxy 骨架先验证阶段 1 的其余部分，降低串行阻塞
-- **可并行**：阶段 2、3 在阶段 1 通后可并行；阶段 4、5 靠后
-
----
-
-## 诚实说明
-
-- 本路线图的**阶段 T（gRPC 传输）是从零实现**，工作量最大、风险最高，且无真机难以完整验证。
-- 现有 SSHProxy 骨架**未经真机验证**，作为过渡参考保留，不代表已可用。
-- 所有 `[TODO]` / `[蓝图]` 标记项均**尚未实现**。
-- 端到端从未在真实环境跑通 —— 这份路线图是"怎么走到那一步"的计划，不是"已经走到了"的记录。
+- 在线 VM 内存迁移；
+- 把普通远端主机变成完整 Qubes dom0；
+- 依赖云厂商删除或覆写来替代端到端加密；
+- 在未验证前宣称 GCP/AWS 与 Proxmox 等价。

@@ -314,7 +314,7 @@
     font-weight: normal;
   }
 
-  .field input[type="text"],
+  .field input[type="password"],
   .field input[type="url"],
   .field input[type="number"],
   .field select {

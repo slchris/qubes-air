@@ -127,7 +127,7 @@
     if (fType === 'gcp') {
       if (!fProject.trim()) return 'Project is required';
       if (!fGcpZone.trim()) return 'Compute zone is required: the data disk and the instance must share one or the disk cannot be attached';
-      if (!fBucket.trim()) return 'Identity bucket is required: the agent identity cannot go in instance metadata, because terraform would write its private key into state';
+      if (!fBucket.trim()) return 'Bootstrap bucket is required: the one-time bootstrap token must not be written into Terraform state';
     }
     return null;
   }
@@ -238,9 +238,10 @@
 </div>
 
 {#if showCreate}
-  <div class="scrim" onclick={() => (showCreate = false)} role="presentation">
-    <div class="sheet" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Add zone">
-      <h3>Add zone</h3>
+  <div class="scrim">
+    <button type="button" class="scrim-backdrop" aria-label="Close add zone dialog" onclick={() => (showCreate = false)}></button>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="add-zone-title" tabindex="-1">
+      <h3 id="add-zone-title">Add zone</h3>
 
       {#if formError}<p class="banner error">{formError}</p>{/if}
 
@@ -336,13 +337,13 @@
             </label>
           </div>
           <label class="f">
-            <span>Identity bucket</span>
+            <span>Bootstrap bucket</span>
             <input bind:value={fBucket} placeholder="private GCS bucket" />
           </label>
           <p class="note">
-            The per-qube agent identity is delivered through this bucket. It cannot
-            travel in instance metadata: metadata is a resource attribute, so
-            terraform would write the agent's private key into state.
+            The public CA and one-time bootstrap token are delivered through this
+            bucket. The agent generates its private key inside the guest; no private
+            key is uploaded by the Console or stored in Terraform state.
           </p>
           <div class="row">
             <label class="f">
@@ -391,10 +392,14 @@
 
   .scrim {
     position: fixed; inset: 0; z-index: 10001;
-    background: var(--modalScrimColor);
     display: grid; place-items: center; padding: 24px;
   }
+  .scrim-backdrop {
+    position: absolute; inset: 0; padding: 0; border: 0;
+    background: var(--modalScrimColor); cursor: default;
+  }
   .sheet {
+    position: relative; z-index: 1;
     width: 100%; max-width: 560px; max-height: 85dvh; overflow-y: auto;
     background: var(--pageBG); color: var(--systemPrimary);
     border-radius: var(--modalBorderRadius);

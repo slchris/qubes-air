@@ -201,11 +201,12 @@
 </div>
 
 {#if showModal}
-  <div class="modal-overlay" onclick={closeModal}>
-    <div class="modal" onclick={(e) => e.stopPropagation()}>
+  <div class="modal-layer">
+    <button type="button" class="modal-backdrop" aria-label="Close credential dialog" onclick={closeModal}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="credential-dialog-title" tabindex="-1">
       <div class="modal-header">
-        <h3>{editingId ? 'Edit Credential' : 'Add Credential'}</h3>
-        <button class="btn-close" onclick={closeModal}>×</button>
+        <h3 id="credential-dialog-title">{editingId ? 'Edit Credential' : 'Add Credential'}</h3>
+        <button type="button" class="btn-close" aria-label="Close credential dialog" onclick={closeModal}>×</button>
       </div>
       <form class="modal-form" onsubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
         {#if formError}
@@ -361,20 +362,30 @@
   }
 
   /* Modal styles */
-  .modal-overlay {
+  .modal-layer {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
   }
 
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: default;
+  }
+
   .modal {
+    position: relative;
+    z-index: 1;
     background: var(--pageBG);
     border-radius: var(--global-border-radius-small);
     width: 100%;

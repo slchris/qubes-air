@@ -10,14 +10,15 @@
 #   suspend = 销毁 instance 保留 disk; resume = 重建 instance 挂回同一 disk。
 #
 # ---------------------------------------------------------------------------
-# 红线: agent 私钥绝不进 terraform state
+# 红线: bootstrap token 不进入 terraform state
 # ---------------------------------------------------------------------------
 # 这条约束决定了本模块最不直观的一处设计。
 #
 # 最自然的写法是 `metadata = { user-data = file(var.agent_user_data_file) }` ——
 # **不能这么写**。metadata 是 instance 的属性, terraform 会把它的值原样写进 state,
-# 于是那份身份文档连同 agent 私钥一起明文躺在 state 里。proxmox 子模块为同一条红线
-# 刻意传路径而非内容 (见其 agent_user_data_file 的注释)。
+# 于是那份 bootstrap 文档连同一次性 token 一起明文躺在 state 里。Agent 私钥在 guest
+# 内生成，从不在这份文档中；但 token 仍然是敏感的单次签发凭据。Proxmox 子模块为同一条
+# 红线刻意传路径而非内容 (见其 agent_user_data_file 的注释)。
 #
 # GCP 侧的等价物是 google_storage_bucket_object 的 `source` 参数: 它和 bpg 的
 # source_file 一样只把路径/哈希写进 state, 内容不进。所以身份文档先落进 GCS,
@@ -89,8 +90,8 @@ variable "ssh_public_keys" {
 
 variable "agent_user_data_file" {
   description = <<-EOT
-    本地路径, 指向 Console 渲染出的 cloud-init user-data (内含该 agent 的 mTLS 身份)。
-    留空则不投递身份 —— agent 将无法认证。
+    本地路径, 指向 Console 渲染出的 cloud-init user-data，内含公开 CA、一次性 token
+    和 agent artifact digest。留空则不投递 bootstrap 数据，agent 将无法取得身份。
 
     刻意传**路径**而非内容: 见文件头「红线」一节。内容经 GCS object 的 source
     参数投递, 不进 state。

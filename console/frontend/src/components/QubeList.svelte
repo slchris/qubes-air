@@ -296,9 +296,6 @@
     handleUpdate();
   }
 
-  function stopPropagation(e: Event): void {
-    e.stopPropagation();
-  }
 </script>
 
 <div class="qube-list">
@@ -405,11 +402,10 @@
 
 <!-- Create Modal -->
 {#if showCreateModal}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-overlay" onclick={closeModals}>
-    <div class="modal" onclick={stopPropagation}>
-      <h3>Create Qube</h3>
+  <div class="modal-layer">
+    <button type="button" class="modal-backdrop" aria-label="Close create qube dialog" onclick={closeModals}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="create-qube-title" tabindex="-1">
+      <h3 id="create-qube-title">Create Qube</h3>
 
       {#if actionError}
         <p class="form-error">{actionError}</p>
@@ -523,11 +519,10 @@
 
 <!-- Edit Modal -->
 {#if showEditModal && editingQube}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="modal-overlay" onclick={closeModals}>
-    <div class="modal" onclick={stopPropagation}>
-      <h3>Edit Qube</h3>
+  <div class="modal-layer">
+    <button type="button" class="modal-backdrop" aria-label="Close edit qube dialog" onclick={closeModals}></button>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-qube-title" tabindex="-1">
+      <h3 id="edit-qube-title">Edit Qube</h3>
 
       {#if actionError}
         <p class="form-error">{actionError}</p>
@@ -586,9 +581,6 @@
 {/if}
 
 <style>
-  .qube-list {
-  }
-
   /* --- list layout ---------------------------------------------------------
      One grid template shared by the header and every row, so columns line up
      without a <table> (rows need to expand into a log panel, which a table row
@@ -699,8 +691,6 @@
   .agent.healthy { color: var(--systemGreen); }
   .agent.unreachable { color: var(--systemRed); }
   .agent.unknown { color: var(--systemSecondary); }
-  .agent-err span { color: var(--systemRed); font: var(--callout); word-break: break-word; }
-
   .header {
     display: flex;
     justify-content: space-between;
@@ -827,17 +817,27 @@
   }
 
   /* Modal styles */
-  .modal-overlay {
+  .modal-layer {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
   }
 
+  .modal-backdrop {
+    position: absolute;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(0, 0, 0, 0.5);
+    cursor: default;
+  }
+
   .modal {
+    position: relative;
+    z-index: 1;
     background: var(--modal-bg, #fff);
     padding: 1.5rem;
     border-radius: 8px;

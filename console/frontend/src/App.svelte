@@ -68,7 +68,12 @@
   <div class="main">
     <!-- 移动端遮罩层 -->
     {#if sidebarOpen}
-      <div class="sidebar-overlay" onclick={() => sidebarOpen = false}></div>
+      <button
+        type="button"
+        class="sidebar-overlay"
+        aria-label="Close navigation"
+        onclick={() => sidebarOpen = false}
+      ></button>
     {/if}
     
     <Sidebar {currentView} onViewChange={handleViewChange} isOpen={sidebarOpen} />
@@ -159,6 +164,8 @@
       display: block;
       position: fixed;
       inset: 0;
+      padding: 0;
+      border: 0;
       background: var(--modalScrimColor);
       z-index: 99;
     }

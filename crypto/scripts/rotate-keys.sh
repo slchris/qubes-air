@@ -153,7 +153,7 @@ rotate_age() {
 #
 # 这里原本有一个 rotate_wg(), 它把新私钥写进 $KEY_DIR ($HOME/.qubes-air/keys),
 # 然后指示「更新 pillar 里的 private_key, 重应用 salt sys-remote.wireguard」。
-# 那个 state 已经随 sys-remote/ 一起删掉了 (salt/qubes-air/README.md), 所以这条
+# 对应的 state 不在当前部署配置中, 所以这条
 # 指示指向不存在的东西 —— 而脚本本身会「成功」, 这比不能跑更糟。
 #
 # 但真正的问题不是那条过时的指示, 是**这件事不该由 shell 脚本做**:

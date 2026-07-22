@@ -142,15 +142,10 @@ func NewCA(commonName string, lifetime time.Duration) (*CA, error) {
 	return &CA{Cert: cert, Key: key}, nil
 }
 
-// IssueAgentCert signs a client certificate for one agent, generating the key
-// pair here.
-//
-// This is the BOOTSTRAP path, used when a qube has no identity yet and so has no
-// authenticated channel to ask over. The cost is real and worth naming: the
-// private key exists on the console and travels to the remote through
-// cloud-init, so anyone who can read that VM's cloud-init data can read the key.
-// Once an agent holds a certificate it renews through SignAgentCSR instead,
-// where the key is generated on the remote and never crosses the network.
+// IssueAgentCert signs a short-lived client certificate and generates its key
+// pair locally. Console-side probes, bootstrap, renewal and unlock clients use
+// this helper. Agent and Relay long-lived identities use SignAgentCSR so their
+// private keys never leave the machine that generated them.
 func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle, error) {
 	if ca == nil || ca.Cert == nil || ca.Key == nil {
 		return nil, ErrNoCA

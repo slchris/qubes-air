@@ -85,8 +85,9 @@ func NewQubeSnapshot(qubeRepo repository.QubeRepository, zoneRepo repository.Zon
 			}
 			// Point terraform at the identity file, if one was rendered. The
 			// PATH is passed, never the content: terraform's source_file keeps
-			// only the path and volume id in state, while inlining the content
-			// would put a private key there in plaintext.
+			// only the path and volume id in state. The document contains the
+			// public CA and a one-time bootstrap token, not an agent private key,
+			// but the token still must not be copied into state.
 			if identity != nil {
 				if path := identity.IdentityPath(q.Name); path != "" {
 					entry["agent_user_data_file"] = path
@@ -226,9 +227,9 @@ func renderGCP(entry map[string]any, zone *models.Zone) error {
 	// skips identity delivery entirely when either side is empty.
 	if _, wantsIdentity := entry["agent_user_data_file"]; wantsIdentity && gc.IdentityBucket == "" {
 		return fmt.Errorf(
-			"zone %q has an agent identity to deliver but no identity_bucket; the identity "+
-				"cannot go in instance metadata because terraform would write the agent's "+
-				"private key into state", zone.Name)
+			"zone %q has bootstrap data to deliver but no identity_bucket; the one-time "+
+				"token cannot go in instance metadata because terraform would copy it into state",
+			zone.Name)
 	}
 	if gc.IdentityBucket != "" {
 		entry["identity_bucket"] = gc.IdentityBucket

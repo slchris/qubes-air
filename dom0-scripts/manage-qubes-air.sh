@@ -7,7 +7,7 @@
 # 那套东西**被评审否决并已删除**:
 #   - `sys-remote` 开 `ip_forward` + `provides_network` 把 Relay 当本地网关,
 #     违反平面分离; `qubes-air.Remote` 是任意命令通道, 反模式。
-#     见 salt/qubes-air/README.md 与 docs/architecture.md (整篇标着 DEPRECATED)。
+#     现行架构见 docs/architecture.md。
 #   - 对应的 salt states (sys-remote/wireguard.sls / gateway.sls / firewall.sls)
 #     已随之删除。
 #
@@ -46,8 +46,7 @@ sys-remote 方案已被评审否决 (违反平面分离), 相关 qube 与 salt s
   qrexec-client-vm <remotevm> qubesair.Ping   自检可达
   bash decommission-zone.sh                   下线 zone
 
-背景: salt/qubes-air/README.md, docs/architecture.md (DEPRECATED),
-      docs/remotevm-alignment.md
+背景: docs/architecture.md, docs/remotevm-alignment.md
 ==============================================================
 EOF
 

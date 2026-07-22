@@ -1,82 +1,25 @@
-# Qubes Air - Crypto Utilities
-#
-# 本地 vault 的密钥生成、加密与轮换工具。
-#
-# 红线 (评审确立): 私钥永不进 git、永不进 pillar 明文、永不上云。这些脚本只在本机
-# KEY_DIR (默认 ~/.qubes-air/keys) 操作, 只把【公钥】打印出来供分发。
+# Crypto utilities
 
-```
-.
-├── scripts/
-│   ├── generate-keys.sh      # 生成 age 密钥到 KEY_DIR (WireGuard 部分已删)
-│   ├── encrypt-secrets.sh    # 用 SOPS/age 加解密敏感文件 (encrypt|decrypt)
-│   └── rotate-keys.sh        # 轮换 age / relay SSH 密钥 (wg 已删)
-├── sops/
-│   └── .sops.yaml            # SOPS 创建规则 (age 收件人 = 你的 age 公钥)
-└── README.md
-```
+这里的脚本只管理仍使用 SOPS/age 的离线材料。现行 Relay/agent 身份和 console credential
+加密不由这些脚本管理。
 
-## 密钥清单与存放
+## 脚本
 
-| 密钥 | 生成 | 存放 | 谁用 |
-|---|---|---|---|
-| age/SOPS 私钥 | generate-keys.sh | KEY_DIR / vault-cloud | 解密 salt pillar secrets |
-| relay transport SSH 私钥 | rotate-keys.sh ssh / ssh-keygen | vault-cloud ~/.ssh (split-ssh) | sys-relay 经 agent 用, 拿不到私钥 |
-| 控制台加密密钥 (AES-256) | 运维自选 32 字节 | mgmt-air 控制台 config | 控制台加密 SQLite 凭据元数据 |
+| 脚本 | 用途 |
+|---|---|
+| `scripts/generate-keys.sh` | 在 `KEY_DIR`（默认 `~/.qubes-air/keys`）生成 age key |
+| `scripts/encrypt-secrets.sh` | 用 SOPS/age 加解密文件 |
+| `scripts/rotate-keys.sh age` | 生成新 age key，并原子重加密已发现的 SOPS 文件 |
 
-注意: **控制台加密密钥的轮换不在这里**, 它在 Go 控制台侧, 用
-`console/backend/cmd/rotate-key` (多版本密钥, 向后兼容重加密)。见
-`docs/credential-vault.md` 的"控制台密钥轮换"。
-
-## 用法
-
-### 生成初始密钥
-```
+```bash
 bash scripts/generate-keys.sh
-# 输出 age 公钥, 填进 sops/.sops.yaml。
-```
-
-### 加解密 SOPS 文件
-```
-bash scripts/encrypt-secrets.sh encrypt salt/pillar/secrets.sls
-bash scripts/encrypt-secrets.sh decrypt salt/pillar/secrets.sls.enc
-```
-
-### 轮换密钥 (rotate-keys.sh)
-```
-# 轮换 age 私钥并用新公钥重加密所有 SOPS 文件 (旧密钥先解后重加, 原子逐文件替换)
+bash scripts/encrypt-secrets.sh encrypt <plain.yaml>
+bash scripts/encrypt-secrets.sh decrypt <encrypted.yaml>
 bash scripts/rotate-keys.sh age
-
-# 轮换 relay transport SSH 私钥, 打印新公钥供追加到远端 authorized_keys
-bash scripts/rotate-keys.sh ssh
-
-# 三者一起
-bash scripts/rotate-keys.sh all
-
-# 先看会做什么, 不改动
-DRY_RUN=1 bash scripts/rotate-keys.sh all
+DRY_RUN=1 bash scripts/rotate-keys.sh age
 ```
 
-轮换脚本特性:
-- **有备份**: 每次先把旧密钥/旧 SOPS 文件复制到 `KEY_DIR/backup/<时间戳>/`, 不静默覆盖。
-- **幂等友好**: 用临时文件 (`.new`) 生成, 校验成功后原子 `mv` 就位。
-- **失败不留半成品**: `set -euo pipefail`; SOPS 重加密任一文件失败即中止, 其余文件保持旧密钥可解,
-  旧 age 私钥备份仍在 -> 可回滚。
-- **只出公钥**: SSH 只打印新公钥, 私钥留本机。
+私钥不进 Git、pillar 明文或云端；只有 age public recipient 可以提交。
 
-轮换后需人工完成的分发 (脚本会提示):
-- age: 更新 `sops/.sops.yaml` 的 age 收件人为新公钥并提交 (公钥可入 git); 确认新密钥可解后销毁旧备份。
-- ~~WireGuard~~: **`rotate-keys.sh wg` 已删除** (2026-07-20)。它把明文私钥写进
-  `$KEY_DIR`, 并指示「重应用 salt sys-remote.wireguard」—— 那个 state 已随
-  `sys-remote/` 删除, 所以那条指示指向不存在的东西, 而脚本本身会「成功」。
-  更根本的问题是形状: console 已经有加密凭据库 (版本化密钥 + `cmd/rotate-key`),
-  vault-cloud 已经是存凭据的无网络 qube, 再往 home 目录写一份明文私钥是第三套机制。
-  该做成 `CertRenewer` 的形状 —— console 发起, 密钥在持有它的那一侧生成, 只有公钥出来。
-  见 docs/bootstrap-design.md §12.1。
-- SSH: 把新公钥追加到远端 Remote-Relay 的 authorized_keys; 私钥放 vault-cloud ~/.ssh 并 ssh-add;
-  切换后重启 autossh 隧道。
-
-## 与凭据下发 / 销毁的关系
-
-- 凭据隔离下发 (vault-cloud + qrexec `qubesair.GetCredential` + split-ssh): 见 `docs/credential-vault.md`。
-- 凭据/密钥销毁 (单 Zone 下线 / 整机应急 / 远端 crypto-shredding): 见 `docs/credential-destruction.md`。
+Console AES-GCM key 使用 `console/backend/cmd/rotate-key` 轮换；数据盘 master、agent 和 Relay
+证书也各有独立生命周期，不能用本目录脚本替代。

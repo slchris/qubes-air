@@ -2,7 +2,10 @@
 #
 # 常用构建和开发命令
 
-.PHONY: help build clean dev test agent-deb publish-agent-deb release-agent
+.PHONY: help build clean dev test agent-deb publish-agent-deb release-agent \
+	pre-commit audit check-tools diff-check test-race lint-new gosec-new \
+	complexity-new vuln-check frontend-check shellcheck-new docs-check \
+	frontend-audit-new frontend-audit lint-all gosec-all complexity-all shellcheck-all
 
 # 默认目标
 help:
@@ -13,6 +16,8 @@ help:
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
+	@echo "  pre-commit     提交前增量门禁: test/race/lint/gosec/复杂度/前端/Shell/Terraform/文档"
+	@echo "  audit          里程碑完整审计: 对全部存量代码执行所有门禁"
 	@echo "  clean          Clean build artifacts"
 	@echo ""
 	@echo "  agent-deb         构建 qubes-air-agent .deb (Docker 内交叉编译 amd64)"
@@ -52,6 +57,102 @@ dev:
 test:
 	@echo "Running tests..."
 	cd console/backend && go test ./...
+
+# ============================================================
+# 开发质量门禁
+#
+# pre-commit 只拒绝 BASE_REV 之后新增的 lint/security/complexity 问题，避免当前阶段
+# 被不相关的存量债务卡死；测试、依赖漏洞、前端、Terraform 和文档仍做全量检查。
+# audit 用于里程碑/release，扫描全部存量代码，必须清零后才能发布。
+# ============================================================
+
+BASE_REV ?= HEAD
+GOLANGCI_LINT ?= golangci-lint
+SHELLCHECK ?= shellcheck
+GOVULNCHECK ?= govulncheck
+
+pre-commit: check-tools diff-check test-race lint-new gosec-new complexity-new \
+	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check tf-validate
+
+audit: check-tools diff-check test-race lint-all gosec-all complexity-all \
+	vuln-check frontend-check frontend-audit shellcheck-all docs-check tf-validate
+
+check-tools:
+	@for tool in git go node npm $(GOLANGCI_LINT) $(SHELLCHECK) $(GOVULNCHECK) $(TF_BIN); do \
+		command -v "$$tool" >/dev/null 2>&1 || { echo "缺少开发门禁工具: $$tool" >&2; exit 1; }; \
+	done
+
+diff-check:
+	git diff --check $(BASE_REV) --
+
+test-race:
+	cd console/backend && go test -race -coverprofile=coverage.out ./...
+
+lint-new:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV)
+
+# 显式单独运行安全和复杂度 linter，防止以后修改默认 linter 集合时悄悄丢掉门禁。
+gosec-new:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gosec
+
+complexity-new:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gocyclo,funlen
+
+vuln-check:
+	cd console/backend && $(GOVULNCHECK) ./...
+
+# Warning 也属于失败：保持为 0，不建立可永久继承的告警基线。
+FRONTEND_WARNING_BUDGET ?= 0
+
+frontend-check:
+	cd console/frontend && npm ci
+	@output="$$(cd console/frontend && npm run check 2>&1)"; status=$$?; \
+	printf '%s\n' "$$output"; \
+	[ $$status -eq 0 ] || exit $$status; \
+	warnings="$$(printf '%s\n' "$$output" | sed -n 's/.*found 0 errors and \([0-9][0-9]*\) warnings.*/\1/p' | tail -n 1)"; \
+	[ -n "$$warnings" ] || { echo "无法读取 Svelte warning 数量" >&2; exit 1; }; \
+	[ "$$warnings" -le "$(FRONTEND_WARNING_BUDGET)" ] || { \
+		echo "Svelte warning 增加: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
+	}
+	cd console/frontend && npm run build
+
+# 依赖文件发生变化时，提交前必须检查 high/critical 漏洞；完整 audit 每次都检查。
+frontend-audit-new:
+	@if { git diff --name-only $(BASE_REV) --; git ls-files --others --exclude-standard; } | \
+		grep -Eq '^console/frontend/(package.json|package-lock.json)$$'; then \
+		cd console/frontend && npm audit --audit-level=high; \
+	else \
+		echo "npm audit: frontend dependencies unchanged"; \
+	fi
+
+frontend-audit:
+	cd console/frontend && npm audit --audit-level=high
+
+# 检查相对 BASE_REV 修改及新建的所有 shell/shebang 文件，包括无 .sh 后缀的 qrexec 服务。
+shellcheck-new:
+	@files="$$( \
+		{ git diff --name-only --diff-filter=ACMR $(BASE_REV) --; git ls-files --others --exclude-standard; } | \
+		sort -u | while IFS= read -r file; do \
+			if [ -f "$$file" ] && head -n 1 "$$file" | grep -Eq '^\#\!.*/(ba)?sh'; then printf '%s\n' "$$file"; fi; \
+		done \
+	)"; \
+	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no changed shell files"; fi
+
+docs-check:
+	node scripts/check-doc-links.mjs
+
+lint-all:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m
+
+gosec-all:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gosec
+
+complexity-all:
+	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gocyclo,funlen
+
+shellcheck-all:
+	@files="$$(git grep -l -E '^\#\!.*/(ba)?sh')"; \
+	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no shell files"; fi
 
 # 清理
 clean:
@@ -164,8 +265,7 @@ tf-resume:
 	cd terraform && $(TF_BIN) apply -var-file=$(TFVARS) \
 		-target='module.remote_qubes["$(QUBE)"].module.proxmox[0].proxmox_virtual_environment_vm.compute'
 
-# Salt: qubes-air 的 states 已退役 (见 salt/qubes-air/README.md)。
-# Qubes 侧真正在跑的 states 在 qubes-salt-config 仓库, 不由本 Makefile 驱动。
+# Qubes 侧 states 在 qubes-salt-config 仓库, 不由本 Makefile 驱动。
 # salt-apply 目标已移除 —— `qubesctl --all` 对本仓库无 state 可应用。
 
 # 密钥生成

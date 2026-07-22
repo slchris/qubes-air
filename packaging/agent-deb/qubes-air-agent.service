@@ -45,12 +45,11 @@ Type=simple
 # partially rendered agent.env still yields a listenable address.
 Environment=QUBESAIR_LISTEN=0.0.0.0:8443
 
-# Services this agent will run, comma-separated. Defaults to the reachability
-# probe plus qubesair.Exec (run a command), which is what makes a provisioned
-# machine usable rather than only pingable. Override in agent.env to lock an
-# agent down (e.g. QUBESAIR_ALLOW=qubesair.Ping). It must be NON-EMPTY: an empty
-# allowlist is treated as allow-all by the invoker, so the default here is what
-# keeps that footgun unreachable in practice.
+# Services this agent will run, comma-separated. The package currently enables
+# the reachability probe plus the privileged Exec, FileCopy and UnlockData
+# services. Override in agent.env to lock an agent down (for example,
+# QUBESAIR_ALLOW=qubesair.Ping). It must be NON-EMPTY: an empty allowlist is
+# treated as allow-all by the invoker.
 Environment=QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec,qubesair.FileCopy,qubesair.UnlockData
 
 # No leading '-' on purpose: if /etc/qubes-air/agent.env is absent the unit must
