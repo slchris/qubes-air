@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/service"
 )
@@ -22,7 +23,7 @@ func NewSettingsHandler(svc *service.SettingsService) *SettingsHandler {
 func (h *SettingsHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	settings := rg.Group("/settings")
 	settings.GET("", h.Get)
-	settings.PUT("", h.Update)
+	settings.PUT("", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Update)
 }
 
 // Get returns current settings.

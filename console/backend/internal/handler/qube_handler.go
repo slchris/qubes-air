@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -42,8 +43,8 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	{
 		qubes.GET("", h.List)
 		qubes.GET("/:id", h.GetByID)
-		qubes.POST("", h.Create)
-		qubes.PUT("/:id", h.Update)
+		qubes.POST("", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Create)
+		qubes.PUT("/:id", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Update)
 		qubes.DELETE("/:id", h.Delete)
 		qubes.POST("/:id/start", h.Start)
 		qubes.POST("/:id/stop", h.Stop)

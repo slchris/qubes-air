@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/service"
 )
@@ -23,8 +24,8 @@ func (h *InfraHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	infra := rg.Group("/infrastructure")
 	infra.GET("", h.List)
 	infra.GET("/:id", h.Get)
-	infra.POST("", h.Create)
-	infra.PUT("/:id", h.Update)
+	infra.POST("", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Create)
+	infra.PUT("/:id", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Update)
 	infra.DELETE("/:id", h.Delete)
 	infra.POST("/:id/connect", h.Connect)
 	infra.POST("/:id/disconnect", h.Disconnect)

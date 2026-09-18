@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/service"
 )
@@ -23,8 +24,8 @@ func (h *CredentialHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	creds := rg.Group("/credentials")
 	creds.GET("", h.List)
 	creds.GET("/:id", h.Get)
-	creds.POST("", h.Create)
-	creds.PUT("/:id", h.Update)
+	creds.POST("", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Create)
+	creds.PUT("/:id", middleware.MaxBodySize(middleware.MaxBodyBytes), h.Update)
 	creds.DELETE("/:id", h.Delete)
 }
 
