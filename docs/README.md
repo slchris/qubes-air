@@ -20,6 +20,7 @@
 | [Bootstrap](bootstrap-design.md) | agent 投递、CSR、证书续期和 provider 差异 |
 | [gRPC transport](grpc-transport-design.md) | RemoteVM 改写、Relay、mTLS 和服务契约 |
 | [Remote agent](remote-agent-design.md) | 普通 Linux 远端怎样提供受限 qrexec 语义 |
+| [MCP 接入](mcp-design.md) | MCP server 如何以非特权路径接入 Console API |
 | [RemoteVM 对齐](remotevm-alignment.md) | 本项目如何使用 Qubes OS R4.3 RemoteVM |
 | [路线图](roadmap-to-production.md) | 已完成能力和剩余工作 |
 
