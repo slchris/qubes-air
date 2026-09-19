@@ -267,6 +267,98 @@ func TestConfig_IsAuthEnabled(t *testing.T) {
 	assert.True(t, cfg.IsAuthEnabled())
 }
 
+// TestConfig_IsAuthEnabled_ScopedTokens — the scoped list enables enforcement
+// exactly like the legacy administrator token; an entry with an empty token
+// (which Validate would refuse at startup) does not count.
+func TestConfig_IsAuthEnabled_ScopedTokens(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.Tokens = []ScopedToken{{Name: "read", Token: "rt", Scope: "read-only"}}
+	assert.True(t, cfg.IsAuthEnabled())
+
+	cfg.Auth.Tokens = []ScopedToken{{Name: "empty", Token: "", Scope: "control"}}
+	assert.False(t, cfg.IsAuthEnabled())
+}
+
+// TestConfig_ValidateAuth — a malformed token list must fail Validate: an empty
+// token or an unknown scope would otherwise be silently skipped, denying an
+// operator the protection they believe they configured.
+func TestConfig_ValidateAuth(t *testing.T) {
+	tests := []struct {
+		name    string
+		tokens  []ScopedToken
+		wantErr string
+	}{
+		{
+			name:   "no tokens is valid (auth disabled)",
+			tokens: nil,
+		},
+		{
+			name:   "read-only and control are valid",
+			tokens: []ScopedToken{{Name: "r", Token: "rt", Scope: "read-only"}, {Name: "c", Token: "ct", Scope: "control"}},
+		},
+		{
+			name:    "empty token is refused",
+			tokens:  []ScopedToken{{Name: "r", Token: "", Scope: "read-only"}},
+			wantErr: "must not be empty",
+		},
+		{
+			name:    "unknown scope is refused",
+			tokens:  []ScopedToken{{Name: "r", Token: "rt", Scope: "admin"}},
+			wantErr: `scope must be "read-only" or "control"`,
+		},
+		{
+			name:    "empty scope is refused",
+			tokens:  []ScopedToken{{Name: "r", Token: "rt", Scope: ""}},
+			wantErr: `scope must be "read-only" or "control"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Auth.Tokens = tt.tokens
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestConfig_LoadFromFileScopedTokens — the token list is a config-file
+// surface; a binding that silently does not read leaves the console open while
+// the file promises tokens.
+func TestConfig_LoadFromFileScopedTokens(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "config-tokens-*.yaml")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	content := `
+auth:
+  api_token: ""
+  tokens:
+    - name: "read"
+      token: "reader-secret"
+      scope: "read-only"
+    - name: "ops"
+      token: "ops-secret"
+      scope: "control"
+`
+	_, err = tmpFile.WriteString(content)
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg, err := Load(tmpFile.Name())
+	require.NoError(t, err)
+	require.Len(t, cfg.Auth.Tokens, 2)
+	assert.Equal(t, ScopedToken{Name: "read", Token: "reader-secret", Scope: "read-only"}, cfg.Auth.Tokens[0])
+	assert.Equal(t, ScopedToken{Name: "ops", Token: "ops-secret", Scope: "control"}, cfg.Auth.Tokens[1])
+	assert.True(t, cfg.IsAuthEnabled())
+}
+
 func TestConfig_LoadFromEnvSecurity(t *testing.T) {
 	t.Setenv("QUBES_AIR_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
 	t.Setenv("QUBES_AIR_API_TOKEN", "env-token")

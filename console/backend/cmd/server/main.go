@@ -96,10 +96,31 @@ func logConfig(cfg *config.Config) {
 
 // authStatus returns a human-readable auth status for logging.
 func authStatus(cfg *config.Config) string {
-	if cfg.IsAuthEnabled() {
-		return "enabled (Bearer token)"
+	if !cfg.IsAuthEnabled() {
+		return "DISABLED"
 	}
-	return "DISABLED"
+	msg := "enabled (Bearer"
+	if cfg.Auth.APIToken != "" {
+		msg += "; administrator api_token"
+	}
+	if n := len(cfg.Auth.Tokens); n > 0 {
+		msg += fmt.Sprintf("; %d scoped token(s)", n)
+	}
+	return msg + ")"
+}
+
+// scopedTokens adapts the configured token list to the middleware's shape.
+// The legacy single api_token is handled inside ScopedAuth itself (control).
+func scopedTokens(cfg *config.Config) []middleware.Token {
+	tokens := make([]middleware.Token, 0, len(cfg.Auth.Tokens))
+	for _, t := range cfg.Auth.Tokens {
+		tokens = append(tokens, middleware.Token{
+			Name:  t.Name,
+			Value: t.Token,
+			Scope: middleware.Scope(t.Scope),
+		})
+	}
+	return tokens
 }
 
 // logSecurityWarnings emits prominent warnings for insecure configurations so
@@ -108,7 +129,7 @@ func logSecurityWarnings(cfg *config.Config) {
 	if !cfg.IsAuthEnabled() {
 		log.Printf("SECURITY WARNING: API authentication is DISABLED. " +
 			"All /api/v1 endpoints (including credential management) are open. " +
-			"Set auth.api_token (or QUBES_AIR_API_TOKEN) before exposing beyond localhost.")
+			"Set auth.api_token (or QUBES_AIR_API_TOKEN) or auth.tokens before exposing beyond localhost.")
 	}
 	if cfg.UsesDevEncryptionKey() {
 		log.Printf("SECURITY WARNING: using the built-in development encryption key. " +
@@ -831,11 +852,15 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	// probing (docs/bootstrap-design.md §9.3); the issuance logic lives in
 	// service.BootstrapIssuer.
 
-	// All /api/v1 routes require a valid Bearer token when an API token is
-	// configured. When none is configured, Auth is a pass-through and a
-	// warning is logged at startup (see logSecurityWarnings).
+	// All /api/v1 routes require a valid Bearer token when a token is
+	// configured (the legacy single api_token or the scoped list). When none
+	// is configured, the middleware is a pass-through and a warning is logged
+	// at startup (see logSecurityWarnings). RequireControl then enforces the
+	// fail-closed method rule on top of the resolved scope: GET/HEAD/OPTIONS
+	// are open to any authenticated scope, every other method needs control.
 	v1 := r.Group("/api/v1")
-	v1.Use(middleware.Auth(cfg.Auth.APIToken))
+	v1.Use(middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg)))
+	v1.Use(middleware.RequireControl())
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
 	deps.infraHandler.RegisterRoutes(v1)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/keyring"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"gopkg.in/yaml.v3"
 )
 
@@ -364,7 +365,31 @@ type AuthConfig struct {
 	// APIToken, when set, is required as a Bearer token on every /api/v1
 	// request. When empty, authentication is DISABLED (a warning is logged
 	// at startup). Set this before exposing the console beyond localhost.
+	//
+	// APIToken is the administrator token: it is accepted with control scope,
+	// it is not a legacy branch to be retired.
 	APIToken string `yaml:"api_token"`
+
+	// Tokens is the scoped-token list: named bearer tokens, each bound to an
+	// explicit scope ("read-only" or "control"). A read-only token may only
+	// perform the permissive methods (GET/HEAD/OPTIONS); every other method
+	// requires a control token (see middleware.RequireControl for the
+	// fail-closed method rule).
+	Tokens []ScopedToken `yaml:"tokens"`
+}
+
+// ScopedToken is one named bearer token and the scope it grants.
+//
+// The scope is fixed at configuration time and carried by the validated
+// request; the API has no endpoint to mint or widen a token, so ".../control"
+// cannot be upgraded through the API itself.
+type ScopedToken struct {
+	// Name is a human label for logs and audit; it carries no authority.
+	Name string `yaml:"name"`
+	// Token is the expected bearer token value.
+	Token string `yaml:"token"`
+	// Scope is "read-only" or "control" (config.ScopeReadOnly / ScopeControl).
+	Scope string `yaml:"scope"`
 }
 
 // devEncryptionKey is the well-known insecure key used only when no key is
@@ -372,8 +397,21 @@ type AuthConfig struct {
 const devEncryptionKey = "qubes-air-dev-encryption-key32!!" // 32 bytes for AES-256
 
 // IsAuthEnabled reports whether API authentication is enforced.
+//
+// Enforcement is enabled by the legacy administrator token OR by any scoped
+// token. An entry whose Token is empty would fail Validate() before the
+// console starts, so a running console never reaches this with a half-written
+// token silently ignored.
 func (c *Config) IsAuthEnabled() bool {
-	return c.Auth.APIToken != ""
+	if c.Auth.APIToken != "" {
+		return true
+	}
+	for _, t := range c.Auth.Tokens {
+		if t.Token != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // UsesDevEncryptionKey reports whether the insecure development key is in use.
@@ -722,6 +760,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid port: %d", c.Server.Port)
 	}
 
+	if err := c.validateAuth(); err != nil {
+		return err
+	}
+
 	if c.Server.TLS.Enabled {
 		if c.Server.TLS.CertFile == "" {
 			return fmt.Errorf("TLS enabled but cert_file not specified")
@@ -781,6 +823,26 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+// validateAuth fails fast on a malformed token list.
+//
+// A bad scope or an empty token must stop the console at startup rather than
+// be silently skipped: a token that is configured but ignored is a permission
+// the operator believes exists and an authorization decision made somewhere
+// else. Scope values live in middleware (the enforcing layer) so validation
+// and enforcement cannot drift apart.
+func (c *Config) validateAuth() error {
+	for i, t := range c.Auth.Tokens {
+		if t.Token == "" {
+			return fmt.Errorf("auth.tokens[%d] (%q): token must not be empty", i, t.Name)
+		}
+		if !middleware.ValidScope(t.Scope) {
+			return fmt.Errorf("auth.tokens[%d] (%q): scope must be %q or %q, got %q",
+				i, t.Name, middleware.ScopeReadOnly, middleware.ScopeControl, t.Scope)
+		}
+	}
 	return nil
 }
 
