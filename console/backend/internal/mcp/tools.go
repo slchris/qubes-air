@@ -61,6 +61,26 @@ func pathID(args map[string]any, key string) (string, error) {
 	return id, nil
 }
 
+// computerUseAppIDRe is the allowlist the {app} path segment must match. It is
+// the same character set the remote qubes.StartApp script permits and that the
+// Console API's service layer enforces (see service.ValidAppID). The app id
+// becomes a qrexec service ARGUMENT before it ever launches anything, so the
+// bar is tight on purpose: no slashes, no spaces, no length explosion. A
+// crafted id must not be able to redirect the request onto another route or to
+// forge a different service name.
+var computerUseAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,128}$`)
+
+// appPathID reads the required "app" argument and allowlists it for use in the
+// {app} path segment; it is the MCP-side twin of the allowlist the Console API
+// re-enforces at the service boundary.
+func appPathID(args map[string]any) (string, error) {
+	app := queryString(args, "app")
+	if app == "" || !computerUseAppIDRe.MatchString(app) {
+		return "", ErrInvalidParams
+	}
+	return app, nil
+}
+
 // textBlocks renders one or more text content items for a CallToolResult.
 func textBlocks(ts ...string) []ContentItem {
 	out := make([]ContentItem, 0, len(ts))
@@ -277,55 +297,81 @@ func controlTools(cl *Client) []*Tool {
 	}
 }
 
-// computerUseTools are Phase-1 stubs. They stay unregistered unless
-// --enable-computer-use is set, and even then every call fails loudly: the
-// group would act as the user on a graphical desktop, and nothing like that is
-// implemented yet. Better an explicit refusal than a silent no-op.
-func computerUseTools() []*Tool {
-	return []*Tool{
-		{
-			Name:        "desktop_apps_list",
-			Description: "(not implemented) List applications available in the connected desktop session.",
-			InputSchema: objSchema(nil),
-			Scope:       ScopeControl,
-			Method:      "N/A",
-			Path:        "",
-			Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-				return resultError("computer-use is not implemented in this phase; the desktop tool group is a stub"), nil
-			},
-		},
-		{
-			Name:        "desktop_app_launch",
-			Description: "(not implemented) Launch an application in the desktop session.",
-			InputSchema: objSchema(map[string]any{"app": strProp("Application name.")}, "app"),
-			Scope:       ScopeControl,
-			Method:      "N/A",
-			Path:        "",
-			Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-				return resultError("computer-use is not implemented in this phase; the desktop tool group is a stub"), nil
-			},
-		},
-		{
-			Name:        "desktop_frame_get",
-			Description: "(not implemented) Capture one frame of the desktop session.",
-			InputSchema: objSchema(nil),
-			Scope:       ScopeControl,
-			Method:      "N/A",
-			Path:        "",
-			Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-				return resultError("computer-use is not implemented in this phase; the desktop tool group is a stub"), nil
-			},
-		},
-		{
-			Name:        "desktop_input_send",
-			Description: "(not implemented) Inject input events into the desktop session.",
-			InputSchema: objSchema(map[string]any{"events": map[string]any{"type": "array", schemaKeyDescription: "Input events."}}, "events"),
-			Scope:       ScopeControl,
-			Method:      "N/A",
-			Path:        "",
-			Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-				return resultError("computer-use is not implemented in this phase; the desktop tool group is a stub"), nil
-			},
+// computerUseTools are the desktop-session tools. They stay unregistered unless
+// --enable-computer-use is set. desktop_apps_list / desktop_app_launch are
+// REAL actions backed by the Console API (GET /qubes/{id}/appmenus and
+// POST /qubes/{id}/apps/{app}/launch), which drive the qubes.StartApp qrexec
+// service on the target qube. desktop_frame_get / desktop_input_send remain
+// Phase-2 stubs that refuse loudly: delivering pixels and input needs an RFB or
+// Xpra session client this console process does not yet implement, and a silent
+// no-op would be worse than an explicit refusal.
+func computerUseTools(cl *Client) []*Tool {
+	// desktop_apps_list is a normal readGET: the appmenus endpoint is keyed by
+	// the qube id alone, and the menu text travels straight back as the result.
+	appsList := readGET(cl, "desktop_apps_list",
+		"List the applications available in a qube's desktop session (GET /api/v1/qubes/{id}/appmenus, backed by the qubes.StartApp agent service).",
+		"/api/v1/qubes/{id}/appmenus", "id",
+		nil, "id")
+
+	// desktop_app_launch is the one POST tool with TWO path parameters, so it
+	// builds its own path instead of going through callPath: both the {id} and
+	// the {app} argument are allowlisted before substitution, which is exactly
+	// the point (the app id becomes a qrexec service argument).
+	const launchPath = "/api/v1/qubes/{id}/apps/{app}/launch"
+	launch := &Tool{
+		Name:        "desktop_app_launch",
+		Description: "Launch an application in a qube's desktop session (POST /api/v1/qubes/{id}/apps/{app}/launch, backed by the qubes.StartApp+<app> agent service).",
+		InputSchema: objSchema(map[string]any{
+			"id":  strProp("The qube id (UUID)."),
+			"app": strProp("The application id (the same naming desktop_apps_list reports, e.g. firefox.desktop)."),
+		}, "id", "app"),
+		Scope:   ScopeControl,
+		Method:  http.MethodPost,
+		Path:    launchPath,
+		PathArg: "id",
+		Handler: func(ctx context.Context, args map[string]any) (*CallToolResult, error) {
+			id, err := pathID(args, "id")
+			if err != nil {
+				return nil, err
+			}
+			app, err := appPathID(args)
+			if err != nil {
+				return nil, err
+			}
+			path := strings.ReplaceAll(launchPath, "{id}", id)
+			path = strings.ReplaceAll(path, "{app}", app)
+			return doRequest(cl, ctx, http.MethodPost, path, nil, nil)
 		},
 	}
+
+	frameStub := &Tool{
+		Name:        "desktop_frame_get",
+		Description: "(not implemented) Capture one frame of the desktop session.",
+		InputSchema: objSchema(map[string]any{
+			"id": strProp("The qube id (UUID)."),
+		}, "id"),
+		Scope:  ScopeControl,
+		Method: "N/A",
+		Path:   "",
+		Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
+			return resultError("desktop_frame_get is not implemented: frame capture needs an RFB/Xpra session client this process does not ship yet"), nil
+		},
+	}
+
+	inputStub := &Tool{
+		Name:        "desktop_input_send",
+		Description: "(not implemented) Inject input events into the desktop session.",
+		InputSchema: objSchema(map[string]any{
+			"id":     strProp("The qube id (UUID)."),
+			"events": map[string]any{"type": "array", schemaKeyDescription: "Input events."},
+		}, "id", "events"),
+		Scope:  ScopeControl,
+		Method: "N/A",
+		Path:   "",
+		Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
+			return resultError("desktop_input_send is not implemented: input injection needs an RFB/Xpra session client this process does not ship yet"), nil
+		},
+	}
+
+	return []*Tool{appsList, launch, frameStub, inputStub}
 }

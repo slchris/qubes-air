@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,11 +40,40 @@ var (
 	// ErrUnreachable wraps a failure to reach a remote qube over the gRPC
 	// transport (cross-machine qrexec). The health-check call did not complete.
 	ErrUnreachable = errors.New("remote qube unreachable")
+	// ErrInvalidAppID means an app id cannot be used as a qrexec service
+	// argument: it either contains a character outside the .desktop id set or
+	// exceeds the length bound (see ValidAppID).
+	ErrInvalidAppID = errors.New("invalid app id")
 )
 
 // pingService is the qrexec service used by CheckReachable to probe a remote
 // qube's reachability over the tunnel.
 const pingService = "qubesair.Ping"
+
+// appmenusService is the qrexec service that lists a remote's desktop apps.
+const appmenusService = "qubes.GetAppmenus"
+
+// startAppServicePrefix is the qrexec service family that launches one app; the
+// app id is the service ARGUMENT ("qubes.StartApp+<app-id>"). Same shape the
+// native qubes-core-agent uses, so the remote script needs no changes.
+const startAppServicePrefix = "qubes.StartApp+"
+
+// MaxAppIDLen bounds a .desktop app id. Bound length so a crafted id cannot
+// grow a qrexec service argument without limit.
+const MaxAppIDLen = 128
+
+// validAppIDRe matches the app-id character set the remote qubes.StartApp
+// script itself allows ([A-Za-z0-9._+-]); the id becomes the qrexec service
+// argument, so anything else must be refused before it reaches the wire.
+var validAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,128}$`)
+
+// ValidAppID reports whether app may be used as the qrexec service argument of
+// qubes.StartApp. Enforced HERE (the point where the service name is built) and
+// again by the handler (so an invalid id maps to 400 before any transport
+// call).
+func ValidAppID(app string) bool {
+	return len(app) <= MaxAppIDLen && validAppIDRe.MatchString(app)
+}
 
 // QubeService defines qube business logic operations.
 type QubeService interface {
@@ -62,6 +92,13 @@ type QubeService interface {
 	// CheckReachable probes a remote qube over the gRPC transport (cross-machine
 	// qrexec health check). Returns the probe response on success.
 	CheckReachable(ctx context.Context, id string) (string, error)
+	// GetAppMenus lists the desktop applications of a remote qube over the gRPC
+	// transport (qubes.GetAppmenus). Returns the raw menu text on success.
+	GetAppMenus(ctx context.Context, id string) (string, error)
+	// LaunchApp starts one desktop application on a remote qube over the gRPC
+	// transport (qubes.StartApp+<app>). app must pass ValidAppID, otherwise it
+	// fails with ErrInvalidAppID before any transport call.
+	LaunchApp(ctx context.Context, id, app string) (string, error)
 	// ProbeAgent probes ONE qube's agent and records what it found. It is the
 	// single answer to "is this agent alive": the on-demand endpoint, the
 	// post-provision settle loop and the periodic reconciler all come through
@@ -804,6 +841,47 @@ func (s *QubeServiceImpl) CheckReachable(ctx context.Context, id string) (string
 		return "", fmt.Errorf("%w: ping %q: %s", ErrUnreachable, qube.Name, res.Reason)
 	}
 	return res.Pong, nil
+}
+
+// GetAppMenus lists the desktop apps of a remote qube, returning the raw menu
+// text emitted by qubes.GetAppmenus. The menu is enumerated on the remote by
+// the agent; this endpoint only forwards the text.
+func (s *QubeServiceImpl) GetAppMenus(ctx context.Context, id string) (string, error) {
+	qube, err := s.qubeRepo.GetByID(ctx, id)
+	if err != nil {
+		return "", ErrQubeNotFound
+	}
+	if err := s.verifyZoneConnected(ctx, qube.ZoneID); err != nil {
+		return "", err
+	}
+
+	resp, err := s.transport.Call(ctx, qube.Name, appmenusService, nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: qubes.GetAppmenus %q: %v", ErrUnreachable, qube.Name, err)
+	}
+	return string(resp), nil
+}
+
+// LaunchApp starts one desktop app on a remote qube. The app id becomes the
+// qrexec service argument ("qubes.StartApp+<app>"), so it is allowlisted BEFORE
+// the transport is touched — a malformed id must never reach the wire.
+func (s *QubeServiceImpl) LaunchApp(ctx context.Context, id, app string) (string, error) {
+	if !ValidAppID(app) {
+		return "", ErrInvalidAppID
+	}
+	qube, err := s.qubeRepo.GetByID(ctx, id)
+	if err != nil {
+		return "", ErrQubeNotFound
+	}
+	if err := s.verifyZoneConnected(ctx, qube.ZoneID); err != nil {
+		return "", err
+	}
+
+	resp, err := s.transport.Call(ctx, qube.Name, startAppServicePrefix+app, nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: qubes.StartApp %q %q: %v", ErrUnreachable, qube.Name, app, err)
+	}
+	return string(resp), nil
 }
 
 // ProbeAgent probes one qube's agent and records the outcome on the qube row.
