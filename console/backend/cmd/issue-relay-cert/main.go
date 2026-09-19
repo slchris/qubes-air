@@ -47,18 +47,26 @@ const relayCertLifetime = 24 * time.Hour
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("issue-relay-cert: ")
+	if err := run(); err != nil {
+		log.Fatal(logSafe(strings.TrimSpace(err.Error())))
+	}
+}
 
+// run executes the command. Failures are returned rather than logged so that
+// main's log.Fatal runs only after every deferred cleanup (the context cancel
+// and the database close) has completed.
+func run() error {
 	dsn := flag.String("db", "", "console sqlite DSN")
 	lifetime := flag.Duration("lifetime", relayCertLifetime, "certificate lifetime")
 	flag.Parse()
 
 	encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
 	if encKey == "" {
-		log.Fatal("QUBES_AIR_ENCRYPTION_KEY is required")
+		return errors.New("QUBES_AIR_ENCRYPTION_KEY is required")
 	}
 	args := flag.Args()
 	if len(args) < 1 {
-		log.Fatal("usage: issue-relay-cert [flags] <caller-qube-name>   (CSR on stdin)")
+		return errors.New("usage: issue-relay-cert [flags] <caller-qube-name>   (CSR on stdin)")
 	}
 	caller := args[0]
 
@@ -82,12 +90,13 @@ func main() {
 
 	signed, err := issueRelayCert(ca, caller, string(csrPEM), *lifetime)
 	if err != nil {
-		log.Fatalf("refused: %v", err)
+		return fmt.Errorf("refused: %v", err)
 	}
 
 	out, err := json.Marshal(signed)
 	must(err)
 	_, _ = os.Stdout.Write(out)
+	return nil
 }
 
 // issueRelayCert pins the CSR's common name to the caller's relay identity and
@@ -122,6 +131,17 @@ func secretNamed(ctx context.Context, r *repository.CredentialRepository, name s
 
 func must(err error) {
 	if err != nil {
-		log.Fatal(strings.TrimSpace(err.Error()))
+		log.Fatal(logSafe(strings.TrimSpace(err.Error()))) //nolint:gosec // G706: logSafe strips control characters before the value reaches the log
 	}
+}
+
+// logSafe strips control characters so an operator-supplied or remote value
+// cannot forge or break a log line (gosec G706).
+func logSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }

@@ -17,6 +17,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -48,9 +49,11 @@ func main() {
 	name := flag.String("name", "", "this relay's qube name (default: QubesDB /name)")
 	flag.Parse()
 
+	ctx := context.Background()
+
 	relayName := *name
 	if relayName == "" {
-		relayName = qubesdbName()
+		relayName = qubesdbName(ctx)
 	}
 	if relayName == "" {
 		log.Fatal("could not determine this relay's qube name; pass -name")
@@ -60,7 +63,7 @@ func main() {
 	keyPEM, csrPEM, err := generateKeyAndCSR(cn)
 	must(err)
 
-	signed, err := requestCert(*console, csrPEM)
+	signed, err := requestCert(ctx, *console, csrPEM)
 	must(err)
 
 	// Belt and braces: the console pins the CN, but verify the returned
@@ -99,8 +102,8 @@ func generateKeyAndCSR(cn string) (keyPEM, csrPEM string, err error) {
 // requestCert sends the CSR to the console over qrexec and parses the signed
 // certificate it returns. qrexec-client-vm connects stdin/stdout to the console
 // service; the CSR goes in, the JSON SignedCert comes back.
-func requestCert(console, csrPEM string) (*pki.SignedCert, error) {
-	cmd := exec.Command("qrexec-client-vm", console, issueService)
+func requestCert(ctx context.Context, console, csrPEM string) (*pki.SignedCert, error) {
+	cmd := exec.CommandContext(ctx, "qrexec-client-vm", console, issueService)
 	cmd.Stdin = strings.NewReader(csrPEM)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
@@ -188,8 +191,8 @@ func writeAtomic(path, data string, mode os.FileMode) error {
 // qubesdbName reads this qube's own name from QubesDB, the name dom0 also uses
 // as QREXEC_REMOTE_DOMAIN when this qube calls out — so the CN the relay signs
 // into its CSR matches what the console pins it to.
-func qubesdbName() string {
-	out, err := exec.Command("qubesdb-read", "/name").Output()
+func qubesdbName(ctx context.Context) string {
+	out, err := exec.CommandContext(ctx, "qubesdb-read", "/name").Output()
 	if err != nil {
 		return ""
 	}
