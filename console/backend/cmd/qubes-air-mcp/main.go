@@ -37,6 +37,7 @@ func run() int {
 	apiURL := flag.String("api-url", "http://127.0.0.1:8080", "Console API base URL (must reach only over loopback for production use)")
 	scopeFlag := flag.String("scope", string(mcp.ScopeReadOnly), "tool scope: read-only or control")
 	enableComputerUse := flag.Bool("enable-computer-use", false, "register the computer-use tool group (stubs; not implemented in this phase)")
+	allowNonLoopback := flag.Bool("allow-non-loopback", false, "permit a non-loopback --api-url; it must then be https, or the bearer token travels in cleartext")
 	flag.Parse()
 
 	scope, ok := mcp.ParseScope(*scopeFlag)
@@ -50,8 +51,9 @@ func run() int {
 	if token == "" {
 		log.Printf("warning: QUBES_AIR_MCP_TOKEN is not set; requests will carry no Authorization header")
 	}
-	if host := urlHost(*apiURL); !loopbackHost(host) {
-		log.Printf("warning: --api-url host %q is not loopback; the MCP process was designed to talk to the Console API over 127.0.0.1", logSafe(host))
+	if err := validateAPIURL(*apiURL, *allowNonLoopback); err != nil {
+		fmt.Fprintf(os.Stderr, "refusing --api-url %s: %v\n", logSafe(*apiURL), err)
+		return 2
 	}
 
 	client := mcp.NewClient(*apiURL, token)
@@ -88,6 +90,27 @@ func logSafe(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// validateAPIURL enforces the loopback-only default.
+//
+// A non-loopback Console API is refused unless the operator opts in with
+// --allow-non-loopback, and even then the URL must be https: over plain http
+// the bearer token would cross the network in cleartext. This is a refusal
+// rather than a warning because the token is the whole authority of this
+// process — a warning is something an operator scrolls past.
+func validateAPIURL(raw string, allowNonLoopback bool) error {
+	host := urlHost(raw)
+	if loopbackHost(host) {
+		return nil
+	}
+	if !allowNonLoopback {
+		return fmt.Errorf("host %q is not loopback: this process is designed to reach the Console API over 127.0.0.1 (pass --allow-non-loopback to override)", host)
+	}
+	if !strings.HasPrefix(raw, "https://") {
+		return fmt.Errorf("host %q is not loopback and the URL is not https: the bearer token would travel in cleartext", host)
+	}
+	return nil
 }
 
 // urlHost extracts the host portion of a URL, tolerating a bare host:port.

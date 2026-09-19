@@ -89,7 +89,15 @@ func NewClient(baseURL, token string, opts ...ClientOption) *Client {
 	c := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
-		client:  &http.Client{Timeout: DefaultAPITimeout},
+		client: &http.Client{
+			Timeout: DefaultAPITimeout,
+			// The Console API is reached directly. A redirect would aim this
+			// process — and the Authorization header it carries — at a host the
+			// operator never named, so follow none of them.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return fmt.Errorf("refusing redirect to %s: the Console API is reached directly", req.URL.Host)
+			},
+		},
 		maxBody: DefaultMaxResponseBody,
 	}
 	for _, o := range opts {
