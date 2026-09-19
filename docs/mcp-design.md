@@ -72,11 +72,41 @@ MCP server 不直接调用 service 层，而是作为 Console API 的 loopback H
 - computer-use 工具组**不注册**
 - 测试：协议编解码、工具清单、作用域拒绝、上游 4xx/5xx 透传、超时、未知工具
 
-### Phase 2（后续，未实现）
+### Phase 2（本次）
 
-- Console 侧签发分域 token（read-only / control 各自的 token），把作用域从 MCP 层下推到 API 层
-- computer-use 的帧与输入：接 StreamTCP（Xpra / RFB）
-- HTTP transport：绑定 lo / Tailscale，复用同一套 Bearer 校验
+**2a — 作用域下推到 API 层（分域 token）**
+
+Phase 1 的作用域只在 MCP 层强制，那是「实现约束」不是「权限约束」：一个 read-only 的 MCP 进程
+如果被换成一个直接打 API 的脚本，权限就没有了边界。因此把作用域做进 Console API：
+
+- `AuthConfig` 增加 `tokens`：`[{name, token, scope}]`，`scope` 为 `read-only` 或 `control`。
+- 中间件解析 Bearer token 得到作用域，挂到请求上下文；
+- **按方法收口**：`GET` / `HEAD` / `OPTIONS` 只需要任意已认证作用域，其余方法一律需要 `control`。
+  按方法而不是逐个路由标注，是为了让以后新加的写端点**默认就是受限的**（fail-closed）。
+- 单一 `api_token` 继续可用，按 `control` 处理（它是管理员令牌，不是遗留兼容分支）。
+- 未配置任何 token 时保持现状：认证关闭并按启动日志告警。
+
+**2b — computer-use：应用清单与启动应用（真实动作）**
+
+复用既有 qrexec 通路，不新造协议：
+
+- `GET /api/v1/qubes/{id}/appmenus`（read-only）→ 触发 `qubes.GetAppmenus`
+- `POST /api/v1/qubes/{id}/apps/{app}/launch`（control）→ 触发 `qubes.StartApp+<app>`
+- app id 必须按 allowlist 校验（`remote/qubes-rpc/qubes.StartApp` 自己用的就是
+  `[A-Za-z0-9._+-]`），不合法时**不得发出任何上游调用**。
+
+MCP 侧把 `desktop_apps_list` / `desktop_app_launch` 从 stub 换成真实实现。
+
+**2c — 帧与输入（仍未实现，明确记录）**
+
+`desktop_frame_get` / `desktop_input_send` 需要一个 RFB / Xpra 客户端接上既有
+`qubesair.StreamTCP+` 通道。这本身是一个独立的协议实现，不在本次范围内；两个工具
+**保持显式失败**，不会假装可用。
+
+### 仍未实现（Phase 3 候选）
+
+- computer-use 的帧与输入（见 2c）
+- HTTP transport：绑定 lo / Tailscale，复用同一套 Bearer 与作用域校验
 
 ## 验收
 
