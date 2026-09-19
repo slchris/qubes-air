@@ -213,26 +213,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	credentialRepo := repository.NewCredentialRepository(db, kr)
 	agentCertRepo := repository.NewAgentCertRepository(db)
 	bootstrapTokenRepo := repository.NewBootstrapTokenRepository(db)
-	// The snapshot makes the database the source of truth for which qubes
-	// exist: the executor renders it to the generated var-file before every
-	// terraform invocation, and refuses to act on a qube missing from it.
-	// Terraform's provider credentials come from the encrypted credential store
-	// too, injected into the subprocess environment. They are deliberately NOT
-	// passed as terraform variables: a variable's value is written to state in
-	// plaintext, which the state design forbids for long-lived credentials.
-	// The agent package is pinned by digest: the artifact store it comes from is
-	// unauthenticated plain HTTP, so the hash carried in the identity document
-	// is the only thing that makes the download safe to install.
-	certIssuer := service.NewCertIssuer(credentialRepo, agentCertRepo,
-		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen,
-		service.AgentPackage{
-			AptMirror:         cfg.Orchestrator.AptMirror,
-			AptSecurityMirror: cfg.Orchestrator.AptSecurityMirror,
-			URL:               cfg.Orchestrator.AgentPackageURL,
-			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
-			Version:           cfg.Orchestrator.AgentPackageVersion,
-		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore).
-		WithBootstrapTokens(bootstrapTokenRepo, 0)
+	certIssuer := newCertIssuer(cfg, credentialRepo, agentCertRepo, bootstrapTokenRepo)
 	if ds := cfg.Orchestrator.AgentSnippetDatastore; ds != "" {
 		// Said at startup because the two delivery paths are invisible from the
 		// outside once running, and they fail in completely different places: a
@@ -246,6 +227,13 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 			"new qubes will boot without an agent (set QUBES_AIR_AGENT_PACKAGE_URL and _SHA256)")
 	}
 
+	// The snapshot makes the database the source of truth for which qubes
+	// exist: the executor renders it to the generated var-file before every
+	// terraform invocation, and refuses to act on a qube missing from it.
+	// Terraform's provider credentials come from the encrypted credential store
+	// too, injected into the subprocess environment. They are deliberately NOT
+	// passed as terraform variables: a variable's value is written to state in
+	// plaintext, which the state design forbids for long-lived credentials.
 	exec := buildExecutor(cfg.Orchestrator,
 		service.NewQubeSnapshot(qubeRepo, zoneRepo, certIssuer),
 		service.NewTerraformEnvFunc(zoneRepo, credentialRepo,
@@ -263,46 +251,9 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		cfg.Orchestrator.AgentListen,
 		time.Duration(cfg.Orchestrator.AgentProbeTimeoutSeconds)*time.Second)
 
-	// Certificate renewal over the agent's existing mTLS channel. Built before
-	// the qube service because the service publishes the monitor's warnings into
-	// agent health on every probe — a renewal failure recorded only once would be
-	// erased by the next successful probe, leaving the fleet reading healthy
-	// until the day its certificates ran out.
-	certRenewals := buildCertRenewals(cfg, certIssuer, qubeRepo, agentCertRepo)
-	bootstraps := buildBootstrapMonitor(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo, qubeRepo)
+	certRenewals, bootstraps := newFleetMonitors(cfg, certIssuer, credentialRepo, agentCertRepo, bootstrapTokenRepo, qubeRepo)
 
-	// Data-disk unlocking rides on bootstrap: after a qube installs its identity
-	// (first provision, and again on every resume) the console derives the qube's
-	// LUKS key from its master secret and pushes it over verified mTLS to open
-	// /data. The master lives in the same encrypted credential store as the CA
-	// key and never leaves the console, so an encrypted qube's disk is only ever
-	// ciphertext on the remote. Non-encrypted qubes never trigger it.
-	dataUnlocker := service.NewAgentDataUnlocker(
-		certIssuer, service.NewDataKeyManager(credentialRepo),
-		cfg.Orchestrator.AgentListen, service.DefaultDataUnlockTimeout)
-	bootstraps.WithAfterBootstrap(dataUnlocker.UnlockData)
-
-	qubeSvcOpts := []service.QubeServiceOption{
-		service.WithExecutor(exec),
-		service.WithTransport(xport),
-		service.WithAgentProber(agentProber),
-		// Keeps a renewal failure attached to the qube's health on every probe,
-		// so it stays visible for the weeks between "renewal broke" and "the
-		// certificate expired" instead of for one minute.
-		service.WithRenewalWatch(certRenewals),
-		// Automatic node selection. Cluster credentials are resolved from the
-		// encrypted credential store via the zone's credential_id — never from
-		// the environment, so they can be rotated, scoped and audited in one
-		// place rather than living in a process's env.
-		service.WithPlacementDecider(clusterScheduler),
-		// Mint each agent's client certificate at qube creation. The CA lives in
-		// the credential store and is created on first use.
-		service.WithCertIssuer(certIssuer),
-		// Fleet default for encrypt_data when a create request omits it. Config
-		// decides, so flipping the fleet from plaintext to encrypted (or back)
-		// is a config change, not a code change.
-		service.WithEncryptDataDefault(cfg.Orchestrator.EncryptDataDefault),
-	}
+	qubeSvcOpts := newQubeServiceOptions(cfg, exec, xport, agentProber, clusterScheduler, certRenewals, certIssuer)
 
 	jobRepo := repository.NewJobRepository(db)
 	qubeSvc, runner, agents, jobLogs := startOrchestration(
@@ -348,6 +299,94 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		agents:            agents,
 		certRenewals:      certRenewals,
 	}, nil
+}
+
+// newCertIssuer wires agent-identity issuance around the console CA, which
+// lives in the encrypted credential store and which every minted or renewed
+// certificate is rooted in.
+//
+// The agent package is pinned by digest: the artifact store it comes from is
+// unauthenticated plain HTTP, so the hash carried in the identity document is
+// the only thing that makes the download safe to install.
+func newCertIssuer(
+	cfg *config.Config,
+	credentialRepo *repository.CredentialRepository,
+	agentCertRepo *repository.AgentCertRepository,
+	bootstrapTokenRepo *repository.BootstrapTokenRepository,
+) *service.CertIssuer {
+	return service.NewCertIssuer(credentialRepo, agentCertRepo,
+		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen,
+		service.AgentPackage{
+			AptMirror:         cfg.Orchestrator.AptMirror,
+			AptSecurityMirror: cfg.Orchestrator.AptSecurityMirror,
+			URL:               cfg.Orchestrator.AgentPackageURL,
+			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
+			Version:           cfg.Orchestrator.AgentPackageVersion,
+		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore).
+		WithBootstrapTokens(bootstrapTokenRepo, 0)
+}
+
+// newFleetMonitors wires the background monitors that keep the fleet reachable
+// and its identities current: certificate renewal over an agent's existing mTLS
+// channel, and the sweep that issues a first certificate to qubes holding none.
+//
+// Data-disk unlocking rides on bootstrap: after a qube installs its identity
+// (first provision, and again on every resume) the console derives the qube's
+// LUKS key from its master secret and pushes it over verified mTLS to open
+// /data. The master lives in the same encrypted credential store as the CA key
+// and never leaves the console, so an encrypted qube's disk is only ever
+// ciphertext on the remote. Non-encrypted qubes never trigger it.
+func newFleetMonitors(
+	cfg *config.Config,
+	certIssuer *service.CertIssuer,
+	credentialRepo *repository.CredentialRepository,
+	agentCertRepo *repository.AgentCertRepository,
+	bootstrapTokenRepo *repository.BootstrapTokenRepository,
+	qubeRepo repository.QubeRepository,
+) (*service.CertRenewalMonitor, *service.BootstrapMonitor) {
+	certRenewals := buildCertRenewals(cfg, certIssuer, qubeRepo, agentCertRepo)
+	bootstraps := buildBootstrapMonitor(cfg, certIssuer, bootstrapTokenRepo, agentCertRepo, qubeRepo)
+	dataUnlocker := service.NewAgentDataUnlocker(
+		certIssuer, service.NewDataKeyManager(credentialRepo),
+		cfg.Orchestrator.AgentListen, service.DefaultDataUnlockTimeout)
+	bootstraps.WithAfterBootstrap(dataUnlocker.UnlockData)
+	return certRenewals, bootstraps
+}
+
+// newQubeServiceOptions lists the cross-cutting wiring every qube operation
+// carries: the executor, the transport, agent health probing, certificate
+// issuance and renewal, automatic node selection, and the fleet default for
+// encrypt_data.
+func newQubeServiceOptions(
+	cfg *config.Config,
+	exec orchestrator.Executor,
+	xport transport.Transport,
+	agentProber *service.AgentProber,
+	clusterScheduler *service.ClusterScheduler,
+	certRenewals *service.CertRenewalMonitor,
+	certIssuer *service.CertIssuer,
+) []service.QubeServiceOption {
+	return []service.QubeServiceOption{
+		service.WithExecutor(exec),
+		service.WithTransport(xport),
+		service.WithAgentProber(agentProber),
+		// Keeps a renewal failure attached to the qube's health on every probe,
+		// so it stays visible for the weeks between "renewal broke" and "the
+		// certificate expired" instead of for one minute.
+		service.WithRenewalWatch(certRenewals),
+		// Automatic node selection. Cluster credentials are resolved from the
+		// encrypted credential store via the zone's credential_id — never from
+		// the environment, so they can be rotated, scoped and audited in one
+		// place rather than living in a process's env.
+		service.WithPlacementDecider(clusterScheduler),
+		// Mint each agent's client certificate at qube creation. The CA lives in
+		// the credential store and is created on first use.
+		service.WithCertIssuer(certIssuer),
+		// Fleet default for encrypt_data when a create request omits it. Config
+		// decides, so flipping the fleet from plaintext to encrypted (or back)
+		// is a config change, not a code change.
+		service.WithEncryptDataDefault(cfg.Orchestrator.EncryptDataDefault),
+	}
 }
 
 // startOrchestration builds and starts the qube service, the terraform runner

@@ -43,7 +43,15 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("relay-call: ")
+	if err := run(); err != nil {
+		log.Fatal(logSafe(strings.TrimSpace(err.Error())))
+	}
+}
 
+// run executes one relay call. Failures are returned rather than logged so
+// that main's log.Fatal runs only after every deferred cleanup (the context
+// cancel and, in mint mode, the database close) has completed.
+func run() error {
 	dsn := flag.String("db", "", "console sqlite DSN (mint mode)")
 	port := flag.String("port", "8443", "agent mTLS port")
 	// The address may be given explicitly; in provisioned mode it is required,
@@ -65,22 +73,16 @@ func main() {
 	stream := flag.Bool("stream", false, "raw TCP stream to a remote loopback port (service arg is the port)")
 	flag.Parse()
 
-	args := flag.Args()
-	if len(args) < 2 {
-		log.Fatal("usage: relay-call [flags] <target> <service>   (or -stream <target> <port>)")
-	}
-	target := args[0]
-	service := args[1]
-	if *stream {
-		// The agent side dials 127.0.0.1:<port>; the service name carries the port.
-		service = "qubesair.StreamTCP+" + args[1]
+	streamMode := *stream
+	target, service, err := parseRelayTarget(streamMode, flag.Args())
+	if err != nil {
+		return err
 	}
 
 	// Buffered calls take their request body from stdin; a stream pipes stdin live
 	// (do NOT drain it here) inside dialAndStream.
 	var body []byte
-	if !*stream {
-		var err error
+	if !streamMode {
 		body, err = io.ReadAll(os.Stdin)
 		must(err)
 	}
@@ -88,59 +90,99 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	var (
-		pair     tls.Certificate
-		pool     *x509.CertPool
-		endpoint = *addr
-	)
-	if *certFile != "" || *keyFile != "" || *caFile != "" {
-		// Provisioned mode: the relay does not hold the CA, so it cannot resolve
-		// endpoints from the console database either — the address is passed in
-		// (the relay's transport handler reads it from QubesDB).
-		if *certFile == "" || *keyFile == "" || *caFile == "" {
-			log.Fatal("provisioned mode needs -cert, -key and -ca together")
-		}
-		if endpoint == "" {
-			log.Fatal("provisioned mode needs -addr")
-		}
-		pair, pool = loadProvisioned(*certFile, *keyFile, *caFile)
-	} else {
-		// Mint mode (console-as-relay): read the CA from the console database and
-		// sign a short-lived client certificate on the spot, resolving the
-		// endpoint from the database when -addr was not given.
-		encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
-		if encKey == "" {
-			log.Fatal("QUBES_AIR_ENCRYPTION_KEY is required in mint mode")
-		}
-		db, err := database.New(&database.Config{DSN: *dsn})
-		must(err)
-		defer db.Close()
-		kr, err := keyring.NewSingle([]byte(encKey))
-		must(err)
-		creds := repository.NewCredentialRepository(db, kr)
-		if endpoint == "" {
-			endpoint, target = resolveAgent(ctx, repository.NewQubeRepository(db), target, *port)
-		}
-		ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
-			secretNamed(ctx, creds, "qubes-air-ca-key"))
-		must(err)
-		pair, pool = mintFromCA(ca)
+	pair, pool, endpoint, remoteName, err := resolveRelayCredentials(ctx, relayCredentialFlags{
+		dsn:  *dsn,
+		port: *port,
+		addr: *addr,
+		cert: *certFile,
+		key:  *keyFile,
+		ca:   *caFile,
+	}, target)
+	if err != nil {
+		return err
 	}
 
-	log.Printf("target=%s service=%s endpoint=%s stream=%v", target, service, endpoint, *stream)
-	if *stream {
+	log.Printf("target=%s service=%s endpoint=%s stream=%v", remoteName, service, endpoint, streamMode)
+	if streamMode {
 		// Pipe stdin ↔ remote loopback port ↔ stdout over mTLS; no LAN port.
-		if err := dialAndStream(ctx, pair, pool, endpoint, target, service); err != nil {
-			log.Fatalf("stream failed: %v", err)
+		if err := dialAndStream(ctx, pair, pool, endpoint, remoteName, service); err != nil {
+			return fmt.Errorf("stream failed: %w", err)
 		}
-		return
+		return nil
 	}
-	out, err := dialAndCall(ctx, pair, pool, endpoint, target, service, body)
+	out, err := dialAndCall(ctx, pair, pool, endpoint, remoteName, service, body)
 	if err != nil {
-		log.Fatalf("call failed: %v", err)
+		return fmt.Errorf("call failed: %w", err)
 	}
 	// Response bytes only — this is what qrexec hands back to the local caller.
 	_, _ = os.Stdout.Write(out)
+	return nil
+}
+
+// parseRelayTarget derives the target device and the remote service from the
+// positional arguments. In stream mode the positional service argument is the
+// remote loopback port, rewritten into the StreamTCP service form the agent
+// dials; the agent side then dials 127.0.0.1:<port>.
+func parseRelayTarget(stream bool, args []string) (target, service string, err error) {
+	if len(args) < 2 {
+		return "", "", errors.New("usage: relay-call [flags] <target> <service>   (or -stream <target> <port>)")
+	}
+	target, service = args[0], args[1]
+	if stream {
+		service = "qubesair.StreamTCP+" + args[1]
+	}
+	return target, service, nil
+}
+
+// relayCredentialFlags carries the plain flags that decide which credential
+// path relay-call takes: provisioned (cert/key/CA on disk, address required)
+// or mint (console CA from the database, address resolved by name when it is
+// omitted).
+type relayCredentialFlags struct {
+	dsn, port, addr, cert, key, ca string
+}
+
+// resolveRelayCredentials builds the mTLS client material for one call.
+//
+// Provisioned mode reads a console-issued client certificate and the CA from
+// disk and refuses to run without an explicit address: a relay that does not
+// hold the CA cannot resolve endpoints from the console database either — the
+// address is passed in (the relay's transport handler reads it from QubesDB).
+// Mint mode (console-as-relay) reads the CA from the console database and signs
+// a short-lived client certificate on the spot, resolving the endpoint from the
+// database when -addr was not given. The returned remoteName is the name the
+// agent is expected to answer to (it may differ from target in mint mode).
+func resolveRelayCredentials(ctx context.Context, f relayCredentialFlags, target string) (pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName string, err error) {
+	endpoint = f.addr
+	if f.cert != "" || f.key != "" || f.ca != "" {
+		if f.cert == "" || f.key == "" || f.ca == "" {
+			return tls.Certificate{}, nil, "", "", errors.New("provisioned mode needs -cert, -key and -ca together")
+		}
+		if endpoint == "" {
+			return tls.Certificate{}, nil, "", "", errors.New("provisioned mode needs -addr")
+		}
+		pair, pool = loadProvisioned(f.cert, f.key, f.ca)
+		return pair, pool, endpoint, target, nil
+	}
+
+	encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
+	if encKey == "" {
+		return tls.Certificate{}, nil, "", "", errors.New("QUBES_AIR_ENCRYPTION_KEY is required in mint mode")
+	}
+	db, err := database.New(&database.Config{DSN: f.dsn})
+	must(err)
+	defer db.Close()
+	kr, err := keyring.NewSingle([]byte(encKey))
+	must(err)
+	creds := repository.NewCredentialRepository(db, kr)
+	if endpoint == "" {
+		endpoint, target = resolveAgent(ctx, repository.NewQubeRepository(db), target, f.port)
+	}
+	ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
+		secretNamed(ctx, creds, "qubes-air-ca-key"))
+	must(err)
+	pair, pool = mintFromCA(ca)
+	return pair, pool, endpoint, target, nil
 }
 
 // mintFromCA signs a fresh short-lived client certificate from the console CA —
@@ -301,6 +343,17 @@ func must(err error) {
 	if err != nil {
 		// Trim the noisy wrapping some errors carry so the stderr line stays
 		// readable in a qrexec log.
-		log.Fatal(strings.TrimSpace(err.Error()))
+		log.Fatal(logSafe(strings.TrimSpace(err.Error()))) //nolint:gosec // G706: logSafe strips control characters before the value reaches the log
 	}
+}
+
+// logSafe strips control characters so an operator-supplied or remote value
+// cannot forge or break a log line (gosec G706).
+func logSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }

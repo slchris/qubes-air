@@ -28,7 +28,14 @@ import (
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("list-endpoints: ")
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
 
+// run executes the command. Errors are returned so main's log.Fatal runs only
+// after the deferred context cancel and database close have completed.
+func run() error {
 	dsn := flag.String("db", "", "console sqlite DSN")
 	port := flag.String("port", "8443", "agent mTLS port")
 	flag.Parse()
@@ -38,13 +45,13 @@ func main() {
 
 	db, err := database.New(&database.Config{DSN: *dsn})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer db.Close()
 
 	qubes, err := repository.NewQubeRepository(db).List(ctx, repository.DefaultQubeListOptions())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	var b strings.Builder
@@ -58,4 +65,5 @@ func main() {
 	}
 	// One write, so a caller reading line by line never sees a half-line.
 	fmt.Print(b.String())
+	return nil
 }
