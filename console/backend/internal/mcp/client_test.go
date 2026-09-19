@@ -211,3 +211,27 @@ func TestClient_ContextCancellation(t *testing.T) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
+
+// A redirect would aim this process — and the bearer token it carries — at a
+// host the operator never named. The client must refuse it outright: no
+// follow-up request, no token in the error.
+func TestClient_RefusesRedirects(t *testing.T) {
+	var hits int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, "http://127.0.0.1:1/elsewhere", http.StatusFound)
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, testToken)
+	_, err := c.Do(context.Background(), http.MethodGet, "/api/v1/status", nil, nil)
+	if err == nil {
+		t.Fatal("Do followed a redirect, want refusal")
+	}
+	if strings.Contains(err.Error(), testToken) {
+		t.Fatalf("refusal error leaked the token: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("upstream hit %d times, want exactly 1 (no follow-up request)", hits)
+	}
+}
