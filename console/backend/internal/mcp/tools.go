@@ -20,9 +20,13 @@ var ErrInvalidParams = errors.New("invalid tool parameters")
 // crafted id cannot drag a request onto a route it was not meant for.
 var safePathID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
+// schemaKeyDescription is the JSON Schema key repeated by every property
+// definition in this file.
+const schemaKeyDescription = "description"
+
 // strProp is one string property of an input schema.
 func strProp(desc string) map[string]any {
-	return map[string]any{"type": "string", "description": desc}
+	return map[string]any{"type": "string", schemaKeyDescription: desc}
 }
 
 // objSchema builds a JSON object schema (MCP inputSchema must be an object).
@@ -139,7 +143,7 @@ func readGET(cl *Client, name, desc, path, pathArg string, props map[string]any,
 
 // writeAction declares a control tool that posts an empty action against a
 // real write route (start / stop / delete / acknowledge).
-func writeAction(cl *Client, name, desc, method, path, pathArg string) *Tool {
+func writeAction(cl *Client, name, desc, method, path string) *Tool {
 	t := &Tool{
 		Name:        name,
 		Description: desc,
@@ -149,7 +153,7 @@ func writeAction(cl *Client, name, desc, method, path, pathArg string) *Tool {
 		Scope:   ScopeControl,
 		Method:  method,
 		Path:    path,
-		PathArg: pathArg,
+		PathArg: "id",
 	}
 	t.Handler = func(ctx context.Context, args map[string]any) (*CallToolResult, error) {
 		return callPath(cl, ctx, t, args, nil, nil)
@@ -242,12 +246,12 @@ var qubeCreateSchema = map[string]any{
 	"spec": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"vcpu":         map[string]any{"type": "integer", "description": "vCPUs."},
-			"memory":       map[string]any{"type": "integer", "description": "Memory in MB."},
-			"disk":         map[string]any{"type": "integer", "description": "Root disk in GB."},
-			"data_disk_gb": map[string]any{"type": "integer", "description": "Persistent data disk in GB."},
+			"vcpu":         map[string]any{"type": "integer", schemaKeyDescription: "vCPUs."},
+			"memory":       map[string]any{"type": "integer", schemaKeyDescription: "Memory in MB."},
+			"disk":         map[string]any{"type": "integer", schemaKeyDescription: "Root disk in GB."},
+			"data_disk_gb": map[string]any{"type": "integer", schemaKeyDescription: "Persistent data disk in GB."},
 			"node":         strProp("Cluster node to pin the qube to."),
-			"encrypt_data": map[string]any{"type": "boolean", "description": "Encrypt the data disk (nil = fleet default)."},
+			"encrypt_data": map[string]any{"type": "boolean", schemaKeyDescription: "Encrypt the data disk (nil = fleet default)."},
 		},
 	},
 }
@@ -263,13 +267,13 @@ func controlTools(cl *Client) []*Tool {
 			http.MethodPut, "/api/v1/qubes/{id}", "id",
 			map[string]any{"name": strProp("New name."), "spec": qubeCreateSchema["spec"]}, "id"),
 		writeAction(cl, "qube_delete", "Release a qube: compute is destroyed, the data disk is retained (DELETE /api/v1/qubes/{id}).",
-			http.MethodDelete, "/api/v1/qubes/{id}", "id"),
+			http.MethodDelete, "/api/v1/qubes/{id}"),
 		writeAction(cl, "qube_start", "Start (resume) a qube (POST /api/v1/qubes/{id}/start). Queues a job.",
-			http.MethodPost, "/api/v1/qubes/{id}/start", "id"),
+			http.MethodPost, "/api/v1/qubes/{id}/start"),
 		writeAction(cl, "qube_stop", "Stop (suspend) a qube (POST /api/v1/qubes/{id}/stop). Queues a job.",
-			http.MethodPost, "/api/v1/qubes/{id}/stop", "id"),
+			http.MethodPost, "/api/v1/qubes/{id}/stop"),
 		writeAction(cl, "alert_acknowledge", "Acknowledge a monitoring alert (POST /api/v1/monitoring/alerts/{id}/acknowledge).",
-			http.MethodPost, "/api/v1/monitoring/alerts/{id}/acknowledge", "id"),
+			http.MethodPost, "/api/v1/monitoring/alerts/{id}/acknowledge"),
 	}
 }
 
@@ -315,7 +319,7 @@ func computerUseTools() []*Tool {
 		{
 			Name:        "desktop_input_send",
 			Description: "(not implemented) Inject input events into the desktop session.",
-			InputSchema: objSchema(map[string]any{"events": map[string]any{"type": "array", "description": "Input events."}}, "events"),
+			InputSchema: objSchema(map[string]any{"events": map[string]any{"type": "array", schemaKeyDescription: "Input events."}}, "events"),
 			Scope:       ScopeControl,
 			Method:      "N/A",
 			Path:        "",

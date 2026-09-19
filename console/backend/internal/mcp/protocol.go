@@ -55,7 +55,7 @@ const (
 )
 
 // ErrLineTooLong is returned when a single stdio line exceeds the configured
-// cap. The stream cannot be re-synchronised after this, so the serve loop
+// cap. The stream cannot be re-synchronized after this, so the serve loop
 // terminates; callers must never try to keep reading.
 var ErrLineTooLong = errors.New("message exceeds maximum single-line size")
 

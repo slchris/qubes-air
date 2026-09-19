@@ -101,7 +101,7 @@ func NewClient(baseURL, token string, opts ...ClientOption) *Client {
 // Do performs one Console API request.
 //
 // path is already URL-encoded (callers build it from allowlisted inputs);
-// query is encoded here. body, when non-nil, is JSON-marshalled. Transport
+// query is encoded here. body, when non-nil, is JSON-marshaled. Transport
 // failures (dial, timeout, body over the cap) return an error that carries no
 // credentials. A non-2xx status arrives as an *APIResponse with StatusCode set.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body any) (*APIResponse, error) {
