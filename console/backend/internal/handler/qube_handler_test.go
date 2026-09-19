@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +16,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
+	"github.com/slchris/qubes-air/console/internal/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -274,4 +277,243 @@ func TestQubeHandler_Stop(t *testing.T) {
 	assert.NoError(t, err)
 	// Stop suspends: compute released, data retained.
 	assert.Equal(t, models.QubeStatusSuspended, qube.Status)
+}
+
+// setupQubeAppsTestRouter is setupQubeTestRouter plus an injected transport and
+// a ready qube, for the computer-use endpoints (appmenus / launch).
+func setupQubeAppsTestRouter(t *testing.T, xport transport.Transport) (*gin.Engine, string, *transport.FakeTransport, func()) {
+	t.Helper()
+
+	gin.SetMode(gin.TestMode)
+	fake, _ := xport.(*transport.FakeTransport)
+
+	tmpFile, err := os.CreateTemp("", "qube-apps-handler-test-*.db")
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg := database.DefaultConfig()
+	cfg.DSN = tmpFile.Name()
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+
+	zoneRepo := repository.NewZoneRepository(db)
+	qubeRepo := repository.NewQubeRepository(db)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, service.WithTransport(xport))
+
+	qubeHandler := NewQubeHandler(qubeSvc)
+	router := gin.New()
+	v1 := router.Group("/api/v1")
+	qubeHandler.RegisterRoutes(v1)
+
+	ctx := context.Background()
+	zone := createTestZoneForHandler(t, zoneSvc)
+	createdOp, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name:   "apps-qube",
+		Type:   models.QubeTypeApp,
+		ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+
+	cleanup := func() {
+		db.Close()
+		os.Remove(tmpFile.Name())
+	}
+	return router, createdOp.Qube.ID, fake, cleanup
+}
+
+func TestQubeHandler_GetAppMenus(t *testing.T) {
+	fake := &transport.FakeTransport{
+		RespFn: func(target, service string, _ []byte) ([]byte, error) {
+			assert.Equal(t, "apps-qube", target)
+			assert.Equal(t, "qubes.GetAppmenus", service)
+			return []byte("firefox.desktop:Name=Firefox\n"), nil
+		},
+	}
+	router, id, _, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/qubes/"+id+"/appmenus", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "firefox.desktop:Name=Firefox")
+	assert.Equal(t, 1, fake.CallCount())
+}
+
+func TestQubeHandler_GetAppMenus_TransportError(t *testing.T) {
+	fake := &transport.FakeTransport{
+		RespFn: func(_, _ string, _ []byte) ([]byte, error) {
+			return nil, errors.New("tunnel down")
+		},
+	}
+	router, id, _, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/qubes/"+id+"/appmenus", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestQubeHandler_GetAppMenus_NotFound(t *testing.T) {
+	fake := &transport.FakeTransport{}
+	router, _, _, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/qubes/does-not-exist/appmenus", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Zero(t, fake.CallCount())
+}
+
+func TestQubeHandler_LaunchApp(t *testing.T) {
+	fake := &transport.FakeTransport{
+		RespFn: func(target, service string, _ []byte) ([]byte, error) {
+			assert.Equal(t, "apps-qube", target)
+			assert.Equal(t, "qubes.StartApp+firefox.desktop", service)
+			return []byte("qubes.StartApp: launched 'firefox.desktop' on :100\n"), nil
+		},
+	}
+	router, id, _, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+id+"/apps/firefox.desktop/launch", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "launched")
+	assert.Equal(t, "qubes.StartApp+firefox.desktop", fake.Calls[0].Service)
+}
+
+// TestQubeHandler_LaunchApp_InvalidAppID — a malformed app id is refused and
+// NEVER reaches the transport (zero upstream calls). Two distinct boundaries
+// both hold:
+//
+//   - a separator injected through the URL (encoded or not) is torn apart by
+//     routing itself: the request never matches the :app route and is refused
+//     as 404 without the handler — let alone the service — being consulted;
+//   - a non-separator that still fails the allowlist (space, newline, over-long)
+//     reaches the handler and is refused there with an explicit 400.
+//
+// Either way the transport is provably untouched, which is the security
+// property this test exists for.
+func TestQubeHandler_LaunchApp_InvalidAppID(t *testing.T) {
+	// A fingerprinting transport: it must not be consulted at all.
+	fake := &transport.FakeTransport{}
+	router, id, fake, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	refused404 := []struct{ name, app string }{
+		{"path traversal", "..%2Ffirefox"},
+		{"slash", "a%2Fb"},
+		{"bare traversal", "../firefox"},
+		{"bare slash", "a/b"},
+	}
+	for _, tt := range refused404 {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/v1/qubes/"+id+"/apps/"+tt.app+"/launch", nil)
+			router.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusNotFound, w.Code)
+		})
+	}
+
+	rejected400 := []struct{ name, app string }{
+		{"space", "a%20b"},
+		{"newline", "a%0Ab"},
+	}
+	for _, tt := range rejected400 {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("POST", "/api/v1/qubes/"+id+"/apps/"+tt.app+"/launch", nil)
+			router.ServeHTTP(w, req)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+		})
+	}
+
+	// Over-long: a plain (unencoded) path segment of allowed characters.
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST",
+		"/api/v1/qubes/"+id+"/apps/"+strings.Repeat("a", service.MaxAppIDLen+1)+"/launch", nil)
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	assert.Zero(t, fake.CallCount(), "an invalid app id must never reach the transport")
+}
+
+// TestQubeHandler_LaunchApp_InvalidAppID_Direct exercises the handler's
+// allowlist boundary directly, including the empty param, which cannot be
+// expressed as a URL path segment.
+func TestQubeHandler_LaunchApp_InvalidAppID_Direct(t *testing.T) {
+	fake := &transport.FakeTransport{}
+	svc, _, cleanup := appTestService(t, fake)
+	defer cleanup()
+	h := NewQubeHandler(svc)
+
+	for _, bad := range []string{"", "../firefox", "a/b", "a b", "a\nb", strings.Repeat("a", service.MaxAppIDLen+1)} {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest("POST", "/api/v1/qubes/x/apps/x/launch", nil)
+		c.Params = gin.Params{
+			{Key: "id", Value: "some-qube"},
+			{Key: "app", Value: bad},
+		}
+		h.LaunchApp(c)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "app %q", bad)
+	}
+	assert.Zero(t, fake.CallCount(), "an invalid app id must never reach the transport")
+}
+
+// appTestService builds a QubeService with a fake transport and a connected
+// zone plus one registered qube, ready for direct handler calls.
+func appTestService(t *testing.T, xport transport.Transport) (service.QubeService, string, func()) {
+	t.Helper()
+
+	tmpFile, err := os.CreateTemp("", "qube-apps-service-test-*.db")
+	require.NoError(t, err)
+	tmpFile.Close()
+
+	cfg := database.DefaultConfig()
+	cfg.DSN = tmpFile.Name()
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+
+	zoneRepo := repository.NewZoneRepository(db)
+	qubeRepo := repository.NewQubeRepository(db)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, service.WithTransport(xport))
+
+	zone := createTestZoneForHandler(t, zoneSvc)
+	op, err := qubeSvc.Create(context.Background(), &models.QubeCreateRequest{
+		Name: "apps-qube", Type: models.QubeTypeApp, ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+
+	cleanup := func() {
+		db.Close()
+		os.Remove(tmpFile.Name())
+	}
+	return qubeSvc, op.Qube.ID, cleanup
+}
+
+func TestQubeHandler_LaunchApp_TransportError(t *testing.T) {
+	fake := &transport.FakeTransport{
+		RespFn: func(_, _ string, _ []byte) ([]byte, error) {
+			return nil, errors.New("tunnel down")
+		},
+	}
+	router, id, _, cleanup := setupQubeAppsTestRouter(t, fake)
+	defer cleanup()
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+id+"/apps/firefox.desktop/launch", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 }

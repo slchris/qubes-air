@@ -327,11 +327,110 @@ func TestToolsCall_CreateRelaysArgumentsAsBody(t *testing.T) {
 	}
 }
 
+// TestToolsCall_DesktopAppsList — the real appmenus action: GET against the
+// qube-scoped endpoint, menu text returned verbatim.
+func TestToolsCall_DesktopAppsList(t *testing.T) {
+	f := newFixture(t, ScopeControl, true)
+	rec := &recorder{}
+	f.mux.HandleFunc("/api/v1/qubes/", rec.handle(http.StatusOK,
+		"firefox.desktop:Name=Firefox\norg.gnome.Terminal:Name=Terminal\n"))
+
+	resp := f.call(t, "desktop_apps_list", `{"id":"qube-1"}`)
+	if resp.Error != nil {
+		t.Fatalf("%+v", resp.Error)
+	}
+	last := rec.last()
+	if last.Method != http.MethodGet || last.URL.Path != "/api/v1/qubes/qube-1/appmenus" {
+		t.Fatalf("request = %v %s", last.Method, last.URL.Path)
+	}
+	if text := resultText(t, resp); !strings.Contains(text, "firefox.desktop") {
+		t.Fatalf("result = %q", text)
+	}
+}
+
+func TestToolsCall_DesktopAppsList_MissingID(t *testing.T) {
+	f := newFixture(t, ScopeControl, true)
+	f.mux.HandleFunc("/api/v1/", (&recorder{}).handle(http.StatusOK, `{}`))
+
+	resp := f.call(t, "desktop_apps_list", `{}`)
+	if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("want -32602, got %+v", resp.Error)
+	}
+}
+
+// TestToolsCall_DesktopAppLaunch — the app id becomes the URL path segment (and
+// behind the Console API, the qrexec service argument).
+func TestToolsCall_DesktopAppLaunch(t *testing.T) {
+	f := newFixture(t, ScopeControl, true)
+	rec := &recorder{}
+	f.mux.HandleFunc("/api/v1/qubes/", rec.handle(http.StatusOK,
+		"qubes.StartApp: launched 'firefox.desktop' on :100\n"))
+
+	resp := f.call(t, "desktop_app_launch", `{"id":"qube-1","app":"firefox.desktop"}`)
+	if resp.Error != nil {
+		t.Fatalf("%+v", resp.Error)
+	}
+	last := rec.last()
+	if last.Method != http.MethodPost || last.URL.Path != "/api/v1/qubes/qube-1/apps/firefox.desktop/launch" {
+		t.Fatalf("request = %v %s", last.Method, last.URL.Path)
+	}
+	if text := resultText(t, resp); !strings.Contains(text, "launched") {
+		t.Fatalf("result = %q", text)
+	}
+}
+
+// TestToolsCall_DesktopAppLaunch_InvalidApp — an app id that fails the
+// allowlist is refused with -32602 BEFORE any upstream request is made: the
+// upstream recorder proves zero calls. Slashes, spaces and separators are the
+// attacks that would otherwise redirect the request or forge a qrexec service
+// argument.
+func TestToolsCall_DesktopAppLaunch_InvalidApp(t *testing.T) {
+	f := newFixture(t, ScopeControl, true)
+	rec := &recorder{}
+	f.mux.HandleFunc("/api/v1/", rec.handle(http.StatusOK, `{}`))
+
+	badApps := []string{
+		"",                       // empty
+		"../firefox",             // path traversal
+		"a/b",                    // separator
+		"a b",                    // space
+		"a\nb",                   // newline
+		strings.Repeat("a", 129), // over-long
+	}
+	for _, app := range badApps {
+		args := `{"id":"qube-1","app":` + jsonQuote(app) + `}`
+		resp := f.call(t, "desktop_app_launch", args)
+		if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+			t.Fatalf("app %q: want -32602, got %+v", app, resp.Error)
+		}
+	}
+	// Missing required argument entirely.
+	resp := f.call(t, "desktop_app_launch", `{"id":"qube-1"}`)
+	if resp.Error == nil || resp.Error.Code != CodeInvalidParams {
+		t.Fatalf("missing app: want -32602, got %+v", resp.Error)
+	}
+	if got := rec.count(); got != 0 {
+		t.Fatalf("invalid app ids made %d upstream calls, want 0", got)
+	}
+}
+
+// TestToolsCall_DesktopAppLaunch_UpstreamError — a transport/upstream failure
+// (here a 502) surfaces as a failed tool result, not a JSON-RPC error.
+func TestToolsCall_DesktopAppLaunch_UpstreamError(t *testing.T) {
+	f := newFixture(t, ScopeControl, true)
+	f.mux.HandleFunc("/api/v1/", (&recorder{}).handle(http.StatusBadGateway, `qube is unreachable over the transport`))
+
+	resp := f.call(t, "desktop_app_launch", `{"id":"qube-1","app":"firefox.desktop"}`)
+	if !isErrorResult(resp) {
+		t.Fatalf("want failed result, got %+v", resp.Result)
+	}
+}
+
 func TestToolsCall_ComputerUseStubsRefuseLoudly(t *testing.T) {
 	f := newFixture(t, ScopeControl, true)
 
-	for _, name := range []string{"desktop_apps_list", "desktop_app_launch", "desktop_frame_get", "desktop_input_send"} {
-		resp := f.call(t, name, `{}`)
+	for _, name := range []string{"desktop_frame_get", "desktop_input_send"} {
+		resp := f.call(t, name, `{"id":"qube-1"}`)
 		text := resultText(t, resp)
 		if !isErrorResult(resp) || !strings.Contains(text, "not implemented") {
 			t.Fatalf("%s: text=%q isError=%v", name, text, isErrorResult(resp))

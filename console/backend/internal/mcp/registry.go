@@ -86,7 +86,7 @@ func NewRegistry(scope Scope, enableComputerUse bool, cl *Client) *Registry {
 			r.add(t)
 		}
 		if enableComputerUse {
-			for _, t := range computerUseTools() {
+			for _, t := range computerUseTools(cl) {
 				r.add(t)
 			}
 		}

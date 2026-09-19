@@ -3,6 +3,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +49,8 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		qubes.POST("/:id/start", h.Start)
 		qubes.POST("/:id/stop", h.Stop)
 		qubes.GET("/:id/reachable", h.CheckReachable)
+		qubes.GET("/:id/appmenus", h.GetAppMenus)
+		qubes.POST("/:id/apps/:app/launch", h.LaunchApp)
 		qubes.GET("/:id/certs", h.ListCerts)
 	}
 }
@@ -207,7 +210,42 @@ func (h *QubeHandler) CheckReachable(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"reachable": true, "response": resp})
 }
 
-// handleQubeError maps service errors to HTTP responses.
+// GetAppMenus handles GET /qubes/:id/appmenus. It asks the remote qube for its
+// desktop app menu (qubes.GetAppmenus over the gRPC transport) and returns the
+// menu text — the shape the MCP desktop_apps_list tool forwards verbatim.
+func (h *QubeHandler) GetAppMenus(c *gin.Context) {
+	resp, err := h.qubeSvc.GetAppMenus(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		handleQubeError(c, err)
+		return
+	}
+
+	c.String(http.StatusOK, resp)
+}
+
+// LaunchApp handles POST /qubes/:id/apps/:app/launch. It starts one desktop app
+// on the remote qube (qubes.StartApp+<app> over the gRPC transport).
+//
+// The app id becomes the qrexec service ARGUMENT, so it is allowlisted HERE
+// before the service is consulted: an invalid id answers 400 and provably never
+// reaches the transport, because the service is never called.
+func (h *QubeHandler) LaunchApp(c *gin.Context) {
+	app := c.Param("app")
+	if !service.ValidAppID(app) {
+		respondError(c, http.StatusBadRequest,
+			fmt.Errorf("%w: app id must match [A-Za-z0-9._+-] and be at most %d characters", service.ErrInvalidAppID, service.MaxAppIDLen))
+		return
+	}
+
+	resp, err := h.qubeSvc.LaunchApp(c.Request.Context(), c.Param("id"), app)
+	if err != nil {
+		handleQubeError(c, err)
+		return
+	}
+
+	c.String(http.StatusOK, resp)
+}
+
 // ListCerts returns the certificates issued to a qube's agent.
 //
 // Deliberately metadata only — fingerprint, validity, revocation state. The
@@ -245,6 +283,7 @@ func respondOperation(c *gin.Context, status int, op *service.Operation) {
 	c.JSON(status, body)
 }
 
+// handleQubeError maps service errors to HTTP responses.
 func handleQubeError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, repository.ErrTransitionConflict):
@@ -263,6 +302,8 @@ func handleQubeError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrInvalidQubeName):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrInvalidQubeType):
+		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrInvalidAppID):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrUnreachable):
 		respondError(c, http.StatusBadGateway, err)
