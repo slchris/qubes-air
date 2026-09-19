@@ -23,6 +23,12 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run holds main's body and returns an exit code instead of calling os.Exit,
+// so the deferred signal cleanup below actually runs (gocritic exitAfterDefer).
+func run() int {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	// stdout carries the MCP protocol: every log line must go to stderr or it
 	// would corrupt the newline-delimited JSON stream.
@@ -37,7 +43,7 @@ func main() {
 	if !ok {
 		fmt.Fprintf(os.Stderr, "invalid --scope %q: must be %q or %q\n",
 			*scopeFlag, mcp.ScopeReadOnly, mcp.ScopeControl)
-		os.Exit(2)
+		return 2
 	}
 
 	token := os.Getenv("QUBES_AIR_MCP_TOKEN")
@@ -45,7 +51,7 @@ func main() {
 		log.Printf("warning: QUBES_AIR_MCP_TOKEN is not set; requests will carry no Authorization header")
 	}
 	if host := urlHost(*apiURL); !loopbackHost(host) {
-		log.Printf("warning: --api-url host %q is not loopback; the MCP process was designed to talk to the Console API over 127.0.0.1", host)
+		log.Printf("warning: --api-url host %q is not loopback; the MCP process was designed to talk to the Console API over 127.0.0.1", logSafe(host))
 	}
 
 	client := mcp.NewClient(*apiURL, token)
@@ -53,8 +59,8 @@ func main() {
 	codec := mcp.NewCodec(os.Stdin, os.Stdout)
 	server := mcp.NewServer(codec, registry)
 
-	log.Printf("qubes-air-mcp serving on stdio: scope=%s tools=%d computer_use=%v api=%s",
-		scope, len(registry.Tools()), *enableComputerUse, *apiURL)
+	log.Printf("qubes-air-mcp serving on stdio: scope=%s tools=%d computer_use=%v api=%s", //nolint:gosec // G706: the api URL is passed through logSafe, which strips control characters before it reaches the log
+		scope, len(registry.Tools()), *enableComputerUse, logSafe(*apiURL))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -62,14 +68,26 @@ func main() {
 	if err := server.Serve(ctx); err != nil {
 		if errors.Is(err, mcp.ErrLineTooLong) {
 			log.Printf("mcp: refusing an over-long frame; exiting")
-			os.Exit(1)
+			return 1
 		}
 		if ctx.Err() != nil {
-			return
+			return 0
 		}
 		log.Printf("mcp: %v", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// logSafe strips control characters so an operator-supplied value cannot forge
+// or break a log line (gosec G706).
+func logSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // urlHost extracts the host portion of a URL, tolerating a bare host:port.

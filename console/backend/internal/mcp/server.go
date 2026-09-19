@@ -39,7 +39,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 			if errors.Is(err, ErrLineTooLong) {
 				// One last reply with a null id, then stop.
-				_ = s.respond(nil, &Response{JSONRPC: JSONRPCVersion, Error: &RPCError{
+				_ = s.respond(&Response{JSONRPC: JSONRPCVersion, Error: &RPCError{
 					Code:    CodeParseError,
 					Message: "message exceeds maximum single-line size",
 				}})
@@ -55,7 +55,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		if err := json.Unmarshal(raw, &req); err != nil {
 			// Invalid JSON on its own line: the next line is still a valid
 			// boundary, so the loop may continue after answering.
-			if err := s.respond(nil, &Response{JSONRPC: JSONRPCVersion, Error: &RPCError{
+			if err := s.respond(&Response{JSONRPC: JSONRPCVersion, Error: &RPCError{
 				Code:    CodeParseError,
 				Message: "parse error: invalid JSON",
 			}}); err != nil {
@@ -75,7 +75,7 @@ func (s *Server) Serve(ctx context.Context) error {
 func (s *Server) dispatch(ctx context.Context, req *Request) error {
 	if req.JSONRPC != JSONRPCVersion || req.Method == "" {
 		if !req.Notification() {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 				Code:    CodeInvalidRequest,
 				Message: "invalid request: expected jsonrpc \"2.0\" and a method",
 			}})
@@ -90,12 +90,12 @@ func (s *Server) dispatch(ctx context.Context, req *Request) error {
 		return nil
 	case MethodPing:
 		if !req.Notification() {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: map[string]any{}})
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: map[string]any{}})
 		}
 		return nil
 	case MethodToolsList:
 		if !req.Notification() {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: ListToolsResult{Tools: s.reg.Tools()}})
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: ListToolsResult{Tools: s.reg.Tools()}})
 		}
 		return nil
 	case MethodToolsCall:
@@ -105,7 +105,7 @@ func (s *Server) dispatch(ctx context.Context, req *Request) error {
 		return nil
 	default:
 		if !req.Notification() {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 				Code:    CodeMethodNotFound,
 				Message: "method not found: " + req.Method,
 			}})
@@ -119,7 +119,7 @@ func (s *Server) handleInitialize(req *Request) error {
 	var params InitializeParams
 	if len(req.Params) > 0 && !emptyObject(req.Params) {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 				Code:    CodeInvalidParams,
 				Message: "invalid initialize params: " + err.Error(),
 			}})
@@ -133,7 +133,7 @@ func (s *Server) handleInitialize(req *Request) error {
 		},
 		ServerInfo: Implementation{Name: serverName, Version: serverVersion},
 	}
-	return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+	return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
 }
 
 // handleToolsCall runs one tool. Name/protocol violations are JSON-RPC errors;
@@ -141,13 +141,13 @@ func (s *Server) handleInitialize(req *Request) error {
 func (s *Server) handleToolsCall(ctx context.Context, req *Request) error {
 	var params CallToolParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+		return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 			Code:    CodeInvalidParams,
 			Message: "invalid tools/call params: " + err.Error(),
 		}})
 	}
 	if params.Name == "" {
-		return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+		return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 			Code:    CodeInvalidParams,
 			Message: "missing tool name",
 		}})
@@ -159,7 +159,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) error {
 		// not use never exists in it, so this reply is both "unknown" and
 		// "denied" at once — and a read-only process provably cannot reach a
 		// control tool even by name.
-		return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+		return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 			Code:    CodeInvalidParams,
 			Message: "unknown tool: " + params.Name,
 		}})
@@ -168,7 +168,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) error {
 	args := map[string]any{}
 	if len(params.Arguments) > 0 && !emptyObject(params.Arguments) {
 		if err := json.Unmarshal(params.Arguments, &args); err != nil {
-			return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+			return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 				Code:    CodeInvalidParams,
 				Message: "invalid tool arguments: " + err.Error(),
 			}})
@@ -180,7 +180,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) error {
 	case err == nil && result == nil:
 		result = &CallToolResult{}
 	case errors.Is(err, ErrInvalidParams):
-		return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
+		return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Error: &RPCError{
 			Code:    CodeInvalidParams,
 			Message: fmt.Sprintf("invalid arguments for tool %q: %v", params.Name, err),
 		}})
@@ -189,7 +189,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req *Request) error {
 		// losing it to a protocol error.
 		result = resultError("tool %q failed: %v", params.Name, err)
 	}
-	return s.respond(req.ID, &Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+	return s.respond(&Response{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
 }
 
 // emptyObject reports whether the raw JSON is "{}" or whitespace.
@@ -198,6 +198,6 @@ func emptyObject(raw json.RawMessage) bool {
 }
 
 // respond sends one response line.
-func (s *Server) respond(id json.RawMessage, resp *Response) error {
+func (s *Server) respond(resp *Response) error {
 	return s.codec.WriteJSON(resp)
 }
