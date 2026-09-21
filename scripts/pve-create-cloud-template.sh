@@ -12,7 +12,7 @@
 #   - Apple Silicon 上 `-accel kvm` 无效 (只有 tcg), x86_64 镜像要全软件模拟。
 #   本脚本用 `qm` 在节点本地完成同样的事, 无需上述任何网络条件。
 #
-# 产出: 一个 terraform 模块可以直接 clone 的模板 VM。满足模块的硬要求:
+# 产出: 一个 provider adapter 可以直接 clone 的模板 VM。满足其硬要求:
 #   systemd + cloud-init + qemu-guest-agent + **启动盘在 scsi0** + sshd 公钥登录
 #
 # 用法:
@@ -92,8 +92,8 @@ echo "${BOLD}================================================================${N
 echo
 warn "你的集群是**多节点**的 (已观测到 infra-node1/2/4/6, ingress 在轮询)。"
 warn "而 local-lvm 是**节点本地存储** —— 在这台建的模板, 别的节点上不存在。"
-warn "务必确认这就是你打算跑 VM 的那个节点, 并且 terraform 里的"
-warn "  node_name 要写成: ${BOLD}${NODE}${NC}"
+warn "务必确认这就是你打算跑 VM 的那个节点, 并且 console zone 配置里的"
+warn "  node 要写成: ${BOLD}${NODE}${NC}"
 echo
 read -rp "确认在 ${NODE} 上继续? [y/N] " ans
 [[ "$ans" == "y" || "$ans" == "Y" ]] || die "已取消"
@@ -103,7 +103,7 @@ if qm status "$VMID" &>/dev/null; then
   die "VMID $VMID 已存在。换一个 VMID, 或先手动确认后销毁: qm destroy $VMID"
 fi
 
-# 存储可用性检查 —— tfvars 默认的 local-lvm 未必存在
+# 存储可用性检查 —— console zone 默认的 local-lvm 未必存在
 info "本节点可用存储:"
 pvesm status | awk 'NR==1 || $2=="lvmthin" || $2=="dir" || $2=="zfspool" || $2=="lvm" || $2=="rbd" || $2=="nfs" {print "      "$0}'
 echo
@@ -164,7 +164,7 @@ info "镜像虚拟大小: ${VSIZE_GB}G"
 # ============================================
 # 2) 创建 VM 骨架
 #
-# 关键点 (直接对应 terraform 模块的硬要求):
+# 关键点 (直接对应 provider adapter 的硬要求):
 #   --scsihw virtio-scsi-single : clone 会继承。模块在两块盘上都设了 iothread=1,
 #                                 而 iothread 只在 virtio-scsi-single 下才被 PVE 真正采纳。
 #                                 在模板上设好, 顺带把模块那个 iothread 空转的问题解决了。
@@ -232,9 +232,9 @@ echo "${GREEN}${BOLD} 模板创建完成${NC}"
 echo "${BOLD}================================================================${NC}"
 qm config "$VMID" | grep -E '^(name|scsi0|scsihw|ide2|boot|agent|ostype|net0|serial0):' | sed 's/^/    /'
 echo
-echo "${BOLD}把这些值填进 terraform/environments/<你的>.tfvars:${NC}"
+echo "${BOLD}把这些值填进 console 的 Proxmox zone 配置:${NC}"
 echo "    template_vm_id  = ${VMID}"
-echo "    node_name       = \"${NODE}\"        # 多节点集群, 必须写死"
+echo "    node            = \"${NODE}\"        # 多节点集群, 必须写死"
 echo "    datastore_id    = \"${STORAGE}\""
 echo "    network_bridge  = \"${BRIDGE}\""
 echo "    ssh_public_keys = [\"ssh-ed25519 AAAA... your-key\"]   # 空数组会导致没有可登录账号"
@@ -243,9 +243,9 @@ echo "${BOLD}并确保 os 盘大于模板盘 (${VSIZE_GB}G), 否则 clone 会因
 echo "    disk = 32     # 必须 > ${VSIZE_GB}"
 echo
 echo "${BOLD}provider 端点 (注意不带 :8006, 走 ingress 的 443):${NC}"
-echo "    proxmox_config = { endpoint = \"https://pve.infra.plz.ac/\", node = \"${NODE}\" }"
+echo "    endpoint = \"https://pve.infra.plz.ac/\""
 echo
-echo "${YELLOW}首次 apply 后建议验证 guest agent 真的在跑 (模块靠它拿 IP):${NC}"
+echo "${YELLOW}首次 provision 后建议验证 guest agent 真的在跑 (adapter 靠它拿 IP):${NC}"
 echo "    qm agent <新VMID> ping    # 无输出即成功; 报错说明 agent 没起来"
 echo
 warn "cloud-init 默认用户是 '${CI_USER}'; 模块的 initialization.user_account 会另建 'qubes' 用户。"

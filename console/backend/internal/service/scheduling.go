@@ -49,6 +49,7 @@ func NewZoneCredentialResolver(zoneRepo repository.ZoneRepository, secrets Secre
 
 		creds := parseProxmoxSecret(secret)
 		creds.Endpoint = zone.Config.Endpoint
+		creds.CAPEM = pc.CAPEM
 		if !creds.Valid() {
 			return scheduler.Credentials{}, fmt.Errorf(
 				"zone %q: credential is not a usable Proxmox secret (want an API token \"user@realm!id=secret\" or \"user@realm:password\")", zone.Name)
@@ -162,7 +163,11 @@ func (c *ClusterScheduler) Capacity(ctx context.Context, zoneID string) (*ZoneCa
 		if err != nil {
 			return nil, err
 		}
-		nodes, err := scheduler.NewProxmoxProvider(creds).Nodes(ctx)
+		provider, err := scheduler.NewProxmoxProvider(creds)
+		if err != nil {
+			return nil, err
+		}
+		nodes, err := provider.Nodes(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("read cluster capacity: %w", err)
 		}
@@ -181,16 +186,10 @@ func (c *ClusterScheduler) Capacity(ctx context.Context, zoneID string) (*ZoneCa
 		// rather than as a node pool with zero nodes — the difference tells the
 		// UI to hide node selection entirely instead of showing an empty picker.
 		//
-		// Wiring real numbers means querying each provider's quota and billing
-		// APIs, and it has not been done. AWS is still a skeleton that creates
-		// no resources, so there is genuinely nothing to report there.
-		//
-		// GCP is NOT — that module builds real instances and disks. This
-		// comment used to claim both were skeletons, and that staleness was
-		// doing harm: it read as "GCP has not started", which hid the fact that
-		// GCP qubes provision successfully and are then unreachable forever
-		// (the module records a VPC-private address and nothing builds the
-		// private path its own comments assume). See
+		// There is no adapter for these types in this console (only Proxmox is
+		// registered), so a provision attempt fails with provider.ErrNoAdapter.
+		// Wiring real numbers means implementing the provider adapter AND querying
+		// its quota/billing APIs; neither has been done. See
 		// docs/bootstrap-design.md §10.2.
 		return &ZoneCapacity{
 			Kind: CapacityKindQuota,
@@ -232,7 +231,11 @@ func (c *ClusterScheduler) Place(ctx context.Context, zoneID string, req schedul
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := scheduler.NewProxmoxProvider(creds).Nodes(ctx)
+	provider, err := scheduler.NewProxmoxProvider(creds)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := provider.Nodes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read cluster capacity: %w", err)
 	}
@@ -281,7 +284,7 @@ func (s *QubeServiceImpl) resolvePlacement(ctx context.Context, qube *models.Qub
 
 	// Nothing could be decided — typically a zone that has not been configured
 	// for provisioning yet. Leave the node unset rather than refusing to record
-	// the qube: the tfvars renderer already fails loudly, by name, if a qube
+	// the qube: the provider adapter already fails loudly, by name, if a qube
 	// reaches provisioning without a node, so this is deferred rather than
 	// skipped. Only a cluster that genuinely has no room (above) is fatal here.
 	return "", "no node could be resolved; will be rejected at provision time unless the zone is configured", nil

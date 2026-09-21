@@ -55,6 +55,8 @@ func (t ZoneType) IsValid() bool {
 // These are zone-level DEFAULTS. A qube may pin its own node (see
 // QubeSpec.Node); the rest are properties of the cluster, not of one qube.
 type ProxmoxZoneConfig struct {
+	// CAPEM is the public cluster CA. Empty uses system trust roots.
+	CAPEM string `json:"ca_pem,omitempty"`
 	// Node is the default node to place qubes on. Empty means "any node",
 	// which is only safe when the datastore is shared (Ceph/NFS) — with
 	// node-local storage a template cannot be cloned across nodes.
@@ -64,9 +66,22 @@ type ProxmoxZoneConfig struct {
 	DatastoreID string `json:"datastore_id,omitempty"`
 	// NetworkBridge is the bridge new VMs attach to, e.g. "vmbr0".
 	NetworkBridge string `json:"network_bridge,omitempty"`
+	// IPPool is an optional CIDR whose usable addresses the adapter assigns
+	// statically instead of taking a DHCP lease, e.g. "10.31.0.64/27".
+	//
+	// DHCP is the default and stays the default: it is right for a network whose
+	// DHCP server hands out unique leases. It is wrong when the pool overlaps a
+	// range something else hands out — the console then records an address the
+	// VM did not win, and the agent is unreachable while every status still says
+	// "running". A static pool removes the DHCP server from the trust path.
+	//
+	// Empty means DHCP. Setting it requires Gateway.
+	IPPool string `json:"ip_pool,omitempty"`
+	// Gateway is the default gateway used with IPPool, e.g. "10.31.0.254".
+	Gateway string `json:"gateway,omitempty"`
 	// TemplateVMID is the cloud-init template VM to clone. Its boot disk must
 	// be on scsi0 and it must have a cloud-init drive and qemu-guest-agent, or
-	// terraform will wait for an IP that never arrives.
+	// the adapter cannot report the instance's address.
 	TemplateVMID int `json:"template_vm_id,omitempty"`
 	// TemplateNode is the node the template VM lives on.
 	//
@@ -117,8 +132,8 @@ type GCPZoneConfig struct {
 	SourceImage string `json:"source_image,omitempty"`
 	// IdentityBucket is a PRIVATE GCS bucket the per-qube agent identity is
 	// delivered through. It cannot go in instance metadata: metadata is a
-	// resource attribute, so terraform would write the agent's private key into
-	// state in plaintext.
+	// resource attribute a provider would persist, so the agent's private key
+	// would be written somewhere it must not be.
 	IdentityBucket string `json:"identity_bucket,omitempty"`
 	// ServiceAccountEmail is the instance's service account; it needs read
 	// access to IdentityBucket or the VM cannot fetch its own identity.

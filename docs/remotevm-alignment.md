@@ -36,12 +36,11 @@ RemoteVM 定义了“怎样委派”，但不会替普通 Linux 远端实现 qre
 - Proxmox 置备、bootstrap 与存算分离；
 - dom0 policy 和部署 state（由 qubes-salt-config 管理）。
 
-## 已验证边界
+## 验证边界
 
-已验证：RemoteVM 自动注册、`GrpcProxy` 改写、独立 Relay、`Ping`/`Exec`/`FileCopy` 和 mTLS
-TCP streaming。
-
-正在完成：将 `GetAppmenus`、`StartApp` 与 Xpra 原语组合成稳定的无缝桌面体验。
+RemoteVM 与后续结构化 Exec/FileCopy 的现场记录见[历史验收汇总](reviews/validation-history.md)。
+这些是不同阶段记录，当前工作区仍需按同一源码和构建版本重新验收。
+无缝桌面待办统一见 [GUI-01](TODO.md)。
 
 不应宣称与本地 Qube 完全等价：
 

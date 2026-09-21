@@ -1,7 +1,7 @@
 # ~/.ssh/config —— 部署到本地 Relay (sys-relay-*) 的 user@relay 家目录
 # =====================================================================
-# 由 mgmt-air 上的渲染脚本 (relay/ssh/render-ssh-config.sh) 消费阶段1 terraform
-# output(ip_address) 生成实际文件。占位符形如 {{ REMOTE_RELAY_IP }} 会被替换。
+# 由 Relay 的部署流程用 console 发布的端点 (QubesDB /remote-endpoint/<name>)
+# 渲染。占位符形如 {{ REMOTE_RELAY_IP }} 会被替换。
 #
 # 设计要点 (零入站 + host key pinning):
 #   - 本 Relay 只发出站 SSH; 远端(家庭 NAT 后)无需任何公网入站端口。

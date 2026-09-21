@@ -124,7 +124,7 @@ main() {
     log_info "Next steps (阶段2 RemoteVM 链路, 详见 docs/runbook-remotevm.md):"
     log_info "  1. 对 Relay 模板与 sys-relay-pve 应用 salt: qubes-air.remotevm.relay/.autossh"
     log_info "  2. 创建 RemoteVM: bash create-remotevm.sh --name remote-dev-1 --relay sys-relay-pve --remote-name dev"
-    log_info "  3. 在 mgmt-air 渲染 ssh config (消费 terraform output) 并投递到 Relay"
+    log_info "  3. 在 Relay 上用 console 发布的端点渲染 ssh config 并投递到 Relay"
     log_info "  4. 从本地 AppVM 自检: qrexec-client-vm remote-dev-1 qubesair.Ping"
     log_warn "  注意: RemoteVM 不可 qvm-start (纯元数据 qube); WireGuard 方案已废弃, 改用 SSH transport。"
 }

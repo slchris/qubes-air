@@ -11,7 +11,7 @@
 #   两个哈希对不上就失败 —— 这不是偏执, 这是这条链路上唯一的完整性检查。
 #
 #   最终防线在 console: 它把这里打印的 SHA256 写进每台 qube 的身份文件
-#   (走 console -> terraform SFTP -> PVE snippet -> cloud-init 这条可信路径),
+#   (走 console -> PVE snippet -> cloud-init 这条可信路径),
 #   cloud-init 下载完 .deb 先比对哈希再 dpkg -i。下载通道不可信, 但哈希
 #   是从可信通道来的, 所以整体成立。详见 docs/bootstrap-design.md §6。
 #

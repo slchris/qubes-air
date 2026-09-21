@@ -4,7 +4,7 @@
 
 ## A. Console 与置备
 
-- [ ] provision job 成功，无 Terraform/OpenTofu 错误；
+- [ ] provision job 成功，无 provider 错误；
 - [ ] Qube 有当前 IP/endpoint；
 - [ ] `agent_health=healthy`；
 - [ ] agent artifact URL 可达且 SHA256 与配置一致；
@@ -52,9 +52,12 @@ qvm-tags <remotevm>
 
 ## F. 端到端
 
+执行 Exec 前必须显式启用服务并允许 `/usr/bin/id`；FileCopy 也需启用服务及允许目标目录。
+默认仅 Ping 可用。Exec 使用 JSON 参数列表并继承 agent 沙箱，配置与限制见[安全控制](security-controls.md)。
+
 ```bash
 qrexec-client-vm <remotevm> qubesair.Ping
-printf 'id\n' | qrexec-client-vm <remotevm> qubesair.Exec
+printf '%s\n' '["/usr/bin/id"]' | qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
 - [ ] Ping 返回正确远端身份；
@@ -76,5 +79,4 @@ printf 'id\n' | qrexec-client-vm <remotevm> qubesair.Exec
 - [ ] 云防火墙只开放 bootstrap/agent 实际需要且有来源限制的路径；
 - [ ] GUI/VNC/RDP 端口不直接暴露给 LAN/公网；
 - [ ] console API 不使用开发 token，CORS 非 `*`；
-- [ ] state backend 使用客户端加密；
-- [ ] Git 中没有凭据、私钥或生成的真实 tfvars/state。
+- [ ] Git 中没有凭据、私钥或生成的真实 identity/配置文件。
