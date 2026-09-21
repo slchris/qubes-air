@@ -66,10 +66,10 @@ func TestRegistry_ControlExposesControlTools(t *testing.T) {
 	reg := controlReg(t, false)
 	got := names(reg)
 
-	if len(got) != 25 {
-		t.Fatalf("control tools = %d (%v), want 25", len(got), got)
+	if len(got) != 26 {
+		t.Fatalf("control tools = %d (%v), want 26", len(got), got)
 	}
-	for _, control := range []string{"qube_create", "qube_update", "qube_delete", "qube_start", "qube_stop", "alert_acknowledge"} {
+	for _, control := range []string{"qube_create", "qube_update", "qube_delete", "qube_purge", "qube_start", "qube_stop", "alert_acknowledge"} {
 		if !contains(got, control) {
 			t.Fatalf("control registry missing %q", control)
 		}
@@ -89,8 +89,8 @@ func TestRegistry_ComputerUseOnlyWhenEnabledAndControl(t *testing.T) {
 	}{
 		{ScopeReadOnly, true, 19},
 		{ScopeReadOnly, false, 19},
-		{ScopeControl, false, 25},
-		{ScopeControl, true, 29},
+		{ScopeControl, false, 26},
+		{ScopeControl, true, 30},
 	}
 	for _, c := range cases {
 		reg := NewRegistry(c.scope, c.cu, dummyClient())
@@ -139,6 +139,7 @@ func expectedEndpoints() []endpointMap {
 		{"qube_delete", "DELETE", "/api/v1/qubes/{id}", "id"},
 		{"qube_start", "POST", "/api/v1/qubes/{id}/start", "id"},
 		{"qube_stop", "POST", "/api/v1/qubes/{id}/stop", "id"},
+		{"qube_purge", "POST", "/api/v1/qubes/{id}/purge", "id"},
 		{"alert_acknowledge", "POST", "/api/v1/monitoring/alerts/{id}/acknowledge", "id"},
 		{"desktop_apps_list", "GET", "/api/v1/qubes/{id}/appmenus", "id"},
 		{"desktop_app_launch", "POST", "/api/v1/qubes/{id}/apps/{app}/launch", "id"},
