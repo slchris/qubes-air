@@ -21,7 +21,7 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 | 请求与认证 | 浏览器用 HttpOnly、SameSite=Strict session；Bearer 保留给 CLI/MCP；变更请求要求 control scope | session TTL 默认 12h；设置页的 timeout/2FA/通知尚未接入 |
 | API 安全基线 | 安全响应头、CORS、生产配置拒绝不安全默认值、请求体上限、限流、结构化操作者审计 | 不代表完整多租户身份体系或审计归档系统 |
 | 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并清理端点/RemoteVM | 部分失败只允许继续 purge；不能保证清除历史备份里的密钥 |
-| 数据密钥 | 新 Qube 使用随机 256-bit DEK，保存在加密凭据库 | 代码仍有 master 派生密钥回退；未使用独立 DEK 的盘不具备同等删除属性 |
+| 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘首次解锁原子迁移到 DEK，master 只读且仅用于迁移 | 迁移完成前旧盘仍依赖 master；agent 需先允许 RekeyData，按盘真机核验归 QA-01 |
 | 重启对账 | queued → failed、running → unknown，Qube → error；保留资源 checkpoint 及 purge 意图 | 显式重试原动作；不自动重放队列或跨进程接管 |
 | 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 仍需断线、取消、超时和重启场景的自动化回归 |
 | 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 有实现与单测，尚无离机恢复演练及 RTO 记录 |

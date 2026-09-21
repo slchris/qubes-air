@@ -83,6 +83,25 @@ ProtectHome 或 PrivateTmp。允许的程序自身若支持执行代码或修改
 
 包依赖新增 Python 3。服务测试通过 Go 测试套件运行，测试环境也需要 Python 3 和完整仓库目录。
 
+## 数据盘迁移：RekeyData
+
+`qubesair.RekeyData` 把仍由旧 master 派生密钥加密的数据盘原子换成该 Qube 自己的随机
+DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 密钥的 JSON
+（`{"old":...,"new":...}`），经与 UnlockData 相同的、按 `agent-<qube>` 固定对端的验证通道
+下发；密钥只经 stdin 和进程替换传递，不进入 argv、不写盘，特权部分同样经 systemd-run。
+
+- 不格式化、不覆盖：非 LUKS 盘、缺盘、两把钥匙都打不开时拒绝并上报原因。
+- 顺序不可逆：先 `luksChangeKey` 原子替换；失败才退回“先 add 新键、验证新键可开、再
+  remove 旧键”。任何失败路径都保留旧键可用，不会把数据锁死。
+- 幂等：新键可用且旧键已不可用时直接报告成功，不碰容器。
+- 旧 keyslot 未能移除时报告 `old_key_removed:false`，Console 写入迁移标记，之后每次解锁
+  都重试删除；在删除成功前该盘仍可被 master 打开。
+- 服务与 UnlockData 一样必须在 `QUBESAIR_ALLOW` 中显式启用，并新增 Python 3 解析依赖。
+
+升级要求：加密 Qube 的 agent 在下次解锁前必须允许 `qubesair.RekeyData`，否则迁移失败、
+数据保持加密并在下次 resume 重试。迁移完成后 `qubes-air-luks-master` 只是只读的迁移材料，
+可核验无未迁移盘后删除；master 丢失会使未迁移盘无法解锁，也不会自动重建。
+
 ## Proxmox 管理连接
 
 资源执行器和容量调度器共用 HTTPS 客户端：拒绝明文 HTTP、URL 凭据、query/fragment 与所有

@@ -5,7 +5,7 @@
 | 材料 | 当前保存位置 | 说明 |
 |---|---|---|
 | Provider API 凭据 | console 加密 credential store | 调用 provider adapter 时按需解密，只交给该次调用 |
-| Console CA、per-Qube DEK 与派生回退用 master | console 加密 credential store | CA 私钥与 master 不分发；数据密钥经 agent mTLS 使用 |
+| Console CA、per-Qube DEK 与迁移用 master | console 加密 credential store | CA 私钥与 master 不分发；数据密钥经 agent mTLS 使用 |
 | Console credential 加密密钥 | console 部署 secret | 32 字节 AES-256 key；支持多版本轮换 |
 | Agent 私钥 | remote guest | guest 生成，只提交 CSR |
 | Relay 私钥 | Relay `/rw` | Relay 生成，经 qrexec 提交 CSR |
@@ -107,10 +107,10 @@ caller 到 console 的 policy，以及 console 是否把 CN 钉死为真实 call
 - console 数据库；
 - 当前及仍被引用的旧 encryption key version；
 - console CA 恢复材料；
-- 凭据库中的 per-Qube DEK，以及仍被派生回退使用的 `qubes-air-luks-master`。
+- 凭据库中的 per-Qube DEK，以及仅供旧盘迁移读取的 `qubes-air-luks-master`。
 
 数据库备份已经包含这些凭据的密文；恢复还需要对应 keyring。历史备份保留的密钥不会因
 当前库中的 purge 而消失，详见[灾难恢复](disaster-recovery.md)。
 
-丢失 `qubes-air-luks-master` 会让所有由它派生密钥的加密数据盘不可恢复。删除前先按
+丢失 `qubes-air-luks-master` 会让尚未迁移的旧加密盘无法解锁或迁移。删除前先按
 [凭据销毁流程](credential-destruction.md)确认影响范围。

@@ -8,8 +8,10 @@
 新 Qube 使用独立随机 256-bit DEK，存放在控制台加密凭据库的
 `qubes-air-luks-key-<id>` 中，通过 agent mTLS 用于数据盘操作。purge 会删除当前库内的该密钥。
 
-代码仍保留 `qubes-air-luks-master` + Qube ID 的派生回退。未使用独立 DEK 的盘不能仅通过
-删除 Qube 记录获得相同删除属性；需核验实际密钥来源，不能把回退当成已完成迁移。
+旧盘不再静默使用 master 派生密钥解锁：首次解锁时 Console 取已有 `qubes-air-luks-master`
+派生出旧键，把容器原子重加密到该 Qube 的 DEK（失败则保留旧键可用并重试），此后 master
+与该盘无关。在迁移完成前，该盘仍可被 master 打开，删除当前库内 DEK 不构成 crypto-shred；
+`qubes-air-luks-master` 只读、只用于迁移，可在确认没有未迁移盘后删除，且不会自动重建。
 
 数据库归档可能含有 DEK 或 master 的历史副本。删除当前库内记录不会清除这些副本，也不等于
 安全擦除了 SQLite/WAL 或存储快照中的历史内容。不可恢复性必须同时考虑所有密钥副本与备份。
@@ -22,7 +24,8 @@
 3. release/suspend 只删除 compute、保留数据盘。彻底销毁使用
    `POST /api/v1/qubes/{id}/purge`，需要 control scope 和请求体 `{"confirm":"<qube 名>"}`。
 4. purge 接受 released/suspended/stopped/error，先原子记录不可逆意图、撤销证书和 bootstrap token，再解除保护、删除当前库内数据密钥，
-   再入队销毁资源；正常完成后 Qube 保留 `purged` 记录并清理端点/RemoteVM。
+   再入队销毁资源；正常完成后 Qube 保留 `purged` 记录并清理端点/RemoteVM。若该盘尚未迁移到
+   独立 DEK，删除库内记录不会让保留副本不可恢复，需先迁移或明确接受这一点。
 5. 检查 job log 和 provider：分别核验 compute、storage holder、数据盘、证书和 RemoteVM，
    按保留政策处置已知快照与密钥备份。
 
@@ -58,7 +61,7 @@ CA 处置与恢复见[灾难恢复](disaster-recovery.md)。恢复后不要复�
 | Console encryption key | 仅由该版本加密的 credential 行无法解密 |
 | Console CA private key | 无法继续签发/续期；已有证书仍可用原公共 CA 在有效期内验证 |
 | Per-Qube DEK | 对应加密数据盘无法解锁 |
-| `qubes-air-luks-master` | 仍依赖该 master 派生的盘无法解锁，不影响独立 DEK 的盘 |
+| `qubes-air-luks-master` | 未迁移的旧盘无法解锁/迁移；已迁移的盘不受影响 |
 | Relay / agent private key | 对应身份无法使用，需要受控重建或重新 bootstrap |
 
 执行前明确确认目标、备份保留政策与依赖范围。根密钥销毁不应由模糊的 Zone 操作自动完成。

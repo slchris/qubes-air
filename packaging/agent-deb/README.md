@@ -45,10 +45,12 @@ systemctl reset-failed qubes-air-agent
 systemctl start qubes-air-agent
 ```
 
-Exec/FileCopy require Python 3 (declared as a package dependency) and explicit service/policy
-configuration. Exec accepts JSON argv, FileCopy uses directory descriptors; both inherit the agent
-sandbox. The unit requires `QUBESAIR_REVOCATION_URL` for CA-signed revocation status. Deployment
-requirements and failure behavior are documented in [security controls](../../docs/security-controls.md).
+Exec, FileCopy and RekeyData require Python 3 (declared as a package dependency) and explicit
+service/policy configuration. Exec accepts JSON argv, FileCopy uses directory descriptors,
+UnlockData opens the encrypted data disk and RekeyData migrates a legacy disk to its own key; all
+inherit the agent sandbox. The unit requires `QUBESAIR_REVOCATION_URL` for CA-signed revocation
+status. Deployment requirements and failure behavior are documented in
+[security controls](../../docs/security-controls.md).
 
 ## Build
 

@@ -38,6 +38,23 @@ provider 先确认 compute 已不存在，再清除 ComputeVMID。purge 分别�
 及 [Storage Content API](https://github.com/proxmox/pve-storage/blob/master/src/PVE/API2/Storage/Content.pm)。
 权限或资源在检查后被外部管理员改变不在单个 worker 的原子保证内；部署凭据需有对应权限。
 
+## 数据盘解锁与迁移
+
+数据盘只在 bootstrap 成功后经验证通道解锁。有独立 DEK 就只用它；没有 DEK 说明是旧盘，
+必须先迁移再解锁，不存在静默派生回退。
+
+| 中断位置 | 保留事实与恢复方式 |
+|---|---|
+| 存储失败或 DEK 不存在于库中 | 不拨号、不下发密钥；修复凭据库后重试 |
+| master 缺失但盘未迁移 | 拒绝迁移并保持盘关闭；先恢复 keyring，不能重建 master |
+| 新键已入库、rekey 未生效（进程退出/失败） | 重试复用同一 DEK；`luksChangeKey` 失败时旧键仍有效 |
+| rekey 完成但旧 keyslot 未移除 | 盘可用新键打开；写入迁移标记，每次解锁重试删除，直至确认旧键失效 |
+| 迁移中崩溃 | 存入 DEK 在前、原子换键在后，任何窗口都不会同时丢失两把可用钥匙 |
+| 两把钥匙都打不开或非 LUKS | 拒绝并上报原因，不格式化、不覆盖 |
+
+迁移完成前该盘仍可被 master 打开；迁移标记未清除时不能把它当作已 crypto-shred。
+Console 无自动重放跨进程接管，解锁失败在下次 resume 的 bootstrap 回调重试。
+
 ## 创建与重试
 
 Proxmox 分配 VMID 后，必须先把 node、Qube ID、VMID 写入 qube_infra，再发送 create/clone。
