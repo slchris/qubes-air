@@ -26,9 +26,19 @@ func ValidScope(s string) bool {
 	return Scope(s) == ScopeReadOnly || Scope(s) == ScopeControl
 }
 
-// ScopeContextKey is the gin context key holding the authenticated requests'
-// granted scope (a string, see ScopeFromContext).
-const ScopeContextKey = "middleware.auth.scope"
+// Context keys set by ScopedAuth.
+const (
+	// ScopeContextKey holds the granted scope (a string, see ScopeFromContext).
+	ScopeContextKey = "middleware.auth.scope"
+	// SubjectContextKey holds the credential's name (never its value), used for
+	// operation audit. See SubjectFromContext.
+	SubjectContextKey = "middleware.auth.subject"
+)
+
+// sessionLoginPath is the one route exempt from the Bearer requirement: it
+// authenticates the token from its own request body so a browser can exchange
+// the token for a session cookie.
+const sessionLoginPath = "/api/v1/session"
 
 // Token is one accepted bearer credential and the scope it grants.
 type Token struct {
@@ -74,19 +84,25 @@ func newCredentials(apiToken string, scoped []Token) []credential {
 	return creds
 }
 
-// ScopedAuth returns a Gin middleware that requires a valid Bearer token on
-// every request. apiToken and the entries of scoped form the credential set;
-// the legacy single api_token is treated as control scope. When NO credential
-// is configured, authentication is DISABLED and all requests pass through (the
-// caller should log a startup warning).
+// MatchToken reports whether candidate is a configured credential, returning its
+// subject label (never the value) and scope. The session endpoint authenticates
+// the token from its request body through this.
+func MatchToken(apiToken string, scoped []Token, candidate string) (subject string, scope Scope, ok bool) {
+	return matchCredential(candidate, newCredentials(apiToken, scoped))
+}
+
+// ScopedAuth returns a Gin middleware that authenticates every request with EITHER
+// a valid session cookie OR a Bearer token. apiToken and the entries of scoped
+// form the credential set; the legacy single api_token is treated as control
+// scope. When NO credential is configured, authentication is DISABLED and all
+// requests pass through (the caller should log a startup warning).
 //
-// On success the granted scope is stored in the request context under
-// ScopeContextKey so downstream middleware (RequireControl) can read it.
-// Matching runs in constant time across the WHOLE credential list: every
-// candidate is hashed once and compared against all prehashed digests, never
-// returning early, so neither the number of credentials nor any single
-// credential's length leaks through the comparison.
-func ScopedAuth(apiToken string, scoped []Token) gin.HandlerFunc {
+// On success the granted scope and the subject label are stored in the request
+// context for RequireControl and the audit log. Matching runs in constant time
+// across the WHOLE credential list: every candidate is hashed once and compared
+// against all prehashed digests, never returning early, so neither the number of
+// credentials nor any single credential's length leaks through the comparison.
+func ScopedAuth(apiToken string, scoped []Token, sessions *SessionStore) gin.HandlerFunc {
 	creds := newCredentials(apiToken, scoped)
 	authDisabled := len(creds) == 0
 
@@ -96,39 +112,63 @@ func ScopedAuth(apiToken string, scoped []Token) gin.HandlerFunc {
 			return
 		}
 
+		// The login endpoint authenticates the token in its own body; requiring a
+		// Bearer here would make exchanging a token for a session impossible.
+		if c.Request.Method == http.MethodPost && c.Request.URL.Path == sessionLoginPath {
+			c.Next()
+			return
+		}
+
+		if sessions != nil {
+			if cookie, err := c.Cookie(SessionCookieName); err == nil {
+				if sess, ok := sessions.Get(cookie); ok {
+					setAuthContext(c, sess.Subject, sess.Scope)
+					c.Next()
+					return
+				}
+			}
+		}
+
 		token, ok := bearerToken(c.Request.Header.Get("Authorization"))
 		if !ok {
 			unauthorized(c)
 			return
 		}
-		scope, ok := matchScope(token, creds)
+		subject, scope, ok := matchCredential(token, creds)
 		if !ok {
 			unauthorized(c)
 			return
 		}
-		c.Set(ScopeContextKey, string(scope))
+		setAuthContext(c, subject, scope)
 		c.Next()
 	}
 }
 
-// matchScope returns the scope granted by candidate, scanning every credential
-// in constant time. Comparing SHA-256 digests of a fixed length removes the
-// raw length difference from the comparison, and iterating the whole list
-// without an early return means which position matched (or that none did) does
-// not leak either.
-func matchScope(candidate string, creds []credential) (Scope, bool) {
+func setAuthContext(c *gin.Context, subject string, scope Scope) {
+	c.Set(ScopeContextKey, string(scope))
+	c.Set(SubjectContextKey, subject)
+}
+
+// matchCredential returns the subject label and scope granted by candidate,
+// scanning every credential in constant time. Comparing SHA-256 digests of a
+// fixed length removes the raw length difference from the comparison, and
+// iterating the whole list without an early return means which position matched
+// (or that none did) does not leak either.
+func matchCredential(candidate string, creds []credential) (string, Scope, bool) {
 	digest := sha256.Sum256([]byte(candidate))
 	var (
-		found Scope
-		ok    bool
+		subject string
+		found   Scope
+		ok      bool
 	)
 	for _, cd := range creds {
 		if subtle.ConstantTimeCompare(digest[:], cd.digest[:]) == 1 {
+			subject = cd.name
 			found = cd.scope
 			ok = true
 		}
 	}
-	return found, ok
+	return subject, found, ok
 }
 
 // RequireControl enforces the FAIL-CLOSED method rule: the permissive methods
@@ -169,6 +209,18 @@ func RequireControl() gin.HandlerFunc {
 // carries no scope.
 func ScopeFromContext(c *gin.Context) (string, bool) {
 	v, ok := c.Get(ScopeContextKey)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// SubjectFromContext returns the credential name ScopedAuth authenticated, or
+// ("", false) when authentication is disabled. It is for audit only and carries
+// no authority.
+func SubjectFromContext(c *gin.Context) (string, bool) {
+	v, ok := c.Get(SubjectContextKey)
 	if !ok {
 		return "", false
 	}

@@ -40,6 +40,44 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "production without an API token fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = ""
+				c.Auth.Tokens = nil
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with the development encryption key fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with wildcard CORS fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+				c.CORS.AllowedOrigins = []string{"*"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with token, real key and restricted CORS is valid",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+				c.CORS.AllowedOrigins = []string{"https://console.local"}
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid port zero",
 			modify: func(c *Config) {
 				c.Server.Port = 0
@@ -70,18 +108,10 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "orchestrator enabled without terraform dir",
+			name: "orchestrator enabled uses native executor",
 			modify: func(c *Config) {
 				c.Orchestrator.Enabled = true
-				c.Orchestrator.TerraformDir = ""
-			},
-			wantErr: true,
-		},
-		{
-			name: "orchestrator enabled with terraform dir",
-			modify: func(c *Config) {
-				c.Orchestrator.Enabled = true
-				c.Orchestrator.TerraformDir = "/tf"
+				c.Orchestrator.AgentRevocationURL = "https://console.example/pki/revocations"
 			},
 			wantErr: false,
 		},
@@ -477,4 +507,10 @@ func TestConfig_AgentProbeEnvGarbageKeepsTheDefault(t *testing.T) {
 
 	assert.Equal(t, DefaultConfig().Orchestrator.AgentProbeIntervalSeconds,
 		cfg.Orchestrator.AgentProbeIntervalSeconds)
+}
+
+func TestOrchestratorRequiresRevocationURL(t *testing.T) {
+	c := DefaultConfig()
+	c.Orchestrator.Enabled = true
+	assert.Error(t, c.Validate())
 }

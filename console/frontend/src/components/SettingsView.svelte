@@ -2,7 +2,7 @@
   Qubes Air Console - Settings View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch, getApiToken, setApiToken } from '../lib/api';
+  import { getApiBaseUrl, apiFetch, login, logout } from '../lib/api';
 
   interface Settings {
     general: {
@@ -69,21 +69,31 @@
   }
 
   let apiToken = $state('');
-  let hasStoredToken = $state(Boolean(getApiToken()));
   let tokenMessage = $state('');
 
   /**
-   * Persists the API token in this browser.
+   * Starts a browser session from the API token.
    *
-   * Deliberately not round-tripped through the server: it is the credential
-   * used to talk to the server, so storing it there would be circular, and
-   * echoing it back would widen its exposure.
+   * The token is exchanged for an HttpOnly session cookie and not persisted;
+   * storing it here would be circular, and echoing it back would widen its
+   * exposure.
    */
-  function saveToken(): void {
-    setApiToken(apiToken);
-    hasStoredToken = Boolean(apiToken);
-    tokenMessage = apiToken ? 'Token saved for this browser' : 'Token cleared';
+  async function startSession(): Promise<void> {
+    const value = apiToken.trim();
+    if (!value) return;
+    try {
+      await login(value);
+      tokenMessage = 'Session started in this browser';
+    } catch {
+      tokenMessage = 'Token rejected';
+    }
     apiToken = '';
+    setTimeout(() => { tokenMessage = ''; }, 4000);
+  }
+
+  async function endSession(): Promise<void> {
+    await logout();
+    tokenMessage = 'Signed out';
     setTimeout(() => { tokenMessage = ''; }, 4000);
   }
 
@@ -145,19 +155,21 @@
           id="api-token"
           type="password"
           bind:value={apiToken}
-          placeholder={hasStoredToken ? '•••••••• (stored)' : 'Bearer token from auth.api_token'}
+          placeholder="Bearer token from auth.api_token"
           autocomplete="off"
         />
         <small class="hint">
-          Sent as <code>Authorization: Bearer …</code> on every API request.
-          Required once the server has <code>auth.api_token</code> set — without
-          it every request returns 401. Stored in this browser only; it is never
-          sent to the settings endpoint.
+          Exchanged once for a short-lived HttpOnly session cookie; the token is
+          not stored in this browser. Required once the server has
+          <code>auth.api_token</code> set — without it every request returns 401.
         </small>
       </div>
       <div class="field">
-        <button type="button" class="btn-primary" onclick={saveToken}>
-          {apiToken ? 'Save token' : 'Clear token'}
+        <button type="button" class="btn-primary" onclick={startSession}>
+          Start session
+        </button>
+        <button type="button" class="btn-secondary" onclick={endSession}>
+          Sign out
         </button>
         {#if tokenMessage}<span class="token-message">{tokenMessage}</span>{/if}
       </div>
@@ -197,6 +209,10 @@
 
       <section class="section">
         <h3>Notifications</h3>
+        <p class="not-wired">
+          Not implemented: these preferences are stored but no email or webhook
+          is sent.
+        </p>
         
         <div class="field checkbox">
           <input type="checkbox" id="email-notify" bind:checked={settings.notifications.email} />
@@ -218,6 +234,10 @@
 
       <section class="section">
         <h3>Security</h3>
+        <p class="not-wired">
+          Not implemented: session lifetime is set by the server's session store,
+          not this value, and two-factor authentication is not available.
+        </p>
         
         <div class="field">
           <label for="session-timeout">Session Timeout (minutes)</label>
@@ -389,6 +409,15 @@
     font: var(--subhead);
     color: var(--text-muted, var(--systemSecondary));
     line-height: 1.5;
+  }
+  .not-wired {
+    margin: 0 0 0.75rem;
+    padding: 0.45rem 0.6rem;
+    border-left: 3px solid #d97706;
+    background: rgba(217, 119, 6, 0.12);
+    font: var(--subhead);
+    line-height: 1.5;
+    color: var(--text-muted, var(--systemSecondary));
   }
   .hint code {
     font-size: 0.72rem;

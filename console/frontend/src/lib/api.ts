@@ -6,7 +6,6 @@
  */
 
 import { auth } from './auth.svelte';
-import { getApiToken as readApiToken, writeApiToken } from './token';
 
 import type {
   Zone,
@@ -45,36 +44,16 @@ export function getApiBaseUrl(): string {
 const API_BASE = getApiBaseUrl();
 
 /**
- * Token storage lives in ./token so this module and the auth gate can both use
- * it without importing each other. Re-exported here because every existing
- * caller imports it from the API module.
- */
-export { getApiToken } from './token';
-
-/** Stores the API token, or clears it when given an empty value. */
-export function setApiToken(token: string): void {
-  writeApiToken(token);
-  // Notified here rather than at each call site: a caller that saves a token
-  // and forgets to clear the rejected flag leaves the operator staring at the
-  // gate with a correct token already entered.
-  auth.tokenChanged();
-}
-
-/**
- * Builds request headers, attaching the bearer token when one is configured.
+ * Builds request headers for a JSON API call.
  *
- * Every request funnels through here precisely so authentication cannot be
- * forgotten on one verb — which is exactly how the client ended up sending no
- * Authorization header at all.
+ * Authentication is NOT here: the browser sends the HttpOnly session cookie,
+ * which `fetch` attaches when called with `credentials: 'include'`. Nothing on
+ * the page can set or read it, which is the point.
  */
 function buildHeaders(hasBody: boolean): HeadersInit {
   const headers: Record<string, string> = {};
   if (hasBody) {
     headers['Content-Type'] = 'application/json';
-  }
-  const token = readApiToken();
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
 }
@@ -163,6 +142,9 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   const hasBody = init?.body !== undefined;
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
+    // Send the session cookie on same-origin API calls. The cookie is HttpOnly,
+    // so this is the only way the browser can authenticate.
+    credentials: 'include',
     headers: { ...buildHeaders(hasBody), ...(init?.headers ?? {}) },
   });
   // Callers inspect response.ok themselves, so the gate has to be raised here
@@ -174,14 +156,45 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 
 /**
  * Single exit point for every API call. Centralising this is what guarantees
- * the Authorization header is attached uniformly.
+ * the session cookie is sent uniformly.
  */
 async function request<T>(method: string, path: string, body?: unknown): Promise<Response> {
   return fetch(`${API_BASE}${path}`, {
     method,
+    credentials: 'include',
     headers: buildHeaders(body !== undefined),
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+}
+
+/**
+ * Exchanges the API token for a short-lived session cookie.
+ *
+ * The token is sent once and then dropped from memory: subsequent requests
+ * authenticate with the HttpOnly cookie the server sets here, so the long-lived
+ * token is never kept where page script could read it.
+ */
+export async function login(token: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/session`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!response.ok) {
+    auth.markRejected();
+    throw new ApiException(response.status, 'UNAUTHORIZED', 'The API token was rejected');
+  }
+  auth.tokenChanged();
+}
+
+/** Ends the browser session (logout). */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(`${API_BASE}/session`, { method: 'DELETE', credentials: 'include' });
+  } finally {
+    auth.markRejected();
+  }
 }
 
 /** Makes a GET request to the API. */
@@ -306,6 +319,14 @@ export async function updateQube(id: string, data: QubeUpdateRequest): Promise<Q
  */
 export async function deleteQube(id: string): Promise<void> {
   return del(`/qubes/${id}`);
+}
+
+/**
+ * Purges a qube: destroys the persistent data disk and revokes the agent
+ * identity. Irreversible. `confirm` must be the qube's exact name.
+ */
+export async function purgeQube(id: string, confirm: string): Promise<void> {
+  await post(`/qubes/${id}/purge`, { confirm });
 }
 
 /**
