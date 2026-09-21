@@ -378,9 +378,9 @@ func TestRenewedCertificateVerifiesAndAuthorizes(t *testing.T) {
 	require.True(t, pool.AppendCertsFromPEM([]byte(signed.CAPEM)))
 	_, err = leaf.Verify(x509.VerifyOptions{
 		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
-	require.NoError(t, err, "a renewed certificate must chain to the CA")
+	require.NoError(t, err, "a renewed agent certificate must chain to the CA as a server identity")
 
 	// The fingerprint the CA reports must be the one the verifier computes.
 	require.Equal(t, signed.Fingerprint, Fingerprint(leaf),

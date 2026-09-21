@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -58,4 +59,37 @@ func TestBuildDSN(t *testing.T) {
 	assert.Contains(t, dsn, "/tmp/test.db")
 	assert.Contains(t, dsn, "_journal_mode=WAL")
 	assert.Contains(t, dsn, "_foreign_keys=on")
+}
+
+func TestSchemaVersionStamped(t *testing.T) {
+	path := t.TempDir() + "/stamp.db"
+	cfg := DefaultConfig()
+	cfg.DSN = path
+
+	db, err := New(cfg)
+	require.NoError(t, err)
+	defer db.Close()
+
+	got, err := db.UserVersion()
+	require.NoError(t, err)
+	assert.Equal(t, SchemaVersion, got)
+}
+
+// TestRefusesNewerSchema is the downgrade guard: an older console must not open
+// a database written by a newer one, or it would write rows the newer schema no
+// longer expects.
+func TestRefusesNewerSchema(t *testing.T) {
+	path := t.TempDir() + "/newer.db"
+	cfg := DefaultConfig()
+	cfg.DSN = path
+
+	db, err := New(cfg)
+	require.NoError(t, err)
+	_, err = db.DB().Exec("PRAGMA user_version = " + strconv.Itoa(SchemaVersion+1))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = New(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "newer than this console supports")
 }

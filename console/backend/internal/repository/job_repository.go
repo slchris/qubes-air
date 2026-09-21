@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
@@ -16,7 +17,7 @@ var ErrJobNotFound = errors.New("job not found")
 // JobRepository persists orchestration jobs as an audit trail.
 //
 // Every job is a record of an infrastructure change: what was asked for, when,
-// and what terraform reported. Rows outlive the qube they reference — a
+// and what the provider reported. Rows outlive the qube they reference — a
 // released qube's history is exactly what an audit wants to read — so there is
 // no foreign key onto qubes.
 type JobRepository struct {
@@ -86,6 +87,39 @@ func (r *JobRepository) ListByQube(ctx context.Context, qubeID string, limit int
 		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at
 		FROM jobs WHERE qube_id = ? ORDER BY enqueued_at DESC LIMIT ?`
 	rows, err := r.db.DB().QueryContext(ctx, q, qubeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*orchestrator.Job
+	for rows.Next() {
+		j, err := scanJobRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
+// ListByStates returns every job in one of the given states, oldest first. Used
+// at startup to find jobs a previous process left unfinished.
+func (r *JobRepository) ListByStates(ctx context.Context, states []orchestrator.JobState) ([]*orchestrator.Job, error) {
+	if len(states) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(states))
+	args := make([]any, len(states))
+	for i, s := range states {
+		placeholders[i] = "?"
+		args[i] = string(s)
+	}
+	// #nosec G202 -- the only concatenated text is "?" placeholders; states are
+	// bound as parameters.
+	q := "SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at " +
+		"FROM jobs WHERE state IN (" + strings.Join(placeholders, ",") + ") ORDER BY enqueued_at ASC"
+	rows, err := r.db.DB().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -20,7 +20,7 @@ const (
 	ActionResume    Action = "resume"
 	ActionSuspend   Action = "suspend"
 	ActionDestroy   Action = "destroy"
-	// ActionRelease performs the same terraform work as ActionSuspend — destroy
+	// ActionRelease performs the same provider work as ActionSuspend — destroy
 	// the compute VM, keep the data disk — but records a different intent: the
 	// user deleted the qube rather than parking it. They are distinguished so
 	// job history reads truthfully and so the completion hook can land the qube
@@ -28,7 +28,7 @@ const (
 	ActionRelease Action = "release"
 )
 
-// JobState is the lifecycle of a single terraform invocation.
+// JobState is the lifecycle of a single orchestration invocation.
 type JobState string
 
 // Job states.
@@ -37,9 +37,14 @@ const (
 	JobRunning   JobState = "running"
 	JobSucceeded JobState = "succeeded"
 	JobFailed    JobState = "failed"
+	// JobUnknown means the job was interrupted by a process restart and the
+	// provider could not confirm whether its work completed. It is deliberately
+	// distinct from JobFailed, which records an observed execution error.
+	// Both can have partial side effects; retries must use persisted identity.
+	JobUnknown JobState = "unknown"
 )
 
-// Job is one terraform invocation. It outlives the HTTP request that asked for
+// Job is one orchestration invocation. It outlives the HTTP request that asked for
 // it: a real apply takes minutes, far longer than any request may block, so the
 // caller is handed a job id and polls for the outcome.
 type Job struct {
@@ -66,9 +71,9 @@ type JobStore interface {
 // stored status can follow the real outcome rather than the intent.
 //
 // It is the ONLY place a terminal status is written. With operations running
-// asynchronously, nothing else is still around to do it when terraform
+// asynchronously, nothing else is still around to do it when an operation
 // finishes.
-type Completion func(ctx context.Context, j *Job)
+type Completion func(ctx context.Context, j *Job) error
 
 // Runner errors.
 var (
@@ -76,30 +81,29 @@ var (
 	ErrRunnerClosed = errors.New("orchestration runner is shutting down")
 )
 
-// Runner serializes every terraform invocation onto a single worker goroutine.
+// Runner serializes every provider operation onto a single worker goroutine.
 //
-// One worker is the mutual exclusion: terraform's local backend takes a
-// non-blocking fcntl lock on the state file, so a second concurrent process
-// does not wait its turn — it fails outright with "Error acquiring the state
-// lock". A mutex would also serialize, but it cannot be canceled, gives no
-// backpressure, and offers no way to report what is happening; with operations
-// measured in minutes those matter. A queue additionally guarantees submission
-// order, so a Stop immediately followed by a Start cannot execute in reverse.
+// One worker is the mutual exclusion. A mutex would also serialize, but it
+// cannot be canceled, gives no backpressure, and offers no way to report what is
+// happening; with operations measured in minutes those matter. A queue
+// additionally guarantees submission order, so a Stop immediately followed by a
+// Start cannot execute in reverse.
 type Runner struct {
 	exec    Executor
 	store   JobStore
 	onDone  Completion
 	timeout time.Duration
-	// logs captures each job's terraform output. Nil disables it, which costs
-	// visibility into a running apply but never blocks one.
+	// logs captures each job's operation output. Nil disables it, which costs
+	// visibility into a running operation but never blocks one.
 	logs *JobLogStore
 
 	queue chan *Job
 
-	// base is the lifetime context for all terraform work. It is deliberately
+	// base is the lifetime context for all provider work. It is deliberately
 	// derived from context.Background() and never from an HTTP request: a
-	// client disconnect must not signal terraform away mid-apply, because a
-	// half-applied run can leave VMs and disks that terraform has no record of.
+	// client disconnect must not abort an operation midway, because a
+	// half-finished run can leave VMs and disks that qube_infra has no record
+	// of.
 	base   context.Context
 	cancel context.CancelFunc
 
@@ -119,7 +123,7 @@ type RunnerConfig struct {
 	OnDone    Completion
 	QueueSize int
 	Timeout   time.Duration
-	// Logs captures each job's terraform output as it is produced, so a running
+	// Logs captures each job's operation output as it is produced, so a running
 	// apply can be watched rather than only reported on once it ends. Optional.
 	Logs *JobLogStore
 }
@@ -128,13 +132,18 @@ type RunnerConfig struct {
 // Submit reports ErrQueueFull rather than growing without limit.
 const DefaultQueueSize = 64
 
+// DefaultJobTimeout bounds one orchestration job when the caller configures no
+// timeout. A real provision — clone a template, attach a disk, start the VM —
+// can take minutes.
+const DefaultJobTimeout = 15 * time.Minute
+
 // NewRunner builds a Runner. Call Start to spawn the worker.
 func NewRunner(cfg RunnerConfig) *Runner {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = DefaultQueueSize
 	}
 	if cfg.Timeout <= 0 {
-		cfg.Timeout = DefaultTimeout
+		cfg.Timeout = DefaultJobTimeout
 	}
 	base, cancel := context.WithCancel(context.Background())
 	return &Runner{
@@ -159,8 +168,17 @@ func (r *Runner) Start() {
 //
 // ctx bounds only the enqueue, not the work: the job runs under the Runner's
 // own lifetime context. That separation is the point — the caller's request
-// ends in milliseconds while terraform runs for minutes.
+// ends in milliseconds while an operation runs for minutes.
 func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Action) (*Job, error) {
+	// Check shutdown before recording anything, and serialize it with enqueue.
+	r.closeMu.RLock()
+	defer r.closeMu.RUnlock()
+	if r.closing {
+		return nil, ErrRunnerClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	job := &Job{
 		ID:         uuid.NewString(),
 		QubeID:     qubeID,
@@ -175,14 +193,6 @@ func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Act
 		}
 	}
 
-	// Guard the send: once Shutdown closes the queue, sending would panic.
-	// Holding the read lock for the send is what makes close-vs-send safe.
-	r.closeMu.RLock()
-	defer r.closeMu.RUnlock()
-	if r.closing {
-		return nil, ErrRunnerClosed
-	}
-
 	select {
 	case r.queue <- job:
 		return job, nil
@@ -193,7 +203,9 @@ func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Act
 		now := time.Now().UTC()
 		job.FinishedAt = &now
 		if r.store != nil {
-			_ = r.store.Update(ctx, job)
+			if err := r.store.Update(ctx, job); err != nil {
+				return nil, errors.Join(ErrQueueFull, fmt.Errorf("record rejected job: %w", err))
+			}
 		}
 		return nil, ErrQueueFull
 	}
@@ -205,7 +217,7 @@ func (r *Runner) loop() {
 	// Ranging (rather than selecting on base.Done) means Shutdown can close the
 	// queue and have the worker drain what is already accepted before exiting.
 	// Cancellation of base remains the escape hatch for a shutdown that runs
-	// out of patience, and it reaches terraform as a signal, not a kill.
+	// out of patience, and it lets the in-flight operation stop cleanly.
 	for job := range r.queue {
 		r.run(job)
 	}
@@ -217,15 +229,18 @@ func (r *Runner) run(job *Job) {
 	job.State = JobRunning
 	job.StartedAt = &started
 	if r.store != nil {
-		_ = r.store.Update(r.base, job)
+		if err := r.store.Update(r.base, job); err != nil {
+			r.failBeforeExecution(job, err)
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.base, r.timeout)
 	defer cancel()
 
-	// Capture terraform's output for this job. Failing to open the log must not
-	// stop the job: not being able to watch an apply is a worse outcome than
-	// not being able to watch it AND not running it.
+	// Capture the operation's output for this job. Failing to open the log must
+	// not stop the job: not being able to watch an operation is a worse outcome
+	// than not being able to watch it AND not running it.
 	if r.logs != nil {
 		if f, lerr := r.logs.Create(job.ID); lerr == nil {
 			defer func() { _ = f.Close() }()
@@ -249,35 +264,48 @@ func (r *Runner) run(job *Job) {
 		err = fmt.Errorf("unknown action %q", job.Action)
 	}
 
+	if err == nil {
+		err = ctx.Err()
+	}
+	r.finish(job, started, err)
+}
+
+// finish includes cleanup in the job outcome before persisting a terminal state.
+func (r *Runner) finish(job *Job, started time.Time, err error) {
 	finished := time.Now().UTC()
 	job.FinishedAt = &finished
+	job.State = JobSucceeded
 	if err != nil {
-		job.State = JobFailed
-		job.Error = err.Error()
-		log.Printf("orchestrator: job %s (%s %s) failed after %s: %v",
-			job.ID, job.Action, job.QubeName, finished.Sub(started).Round(time.Second), err)
-	} else {
-		job.State = JobSucceeded
-		log.Printf("orchestrator: job %s (%s %s) succeeded in %s",
-			job.ID, job.Action, job.QubeName, finished.Sub(started).Round(time.Second))
+		job.State, job.Error = JobFailed, err.Error()
+	}
+	// Cleanup is part of the result, not a best-effort action after success.
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer finalCancel()
+	if r.onDone != nil {
+		if err := r.onDone(finalCtx, job); err != nil {
+			job.State = JobFailed
+			if job.Error != "" {
+				job.Error += "; "
+			}
+			job.Error += "completion: " + err.Error()
+		}
 	}
 	if r.store != nil {
-		_ = r.store.Update(r.base, job)
+		if err := r.store.Update(finalCtx, job); err != nil {
+			log.Printf("orchestrator: job %s outcome not persisted: %v", job.ID, err)
+			return
+		}
 	}
-
-	// The completion hook writes the qube's terminal status. It runs even on
-	// failure — a qube left in a transient status would be permanently "busy".
-	if r.onDone != nil {
-		r.onDone(r.base, job)
-	}
+	log.Printf("orchestrator: job %s (%s %s) %s after %s: %s",
+		job.ID, job.Action, job.QubeName, job.State, finished.Sub(started).Round(time.Second), job.Error)
 }
 
 // Shutdown stops accepting work and waits for the in-flight job, up to the
 // given grace period.
 //
-// Canceling the base context signals terraform (SIGINT, not SIGKILL) so it can
-// finish its current operation and persist state. Cutting that short is what
-// strands infrastructure, so prefer a grace period longer than a typical apply.
+// Canceling the base context lets the in-flight operation stop cleanly rather
+// than being killed mid-way. Cutting that short is what strands infrastructure,
+// so prefer a grace period longer than a typical operation.
 func (r *Runner) Shutdown(grace time.Duration) {
 	r.stop.Do(func() {
 		// Stop accepting, then close the queue so the worker drains and exits.
@@ -298,9 +326,28 @@ func (r *Runner) Shutdown(grace time.Duration) {
 			r.cancel()
 		case <-time.After(grace):
 			log.Printf("orchestrator: shutdown grace of %s elapsed with a job still running; "+
-				"signaling terraform to stop", grace)
+				"aborting the in-flight operation", grace)
 			r.cancel()
 			<-done
 		}
 	})
+}
+
+// failBeforeExecution uses a fresh deadline so canceled shutdown/request work
+// cannot prevent recording a failure when the database is still writable.
+func (r *Runner) failBeforeExecution(job *Job, cause error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	finished := time.Now().UTC()
+	job.State, job.FinishedAt = JobFailed, &finished
+	job.Error = "not executed: recording start failed: " + cause.Error()
+	if r.onDone != nil {
+		if err := r.onDone(ctx, job); err != nil {
+			job.Error += "; completion: " + err.Error()
+		}
+	}
+	if err := r.store.Update(ctx, job); err != nil {
+		log.Printf("orchestrator: job %s failure not persisted: %v", job.ID, err)
+	}
+	log.Printf("orchestrator: job %s %s", job.ID, job.Error)
 }

@@ -132,6 +132,7 @@
       // whole compute/storage separation exists to provide.
       case 'suspended': return '#7e57c2';
       case 'released': return '#616161';
+      case 'purged': return '#37474f';
       case 'error': return '#f44336';
       case 'creating':
       case 'resuming':
@@ -151,9 +152,10 @@
       case 'creating': return 'Provisioning…';
       case 'resuming': return 'Resuming…';
       case 'suspending': return 'Suspending…';
-      case 'deleting': return 'Releasing…';
+      case 'deleting': return 'Deleting…';
       case 'suspended': return 'Suspended (data kept)';
       case 'released': return 'Released (data kept)';
+      case 'purged': return 'Purged';
       default: return status;
     }
   }
@@ -281,6 +283,25 @@
     }
   }
 
+  // Purge is irreversible, so it takes two confirmations: a dialog, then typing
+  // the qube's exact name — the same value the backend checks.
+  async function handlePurge(qube: Qube): Promise<void> {
+    if (!confirm(`Permanently destroy qube "${qube.name}" and its data disk? This cannot be undone.`)) return;
+    const typed = prompt(`Type the qube name "${qube.name}" to confirm:`);
+    if (typed !== qube.name) {
+      if (typed !== null) alert('Name did not match; purge cancelled.');
+      return;
+    }
+    processing = qube.id;
+    try {
+      await qubeStore.purge(qube.id, qube.name);
+    } catch (e) {
+      alert(e instanceof ApiException ? e.message : 'Failed to purge qube');
+    } finally {
+      processing = null;
+    }
+  }
+
   function getZoneName(zoneId: string): string {
     if (!zoneId) return 'No Zone';
     return zoneState.zones.find(z => z.id === zoneId)?.name ?? 'Unknown';
@@ -370,6 +391,8 @@
                      so this is disabled rather than offering a click that comes
                      back 409. -->
                 <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
+              {:else if qube.purge_requested}
+                <button class="btn" disabled>{qube.status === 'purged' ? 'Purged' : 'Purge pending'}</button>
               {:else if canStart(qube.status)}
                 <button class="btn" onclick={() => handleStart(qube)}>
                   {qube.status === 'suspended' || qube.status === 'released' ? 'Resume' : 'Start'}
@@ -381,11 +404,17 @@
                 <button class="btn" disabled>{getStatusLabel(qube.status)}</button>
               {/if}
               <button class="btn btn-secondary" onclick={() => openEditModal(qube)}
-                      disabled={isTransientStatus(qube.status)}>Edit</button>
+                      disabled={isTransientStatus(qube.status) || qube.purge_requested}>Edit</button>
               <button class="btn btn-danger" onclick={() => handleDelete(qube)}
-                      disabled={isTransientStatus(qube.status) || qube.status === 'released'}
+                      disabled={isTransientStatus(qube.status) || qube.purge_requested || qube.status === 'released'}
                       title="Release the compute instance. The data disk is kept and can be purged separately."
               >Release</button>
+              {#if ['released', 'suspended', 'stopped', 'error'].includes(qube.status)}
+                <button class="btn btn-danger" onclick={() => handlePurge(qube)}
+                        disabled={isTransientStatus(qube.status)}
+                        title="Permanently destroy the data disk and revoke the agent identity. Irreversible."
+                >{qube.purge_requested ? 'Retry purge' : 'Purge'}</button>
+              {/if}
             </span>
           </div>
 

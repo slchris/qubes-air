@@ -115,7 +115,7 @@ func TestRunnerSerializesWork(t *testing.T) {
 	r := NewRunner(RunnerConfig{
 		Executor: be,
 		Store:    store,
-		OnDone:   func(_ context.Context, j *Job) { done <- j.ID },
+		OnDone:   func(_ context.Context, j *Job) error { done <- j.ID; return nil },
 		Timeout:  5 * time.Second,
 	})
 	r.Start()
@@ -150,7 +150,7 @@ func TestRunnerPreservesSubmissionOrder(t *testing.T) {
 	r := NewRunner(RunnerConfig{
 		Executor: be,
 		Store:    newMemJobStore(),
-		OnDone:   func(context.Context, *Job) { done <- struct{}{} },
+		OnDone:   func(context.Context, *Job) error { done <- struct{}{}; return nil },
 	})
 	r.Start()
 	defer r.Shutdown(2 * time.Second)
@@ -196,7 +196,7 @@ func TestRunnerCompletionRunsOnFailure(t *testing.T) {
 	r := NewRunner(RunnerConfig{
 		Executor: fe,
 		Store:    store,
-		OnDone:   func(_ context.Context, j *Job) { got <- j },
+		OnDone:   func(_ context.Context, j *Job) error { got <- j; return nil },
 	})
 	r.Start()
 	defer r.Shutdown(2 * time.Second)
@@ -221,6 +221,7 @@ func TestRunnerCompletionRunsOnFailure(t *testing.T) {
 		t.Fatal("completion hook never ran on failure")
 	}
 
+	r.Shutdown(2 * time.Second)
 	stored, err := store.GetByID(context.Background(), job.ID)
 	if err != nil {
 		t.Fatalf("get job: %v", err)
@@ -266,5 +267,95 @@ func TestRunnerQueueFullFailsFast(t *testing.T) {
 	}
 	if !errors.Is(lastErr, ErrQueueFull) {
 		t.Errorf("want ErrQueueFull once the queue saturates, got %v", lastErr)
+	}
+}
+
+type failingJobStore struct {
+	*memJobStore
+	failState JobState
+}
+
+func (s *failingJobStore) Update(ctx context.Context, j *Job) error {
+	if j.State == s.failState {
+		return errors.New("injected persistence failure")
+	}
+	return s.memJobStore.Update(ctx, j)
+}
+
+func TestRunnerDoesNotExecuteWithoutDurableStart(t *testing.T) {
+	exec := NewFakeExecutor()
+	store := &failingJobStore{memJobStore: newMemJobStore(), failState: JobRunning}
+	r := NewRunner(RunnerConfig{Executor: exec, Store: store})
+	job, err := r.Submit(context.Background(), "q", "remote-one", ActionDestroy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Start()
+	r.Shutdown(time.Second)
+	if len(exec.Calls()) != 0 {
+		t.Fatal("provider executed despite failed durable running transition")
+	}
+	got, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != JobFailed {
+		t.Fatalf("start persistence failure left state %s", got.State)
+	}
+}
+
+func TestRunnerCompletionFailureIsNotSuccess(t *testing.T) {
+	store := newMemJobStore()
+	r := NewRunner(RunnerConfig{Executor: NewFakeExecutor(), Store: store,
+		OnDone: func(context.Context, *Job) error { return errors.New("RemoteVM cleanup failed") },
+	})
+	job, err := r.Submit(context.Background(), "q", "remote-one", ActionDestroy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Start()
+	r.Shutdown(time.Second)
+	got, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != JobFailed || got.Error == "" {
+		t.Fatalf("cleanup failure lost: %+v", got)
+	}
+}
+
+func TestRunnerClosedDoesNotLeaveQueuedJob(t *testing.T) {
+	store := newMemJobStore()
+	r := NewRunner(RunnerConfig{Executor: NewFakeExecutor(), Store: store})
+	r.Start()
+	r.Shutdown(time.Second)
+	_, err := r.Submit(context.Background(), "q", "remote-one", ActionDestroy)
+	if !errors.Is(err, ErrRunnerClosed) {
+		t.Fatal(err)
+	}
+	jobs, err := store.ListByQube(context.Background(), "q", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 0 {
+		t.Fatal("closed submit recorded phantom work")
+	}
+}
+
+func TestRunnerTimeoutCannotReportSuccess(t *testing.T) {
+	store := newMemJobStore()
+	r := NewRunner(RunnerConfig{Executor: &blockingExecutor{hold: 20 * time.Millisecond}, Store: store, Timeout: time.Millisecond})
+	job, err := r.Submit(context.Background(), "q", "remote-timeout", ActionResume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Start()
+	r.Shutdown(time.Second)
+	got, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != JobFailed {
+		t.Fatalf("timed-out operation reported %s", got.State)
 	}
 }

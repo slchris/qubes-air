@@ -3,7 +3,51 @@ package service
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestDataKeyManagerPerQubeKeyAndShred — a qube gets its own random key (not the
+// shared master), and deleting it destroys the only copy (crypto-shred).
+func TestDataKeyManagerPerQubeKeyAndShred(t *testing.T) {
+	store := newMemCredStore()
+	ctx := context.Background()
+	m := NewDataKeyManager(store)
+
+	k1, err := m.EnsureDataKey(ctx, "q1")
+	require.NoError(t, err)
+	require.NotEmpty(t, k1)
+
+	// DataKeyFor now returns the stored per-qube key.
+	got, err := m.DataKeyFor(ctx, "q1")
+	require.NoError(t, err)
+	assert.Equal(t, k1, got)
+
+	// Another qube gets a different key.
+	k2, err := m.EnsureDataKey(ctx, "q2")
+	require.NoError(t, err)
+	assert.NotEqual(t, k1, k2)
+
+	// Ensure is idempotent.
+	again, err := m.EnsureDataKey(ctx, "q1")
+	require.NoError(t, err)
+	assert.Equal(t, k1, again)
+
+	// Shred: delete q1's key. DataKeyFor then falls back to the (different)
+	// legacy derivation — q1's original key is gone, so its ciphertext is
+	// unrecoverable.
+	require.NoError(t, m.DeleteDataKey(ctx, "q1"))
+	after, err := m.DataKeyFor(ctx, "q1")
+	require.NoError(t, err)
+	assert.NotEqual(t, k1, after, "a shredded key must not come back")
+
+	list, err := store.List(ctx)
+	require.NoError(t, err)
+	for _, c := range list {
+		assert.NotEqual(t, dataKeyCredentialPrefix+"q1", c.Name, "the per-qube key survived the shred")
+	}
+}
 
 func TestDataKeyManagerMintsMasterOnceAndDerivesStably(t *testing.T) {
 	store := newMemCredStore()

@@ -1,63 +1,64 @@
 # 凭据与密钥销毁
 
-云 SSD、快照和底层复制使覆写不可靠。远端数据的销毁原则是“从创建时就加密，退役时销毁
-解密能力”，但必须先确认当前 LUKS key 来源。
+云 SSD、快照和底层复制使覆写不可靠。退役应同时确认云资源、身份与解密能力的最终状态。
+本页描述当前代码行为，不代表完成了所有备份和部分失败场景的现场演练。
 
-## 重要更正
+## 当前密钥模型
 
-现行加密数据盘不是每台 VM 在 `~/.qubes-air/keys/luks/<name>.key` 保存独立 keyfile。
-Console 在加密 credential store 中保存一个 `qubes-air-luks-master`，按 Qube ID 派生
-passphrase，并只通过 agent mTLS 用于解锁。
+新 Qube 使用独立随机 256-bit DEK，存放在控制台加密凭据库的
+`qubes-air-luks-key-<id>` 中，通过 agent mTLS 用于数据盘操作。purge 会删除当前库内的该密钥。
 
-因此仓库中的 `dom0-scripts/decommission-zone.sh --shred-luks-key` 针对旧 keyfile 布局，
-不能单独完成现行单 Qube 的 crypto-shred。不要把它的成功退出当作数据已经不可恢复。
+代码仍保留 `qubes-air-luks-master` + Qube ID 的派生回退。未使用独立 DEK 的盘不能仅通过
+删除 Qube 记录获得相同删除属性；需核验实际密钥来源，不能把回退当成已完成迁移。
+
+数据库归档可能含有 DEK 或 master 的历史副本。删除当前库内记录不会清除这些副本，也不等于
+安全擦除了 SQLite/WAL 或存储快照中的历史内容。不可恢复性必须同时考虑所有密钥副本与备份。
+`dom0-scripts/decommission-zone.sh --shred-luks-key` 也不能作为现行单 Qube 销毁的独立凭据。
 
 ## 单个 Qube 退役
 
-1. 停止新任务并记录 Qube ID、云资源、data disk、RemoteVM 和证书记录。
-2. 如果需要保留数据，先做加密备份并验证恢复。
-3. 删除/销毁云端 compute 和 data disk，包括已知快照与备份策略。
-4. 删除 dom0 RemoteVM 元数据和 Relay endpoint 缓存。
-5. 删除 console 中 Qube/agent 记录。
+1. 确认目标 Qube 名称、ID、provider 资源、数据盘、RemoteVM 和证书；决定数据保留范围。
+2. 如需保留数据，先备份并验证恢复；记录保留备份意味着仍保留相应解密能力。
+3. release/suspend 只删除 compute、保留数据盘。彻底销毁使用
+   `POST /api/v1/qubes/{id}/purge`，需要 control scope 和请求体 `{"confirm":"<qube 名>"}`。
+4. purge 接受 released/suspended/stopped/error，先原子记录不可逆意图、撤销证书和 bootstrap token，再解除保护、删除当前库内数据密钥，
+   再入队销毁资源；正常完成后 Qube 保留 `purged` 记录并清理端点/RemoteVM。
+5. 检查 job log 和 provider：分别核验 compute、storage holder、数据盘、证书和 RemoteVM，
+   按保留政策处置已知快照与密钥备份。
 
-现行 master 派生模型下，删除一个 Qube 记录并不会让旧盘密文在密码学上不可恢复：只要 master
-和原 Qube ID 仍存在，key 可以再次派生。真正的“每 Qube 可独立 crypto-shred”需要引入
-per-Qube 随机 secret 或可撤销的派生 salt，并完成迁移；这是尚未实现的安全改进。
+流程可能部分失败，不能只看 API 接受请求。失败后保留 purge 意图，禁止重新启动；
+失败矩阵和显式重试步骤见[生命周期可靠性](reliability-design.md)。重试前先查明已完成步骤；尤其是密钥
+已删除但 provider 销毁失败时，不应假定资源已经清空或数据仍可恢复。已 purged 的重复请求
+按幂等处理。完整恢复与销毁演练仍是[路线图](roadmap-to-production.md)中的待办。
 
 ## Zone 退役
 
-1. 在 provider 侧先吊销该 Zone 的 API token/service-account key。
-2. 从 console 删除 credential 记录，清除离线 vault 中的副本。
-3. 逐一处理 Zone 内 Qube 的数据保留与云资源删除。
-4. 删除 Zone、Infrastructure、RemoteVM 和对应 policy/tag。
-5. 如果 Relay 只服务于该 Zone，撤销其证书并删除 Relay identity；共享 Relay 不要误删。
-6. 检查远程 state 和备份中是否仍含资源元数据。
+1. 明确 Zone 及其 Qube 的数据保留计划，用有效 provider 凭据完成资源核验与删除。
+2. 吊销该 Zone 的 provider API token/service-account key，再删除 console credential 与离线副本。
+3. 清理 Zone、Infrastructure、RemoteVM 和对应 policy/tag。
+4. 仅在 Relay 专属于该 Zone 时撤销其证书并删除 identity，避免影响共享 Relay。
+5. 核验历史数据库备份、快照与密钥副本的保留政策。
 
-Provider 侧吊销比本地删除 credential 更优先：本地副本泄露后也应已经失效。
+若凭据疑似泄露，应优先吊销或隔离，再使用可信的新凭据完成清理。
 
 ## 控制台或整机事件
 
-当 Qubes 主机丢失或 console 可能被攻破：
+当 Qubes 主机丢失或 console 可能被攻破：从可信设备吊销相关 provider 凭据，隔离 console，
+评估并撤销 Relay/agent 信任，轮换 API token 和凭据加密材料。评估泄露范围应覆盖 CA、独立
+DEK 和派生 master；仅轮换包装密钥不能撤回攻击者已经复制的数据密钥。
 
-1. 从另一台可信设备吊销全部 provider/backend 凭据；
-2. 停止或隔离 console，撤销 Relay/agent 信任；
-3. 轮换 API token、credential encryption key 和可安全轮换的 provider token；
-4. 评估 console CA 是否泄露；若泄露，按 CA 灾难恢复处理整个 fleet；
-5. 评估 `qubes-air-luks-master` 是否泄露：泄露意味着攻击者拿到远端盘副本和 Qube ID 后可
-   派生所有数据盘 key；
-6. 从可信备份恢复后重新签发身份，不复用可疑主机上的私钥。
+CA 处置与恢复见[灾难恢复](disaster-recovery.md)。恢复后不要复用可疑主机上的私钥，也不要
+把旧备份中的证书吊销状态直接当作事件后的最新状态。
 
-## 销毁高价值根密钥的影响
+## 高价值密钥的影响
 
-| 材料 | 销毁结果 |
+| 材料 | 丢失或销毁的影响（假设无其他副本） |
 |---|---|
-| 某 provider token | 对应基础设施 API 访问失效 |
-| Console encryption key | 仍由该版本加密的 credential 行不可恢复 |
-| Console CA private key | 无法续期/签发；现有证书到期后 fleet 失联 |
-| `qubes-air-luks-master` | 所有加密数据盘不可恢复 |
-| State passphrase | 远程加密 state 不可恢复 |
-| Relay private key | 该 Relay 数据面失效，可重新 bootstrap |
-| Agent private key | 该 agent 身份失效，可通过受控重建恢复 |
+| Provider token | 对应 API 访问需更换凭据；让泄露副本失效必须在 provider 侧吊销 |
+| Console encryption key | 仅由该版本加密的 credential 行无法解密 |
+| Console CA private key | 无法继续签发/续期；已有证书仍可用原公共 CA 在有效期内验证 |
+| Per-Qube DEK | 对应加密数据盘无法解锁 |
+| `qubes-air-luks-master` | 仍依赖该 master 派生的盘无法解锁，不影响独立 DEK 的盘 |
+| Relay / agent private key | 对应身份无法使用，需要受控重建或重新 bootstrap |
 
-执行前必须同时确认目标、备份、回滚窗口和依赖范围。根密钥销毁是不可逆操作，不应由一个模糊
-的 `--zone` 脚本自动完成。
+执行前明确确认目标、备份保留政策与依赖范围。根密钥销毁不应由模糊的 Zone 操作自动完成。

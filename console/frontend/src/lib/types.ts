@@ -94,6 +94,7 @@ export type QubeType = 'app' | 'work' | 'dev' | 'gpu' | 'disp' | 'sys';
 // 'suspended' and 'released' both mean the compute VM is gone while the
 // persistent data disk remains — the difference is intent: suspended was parked
 // to save cost, released was deleted by the user and is awaiting a purge.
+// 'purged' is terminal: the data disk is gone and the identity revoked.
 //
 // The four transient values mean a terraform job is queued or running. They are
 // not decoration: the backend refuses a second operation while a qube is in one,
@@ -105,6 +106,7 @@ export type QubeStatus =
   | 'stopped'
   | 'suspended'
   | 'released'
+  | 'purged'
   | 'resuming'
   | 'suspending'
   | 'deleting'
@@ -137,6 +139,7 @@ export interface QubeSpec {
 
 // Qube entity matching backend models.Qube
 export interface Qube {
+  purge_requested: boolean;
   id: string;
   name: string;
   zone_id?: string;  // Optional: qube can exist without a zone

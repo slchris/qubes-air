@@ -16,6 +16,7 @@ import (
 
 // QubeRepository defines qube data access operations.
 type QubeRepository interface {
+	ClaimPurge(ctx context.Context, id string, from []models.QubeStatus) error
 	Create(ctx context.Context, qube *models.Qube) error
 	GetByID(ctx context.Context, id string) (*models.Qube, error)
 	List(ctx context.Context, opts QubeListOptions) ([]*models.Qube, error)
@@ -46,7 +47,7 @@ var ErrQubeNotFound = errors.New("qube not found")
 // agent_* timestamp ends up scanned into the wrong field.
 const qubeColumns = `id, name, type, zone_id, status, spec, ip_address,
 		agent_health, agent_last_probed_at, agent_last_healthy_at, agent_last_error,
-		created_at, updated_at`
+		created_at, updated_at, purge_requested`
 
 // QubeListOptions contains filtering options for listing qubes.
 type QubeListOptions struct {
@@ -157,6 +158,7 @@ func scanQube(row rowScanner) (*models.Qube, error) {
 		&qube.AgentLastError,
 		&qube.CreatedAt,
 		&qube.UpdatedAt,
+		&qube.PurgeRequested,
 	); err != nil {
 		return nil, err
 	}
@@ -247,20 +249,29 @@ func (r *qubeRepository) Update(ctx context.Context, qube *models.Qube) error {
 
 	query := `
 		UPDATE qubes
-		SET name = ?, type = ?, status = ?, spec = ?, ip_address = ?, updated_at = ?
-		WHERE id = ?`
+		SET name = ?, type = ?, spec = ?, updated_at = ?
+		WHERE id = ? AND purge_requested = 0
+ AND status NOT IN ('creating', 'resuming', 'suspending', 'deleting')`
 
-	_, err = r.db.DB().ExecContext(ctx, query,
+	res, err := r.db.DB().ExecContext(ctx, query,
 		qube.Name,
 		qube.Type,
-		qube.Status,
 		specJSON,
-		qube.IPAddress,
 		time.Now(),
 		qube.ID,
 	)
 
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrTransitionConflict
+	}
+	return nil
 }
 
 // Delete removes a qube.
@@ -290,18 +301,27 @@ var ErrTransitionConflict = errors.New("qube is busy: another operation is in pr
 // simultaneous Start requests issue two UPDATEs; the first matches a row and
 // the second affects zero, so exactly one job is ever enqueued. Expressing this
 // as a read-then-write in Go would leave a window between the check and the
-// write — and since a terraform apply takes minutes, that window is wide enough
+// write — and since a provision takes minutes, that window is wide enough
 // to matter in practice, not just in theory.
 func (r *qubeRepository) ClaimTransition(
 	ctx context.Context, id string, from []models.QubeStatus, to models.QubeStatus,
 ) error {
+	return r.claim(ctx, id, from, to, false)
+}
+
+// ClaimPurge records irreversible intent atomically with the exclusive claim.
+func (r *qubeRepository) ClaimPurge(ctx context.Context, id string, from []models.QubeStatus) error {
+	return r.claim(ctx, id, from, models.QubeStatusDeleting, true)
+}
+
+func (r *qubeRepository) claim(ctx context.Context, id string, from []models.QubeStatus, to models.QubeStatus, purge bool) error {
 	if len(from) == 0 {
 		return errors.New("ClaimTransition: no source statuses given")
 	}
 
 	placeholders := make([]string, len(from))
 	args := make([]any, 0, len(from)+3)
-	args = append(args, string(to), time.Now(), id)
+	args = append(args, string(to), time.Now(), purge, id, purge)
 	for i, s := range from {
 		placeholders[i] = "?"
 		args = append(args, string(s))
@@ -310,7 +330,8 @@ func (r *qubeRepository) ClaimTransition(
 	// #nosec G201 -- only "?" placeholders are interpolated into the SQL; every
 	// value, including each source status, is passed as a bound argument.
 	query := fmt.Sprintf(
-		`UPDATE qubes SET status = ?, updated_at = ? WHERE id = ? AND status IN (%s)`,
+		`UPDATE qubes SET status = ?, updated_at = ?, purge_requested = MAX(purge_requested, ?)
+ WHERE id = ? AND (? OR purge_requested = 0) AND status IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 

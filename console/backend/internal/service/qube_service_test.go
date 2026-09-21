@@ -210,6 +210,32 @@ func TestQubeService_Update(t *testing.T) {
 	assert.Equal(t, "Updated", updated.Name)
 }
 
+// TestQubeService_UpdateRejectsInvalid — an update must pass the same name and
+// spec checks creation does, or it can write objects create would have refused.
+func TestQubeService_UpdateRejectsInvalid(t *testing.T) {
+	zoneSvc, qubeSvc, cleanup := setupQubeTestServices(t)
+	defer cleanup()
+	ctx := context.Background()
+	zone := createConnectedZone(t, zoneSvc)
+
+	op, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
+		Name: "Original2", Type: models.QubeTypeApp, ZoneID: zone.ID,
+	})
+	require.NoError(t, err)
+
+	badName := "bad name!"
+	_, err = qubeSvc.Update(ctx, op.Qube.ID, &models.QubeUpdateRequest{Name: &badName})
+	assert.ErrorIs(t, err, ErrInvalidQubeName)
+
+	badSpec := models.QubeSpec{VCPU: -1}
+	_, err = qubeSvc.Update(ctx, op.Qube.ID, &models.QubeUpdateRequest{Spec: &badSpec})
+	assert.ErrorIs(t, err, ErrInvalidQubeSpec)
+
+	got, err := qubeSvc.GetByID(ctx, op.Qube.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Original2", got.Name, "a rejected update must not change the row")
+}
+
 func TestQubeService_Delete(t *testing.T) {
 	zoneSvc, qubeSvc, cleanup := setupQubeTestServices(t)
 	defer cleanup()

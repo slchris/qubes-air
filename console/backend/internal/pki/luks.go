@@ -33,6 +33,24 @@ func NewDataMasterSecret() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
+// NewDataKey returns a fresh, random per-qube data key, base64 (raw-std) so it
+// is a single shell-safe line like DeriveDataKey's output.
+//
+// Unlike DeriveDataKey this is NOT reproducible from any master: the stored copy
+// is the only way to decrypt the disk, so deleting it is a real crypto-shred.
+// That is what makes a purge irreversible even if a copy of the ciphertext
+// survives (a backup, a snapshot, a cloned volume) — the key is gone.
+func NewDataKey() (string, error) {
+	buf := make([]byte, dataKeyLen)
+	if _, err := io.ReadFull(rand.Reader, buf); err != nil {
+		return "", fmt.Errorf("generate data key: %w", err)
+	}
+	return base64.RawStdEncoding.EncodeToString(buf), nil
+}
+
+// dataKeyLen is the size of a per-qube data key. 256 bits, matching the master.
+const dataKeyLen = 32
+
 // DeriveDataKey derives a qube's LUKS passphrase from the console master secret
 // and the qube's stable id.
 //

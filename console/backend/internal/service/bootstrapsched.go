@@ -215,15 +215,21 @@ func (m *BootstrapMonitor) sweepGuarded(ctx context.Context) {
 	m.Sweep(ctx)
 }
 
-// Sweep dials every running qube that holds no usable certificate.
+// Sweep dials every qube that holds no usable certificate.
 //
-// Running only, like the renewal and health sweeps: a suspended qube has no
-// compute instance to dial. A suspended qube that never bootstrapped is
+// Creating and resuming are included: a qube whose provision job is still
+// running already has an agent that needs its first certificate, and the job now
+// WAITS for that agent before it reports success. Selecting only "running" would
+// deadlock every fresh provision — the job waits on the agent, and the agent
+// only gets a certificate from this sweep, which would not look at it until the
+// job had already succeeded. Suspended/released qubes stay excluded: there is no
+// compute instance to dial, and a suspended qube that never bootstrapped is
 // handled by the resume path, which re-renders its user-data and mints a fresh
-// token — dialing a machine that does not exist would only produce a
-// guaranteed failure every minute.
+// token.
 func (m *BootstrapMonitor) Sweep(ctx context.Context) {
-	qubes, err := m.qubes.ListByStatus(ctx, []models.QubeStatus{models.QubeStatusRunning})
+	qubes, err := m.qubes.ListByStatus(ctx, []models.QubeStatus{
+		models.QubeStatusRunning, models.QubeStatusCreating, models.QubeStatusResuming,
+	})
 	if err != nil {
 		log.Printf("bootstrap: could not list running qubes: %v", err)
 		return

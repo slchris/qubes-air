@@ -23,15 +23,21 @@ var (
 	ErrQubeNotStopped   = errors.New("qube must be stopped")
 	ErrZoneDisconnected = errors.New("zone is disconnected")
 	ErrInvalidQubeType  = errors.New("invalid qube type")
+	// ErrPurgeConfirmation means the caller's confirmation string did not match
+	// the qube's name. Purge is irreversible, so the name must be typed exactly.
+	ErrPurgeConfirmation = errors.New("purge confirmation does not match the qube name")
 	// ErrOrchestration wraps a failure that occurred while triggering the real
-	// infrastructure action (terraform suspend/resume). When this is returned
+	// infrastructure action (provider suspend/resume). When this is returned
 	// the DB status is left unchanged.
 	ErrOrchestration = errors.New("orchestration action failed")
 
-	// ErrInvalidQubeName means the name cannot be used as a terraform map key
+	// ErrInvalidQubeName means the name cannot be used as a provider resource name
 	// or -target address: only alphanumerics, '-', '_' and '.', starting with
 	// an alphanumeric, at most 64 characters.
 	ErrInvalidQubeName = errors.New("invalid qube name")
+	// ErrInvalidQubeSpec means a size is out of range. Create and Update share
+	// it so an update cannot write values create would have refused.
+	ErrInvalidQubeSpec = errors.New("invalid qube spec")
 
 	// ErrPlacement means no cluster node could take the qube. This is a hard
 	// failure by design: Proxmox would accept an overcommitted placement and let
@@ -84,8 +90,12 @@ type QubeService interface {
 	List(ctx context.Context, opts repository.QubeListOptions) ([]*models.Qube, error)
 	Update(ctx context.Context, id string, req *models.QubeUpdateRequest) (*models.Qube, error)
 	Delete(ctx context.Context, id string) error
+	// Purge destroys a qube outright including its persistent data disk, after
+	// an explicit confirmation: the caller must pass the qube's exact name.
+	// Irreversible. Release (Delete) is the reversible step that keeps the disk.
+	Purge(ctx context.Context, id, confirmName string) error
 	// Start and Stop are asynchronous: they claim the qube into a transient
-	// status, enqueue a terraform job and return immediately. A real apply takes
+	// status, enqueue an orchestration job and return immediately. A real provision takes
 	// minutes, far beyond any HTTP write deadline.
 	Start(ctx context.Context, id string) (*Operation, error)
 	Stop(ctx context.Context, id string) (*Operation, error)
@@ -129,7 +139,7 @@ const (
 type QubeServiceImpl struct {
 	qubeRepo repository.QubeRepository
 	zoneRepo repository.ZoneRepository
-	// executor triggers real infrastructure actions (terraform suspend/resume).
+	// executor triggers real infrastructure actions (provider suspend/resume).
 	// It is never nil: when no executor is injected a NoopExecutor is used so
 	// existing behavior and tests are preserved.
 	executor orchestrator.Executor
@@ -149,10 +159,16 @@ type QubeServiceImpl struct {
 	// issuance, in which case a qube is created without an agent identity and
 	// its agent cannot authenticate.
 	issuer *CertIssuer
+	// infraStore records provider identities. Purge clears `protected` through
+	// it before the executor may destroy the data disk. Nil disables purge.
+	infraStore orchestrator.InfraStore
+	// dataKeys mints a per-qube data key before formatting and deletes it on
+	// purge (crypto-shred). Nil leaves the legacy master-derived key in place.
+	dataKeys DataKeyStore
 	// placer chooses which cluster node a qube runs on. Nil disables automatic
 	// scheduling, in which case placement falls back to the zone default.
 	placer PlacementDecider
-	// submitter queues terraform work. When nil the service runs the executor
+	// submitter queues orchestration work. When nil the service runs the executor
 	// inline, which preserves the previous synchronous behavior for tests and
 	// for deployments with no orchestration configured.
 	submitter JobSubmitter
@@ -209,6 +225,26 @@ func WithExecutor(exec orchestrator.Executor) QubeServiceOption {
 // WithCertIssuer enables agent certificate issuance at qube creation.
 func WithCertIssuer(i *CertIssuer) QubeServiceOption {
 	return func(s *QubeServiceImpl) { s.issuer = i }
+}
+
+// WithInfraStore supplies the provider-identity record. Purge uses it to lift
+// the data disk's `protected` flag, which is the explicit confirmation the
+// executor's Destroy requires before it will destroy the disk.
+func WithInfraStore(store orchestrator.InfraStore) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.infraStore = store }
+}
+
+// DataKeyStore mints and deletes a qube's per-qube data key. Service.DataKeyManager
+// satisfies it.
+type DataKeyStore interface {
+	EnsureDataKey(ctx context.Context, qubeID string) (string, error)
+	DeleteDataKey(ctx context.Context, qubeID string) error
+}
+
+// WithDataKeyStore mints a per-qube data key at creation (so a formatted disk is
+// only unlockable by that qube's record) and deletes it on purge (crypto-shred).
+func WithDataKeyStore(store DataKeyStore) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.dataKeys = store }
 }
 
 // WithPlacementDecider enables automatic node selection. Without it a qube is
@@ -273,8 +309,8 @@ func NewQubeService(
 // Create records the qube and provisions it.
 //
 // Until now this only wrote a database row: the UI reported a qube that had no
-// VM behind it. The row is still written first — it is what the tfvars renderer
-// reads, so terraform cannot learn about the qube until it exists — and the
+// VM behind it. The row is still written first: the executor resolves the qube
+// by name, so the provider cannot act until the row exists — and the
 // provision job is then queued against it.
 func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequest) (*Operation, error) {
 	if err := s.validateQubeCreateRequest(ctx, req); err != nil {
@@ -295,7 +331,7 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 
 	// Resolve placement BEFORE writing the row, and persist the concrete node.
 	// Recomputing it on every apply would let a qube drift between nodes as
-	// cluster load changes, which terraform would see as a reason to rebuild the
+	// cluster load changes, which the provider adapter would see as a reason to rebuild the
 	// VM. Deciding once and recording the answer also makes "why is it here?"
 	// answerable later.
 	if req.ZoneID != "" {
@@ -319,26 +355,10 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 		return nil, err
 	}
 
-	// Mint the agent's bootstrap credential now, while the qube row exists to
-	// own it and before any infrastructure is built. Later would mean a running
-	// remote with no way to authenticate; earlier would leave a token with no
-	// qube to invalidate it against.
-	//
-	// This does NOT produce a certificate — the agent generates its own key at
-	// first boot and BootstrapMonitor signs it. So the qube is deliberately
-	// created uncertified, and stays that way until the console reaches it.
-	if s.issuer != nil {
-		if err := s.issuer.IssueFor(ctx, qube); err != nil {
-			// The qube row is left in place deliberately: it already exists, and
-			// deleting it here would race the caller's own view. A qube without a
-			// credential is visible and retryable; a half-deleted one is not.
-			return nil, fmt.Errorf("%w: mint agent bootstrap credential: %v", ErrOrchestration, err)
-		}
-	}
-
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{models.QubeStatusPending},
-		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError, nil)
+		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError,
+		func(ctx context.Context) error { return s.prepareProvision(ctx, qube) })
 }
 
 // validateQubeCreateRequest validates qube creation request.
@@ -351,12 +371,16 @@ func (s *QubeServiceImpl) validateQubeCreateRequest(ctx context.Context, req *mo
 		return ErrInvalidQubeType
 	}
 
-	// The name becomes a terraform map key and a -target address, so it must be
+	// The name becomes a provider resource name, so it must be
 	// safe there. Rejecting it here turns what used to be a confusing failure at
 	// first Start (or, before Create provisioned anything, a qube that could
 	// never be started at all) into an immediate, actionable 400.
 	if !orchestrator.ValidQubeName(req.Name) {
 		return fmt.Errorf("%w: %q", ErrInvalidQubeName, req.Name)
+	}
+
+	if err := validateQubeSpec(req.Spec); err != nil {
+		return err
 	}
 
 	// Zone is optional - only validate if provided
@@ -459,6 +483,19 @@ func (s *QubeServiceImpl) Update(ctx context.Context, id string, req *models.Qub
 		return nil, ErrQubeNotFound
 	}
 
+	// An update must pass the same checks creation does. The name is a provider
+	// resource name and a certificate identity, and the spec decides what the
+	// provider is asked to build — an update that wrote values create would have
+	// refused would put invalid objects into the orchestration source of truth.
+	if req.Name != nil && !orchestrator.ValidQubeName(strings.TrimSpace(*req.Name)) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidQubeName, strings.TrimSpace(*req.Name))
+	}
+	if req.Spec != nil {
+		if err := validateQubeSpec(*req.Spec); err != nil {
+			return nil, err
+		}
+	}
+
 	applyQubeUpdates(qube, req)
 	qube.UpdatedAt = time.Now()
 
@@ -467,6 +504,18 @@ func (s *QubeServiceImpl) Update(ctx context.Context, id string, req *models.Qub
 	}
 
 	return qube, nil
+}
+
+// validateQubeSpec rejects clearly invalid sizes. Shared by Create and Update so
+// the two cannot disagree about what a valid spec is.
+func validateQubeSpec(spec models.QubeSpec) error {
+	if spec.VCPU < 0 || spec.Memory < 0 || spec.Disk < 0 || spec.DataDiskGB < 0 {
+		return fmt.Errorf("%w: cpu/memory/disk sizes must not be negative", ErrInvalidQubeSpec)
+	}
+	if spec.GPU != nil && spec.GPU.Count < 0 {
+		return fmt.Errorf("%w: gpu count must not be negative", ErrInvalidQubeSpec)
+	}
+	return nil
 }
 
 // applyQubeUpdates applies update request fields to qube.
@@ -480,13 +529,13 @@ func applyQubeUpdates(qube *models.Qube, req *models.QubeUpdateRequest) {
 }
 
 // Delete removes a qube.
-// Delete releases a qube: terraform destroys the compute instance while the
+// Delete releases a qube: the provider destroys the compute instance while the
 // data disk, and the storage-holder VM that owns it, are retained.
 //
 // This is deliberately not a teardown, and the database row is deliberately
 // kept. The storage holder carries lifecycle.prevent_destroy, so destroying it
 // is a plan-time error rather than something a DELETE can perform; and dropping
-// the qube from the rendered terraform variables while its storage VM is still
+// the qube's qube_infra record while its storage VM is still
 // in state does not bypass that guard — it wedges every subsequent apply, for
 // every qube. Discarding the data is therefore a separate, explicitly confirmed
 // action, and until then the qube must keep being rendered.
@@ -515,10 +564,82 @@ func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+// Purge destroys a qube outright, including its persistent data disk.
+//
+// Release is the reversible half: it destroys the compute instance and keeps the
+// disk. Purge is the irreversible half, and it is deliberately NOT reachable
+// from Delete — it takes a second, explicit confirmation (the caller types the
+// qube's name) because the data on that disk cannot be recovered.
+func (s *QubeServiceImpl) Purge(ctx context.Context, id, confirmName string) error {
+	qube, err := s.qubeRepo.GetByID(ctx, id)
+	if err != nil {
+		return ErrQubeNotFound
+	}
+	if qube.Status == models.QubeStatusPurged {
+		return nil // already purged; purging again is a no-op
+	}
+
+	// Destructive and irreversible: the operator must name the qube.
+	if confirmName != qube.Name {
+		return fmt.Errorf("%w: got %q, want %q", ErrPurgeConfirmation, confirmName, qube.Name)
+	}
+
+	// Only from states where the compute instance is already gone. A running
+	// qube must be released (or stopped) first, so the disk being destroyed is
+	// not attached to a live machine.
+	_, err = s.claimAndEnqueue(ctx, qube,
+		[]models.QubeStatus{
+			models.QubeStatusReleased, models.QubeStatusSuspended,
+			models.QubeStatusStopped, models.QubeStatusError,
+		},
+		models.QubeStatusDeleting, orchestrator.ActionDestroy, qube.Status,
+		func(ctx context.Context) error {
+			// Lift the disk's protection first, then revoke the identity. Both
+			// are irreversible; the job log and status report which step failed.
+			if err := s.clearDataProtection(ctx, qube.ID); err != nil {
+				return err
+			}
+			if s.issuer != nil {
+				if err := s.issuer.RevokeFor(ctx, qube.ID, "purge"); err != nil {
+					return err
+				}
+			}
+			// Delete the current key. Historical key backups require their own
+			// retention policy; this does not erase every recoverable copy.
+			if s.dataKeys != nil {
+				if err := s.dataKeys.DeleteDataKey(ctx, qube.ID); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	return err
+}
+
+// clearDataProtection clears the `protected` flag the executor's Destroy checks.
+// With no infra recorded there is nothing to clear (the qube never had a disk).
+func (s *QubeServiceImpl) clearDataProtection(ctx context.Context, qubeID string) error {
+	if s.infraStore == nil {
+		return nil
+	}
+	inf, err := s.infraStore.Get(ctx, qubeID)
+	if err != nil {
+		return fmt.Errorf("load infra for purge: %w", err)
+	}
+	if inf == nil {
+		return nil
+	}
+	inf.Protected = false
+	if err := s.infraStore.Save(ctx, inf); err != nil {
+		return fmt.Errorf("lift data-disk protection: %w", err)
+	}
+	return nil
+}
+
 // Start starts (resumes) a qube.
 //
 // Order matters: preconditions are checked first, then the orchestrator rebuilds
-// the compute instance (terraform resume), and only if that SUCCEEDS is the DB
+// the compute instance (provider resume), and only if that SUCCEEDS is the DB
 // status flipped to running. If orchestration fails the DB status is left
 // untouched and an error is returned — we never report "running" for a qube the
 // infrastructure did not actually bring up.
@@ -537,15 +658,22 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	revertTo models.QubeStatus,
 	prepare func(context.Context) error,
 ) (*Operation, error) {
-	if err := s.qubeRepo.ClaimTransition(ctx, qube.ID, from, to); err != nil {
-		return nil, err
+	var claimErr error
+	if action == orchestrator.ActionDestroy {
+		claimErr = s.qubeRepo.ClaimPurge(ctx, qube.ID, from)
+		revertTo = models.QubeStatusError
+	} else {
+		claimErr = s.qubeRepo.ClaimTransition(ctx, qube.ID, from, to)
+	}
+	if claimErr != nil {
+		return nil, claimErr
 	}
 
 	// Work that must happen after the qube is CLAIMED but before anything is
 	// enqueued. The claim is the only serialization point on this path, and
 	// certificate reissue depends on it: two concurrent resumes that each minted
 	// an identity before claiming would each revoke the other's, and whichever
-	// one terraform delivered, the qube would boot holding a revoked certificate
+	// one the provider delivered, the qube would boot holding a revoked certificate
 	// and be locked out — by the code written to prevent lockout.
 	//
 	// A failure here releases the claim, for the same reason a failed enqueue
@@ -553,8 +681,7 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	// would make it permanently "busy".
 	if prepare != nil {
 		if err := prepare(ctx); err != nil {
-			_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, revertTo)
-			return nil, err
+			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, revertTo))
 		}
 	}
 
@@ -562,12 +689,10 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	// the console usable (and tests synchronous) without an orchestration queue.
 	if s.submitter == nil {
 		if err := s.runInline(ctx, qube, action); err != nil {
-			_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, models.QubeStatusError)
-			return nil, fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err)
+			return nil, errors.Join(fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err),
+				s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
 		}
-		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
-			return nil, err
-		}
+
 		// Mirror the async completion hook: a destroyed compute VM's IP is stale,
 		// and a resume draws a fresh DHCP lease, so clear it and let the address
 		// reader re-learn the real one. Without this a resumed qube is dialed at a
@@ -576,6 +701,9 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 			if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
 				return nil, err
 			}
+		}
+		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
+			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
 		}
 		updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
 		if err != nil {
@@ -588,8 +716,8 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	if err != nil {
 		// Nothing is running, so release the claim rather than leaving the qube
 		// pinned in a transient status forever.
-		_ = s.qubeRepo.UpdateStatus(ctx, qube.ID, revertTo)
-		return nil, fmt.Errorf("%w: enqueue %s %q: %v", ErrOrchestration, action, qube.Name, err)
+		return nil, errors.Join(fmt.Errorf("%w: enqueue %s %q: %v", ErrOrchestration, action, qube.Name, err),
+			s.releaseFailedClaim(ctx, qube.ID, revertTo))
 	}
 
 	updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
@@ -619,7 +747,7 @@ func (s *QubeServiceImpl) runInline(ctx context.Context, qube *models.Qube, acti
 //
 // It still maps a successful provision to "running" unconditionally, and that
 // is correct: this says the COMPUTE VM is up, which is exactly what a completed
-// terraform apply establishes. Whether the agent inside it works is a separate
+// the provider operation establishes. Whether the agent inside it works is a separate
 // fact, tracked in Qube.AgentHealth. Folding a dead agent into this status would
 // make "suspended" and "running but unusable" indistinguishable and would lose
 // the only signal that tells them apart.
@@ -639,7 +767,7 @@ func terminalStatusFor(action orchestrator.Action) models.QubeStatus {
 	case orchestrator.ActionRelease:
 		return models.QubeStatusReleased
 	case orchestrator.ActionDestroy:
-		return models.QubeStatusReleased
+		return models.QubeStatusPurged
 	default:
 		return models.QubeStatusError
 	}
@@ -650,7 +778,7 @@ func terminalStatusFor(action orchestrator.Action) models.QubeStatus {
 // both set compute_running=false (the VM is destroyed, its disk retained), and
 // destroy removes the qube outright; a resume then rebuilds the VM with a new
 // MAC and a new DHCP lease. The stored address must be cleared on all three so
-// it is re-read from terraform rather than believed forever. Exported so the
+// it is re-read from the provider rather than believed forever. Exported so the
 // async completion hook (cmd/server) and this inline path share one definition.
 func ComputeDestroyingAction(action orchestrator.Action) bool {
 	switch action {
@@ -661,7 +789,7 @@ func ComputeDestroyingAction(action orchestrator.Action) bool {
 	}
 }
 
-// Start resumes a qube: terraform rebuilds the compute VM and re-attaches the
+// Start resumes a qube: the provider rebuilds the compute VM and re-attaches the
 // existing data disk. It does not wait — that takes minutes on a real cluster.
 // The qube goes to "resuming" immediately and reaches "running" or "error" when
 // the job finishes; poll the returned job id.
@@ -685,7 +813,7 @@ func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*Operation, err
 			models.QubeStatusReleased, models.QubeStatusError,
 		},
 		models.QubeStatusResuming, orchestrator.ActionResume, qube.Status,
-		func(ctx context.Context) error { return s.reissueIdentityForResume(ctx, qube, prior) })
+		func(ctx context.Context) error { return s.prepareResume(ctx, qube, prior) })
 }
 
 // reissueIdentityForResume hands a resuming qube a brand new agent identity.
@@ -700,20 +828,15 @@ func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*Operation, err
 // identity through the channel that is actually open at that moment.
 //
 // It is free rather than merely acceptable, and that was checked rather than
-// assumed. Resume drives compute_running false -> true, which makes
-// proxmox_virtual_environment_vm.compute go from count=0 to count=1 — the
-// instance is CREATED, not modified. The identity snippet
-// (proxmox_virtual_environment_file.agent_identity) is gated on the same
-// variable and is an upstream dependency of the compute VM, so the targeted
-// resume apply creates it too, reading whatever content is at the path at that
-// moment. The filesha256 checksum that normally forces a replacement has
-// nothing to replace: neither resource exists yet. See
-// terraform/modules/remote-qube-base/providers/proxmox/main.tf and the
-// agent_user_data_file wiring in tfvars.go.
+// assumed. Resume makes the provider rebuild the compute instance (the compute
+// VM goes from absent to present), and the cloud-init snippet is delivered as
+// part of that same compute creation, reading whatever identity content exists
+// at that moment. There is no stale snippet to replace, because no compute
+// instance exists to reference one.
 //
 // The computeRunning guard is what keeps that true. Every status Start accepts
-// today renders compute_running=false, so it never fires — but it is the single
-// predicate that decides whether terraform builds a compute VM, so if that
+// today reports no compute instance, so it never fires — but it is the single
+// predicate that decides whether a compute VM should exist, so if that
 // accepted-source list ever grows to include a status with a LIVE instance, the
 // reissue is skipped instead of quietly changing the identity file underneath a
 // running VM and provoking a rebuild nobody asked for.
@@ -726,14 +849,14 @@ func (s *QubeServiceImpl) reissueIdentityForResume(
 	// Only statuses that PROVE the compute instance was destroyed get a reissue.
 	//
 	// The guard used to be computeRunning(prior), which answers a different
-	// question: "should terraform build a VM", not "is one running". Error is
+	// question: "should the provider build a VM", not "is one running". Error is
 	// exactly where those diverge, and it is reached with a live VM routinely —
 	// reconcileStrandedQubes rewrites every Creating/Resuming qube to Error when
 	// the console restarts, including ones whose apply had already finished and
 	// whose agent is healthy.
 	//
 	// Starting such a qube would revoke the certificate of a RUNNING agent and
-	// then not replace anything: terraform sees the compute VM already matching
+	// then not replace anything: the provider sees the compute VM already matching
 	// compute_running=true, so it is not rebuilt and never re-reads cloud-init.
 	// The result is a healthy VM whose agent is refused by both the prober and
 	// the renewer — unreachable, unrenewable, recoverable only by rebuilding.
@@ -766,7 +889,7 @@ func (s *QubeServiceImpl) reissueIdentityForResume(
 // current certificate.
 //
 // Deliberately narrow. This gates revocation, so "probably gone" is not good
-// enough — only the statuses terraform reaches by actually destroying the
+// enough — only the statuses reached by actually destroying the
 // instance qualify. Anything else, including Error and Stopped, may or may not
 // have a live VM behind it, and the cost of guessing wrong is a qube that can
 // never authenticate again.
@@ -779,7 +902,7 @@ func instanceProvablyDestroyed(status models.QubeStatus) bool {
 	}
 }
 
-// Stop suspends a qube: terraform destroys the compute VM and keeps the data
+// Stop suspends a qube: the provider destroys the compute VM and keeps the data
 // disk. Asynchronous, same contract as Start.
 func (s *QubeServiceImpl) Stop(ctx context.Context, id string) (*Operation, error) {
 	qube, err := s.qubeRepo.GetByID(ctx, id)
@@ -808,7 +931,7 @@ func (s *QubeServiceImpl) verifyZoneConnected(ctx context.Context, zoneID string
 // Stop stops (suspends) a qube.
 //
 // Same "act first, record second" discipline as Start: the orchestrator releases
-// the compute instance (terraform suspend) while keeping the data disk; only if
+// the compute instance (provider suspend) while keeping the data disk; only if
 // that succeeds is the DB status updated. The resulting status is Suspended —
 // distinct from Stopped — to reflect that compute was released but data is
 // preserved and the qube can be resumed. If orchestration fails the DB status is

@@ -180,3 +180,50 @@ func TestListByStatusEmptyInput(t *testing.T) {
 		t.Errorf("want no rows, got %d", len(got))
 	}
 }
+
+func TestPurgeClaimPersistsAndBlocksResume(t *testing.T) {
+	repo, zone := claimTestEnv(t)
+	ctx := context.Background()
+	id := claimTestQube(t, repo, zone, "remote-purge", models.QubeStatusSuspended)
+	if err := repo.ClaimPurge(ctx, id, []models.QubeStatus{models.QubeStatusSuspended}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateStatus(ctx, id, models.QubeStatusError); err != nil {
+		t.Fatal(err)
+	}
+	q, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !q.PurgeRequested {
+		t.Fatal("purge intent lost on failure")
+	}
+	if err := repo.ClaimTransition(ctx, id, []models.QubeStatus{models.QubeStatusError}, models.QubeStatusResuming); !errors.Is(err, ErrTransitionConflict) {
+		t.Fatalf("resume allowed: %v", err)
+	}
+	if err := repo.ClaimPurge(ctx, id, []models.QubeStatus{models.QubeStatusError}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStaleEditCannotReleaseLifecycleClaim(t *testing.T) {
+	repo, zone := claimTestEnv(t)
+	ctx := context.Background()
+	id := claimTestQube(t, repo, zone, "remote-edit", models.QubeStatusSuspended)
+	stale, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ClaimTransition(ctx, id, []models.QubeStatus{models.QubeStatusSuspended}, models.QubeStatusResuming); err != nil {
+		t.Fatal(err)
+	}
+	stale.Spec.VCPU = 4
+	_ = repo.Update(ctx, stale)
+	got, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.QubeStatusResuming {
+		t.Fatalf("stale edit erased claim: %s", got.Status)
+	}
+}

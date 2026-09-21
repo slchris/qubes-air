@@ -11,6 +11,8 @@
 | `scripts/encrypt-secrets.sh` | 用 SOPS/age 加解密文件 |
 | `scripts/rotate-keys.sh age` | 生成新 age key，并原子重加密已发现的 SOPS 文件 |
 
+从 `crypto/` 目录运行：
+
 ```bash
 bash scripts/generate-keys.sh
 bash scripts/encrypt-secrets.sh encrypt <plain.yaml>
@@ -21,5 +23,5 @@ DRY_RUN=1 bash scripts/rotate-keys.sh age
 
 私钥不进 Git、pillar 明文或云端；只有 age public recipient 可以提交。
 
-Console AES-GCM key 使用 `console/backend/cmd/rotate-key` 轮换；数据盘 master、agent 和 Relay
+Console AES-GCM key 使用 `console/backend/cmd/rotate-key` 轮换；per-Qube DEK、派生回退用 master、agent 和 Relay
 证书也各有独立生命周期，不能用本目录脚本替代。

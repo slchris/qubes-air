@@ -21,15 +21,17 @@ import "time"
 // was found only by SSHing to a hypervisor node and running systemctl by hand.
 // These fields exist so that never happens silently again.
 type Qube struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	ZoneID    string     `json:"zone_id"`
-	Type      QubeType   `json:"type"`
-	Status    QubeStatus `json:"status"`
-	IPAddress string     `json:"ip_address,omitempty"`
-	Spec      QubeSpec   `json:"spec"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	// PurgeRequested is irreversible intent; it survives failures and forbids resume.
+	PurgeRequested bool       `json:"purge_requested"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	ZoneID         string     `json:"zone_id"`
+	Type           QubeType   `json:"type"`
+	Status         QubeStatus `json:"status"`
+	IPAddress      string     `json:"ip_address,omitempty"`
+	Spec           QubeSpec   `json:"spec"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 
 	// AgentHealth is the result of the most recent agent probe. Never omitted
 	// from the API: an absent field would read as "this console has no opinion",
@@ -130,15 +132,16 @@ const (
 	// (destroyed) to save cost while the persistent data disk is retained. It
 	// is distinct from Stopped: a suspended qube can be resumed by rebuilding
 	// compute and re-attaching the same disk. See the orchestrator package and
-	// the terraform compute/storage separation (compute_running).
+	// the provider compute/storage separation.
 	QubeStatusSuspended QubeStatus = "suspended"
 
-	// Transient statuses: a terraform job for this qube is queued or running.
+	// Transient statuses: an orchestration job for this qube is queued or
+	// running.
 	//
 	// These are claims as much as descriptions. A transition into one is made
 	// atomically and only from an expected source status, which is what stops a
-	// double-clicked button from enqueuing two applies against the same qube.
-	// Terraform operations here take minutes, so this window is wide.
+	// double-clicked button from enqueuing two operations against the same qube.
+	// Provider operations here take minutes, so this window is wide.
 	QubeStatusResuming   QubeStatus = "resuming"
 	QubeStatusSuspending QubeStatus = "suspending"
 	QubeStatusDeleting   QubeStatus = "deleting"
@@ -148,13 +151,19 @@ const (
 	// storage-holder VM that owns it) still exist.
 	//
 	// This is the resting state after a "delete" in the UI. Purging the disk is
-	// a separate, explicitly confirmed action, because the storage holder
-	// carries lifecycle.prevent_destroy and destroying it is irreversible.
-	// Critically, a released qube must STILL be rendered into the terraform
-	// variables: dropping it from the map while its storage VM remains in state
-	// does not bypass prevent_destroy — it wedges every subsequent apply, for
-	// every qube.
+	// a separate, explicitly confirmed action, because destroying the storage
+	// holder is irreversible. Critically, a released qube must STILL be
+	// resolvable in qube_infra: its protected data disk is what a purge has to
+	// find, and dropping the record would orphan the disk with no way to destroy
+	// it from the console.
 	QubeStatusReleased QubeStatus = "released"
+
+	// QubeStatusPurged means the qube was destroyed outright: the compute
+	// instance AND its persistent data disk are gone, the agent identity has
+	// been revoked and the RemoteVM registration removed. The row is kept as
+	// history but is no longer resolvable or operable — there is no
+	// infrastructure left to act on. Terminal.
+	QubeStatusPurged QubeStatus = "purged"
 
 	QubeStatusError QubeStatus = "error"
 )
@@ -165,15 +174,15 @@ func (s QubeStatus) IsValid() bool {
 	case QubeStatusPending, QubeStatusCreating, QubeStatusRunning,
 		QubeStatusStopped, QubeStatusSuspended, QubeStatusError,
 		QubeStatusResuming, QubeStatusSuspending, QubeStatusDeleting,
-		QubeStatusReleased:
+		QubeStatusReleased, QubeStatusPurged:
 		return true
 	default:
 		return false
 	}
 }
 
-// IsTransient reports whether a terraform job is expected to be in flight for
-// this qube.
+// IsTransient reports whether an orchestration job is expected to be in flight
+// for this qube.
 //
 // The job queue lives in memory, so a qube found in a transient status at
 // startup belongs to a job that died with the previous process. Startup

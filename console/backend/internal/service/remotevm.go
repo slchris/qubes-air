@@ -9,11 +9,11 @@ import (
 
 // RemoteVM registration: telling dom0 that a provisioned qube exists.
 //
-// The console provisions with terraform, so dom0 has no way to learn a qube
-// exists — it writes terraform, not qvm-prefs. Until dom0 knows, no local qube
-// can address the machine at all: RemoteVM is the addressing shell that makes
-// `qrexec-client-vm remote-dev-1 <service>` resolvable, and without one the
-// fleet is reachable only from the console itself.
+// The console provisions through provider APIs, so dom0 has no way to learn a
+// qube exists — it writes provider state, not qvm-prefs. Until dom0 knows, no
+// local qube can address the machine at all: RemoteVM is the addressing shell
+// that makes `qrexec-client-vm remote-dev-1 <service>` resolvable, and without
+// one the fleet is reachable only from the console itself.
 //
 // The channel is the dom0 qrexec service qubesair.RegisterRemoteVM, which
 // accepts a fixed verb grammar and refuses any name outside `remote-*`. dom0

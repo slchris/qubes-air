@@ -381,3 +381,27 @@ func scanAgentCertRows(rows *sql.Rows) ([]*AgentCert, error) {
 	}
 	return out, rows.Err()
 }
+
+// RevokedFingerprints exposes only the hashes needed by signed status feeds.
+// Refuse overflow rather than publishing an incomplete denylist.
+func (r *AgentCertRepository) RevokedFingerprints(ctx context.Context) ([]string, error) {
+	rows, err := r.db.DB().QueryContext(ctx, `SELECT fingerprint FROM agent_certs
+ WHERE revoked_at IS NOT NULL AND (expires_at IS NULL OR expires_at > ?)
+ ORDER BY fingerprint LIMIT 10001`, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]string, 0)
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			return nil, err
+		}
+		out = append(out, fp)
+	}
+	if len(out) > 10000 {
+		return nil, errors.New("revocation feed capacity exceeded")
+	}
+	return out, rows.Err()
+}

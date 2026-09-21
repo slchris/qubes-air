@@ -85,6 +85,17 @@ func (d *DB) HealthCheck(ctx context.Context) error {
 	return d.db.PingContext(ctx)
 }
 
+// SchemaVersion is the schema this build creates and expects.
+//
+// It is stored in SQLite's own PRAGMA user_version so it travels inside the
+// database file (and therefore inside any backup of it) without a table of its
+// own. A database whose version is HIGHER than this build's is refused at open:
+// running an older console against a newer schema could silently write rows the
+// newer code no longer understands, and the failure would surface as corrupted
+// data rather than an error. Restoring a backup into an older console is the
+// same hazard, which is why backup carries the version too.
+const SchemaVersion = 2
+
 // migrate runs database migrations.
 func (d *DB) migrate() error {
 	migrations := []string{
@@ -96,6 +107,7 @@ func (d *DB) migrate() error {
 		createJobsTable,
 		createAgentCertsTable,
 		createBootstrapTokensTable,
+		createQubeInfraTable,
 	}
 
 	for _, m := range migrations {
@@ -118,6 +130,7 @@ func (d *DB) migrate() error {
 	// specifically not 'healthy', which would reproduce the very bug these
 	// columns exist to catch.
 	for _, c := range []struct{ column, definition string }{
+		{"purge_requested", "INTEGER NOT NULL DEFAULT 0"},
 		{"agent_health", "TEXT NOT NULL DEFAULT 'unknown'"},
 		{"agent_last_probed_at", "DATETIME"},
 		{"agent_last_healthy_at", "DATETIME"},
@@ -128,7 +141,44 @@ func (d *DB) migrate() error {
 		}
 	}
 
+	if err := d.migrateLifecycle(); err != nil {
+		return err
+	}
+	return d.applySchemaVersion()
+}
+
+// applySchemaVersion reads the file's user_version and stamps the current one.
+//
+// A file with no version (0) is either brand new or predates versioning; both
+// are upgraded to SchemaVersion. A file with a HIGHER version is refused: see
+// SchemaVersion.
+func (d *DB) applySchemaVersion() error {
+	have, err := d.UserVersion()
+	if err != nil {
+		return err
+	}
+	if have > SchemaVersion {
+		return fmt.Errorf(
+			"database schema version %d is newer than this console supports (%d); upgrade the console before opening this database",
+			have, SchemaVersion)
+	}
+	if have == SchemaVersion {
+		return nil
+	}
+	// #nosec G202 -- SchemaVersion is a compile-time constant.
+	if _, err := d.db.ExecContext(context.Background(), fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
+		return fmt.Errorf("stamping schema version: %w", err)
+	}
 	return nil
+}
+
+// UserVersion returns the schema version recorded in the database file.
+func (d *DB) UserVersion() (int, error) {
+	var v int
+	if err := d.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&v); err != nil {
+		return 0, fmt.Errorf("read schema version: %w", err)
+	}
+	return v, nil
 }
 
 // addColumnIfMissing adds a column to a table only if it does not already
@@ -221,6 +271,35 @@ CREATE TABLE IF NOT EXISTS qubes (
 	updated_at DATETIME NOT NULL
 )`
 
+// createQubeInfraTable records the provider-side identity of a qube's
+// infrastructure. It is the single source of truth that replaces a terraform
+// state file.
+//
+// There is deliberately no foreign key onto qubes: a job that created a data
+// disk must keep the row even if the qube row is later released, because the
+// disk still exists and must be adoptable. Deleting the qube row does not
+// delete infrastructure; only DestroyStorage does.
+//
+// protected is the explicit replacement for terraform's lifecycle.prevent_destroy:
+// DestroyStorage refuses while it is set. Existing rows default to 1 so a fleet
+// created before the flag existed is protected, not silently unprotected — the
+// safe direction for a column guarding irreversible data loss.
+const createQubeInfraTable = `
+CREATE TABLE IF NOT EXISTS qube_infra (
+	qube_id        TEXT PRIMARY KEY,
+	provider       TEXT NOT NULL DEFAULT '',
+	node           TEXT NOT NULL DEFAULT '',
+	storage_vmid   INTEGER NOT NULL DEFAULT 0,
+	compute_vmid   INTEGER NOT NULL DEFAULT 0,
+	data_volume    TEXT NOT NULL DEFAULT '',
+	identity_vol   TEXT NOT NULL DEFAULT '',
+	observed_state TEXT NOT NULL DEFAULT '',
+	protected      INTEGER NOT NULL DEFAULT 1,
+	observed_at    DATETIME,
+	created_at     DATETIME NOT NULL,
+	updated_at     DATETIME NOT NULL
+)`
+
 const createInfrastructureTable = `
 CREATE TABLE IF NOT EXISTS infrastructure (
 	id TEXT PRIMARY KEY,
@@ -242,7 +321,7 @@ CREATE TABLE IF NOT EXISTS infrastructure (
 // createJobsTable records every orchestration job.
 //
 // Jobs are kept as an AUDIT TRAIL, not merely as poll targets: they are the
-// record of who asked the system to change infrastructure and what terraform
+// record of who asked the system to change infrastructure and what the provider
 // reported back. Rows are therefore never updated destructively beyond their
 // own lifecycle, and never deleted when the qube they reference is released —
 // hence no foreign key onto qubes, which would cascade or block.

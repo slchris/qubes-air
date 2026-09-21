@@ -257,6 +257,16 @@ function createQubeStore() {
       watch(id);
     },
 
+    async purge(id: string, confirmName: string): Promise<void> {
+      await api.purgeQube(id, confirmName);
+      update(s => ({
+        ...s,
+        qubes: s.qubes.map((q: Qube) =>
+          q.id === id ? { ...q, status: 'deleting' as QubeStatus } : q),
+      }));
+      watch(id);
+    },
+
     async start(id: string): Promise<Qube> {
       const op = await api.startQube(id);
       update(s => ({
