@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/slchris/qubes-air/console/internal/qrexec"
 )
 
 // fakeQrexec records calls and returns a canned response, satisfying qrexecClient.
@@ -11,14 +13,28 @@ type fakeQrexec struct {
 	target, service string
 	input           []byte
 	out             []byte
+	stderr          []byte
+	exitCode        int
 	err             error
 	calls           int
 }
 
 func (f *fakeQrexec) Call(_ context.Context, target, service string, input []byte) ([]byte, error) {
+	f.record(target, service, input)
+	return f.out, f.err
+}
+
+func (f *fakeQrexec) CallResult(_ context.Context, target, service string, input []byte) (qrexec.Result, error) {
+	f.record(target, service, input)
+	if f.err != nil {
+		return qrexec.Result{}, f.err
+	}
+	return qrexec.Result{Stdout: f.out, Stderr: f.stderr, ExitCode: f.exitCode}, nil
+}
+
+func (f *fakeQrexec) record(target, service string, input []byte) {
 	f.calls++
 	f.target, f.service, f.input = target, service, append([]byte(nil), input...)
-	return f.out, f.err
 }
 
 func TestQrexecInvokerForwards(t *testing.T) {
@@ -29,8 +45,8 @@ func TestQrexecInvokerForwards(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke err: %v", err)
 	}
-	if string(out) != "resp" {
-		t.Errorf("out = %q, want resp", out)
+	if string(out.Stdout) != "resp" {
+		t.Errorf("out = %q, want resp", out.Stdout)
 	}
 	if fq.target != "remote-gpu" || fq.service != "qubesair.Echo" || string(fq.input) != "hi" {
 		t.Errorf("qrexec got target=%q service=%q input=%q", fq.target, fq.service, fq.input)

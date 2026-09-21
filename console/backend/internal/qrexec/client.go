@@ -9,12 +9,13 @@
 // that the local dom0 policy C has just ask-confirmed).
 //
 // The exec step is behind the Runner interface so tests can capture the call
-// without a real qrexec-client-vm (mirrors the orchestrator terraform runner).
+// without a real qrexec-client-vm (mirrors the orchestrator Executor).
 package qrexec
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"
@@ -24,6 +25,21 @@ import (
 // implementation shells out to qrexec-client-vm; tests inject a fake.
 type Runner interface {
 	Run(ctx context.Context, target, service string, input []byte) ([]byte, error)
+}
+
+// Result is a completed qrexec call: the service's stdout, its stderr, and the
+// exit code of the process that ran it.
+type Result struct {
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
+}
+
+// ResultRunner is an optional richer Runner. CallResult uses it when the
+// injected runner implements it, so the stdout-only Runner (and every existing
+// fake) keeps working unchanged.
+type ResultRunner interface {
+	RunResult(ctx context.Context, target, service string, input []byte) (Result, error)
 }
 
 // Client calls qrexec services with a timeout and argument validation.
@@ -99,11 +115,45 @@ func (c *Client) Call(ctx context.Context, target, service string, input []byte)
 	return c.runner.Run(ctx, target, service, input)
 }
 
+// CallResult invokes a qrexec service and returns its stdout, stderr and exit
+// code. Unlike Call, a non-zero exit is a RESULT, not an error: the caller
+// decides whether it matters. An error means the call could not be made
+// (bad arguments, timeout, qrexec-client-vm could not start).
+func (c *Client) CallResult(ctx context.Context, target, service string, input []byte) (Result, error) {
+	if !ValidArg(target) {
+		return Result{}, fmt.Errorf("invalid qrexec target: %q", target)
+	}
+	if !ValidArg(service) {
+		return Result{}, fmt.Errorf("invalid qrexec service: %q", service)
+	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	if rr, ok := c.runner.(ResultRunner); ok {
+		return rr.RunResult(ctx, target, service, input)
+	}
+	out, err := c.runner.Run(ctx, target, service, input)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Stdout: out}, nil
+}
+
 // execRunner is the production Runner: it shells out to qrexec-client-vm.
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, target, service string, input []byte) ([]byte, error) {
-	// Args are validated by Client.Call before reaching here.
+	res, err := execRunner{}.RunResult(ctx, target, service, input)
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("qrexec call failed: exit status %d, stderr: %s", res.ExitCode, res.Stderr)
+	}
+	return res.Stdout, nil
+}
+
+func (execRunner) RunResult(ctx context.Context, target, service string, input []byte) (Result, error) {
+	// Args are validated by Client.Call/CallResult before reaching here.
 	cmd := exec.CommandContext(ctx, "qrexec-client-vm", target, service) // #nosec G204 -- validated args
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
@@ -111,8 +161,21 @@ func (execRunner) Run(ctx context.Context, target, service string, input []byte)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("qrexec call failed: %v, stderr: %s", err, stderr.String())
+	err := cmd.Run()
+	res := Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}
+	if err == nil {
+		return res, nil
 	}
-	return stdout.Bytes(), nil
+	// A timeout or cancellation is a transport failure, not a command result:
+	// surfacing it as exit code -1 would let a caller mistake it for the
+	// command exiting.
+	if ctx.Err() != nil {
+		return res, fmt.Errorf("qrexec call failed: %w", ctx.Err())
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		res.ExitCode = exit.ExitCode()
+		return res, nil
+	}
+	return res, fmt.Errorf("qrexec call failed: %w", err)
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -247,14 +248,16 @@ func signCSRAs(t *testing.T, ca *pki.CA, csr *x509.CertificateRequest, lifetime 
 	if !ok {
 		t.Fatalf("CSR carries a %T, not an ECDSA key", csr.PublicKey)
 	}
+	roleURI := &url.URL{Scheme: "spiffe", Host: "qubes-air", Path: "/role/agent"}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: csr.Subject.CommonName, Organization: []string{"Qubes Air Agent"}},
 		NotBefore:             time.Now().Add(-5 * time.Minute),
 		NotAfter:              time.Now().Add(lifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		URIs:                  []*url.URL{roleURI},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, pub, ca.Key)
 	if err != nil {

@@ -37,6 +37,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
+	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
 
@@ -44,9 +45,23 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("relay-call: ")
 	if err := run(); err != nil {
+		// Propagate a remote command's exit code instead of collapsing every
+		// failure to 1, so a caller (or dom0 policy) sees the real status.
+		var ec exitCodeError
+		if errors.As(err, &ec) {
+			os.Exit(ec.code)
+		}
 		log.Fatal(logSafe(strings.TrimSpace(err.Error())))
 	}
 }
+
+// exitCodeError carries a remote service's exit code up to main.
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e exitCodeError) Error() string { return e.msg }
 
 // run executes one relay call. Failures are returned rather than logged so
 // that main's log.Fatal runs only after every deferred cleanup (the context
@@ -110,12 +125,22 @@ func run() error {
 		}
 		return nil
 	}
-	out, err := dialAndCall(ctx, pair, pool, endpoint, remoteName, service, body)
+	res, err := dialAndCall(ctx, pair, pool, endpoint, remoteName, service, body)
 	if err != nil {
 		return fmt.Errorf("call failed: %w", err)
 	}
-	// Response bytes only — this is what qrexec hands back to the local caller.
-	_, _ = os.Stdout.Write(out)
+	// stdout and stderr are separate streams now; write each where it belongs
+	// rather than merging them, so a caller can redirect them independently.
+	if len(res.Stdout) > 0 {
+		_, _ = os.Stdout.Write(res.Stdout)
+	}
+	if len(res.Stderr) > 0 {
+		_, _ = os.Stderr.Write(res.Stderr)
+	}
+	if res.ExitCode != 0 {
+		return exitCodeError{code: res.ExitCode,
+			msg: fmt.Sprintf("remote service %q exited %d", service, res.ExitCode)}
+	}
 	return nil
 }
 
@@ -248,7 +273,7 @@ func resolveAgent(ctx context.Context, repo repository.QubeRepository, target, p
 // hand in VerifyConnection rather than by the stack. The certificate may have
 // been minted from the CA (console-as-relay) or loaded from disk (separate
 // relay) — dialing does not care which.
-func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) ([]byte, error) {
+func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) (transport.Result, error) {
 	cli := newClient(pair, pool, endpoint, remoteName)
 	go func() { _ = cli.Start(ctx) }()
 
@@ -258,19 +283,19 @@ func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool,
 	// script that appends to a file), and a slow command must be waited on, not
 	// retried. This also stops a mid-call deadline from being masked by a
 	// trailing "tunnel not connected".
-	var out []byte
+	var res transport.Result
 	var err error
 	for {
-		out, err = cli.Call(ctx, remoteName, service, in)
+		res, err = cli.CallResult(ctx, remoteName, service, in)
 		if err == nil {
-			return out, nil
+			return res, nil
 		}
 		if !errors.Is(err, transportgrpc.ErrNotConnected) {
-			return nil, err
+			return transport.Result{}, err
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
+			return transport.Result{}, fmt.Errorf("tunnel never connected within deadline: %w", ctx.Err())
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -293,11 +318,31 @@ func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName s
 				if len(cs.PeerCertificates) == 0 {
 					return errors.New("agent presented no certificate")
 				}
-				_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-					Roots:     pool,
-					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-				})
-				return err
+				leaf := cs.PeerCertificates[0]
+				inters := x509.NewCertPool()
+				for _, c := range cs.PeerCertificates[1:] {
+					inters.AddCert(c)
+				}
+				if _, err := leaf.Verify(x509.VerifyOptions{
+					Roots:         pool,
+					Intermediates: inters,
+					KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+				}); err != nil {
+					return err
+				}
+				// Role and name, not just "chained to our CA": every qube holds
+				// a CA-signed certificate, so without these any one of them
+				// authenticates as any other on the shared L2 bridge.
+				if role, err := pki.RoleOf(leaf); err != nil {
+					return err
+				} else if role != pki.RoleAgent {
+					return fmt.Errorf("peer role %q is not an agent", role)
+				}
+				if want := pki.AgentCommonName(remoteName); leaf.Subject.CommonName != want {
+					return fmt.Errorf("agent certificate identifies %q but this endpoint should be serving %q",
+						leaf.Subject.CommonName, want)
+				}
+				return nil
 			},
 		},
 	}, nil)

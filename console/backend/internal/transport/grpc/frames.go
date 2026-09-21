@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"fmt"
+	"math"
 	"sort"
 
 	pb "github.com/slchris/qubes-air/console/internal/transport/relaypb"
@@ -91,9 +92,30 @@ func dataFrame(reqID string, streamID uint32, payload []byte) *pb.Frame {
 }
 
 func eosFrame(reqID string, streamID uint32) *pb.Frame {
+	return eosFrameExit(reqID, streamID, 0)
+}
+
+// eosFrameExit ends a stream and carries the executed command's exit code.
+// Only the response stream (streamResponse) uses a non-zero code; callers must
+// not infer failure from the mere arrival of an EOS.
+func eosFrameExit(reqID string, streamID uint32, exitCode int) *pb.Frame {
 	return &pb.Frame{
 		RequestId: reqID,
-		Kind:      &pb.Frame_Eos{Eos: &pb.EndOfStream{StreamId: streamID}},
+		Kind:      &pb.Frame_Eos{Eos: &pb.EndOfStream{StreamId: streamID, ExitCode: clampExitCode(exitCode)}},
+	}
+}
+
+// clampExitCode narrows an exit code to int32. Real exit codes are 0-255 (or -1
+// for killed processes); the bounds check is here so an out-of-range value can
+// never wrap to a misleading small number on the wire.
+func clampExitCode(code int) int32 {
+	switch {
+	case code > math.MaxInt32:
+		return math.MaxInt32
+	case code < math.MinInt32:
+		return math.MinInt32
+	default:
+		return int32(code)
 	}
 }
 

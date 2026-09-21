@@ -2,14 +2,9 @@
 
 ## 状态
 
-2026-07 已在真实 Qubes R4.3 + Proxmox 环境验证：
-
-- dom0 把 RemoteVM qrexec 请求改写到独立 Relay；
-- Relay 用本地生成、console CA 签发的证书连接远端 agent；
-- endpoint 自动同步，新建 Qube 无需手写 QubesDB；
-- `Ping`、`Exec`、`FileCopy` 与 `ConnectTCP` 均端到端通过；
-- GUI/TCP 流量复用 agent mTLS，不暴露额外 LAN 应用端口；
-- agent、Relay 证书支持续期，连接支持保活和重连。
+已有 RemoteVM、独立 Relay、mTLS 与远端服务的真机记录，见
+[历史验收汇总](reviews/validation-history.md)。本页描述当前协议，不把历史通过视为当前
+全部改动的回归结果；角色与吊销执行见下文。
 
 ## 数据流
 
@@ -72,15 +67,19 @@ Console 的 `qubesair.RemoteEndpoints` 只返回名称和 `ip:port`，不返回�
 
 ### Exec
 
-stdin 是命令文本，响应合并 stdout/stderr。远端执行由 `systemd-run` 进入独立 scope，避免
-继承 agent unit 的过严沙箱。真实命令退出码通过响应 trailer 表示，transport 本身保持可返回
-输出。
+stdin 是 JSON 参数数组，服务直接执行已允许的绝对路径程序并继承 agent unit 的沙箱；
+没有 shell 或 systemd-run 入口，参数不会被当作 shell 语法。
+命令的 **stdout、stderr 与退出码分开传输**：stdout/stderr 走各自的帧子流，退出码放在响应
+`EndOfStream.exit_code`。这样调用方能区分「传输成功但命令失败」（exit_code≠0）与「调用没
+跑成」（`CallError`），而不必在 stdout 文本里解析 trailer。agent 侧 `LocalInvoker` 把非零退出
+视为**结果**而非错误（见 `internal/agent/invoker.go`）。
 
 ### FileCopy
 
 stdin 第一行为 `push <absolute-path>` 或 `pull <absolute-path>`。Push 使用临时文件加原子
-rename；响应包含字节数和 SHA256。它只适合配置和脚本，不替代大文件同步工具。当前 16 MiB
-检查发生在输出已经进入内存之后，还不是可靠的资源上限，修复项见[路线图](roadmap-to-production.md)。
+rename；成功响应包含字节数和 SHA256。错误写入 stderr 并返回非零退出码，不再混入 stdout。
+它只适合配置和脚本，不替代大文件同步工具。输出上限（16 MiB）由 agent 的 `capWriter` 在写入
+过程中强制执行，达到上限即中止，不会先整体读入内存再判断。
 
 ### ConnectTCP
 
@@ -97,9 +96,12 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 Agent 和 Relay 证书都链到 console CA。某些连接按裸 IP 发起，证书没有稳定 IP SAN，因此
 实现使用自定义 `VerifyConnection` 对固定 CA 池做完整链验证，而不是无条件跳过 TLS 校验。
 
-当前验证仍有一个关键缺口：同一 CA 下没有强制区分 agent、Relay 和 Console 调用方角色，
-`relay-call` 也没有把远端 endpoint 绑定到预期 agent 名称。修复前，CA 链验证不能等同于完整
-授权；具体改造顺序见[路线图](roadmap-to-production.md)。
+当前签发已分离 agent 的 ServerAuth 与 Relay/Console 的 ClientAuth；Console/Relay 客户端
+要求目标证书为 agent 角色且 CN 匹配 `agent-<目标 qube>`。
+
+实际 agent 启动入口现在必须接入 CA 签名的短期撤销状态源；服务端角色校验不依赖注册表。
+每次握手与长连接巡检都检查有效性，空闲接收会响应吊销取消。来源失效时拒绝调用；
+配置、缓存/重放时间界限和公共 API 的语义见[安全控制](security-controls.md)。
 
 Console CA 是高价值根。Relay/agent 只能提交 CSR，不能获得 CA 私钥或任意签发能力。
 
@@ -115,20 +117,20 @@ Console CA 是高价值根。Relay/agent 只能提交 CSR，不能获得 CA 私�
 
 ## 验收
 
+执行 Exec 前必须显式启用服务并允许 `/usr/bin/id`；FileCopy 也需启用服务及允许目标目录。
+默认仅 Ping 可用。Exec 使用 JSON 参数列表并继承 agent 沙箱，配置与限制见[安全控制](security-controls.md)。
+
 ```bash
 qvm-prefs <remotevm> transport_rpc   # qubesair.GrpcProxy
 qvm-prefs <remotevm> relayvm
 
 qrexec-client-vm <remotevm> qubesair.Ping
-printf 'uname -a; id\n' | qrexec-client-vm <remotevm> qubesair.Exec
+printf '%s\n' '["/usr/bin/id"]' | qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
 更完整的逐层检查见[RemoteVM 自检](remotevm-selfcheck.md)。
 
 ## 剩余工作
 
-- 无缝桌面完整验收与恢复体验；
-- 更严格的 ConnectTCP 目标/端口策略；
-- 多 provider/NAT 场景的真机矩阵；
-- CA 灾难恢复、吊销和审计；
-- 删除未使用的 transport 实现与陈旧源码注释。
+统一维护在 [TODO](TODO.md)：SEC-01（授权/吊销）、SEC-02（特权执行）、QA-01（真机回归）、
+GUI-01（桌面）、MCP-01（帧与输入）。ConnectTCP 目标/端口与拒绝路径也应纳入服务边界验收。

@@ -3,9 +3,9 @@
 // docs/grpc-transport-design.md, roadmap-to-production.md stage T).
 //
 // This is a NEW path. It is NOT the same as orchestrator.Executor: that turns
-// console intent (suspend/resume a qube) into terraform actions. This package
+// console intent (suspend/resume a qube) into provider actions. This package
 // forwards qrexec calls across machines — its semantics mirror the qrexec
-// Client.Call(ctx, target, service, input) → output shape, not terraform.
+// Client.Call(ctx, target, service, input) → output shape, not provisioning.
 //
 // Security invariants (enforced by dom0 policy, NOT here):
 //   - The transport only moves frames; authorization always lives in the two
@@ -20,9 +20,9 @@
 // gRPC transport, tests wire a FakeTransport, and NoopTransport keeps the
 // console working when no transport is configured.
 //
-// STATUS: [TODO] skeleton for stage T. The gRPC implementation under grpc/ is a
-// draft and does not compile until google.golang.org/grpc is added and the
-// proto is generated (see grpc/doc.go).
+// STATUS: implemented. The gRPC transport under grpc/ is real, compiles, and is
+// exercised by integration tests; NoopTransport is the default when no
+// cross-machine transport is configured.
 package transport
 
 import (
@@ -43,12 +43,35 @@ type Transport interface {
 	Call(ctx context.Context, target, service string, in []byte) ([]byte, error)
 }
 
+// Result is the outcome of one qrexec call: the service's stdout and stderr and
+// the exit code of the process that produced them.
+//
+// ExitCode is the point of the type. A call can succeed at the transport level
+// (a Result is returned, err == nil) while the command it ran failed
+// (ExitCode != 0). Without a field for it the only way to report that is to
+// append text to stdout, which a caller cannot tell apart from the command's
+// real output — the flaw this type removes.
+type Result struct {
+	Stdout   []byte
+	Stderr   []byte
+	ExitCode int
+}
+
+// ResultTransport is implemented by Transports that can report a service's exit
+// code and stderr separately. Callers use it when they must distinguish
+// transport success from command failure; Call stays the simple stdout path for
+// services (Ping, appmenus) where a non-zero exit really is the whole error.
+type ResultTransport interface {
+	CallResult(ctx context.Context, target, service string, in []byte) (Result, error)
+}
+
 // ReverseHandler handles a reverse (remote → local) call that arrived over the
 // tunnel. The implementation MUST route it to the local dom0 (policy C: ask)
 // and return the result — it must never decide authorization itself.
 //
-// [TODO] Wire this to a qrexec call into the local target (e.g. vault-cloud
-// qubesair.GetCredential) so dom0 policy C prompts the user.
+// grpc.NewReverseHandler is the production wiring: it delivers the call to the
+// configured local target (e.g. vault-cloud) via qrexec-client-vm, which is what
+// triggers dom0 policy C. It returns nil when no local target is configured.
 type ReverseHandler func(ctx context.Context, service string, in []byte) ([]byte, error)
 
 // nameRe is the shared allow-list for qube/service names put on the wire.

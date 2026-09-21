@@ -12,6 +12,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/slchris/qubes-air/console/internal/qrexec"
 )
 
 // vaultQrexec is a fake qrexecClient that returns different PEMs per credential
@@ -23,14 +25,19 @@ type vaultQrexec struct {
 }
 
 func (v *vaultQrexec) Call(_ context.Context, target, service string, _ []byte) ([]byte, error) {
+	out, err := v.CallResult(context.Background(), target, service, nil)
+	return out.Stdout, err
+}
+
+func (v *vaultQrexec) CallResult(_ context.Context, target, service string, _ []byte) (qrexec.Result, error) {
 	v.calls = append(v.calls, target+"|"+service)
 	if v.err != nil {
-		return nil, v.err
+		return qrexec.Result{}, v.err
 	}
 	if out, ok := v.byService[service]; ok {
-		return out, nil
+		return qrexec.Result{Stdout: out}, nil
 	}
-	return nil, errors.New("no such credential")
+	return qrexec.Result{}, errors.New("no such credential")
 }
 
 func TestFetchClientMTLS(t *testing.T) {

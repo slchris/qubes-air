@@ -27,6 +27,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
 
@@ -34,8 +35,8 @@ import (
 // can confirm the request reached the server side.
 type echoInvoker struct{}
 
-func (echoInvoker) Invoke(_ context.Context, target, service string, in []byte) ([]byte, error) {
-	return []byte(fmt.Sprintf("handled[%s/%s]:%s", target, service, string(in))), nil
+func (echoInvoker) Invoke(_ context.Context, target, service string, in []byte) (transport.Result, error) {
+	return transport.Result{Stdout: []byte(fmt.Sprintf("handled[%s/%s]:%s", target, service, string(in)))}, nil
 }
 
 func main() {
