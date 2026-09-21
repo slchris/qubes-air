@@ -13,6 +13,7 @@ import (
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,11 +56,11 @@ type fakeInvoker struct {
 	err  error
 }
 
-func (f *fakeInvoker) Invoke(_ context.Context, target, service string, _ []byte) ([]byte, error) {
+func (f *fakeInvoker) Invoke(_ context.Context, target, service string, _ []byte) (transport.Result, error) {
 	if f.err != nil {
-		return nil, f.err
+		return transport.Result{}, f.err
 	}
-	return append(append([]byte(nil), f.resp...), []byte(" "+target+" "+service)...), nil
+	return transport.Result{Stdout: append(append([]byte(nil), f.resp...), []byte(" "+target+" "+service)...)}, nil
 }
 
 // --- helpers ----------------------------------------------------------------

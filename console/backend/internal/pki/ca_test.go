@@ -30,11 +30,11 @@ func parseLeaf(t *testing.T, certPEM string) *x509.Certificate {
 	return cert
 }
 
-// TestIssuedCertVerifiesAgainstCA — the point of the exercise. An agent
+// TestIssuedCertVerifiesAgainstCA — the point of the exercise. A client
 // certificate that does not chain to the CA cannot authenticate.
 func TestIssuedCertVerifiesAgainstCA(t *testing.T) {
 	ca := mustCA(t)
-	b, err := ca.IssueAgentCert("agent-dev-work", 0)
+	b, err := ca.IssueAgentCert("console-relay", 0)
 	if err != nil {
 		t.Fatalf("IssueAgentCert: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestCARoundTrip(t *testing.T) {
 		t.Fatalf("ParseCA: %v", err)
 	}
 
-	b, err := restored.IssueAgentCert("agent-after-restart", 0)
+	b, err := restored.IssueAgentCert("console-after-restart", 0)
 	if err != nil {
 		t.Fatalf("issue after restore: %v", err)
 	}

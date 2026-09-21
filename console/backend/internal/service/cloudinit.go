@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/slchris/qubes-air/console/internal/pki"
 )
 
 // agentInstallDir is where the agent's mTLS material lands on the remote.
@@ -27,10 +29,10 @@ const (
 // dataMountScriptPath and dataMountUnitPath install the persistent-data disk
 // mount. The compute VM is ephemeral — every resume rebuilds it from the
 // template and throws its root disk away — while the data disk is a separate,
-// retained volume (the storage-holder VM owns it; see
-// terraform/modules/remote-qube-base) that gets reattached as scsi1 on every
-// boot. Without this, anything a user writes lands on the ephemeral root and
-// vanishes on the next resume, which defeats the entire storage/compute split.
+// retained volume (the storage-holder VM owns it) that gets reattached as scsi1
+// on every boot. Without this, anything a user writes lands on the ephemeral
+// root and vanishes on the next resume, which defeats the entire
+// storage/compute split.
 const (
 	dataMountScriptPath = "/usr/local/sbin/qubes-air-mount-data"
 	dataMountUnitPath   = "/etc/systemd/system/qubes-air-data.service"
@@ -46,12 +48,13 @@ const (
 // uploads and serves them over plain HTTP, so SHA256 here is not a guard
 // against corrupt downloads — it is the only integrity control in the chain.
 // It can be trusted despite the untrusted download because it travels inside
-// this document, which reaches the guest over console -> terraform SFTP ->
-// Proxmox snippet -> cloud-init.
+// this document, which reaches the guest over console -> Proxmox snippet ->
+// cloud-init.
 type AgentPackage struct {
-	URL     string
-	SHA256  string
-	Version string
+	RevocationURL string
+	URL           string
+	SHA256        string
+	Version       string
 	// AptMirror and AptSecurityMirror point the guest at a local Debian mirror.
 	//
 	// They live here because setting user-data REPLACES a template's vendor
@@ -62,7 +65,16 @@ type AgentPackage struct {
 	// own sources alone.
 	AptMirror         string
 	AptSecurityMirror string
+	// AllowedServices is the agent's service allowlist, written into agent.env
+	// as QUBESAIR_ALLOW. Empty means the reachability probe only: privileged
+	// services (Exec, FileCopy, UnlockData) are opt-in, so a default provision
+	// does not hand a new host root-capable primitives it was never asked for.
+	AllowedServices []string
 }
+
+// DefaultAllowedServices is the allowlist a provision gets when none is
+// configured: the reachability probe and nothing else.
+var DefaultAllowedServices = []string{"qubesair.Ping"}
 
 // sha256Hex matches the bare 64-character digest sha256sum(1) expects.
 var sha256Hex = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
@@ -150,6 +162,11 @@ func (d AgentIdentityDoc) validate() error {
 // a shell script doing the same has to get ordering and umask right, and gets
 // them wrong quietly.
 func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, pkg AgentPackage, encryptData bool) (string, error) {
+	if pkg.RevocationURL != "" {
+		if err := pki.ValidateRevocationURL(pkg.RevocationURL); err != nil {
+			return "", err
+		}
+	}
 	if err := id.validate(); err != nil {
 		return "", err
 	}
@@ -192,8 +209,8 @@ func writeUserDataHeader(b *strings.Builder) {
 	b.WriteString("# This document is SELF-SUFFICIENT on purpose. Setting user-data REPLACES a\n")
 	b.WriteString("# template's own cicustom entry, so anything the template relied on its vendor\n")
 	b.WriteString("# snippet to do stops happening. qemu-guest-agent is the one that matters:\n")
-	b.WriteString("# without it terraform waits for an IP the guest never reports, and the apply\n")
-	b.WriteString("# hangs until its timeout with the VM sitting there running.\n")
+	b.WriteString("# without it the provider waits for an IP the guest never reports, and the\n")
+	b.WriteString("# provision hangs until its timeout with the VM sitting there running.\n")
 }
 
 // writeHostnameAndPackages emits the apt stanza, the guest's own name and the
@@ -251,8 +268,13 @@ func writeIdentityFiles(b *strings.Builder, id AgentIdentityDoc, remoteName, lis
 	b.WriteString("write_files:\n")
 	writeFile(b, agentInstallDir+"/ca.pem", "0644", id.CAPEM)
 	writeFile(b, agentInstallDir+"/bootstrap-token", "0600", id.BootstrapToken)
+	allowed := pkg.AllowedServices
+	if len(allowed) == 0 {
+		allowed = DefaultAllowedServices
+	}
 	writeFile(b, agentInstallDir+"/agent.env",
-		"0644", fmt.Sprintf("QUBESAIR_REMOTE_NAME=%s\nQUBESAIR_LISTEN=%s\n", remoteName, listen))
+		"0644", fmt.Sprintf("QUBESAIR_REMOTE_NAME=%s\nQUBESAIR_LISTEN=%s\nQUBESAIR_ALLOW=%s\nQUBESAIR_REVOCATION_URL=%s\n",
+			remoteName, listen, strings.Join(allowed, ","), pkg.RevocationURL))
 
 	// The installer is delivered as a file rather than inlined into runcmd so
 	// its quoting is YAML's problem, not a shell-inside-a-flow-sequence problem.
@@ -283,14 +305,14 @@ func writeRuncmd(b *strings.Builder, encryptData bool) {
 	b.WriteString("runcmd:\n")
 	b.WriteString("  - [ chown, -R, 'root:root', " + agentInstallDir + " ]\n")
 	b.WriteString("  - [ chmod, '0750', " + agentInstallDir + " ]\n")
-	// The guest agent must be running for terraform to learn the VM's address.
+	// The guest agent must be running for the provider to learn the VM's address.
 	// Enabled explicitly rather than trusting the package's own preset.
 	//
 	// It comes BEFORE the agent installer and must stay there. cloud-init's
 	// runcmd script has no "set -e", so a failing installer cannot undo what
-	// already ran — but an installer that hangs on a download would strand
-	// terraform waiting for an IP the guest never reports, and the apply sits
-	// there until it times out. That happened once already.
+	// already ran — but an installer that hangs on a download would strand the
+	// provision waiting for an IP the guest never reports, and it sits there
+	// until it times out. That happened once already.
 	b.WriteString("  - [ systemctl, enable, --now, qemu-guest-agent ]\n")
 	// Mount the persistent data disk before the agent (and before any workload)
 	// can write to /data. --now runs it immediately on this boot; the unit's
@@ -498,8 +520,8 @@ fetch || fail "download failed: $PKG_URL"
 
 # Fail closed, before dpkg ever sees the file. The artifact store has no
 # authentication and delivers over plain HTTP, so anyone on the LAN can replace
-# this package; the digest below arrived over the trusted console -> terraform
-# -> snippet path and is the only thing that makes the download safe to run.
+# this package; the digest below arrived over the trusted console -> snippet
+# path and is the only thing that makes the download safe to run.
 if ! printf '%s  %s\n' "$PKG_SHA" "$DEB" | sha256sum -c - >/dev/null 2>&1; then
     GOT=$(sha256sum < "$DEB" 2>/dev/null | cut -d ' ' -f 1)
     fail "SHA256 mismatch for $PKG_URL (expected $PKG_SHA, got ${GOT:-unreadable}); refusing to install"
@@ -570,7 +592,8 @@ func writeFile(b *strings.Builder, path, mode, content string) {
 	}
 }
 
-// SnippetVolumeID is the terraform user_data_file_id for a snippet file.
+// SnippetVolumeID is the Proxmox cloud-init user-data reference for a snippet
+// file (the value behind `cicustom=user=...`).
 //
 // Proxmox addresses a snippet as "<datastore>:snippets/<file>". The datastore
 // must declare the "snippets" content type, or PVE will not resolve the volume
@@ -585,8 +608,9 @@ func SnippetVolumeID(datastore, fileName string) string {
 	return fmt.Sprintf("%s:snippets/%s", datastore, fileName)
 }
 
-// SnippetFileName is the on-disk name used by the SFTP delivery path, where
-// terraform owns the upload and tracks content through its own checksum.
+// SnippetFileName is the on-disk name used by the SSH upload path, where the
+// adapter re-uploads the file on every compute creation so the content is
+// refreshed rather than tracked by a checksum.
 func SnippetFileName(qubeName string) string {
 	return fmt.Sprintf("qubes-air-%s.yaml", qubeName)
 }
@@ -599,25 +623,16 @@ const snippetHashLen = 12
 // ContentAddressedSnippetName names a snippet after the qube AND the bytes it
 // contains.
 //
-// This is what keeps the shared-storage delivery path correct, and it replaces
-// a guarantee rather than adding one. On the SFTP path, terraform's
-// `checksum = filesha256(...)` is what makes the file resource depend on
-// CONTENT; without it terraform tracks only the path, and a re-rendered
-// identity at the same path is invisible — apply reports success while the node
-// keeps the old file. That was observed on real hardware, and its worse form is
-// that certificate rotation can never land while every apply looks green (see
-// docs/bootstrap-design.md §7).
+// This is what keeps the shared-storage delivery path correct. In that mode the
+// console writes the file and the compute VM references it by volume id; a
+// fixed path would make a re-rendered identity invisible — the provision
+// reports success while the node keeps the old file, and certificate rotation
+// never lands (see docs/bootstrap-design.md §7).
 //
-// Shared storage deletes that resource, and a bare volume-ID string has nowhere
-// to hang a checksum. So the digest moves into the name: different content
-// yields a different file name, hence a different volume id, and
-// user_data_file_id is ForceNew on the VM — the compute instance rebuilds and
-// cloud-init reads the new document. Same end behavior as today, but derived
-// from the content by construction instead of by remembering to pass a
-// checksum.
-//
-// It also makes identities content-addressed rather than overwritten in place,
-// so a superseded document is never silently replaced under a running VM.
+// So the digest moves into the name: different content yields a different file
+// name, hence a different volume id, and the compute VM that references it is
+// rebuilt — cloud-init then reads the new document. Content-addressing also
+// means a superseded document is never silently replaced under a running VM.
 func ContentAddressedSnippetName(qubeName, userData string) string {
 	sum := sha256.Sum256([]byte(userData))
 	return fmt.Sprintf("qubes-air-%s-%s.yaml", qubeName, hex.EncodeToString(sum[:])[:snippetHashLen])
@@ -635,16 +650,15 @@ func snippetNamePattern(qubeName string) *regexp.Regexp {
 		`^qubes-air-` + regexp.QuoteMeta(qubeName) + `(-[0-9a-f]{` + fmt.Sprint(snippetHashLen) + `})?\.yaml$`)
 }
 
-// WriteAgentUserData persists rendered user-data where terraform can upload it.
+// WriteAgentUserData persists rendered user-data where the adapter can upload it.
 //
-// The file is written to disk rather than passed through tfvars because
-// terraform's source_file records only the path, size and volume id in state,
-// while source_raw would put the content there — and the content is a private
-// key. This repository's state design forbids credentials entering state at all
-// (see terraform/main.tf), so the choice is load-bearing, not stylistic.
+// The file is written to disk rather than carried in the config: the adapter
+// uploads from a PATH, and the document contains a public CA and a one-time
+// bootstrap token — never an agent private key (docs/bootstrap-design.md §9).
+// Keeping it out of the config surface and out of any generated state file is
+// deliberate, not stylistic.
 //
-// Mode 0600: this file holds an agent's private key for as long as it sits on
-// the console's disk.
+// Mode 0600: the token is a secret for as long as it sits on the console's disk.
 func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
@@ -654,9 +668,9 @@ func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 	}
 	path := filepath.Join(dir, SnippetFileName(qubeName))
 
-	// Write via a temp file and rename so terraform can never read a partially
-	// written identity — half a private key is not a recoverable error, it is a
-	// VM that boots and cannot authenticate.
+	// Write via a temp file and rename so the adapter can never read a partially
+	// written identity — half an identity document is a VM that boots and cannot
+	// authenticate, which is not a recoverable error.
 	tmp, err := os.CreateTemp(dir, ".identity-*.yaml")
 	if err != nil {
 		return "", fmt.Errorf("create temp identity: %w", err)
@@ -821,7 +835,7 @@ func reapSupersededSnippets(dir, qubeName, keep string) error {
 // RemoveAgentUserData deletes a qube's identity files from the console.
 //
 // Called when a qube is purged. On the SFTP path the copy on the Proxmox node
-// is removed by terraform along with the compute VM; this removes the console's
+// is removed by the provider along with the compute VM; this removes the console's
 // own. On the shared path there is only one copy and this is what removes it,
 // so every content-addressed version is swept, not just the current name —
 // which the caller does not know once the qube's config is gone.

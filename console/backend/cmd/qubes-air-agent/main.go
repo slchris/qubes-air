@@ -1,6 +1,6 @@
 // Command qubes-air-agent is the RemoteVM agent.
 //
-// It runs on a non-Qubes remote (a cloud image cloned by terraform) and gives
+// It runs on a non-Qubes remote (a cloud image cloned by the provider) and gives
 // that host qrexec semantics without Xen vchan — see docs/remote-agent-design.md
 // for why qrexec-client-vm cannot simply be installed there.
 //
@@ -12,9 +12,8 @@
 // Connection direction: this process LISTENS and the local relay dials in,
 // matching the existing transport (internal/transport/grpc: client.go is the
 // local relay, server.go the remote). Note that this does NOT give the remote
-// zero inbound — a claim terraform/providers/proxmox/zero-inbound-firewall.md
-// makes while also stating the local side dials out, which cannot both be true.
-// Reversing it is a transport change, not an agent change.
+// zero inbound: the local side dials out, so claiming both would be
+// contradictory. Reversing it is a transport change, not an agent change.
 //
 // Security posture: this host is UNTRUSTED. The service allowlist here guards
 // against misconfiguration, not against an attacker who has the box — whoever
@@ -64,14 +63,15 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	var (
-		listen     = flag.String("listen", "0.0.0.0:8443", "host:port to listen on")
-		remoteName = flag.String("remote-name", "", "this remote's name (aligns with RemoteVM remote_name)")
-		serviceDir = flag.String("service-dir", agent.DefaultServiceDir, "directory holding qrexec service implementations")
-		allowedCSV = flag.String("allow", strings.Join(defaultAllowedServices, ","), "comma-separated services this agent may run")
-		caFile     = flag.String("ca", "", "PEM CA bundle used to verify the relay's client certificate (required)")
-		certFile   = flag.String("cert", "", "PEM server certificate (required)")
-		keyFile    = flag.String("key", "", "PEM server private key (required)")
-		tokenFile  = flag.String("bootstrap-token", "/etc/qubes-air/bootstrap-token",
+		listen        = flag.String("listen", "0.0.0.0:8443", "host:port to listen on")
+		remoteName    = flag.String("remote-name", "", "this remote's name (aligns with RemoteVM remote_name)")
+		serviceDir    = flag.String("service-dir", agent.DefaultServiceDir, "directory holding qrexec service implementations")
+		allowedCSV    = flag.String("allow", strings.Join(defaultAllowedServices, ","), "comma-separated services this agent may run")
+		caFile        = flag.String("ca", "", "PEM CA bundle used to verify the relay's client certificate (required)")
+		certFile      = flag.String("cert", "", "PEM server certificate (required)")
+		keyFile       = flag.String("key", "", "PEM server private key (required)")
+		revocationURL = flag.String("revocation-url", "", "Console signed revocation status URL (required)")
+		tokenFile     = flag.String("bootstrap-token", "/etc/qubes-air/bootstrap-token",
 			"path to the one-shot bootstrap token; consulted only when no identity is installed yet")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
@@ -158,18 +158,18 @@ func main() {
 		certSource = bootstrap
 	}
 
+	registry, err := identity.NewRevocationRegistry(*revocationURL)
+	if err != nil {
+		log.Fatalf("revocation configuration: %v", err)
+	}
 	srv := transportgrpc.NewServer(transportgrpc.ServerConfig{
 		Listen: *listen,
 		TLS:    identity.ServerTLSConfig(),
 		// Certificate selection per handshake, so a renewal takes effect on the
 		// next connection instead of the next restart — and without dropping
 		// the tunnels that are already up.
-		CertSource: certSource,
-		// No CertRegistry here: the registry lives with the issuer, on the
-		// trusted side. This agent verifies that the peer's certificate chains
-		// to the CA; deciding whether a given relay is still permitted is not
-		// this host's call to make, and a revocation list stored on an
-		// untrusted machine could simply be deleted.
+		CertSource:   certSource,
+		CertRegistry: registry,
 	}, inv)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

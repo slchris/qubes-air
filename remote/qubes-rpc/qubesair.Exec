@@ -1,44 +1,78 @@
-#!/bin/bash
-# qubesair.Exec — 在本远端跑一条命令, 回结果。
-#
-# 由 RemoteVM agent 在收到 qrexec 服务名 "qubesair.Exec" 时执行, 是把这些机器从"只能
-# 探活"变成"能干活"的最小原语 (相当于跨机的 qubes.VMShell)。授权分三层: (1) agent 只
-# 在 --allow 里列了本服务才放行; (2) 调用方必须持 console CA 签的客户端证书才能过 agent
-# 的 mTLS; (3) dom0 policy 对本地 AppVM -> RemoteVM 的调用把关 (建议 ask)。
-#
-# 契约:
-#   stdin  : 要执行的命令 (像 qubes.VMShell 那样从 stdin 读整条命令)
-#   stdout : 命令的 stdout+stderr 合并; 命令非零退出时追加一行 "[qubesair.Exec: exit=N]"
-#   exit   : 恒为 0
-#
-# 为什么恒 0: agent 的 invoker 在服务非零退出时会**丢弃 stdout**、只把 stderr 塞进错误里
-# (internal/agent/invoker.go)。若把命令退出码透传上去, 命令的输出就没了。因此这里吞掉
-# 退出码、把它以 trailer 形式报告, 保证调用方总能拿到输出。
-#
-# 为什么用 systemd-run: agent unit 有 ProtectSystem=full(/usr、/etc 只读)、PrivateTmp
-# (私有 /tmp)、ProtectHome(挡 /home)等沙箱, 这些**会被子进程继承**。命令是 agent 的
-# 子进程, 直接跑就写不了 /usr(`apt install` 报 "Read-only file system")、看不到真实
-# /tmp、动不了 /home。systemd-run 让 PID 1 在**宿主命名空间**起命令, 绕开沙箱 —— 这是
-# 用户自己的机器, 命令本就该有完整访问权。agent 自身仍受沙箱保护, 只有它启动的命令不受。
-set +e
+#!/usr/bin/python3
+"""Execute one explicitly allowed program from a bounded JSON argv request.
 
-cmd="$(cat)"
-if [ -z "$cmd" ]; then
-    echo "qubesair.Exec: 空命令 (命令应从 stdin 传入)"
-    exit 0
-fi
+No shell or transient root unit is involved: arguments remain literal and the
+program inherits the agent's sandbox. Administrators must approve the program's
+own argument semantics; allowing an interpreter grants that interpreter's power.
+"""
 
-if command -v systemd-run >/dev/null 2>&1; then
-    # --pipe 接 stdio, --wait 等命令跑完并透传其退出码, --collect 跑完清理瞬态单元。
-    systemd-run --pipe --wait --collect --quiet -- /bin/bash -lc "$cmd" 2>&1
-    rc=$?
-else
-    # 没有 systemd(极少见)时退回直接跑, 会受沙箱限制。
-    /bin/bash -lc "$cmd" 2>&1
-    rc=$?
-fi
+import json
+import os
+import sys
 
-if [ "$rc" -ne 0 ]; then
-    printf '\n[qubesair.Exec: exit=%d]\n' "$rc"
-fi
-exit 0
+MAX_REQUEST_BYTES = 65536
+MAX_ARGUMENTS = 128
+MAX_ARGUMENT_BYTES = 4096
+
+
+def reject(message, code=64):
+    print("qubesair.Exec: " + message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def absolute_program(value):
+    return (
+        value.startswith("/")
+        and not value.startswith("//")
+        and os.path.normpath(value) == value
+        and ":" not in value
+        and not any(ord(c) < 32 or ord(c) == 127 for c in value)
+    )
+
+
+def request_arguments():
+    raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
+    if len(raw) > MAX_REQUEST_BYTES:
+        reject("request exceeds 64 KiB")
+    try:
+        argv = json.loads(raw)
+    except (ValueError, UnicodeError, RecursionError):
+        reject("expected a JSON array of argument strings")
+    if not isinstance(argv, list) or not 1 <= len(argv) <= MAX_ARGUMENTS:
+        reject("expected 1 to 128 arguments")
+    for value in argv:
+        if not isinstance(value, str) or "\x00" in value:
+            reject("arguments must be strings without NUL bytes")
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeError:
+            reject("arguments must be valid UTF-8")
+        if len(encoded) > MAX_ARGUMENT_BYTES:
+            reject("argument exceeds 4096 bytes")
+    if not absolute_program(argv[0]):
+        reject("program must be a normalized absolute path")
+    return argv
+
+
+def main():
+    if len(sys.argv) != 1:
+        reject("service arguments are not supported")
+    configured = os.environ.get("QUBESAIR_EXEC_ALLOW", "")
+    if not configured:
+        reject("service disabled: no allowed executables configured", 77)
+    allowed = configured.split(":")
+    if any(not absolute_program(program) for program in allowed):
+        reject("invalid executable allowlist", 77)
+    argv = request_arguments()
+    if argv[0] not in allowed:
+        reject("executable is not allowed", 126)
+    # Do not leak bootstrap, identity or service-policy environment variables.
+    environment = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
+    try:
+        os.execve(argv[0], argv, environment)
+    except OSError:
+        reject("could not execute allowed program", 126)
+
+
+if __name__ == "__main__":
+    main()

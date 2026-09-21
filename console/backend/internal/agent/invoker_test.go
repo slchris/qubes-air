@@ -54,7 +54,7 @@ func TestInvokeRunsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if got := strings.TrimSpace(string(out)); got != "pong remote-dev" {
+	if got := strings.TrimSpace(string(out.Stdout)); got != "pong remote-dev" {
 		t.Errorf("want %q, got %q", "pong remote-dev", got)
 	}
 }
@@ -114,7 +114,7 @@ func TestAllowlistMatchesBaseName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if got := string(out); got != "arg=disk" {
+	if got := string(out.Stdout); got != "arg=disk" {
 		t.Errorf("the argument must reach the script, got %q", got)
 	}
 }
@@ -152,23 +152,30 @@ func TestInvokePassesStdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	if string(out) != "hello agent" {
-		t.Errorf("stdin must reach the service, got %q", out)
+	if string(out.Stdout) != "hello agent" {
+		t.Errorf("stdin must reach the service, got %q", out.Stdout)
 	}
 }
 
-// TestInvokeSurfacesStderr — when a service fails, its own diagnostic is the
-// most useful thing to show, so it must not be swallowed.
-func TestInvokeSurfacesStderr(t *testing.T) {
+// TestInvokeReportsExitCodeAndStderr — a service that fails is a RESULT, not an
+// invocation error: the exit code and stderr must come back structured so a
+// caller can tell a failed command from a call that never ran.
+func TestInvokeReportsExitCodeAndStderr(t *testing.T) {
 	dir := serviceDir(t, map[string]string{
-		"qubesair.Failing": "#!/bin/sh\necho 'vault is sealed' >&2\nexit 3\n",
+		"qubesair.Failing": "#!/bin/sh\necho 'vault is sealed' >&2\necho partial\nexit 3\n",
 	})
-	_, err := invokerOver(dir).Invoke(context.Background(), "t", "qubesair.Failing", nil)
-	if err == nil {
-		t.Fatal("expected an error")
+	res, err := invokerOver(dir).Invoke(context.Background(), "t", "qubesair.Failing", nil)
+	if err != nil {
+		t.Fatalf("a non-zero exit must not be an error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "vault is sealed") {
-		t.Errorf("stderr must be surfaced, got %v", err)
+	if res.ExitCode != 3 {
+		t.Errorf("exit code = %d, want 3", res.ExitCode)
+	}
+	if !strings.Contains(string(res.Stderr), "vault is sealed") {
+		t.Errorf("stderr must be captured separately, got %q", res.Stderr)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); got != "partial" {
+		t.Errorf("stdout must be preserved alongside a non-zero exit, got %q", got)
 	}
 }
 
@@ -202,7 +209,7 @@ func TestInvokeMinimalEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	env := string(out)
+	env := string(out.Stdout)
 	if strings.Contains(env, "must-not-leak") {
 		t.Error("the agent's environment must not be inherited by services")
 	}
@@ -225,9 +232,9 @@ func TestRealPingScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
-	fields := strings.Fields(string(out))
+	fields := strings.Fields(string(out.Stdout))
 	if len(fields) != 3 || fields[0] != "pong" {
-		t.Fatalf(`want "pong <name> <ts>", got %q`, out)
+		t.Fatalf(`want "pong <name> <ts>", got %q`, out.Stdout)
 	}
 	if fields[1] != "remote-dev" {
 		t.Errorf("want the remote name, got %q", fields[1])
@@ -255,5 +262,40 @@ func TestInvokeTimeoutSurvivesBackgroundedChild(t *testing.T) {
 
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Errorf("a backgrounded grandchild held the call open for %s; WaitDelay is not bounding the drain", elapsed)
+	}
+}
+
+// TestCapWriterBoundsOutput — the cap is enforced WHILE writing, not after
+// buffering the whole thing. The aborting writer fails the write (so exec stops
+// the copy and the command dies); the truncating one keeps at most limit bytes.
+func TestCapWriterBoundsOutput(t *testing.T) {
+	abort := &capWriter{limit: 4, abortOnOverflow: true}
+	if _, err := abort.Write([]byte("abcdef")); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("aborting writer: want ErrResponseTooLarge, got %v", err)
+	}
+	if !abort.overflow || abort.buf.Len() != 4 {
+		t.Errorf("aborting writer kept %d bytes, overflow=%v", abort.buf.Len(), abort.overflow)
+	}
+
+	trunc := &capWriter{limit: 4}
+	n, err := trunc.Write([]byte("abcdef"))
+	if err != nil || n != 6 {
+		t.Fatalf("truncating writer: n=%d err=%v", n, err)
+	}
+	if !trunc.overflow || trunc.buf.String() != "abcd" {
+		t.Errorf("truncating writer kept %q overflow=%v", trunc.buf.String(), trunc.overflow)
+	}
+}
+
+// TestInvokeOversizeStdoutIsRejected — a service that floods stdout is stopped at
+// the cap rather than buffered in full and only then rejected.
+func TestInvokeOversizeStdoutIsRejected(t *testing.T) {
+	dir := serviceDir(t, map[string]string{
+		"qubesair.Flood": "#!/bin/sh\ntr '\\0' x < /dev/zero | head -c 20000000\n",
+	})
+	_, err := invokerOver(dir, "qubesair.Flood").
+		Invoke(context.Background(), "remote-dev", "qubesair.Flood", nil)
+	if !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("want ErrResponseTooLarge, got %v", err)
 	}
 }

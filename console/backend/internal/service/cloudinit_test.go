@@ -205,6 +205,19 @@ func TestRemoteNameReachesTheAgent(t *testing.T) {
 	env := fileContent(t, cc, "agent.env")
 	assert.Contains(t, env, "QUBESAIR_REMOTE_NAME=remote-dev")
 	assert.Contains(t, env, "QUBESAIR_LISTEN=0.0.0.0:8443")
+	assert.Contains(t, env, "QUBESAIR_ALLOW=qubesair.Ping",
+		"a default provision must enable only the reachability probe")
+}
+
+// TestAgentAllowlistIsDelivered — widening the allowlist is a console config
+// change written into agent.env, so a privileged service is only ever granted
+// on purpose.
+func TestAgentAllowlistIsDelivered(t *testing.T) {
+	pkg := testAgentPackage()
+	pkg.AllowedServices = []string{"qubesair.Ping", "qubesair.Exec"}
+	out, _ := renderWith(t, pkg)
+	env := fileContent(t, parseConfig(t, out), "agent.env")
+	assert.Contains(t, env, "QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec")
 }
 
 // TestNoPrivateKeyIsEverDelivered — this document goes to a host assumed
@@ -728,22 +741,18 @@ func TestForkThenDieIsCaught(t *testing.T) {
 // travels this same path. A reissued certificate would never reach the qube,
 // and every apply would keep saying it succeeded.
 func TestIdentitySnippetIsPinnedByContent(t *testing.T) {
-	mod, err := os.ReadFile("../../../../terraform/modules/remote-qube-base/providers/proxmox/main.tf")
-	require.NoError(t, err)
+	one := ContentAddressedSnippetName("remote-dev", "CA: x\nTOKEN: one\n")
+	two := ContentAddressedSnippetName("remote-dev", "CA: x\nTOKEN: two\n")
+	oneAgain := ContentAddressedSnippetName("remote-dev", "CA: x\nTOKEN: one\n")
 
-	idx := strings.Index(string(mod), `resource "proxmox_virtual_environment_file" "agent_identity"`)
-	require.NotEqual(t, -1, idx, "the agent identity resource must exist")
-
-	// Look only at that resource's body, so a checksum on some unrelated
-	// resource cannot satisfy this test.
-	body := string(mod)[idx:]
-	if end := strings.Index(body[1:], "\nresource "); end != -1 {
-		body = body[:end]
-	}
-	assert.Contains(t, body, "checksum",
-		"source_file must pin content; tracking only the path silently delivers stale identities")
-	assert.Contains(t, body, "filesha256",
-		"the checksum must be computed from the file, not hardcoded")
+	// Same content, same name: a re-render that changes nothing must not churn
+	// the volume id (which would rebuild the compute VM for no reason).
+	assert.Equal(t, one, oneAgain)
+	// Different content, different name: this is what makes a reissued identity
+	// reach a rebuilt compute VM instead of reusing the old document.
+	assert.NotEqual(t, one, two,
+		"content must be pinned by name; tracking only the path delivers stale identities")
+	assert.NotContains(t, one, "/", "the name is a bare file name, not a path")
 }
 
 // TestGuestLearnsItsOwnName — every qube came up as "localhost" with an empty

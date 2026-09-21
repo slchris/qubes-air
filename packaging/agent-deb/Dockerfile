@@ -16,7 +16,7 @@
 # The dpkg-deb stage never executes the packaged binary, so it does not care
 # what architecture that binary is.
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 ARG DEBIAN_SUITE=bookworm
 
 # --------------------------------------------------------------------------

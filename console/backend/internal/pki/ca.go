@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -155,7 +157,7 @@ func (ca *CA) IssueAgentCert(commonName string, lifetime time.Duration) (*Bundle
 	if err != nil {
 		return nil, fmt.Errorf("generate agent key: %w", err)
 	}
-	cert, der, err := ca.signAgentCert(commonName, lifetime, &key.PublicKey)
+	cert, der, err := ca.signAgentCert(commonName, lifetime, &key.PublicKey, roleForSigningCN(commonName))
 	if err != nil {
 		return nil, err
 	}
@@ -220,6 +222,79 @@ func AgentCommonName(qubeName string) string { return "agent-" + qubeName }
 // name into the CSR it generates — two definitions would drift.
 func RelayCommonName(qubeName string) string { return "relay-" + qubeName }
 
+// Role is the authority a certificate grants. It rides in a URI SAN because the
+// common-name prefixes ("agent-", "relay-") share one subject space and do not
+// by themselves say whether the holder is a server or a client.
+type Role string
+
+// Certificate roles.
+const (
+	// RoleAgent is the remote agent's SERVER identity.
+	RoleAgent Role = "agent"
+	// RoleRelay is the local Relay's CLIENT identity.
+	RoleRelay Role = "relay"
+	// RoleConsole is the console's own transient CLIENT identity (probes,
+	// bootstrap, renewal, unlock, console-as-relay).
+	RoleConsole Role = "console"
+)
+
+const roleURIPrefix = "spiffe://qubes-air/role/"
+
+// roleURI renders a role as the URI SAN placed in an issued certificate.
+func roleURI(r Role) *url.URL {
+	u, _ := url.Parse(roleURIPrefix + string(r))
+	return u
+}
+
+// RoleOf returns the role a certificate carries, or an error when it carries
+// none or several. Several is refused rather than resolved arbitrarily: a
+// certificate with two roles is a forging attempt or a bug, and either way the
+// verifier must not guess.
+func RoleOf(cert *x509.Certificate) (Role, error) {
+	if cert == nil {
+		return "", errors.New("pki: no certificate")
+	}
+	var found []Role
+	for _, u := range cert.URIs {
+		if u.Scheme == "spiffe" && u.Host == "qubes-air" && strings.HasPrefix(u.Path, "/role/") {
+			found = append(found, Role(strings.TrimPrefix(u.Path, "/role/")))
+		}
+	}
+	switch len(found) {
+	case 0:
+		return "", fmt.Errorf("pki: certificate %q carries no role", cert.Subject.CommonName)
+	case 1:
+		return found[0], nil
+	default:
+		return "", fmt.Errorf("pki: certificate %q carries %d roles", cert.Subject.CommonName, len(found))
+	}
+}
+
+// roleForSigningCN maps a certificate common name onto its role, for every
+// issuance path. The console mints both agent server certificates (agent-*) and
+// Relay/Console client certificates, so the role is derived from the name it is
+// asked for rather than fixed per function.
+func roleForSigningCN(commonName string) Role {
+	switch {
+	case strings.HasPrefix(commonName, "agent-"):
+		return RoleAgent
+	case strings.HasPrefix(commonName, "relay-"):
+		return RoleRelay
+	default:
+		return RoleConsole
+	}
+}
+
+// ekuForRole returns the extended key usages a certificate of this role may
+// carry: an agent certificate is a server identity, every other role is a
+// client identity.
+func ekuForRole(r Role) []x509.ExtKeyUsage {
+	if r == RoleAgent {
+		return []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	}
+	return []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+}
+
 func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*SignedCert, error) {
 	if ca == nil || ca.Cert == nil || ca.Key == nil {
 		return nil, ErrNoCA
@@ -263,7 +338,7 @@ func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*
 	// remembering to filter it. A CSR is untrusted input that happens to carry a
 	// signature; the signature proves who sent it, not that anything it asks for
 	// is allowed.
-	cert, der, err := ca.signAgentCert(expectedCN, lifetime, csr.PublicKey)
+	cert, der, err := ca.signAgentCert(expectedCN, lifetime, csr.PublicKey, roleForSigningCN(expectedCN))
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +360,7 @@ func (ca *CA) SignAgentCSR(csrPEM, expectedCN string, lifetime time.Duration) (*
 // own, they would drift, and a renewal would quietly change what an agent is
 // permitted to do — the kind of difference nobody finds until a certificate that
 // should work does not.
-func (ca *CA) signAgentCert(commonName string, lifetime time.Duration, pub any) (*x509.Certificate, []byte, error) {
+func (ca *CA) signAgentCert(commonName string, lifetime time.Duration, pub any, role Role) (*x509.Certificate, []byte, error) {
 	if lifetime <= 0 {
 		lifetime = DefaultAgentCertLifetime
 	}
@@ -306,11 +381,14 @@ func (ca *CA) signAgentCert(commonName string, lifetime time.Duration, pub any) 
 		NotBefore:    time.Now().Add(-5 * time.Minute),
 		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		// Client auth only. An agent certificate must not be usable to
-		// impersonate a server, and must not be able to sign anything.
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		// The role decides the EKU: an agent certificate is a SERVER identity,
+		// every client certificate (relay, console) is a CLIENT identity. Before
+		// this both were ClientAuth-only, which is why peers verified with
+		// ExtKeyUsageAny — the role makes the purpose expressible.
+		ExtKeyUsage:           ekuForRole(role),
 		BasicConstraintsValid: true,
 		IsCA:                  false,
+		URIs:                  []*url.URL{roleURI(role)},
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, pub, ca.Key)

@@ -51,9 +51,12 @@ func TestSignedCSRVerifiesAgainstCA(t *testing.T) {
 	leaf := parseLeaf(t, signed.CertPEM)
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
-		t.Errorf("a renewed certificate must verify for client auth: %v", err)
+		t.Errorf("an agent certificate must verify for server auth: %v", err)
+	}
+	if role, err := RoleOf(leaf); err != nil || role != RoleAgent {
+		t.Errorf("agent certificate role = %q, %v; want %q", role, err, RoleAgent)
 	}
 
 	// The certificate must be bound to the key the AGENT holds. If it were bound
@@ -70,6 +73,64 @@ func TestSignedCSRVerifiesAgainstCA(t *testing.T) {
 	}
 	if !signed.NotAfter.Equal(leaf.NotAfter) {
 		t.Errorf("NotAfter %s disagrees with the certificate's %s", signed.NotAfter, leaf.NotAfter)
+	}
+}
+
+// TestIssueAgentCertCarriesClientRole — the transient certificates the console
+// mints for itself and its Relay must be CLIENT identities, with relay vs
+// console distinguished by role.
+func TestIssueAgentCertCarriesClientRole(t *testing.T) {
+	ca := mustCA(t)
+	cases := map[string]Role{
+		"console-relay":       RoleConsole,
+		"pingcheck-client":    RoleConsole,
+		"relay-sys-relay-pve": RoleRelay,
+	}
+	for cn, want := range cases {
+		bundle, err := ca.IssueAgentCert(cn, 0)
+		if err != nil {
+			t.Fatalf("IssueAgentCert(%q): %v", cn, err)
+		}
+		leaf := parseLeaf(t, bundle.CertPEM)
+		if role, err := RoleOf(leaf); err != nil || role != want {
+			t.Errorf("role for %q = %q, %v; want %q", cn, role, err, want)
+		}
+		if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+			t.Errorf("EKU for %q must be client auth only, got %v", cn, leaf.ExtKeyUsage)
+		}
+	}
+}
+
+// TestSignRelayCSRGetsRelayRole — SignAgentCSR also signs the Relay's client
+// certificate. It must get the relay role and client EKU, never the agent's
+// server identity.
+func TestSignRelayCSRGetsRelayRole(t *testing.T) {
+	ca := mustCA(t)
+	cn := RelayCommonName("sys-relay-pve")
+	csrPEM, _ := makeCSR(t, cn, nil)
+	signed, err := ca.SignAgentCSR(csrPEM, cn, 0)
+	if err != nil {
+		t.Fatalf("SignAgentCSR: %v", err)
+	}
+	leaf := parseLeaf(t, signed.CertPEM)
+	if role, err := RoleOf(leaf); err != nil || role != RoleRelay {
+		t.Errorf("relay role = %q, %v; want %q", role, err, RoleRelay)
+	}
+	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Errorf("relay EKU must be client auth only, got %v", leaf.ExtKeyUsage)
+	}
+}
+
+func TestRoleOfRefusesUnlabeledCert(t *testing.T) {
+	ca := mustCA(t)
+	bundle, err := ca.IssueAgentCert("console-relay", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := parseLeaf(t, bundle.CertPEM)
+	leaf.URIs = nil // a certificate issued before roles existed
+	if _, err := RoleOf(leaf); err == nil {
+		t.Error("a certificate with no role must be refused")
 	}
 }
 
@@ -201,10 +262,13 @@ func TestSignAgentCSRIgnoresRequestedExtensions(t *testing.T) {
 	if leaf.IsCA || leaf.KeyUsage&x509.KeyUsageCertSign != 0 {
 		t.Error("a renewed certificate must never be able to sign others")
 	}
-	for _, u := range leaf.ExtKeyUsage {
-		if u == x509.ExtKeyUsageServerAuth {
-			t.Error("a renewed certificate must not be valid for server auth")
-		}
+	// The EKU comes from the role template, never from the request: an agent
+	// certificate is a server identity, full stop.
+	if len(leaf.ExtKeyUsage) != 1 || leaf.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Errorf("agent EKU must be server auth only, got %v", leaf.ExtKeyUsage)
+	}
+	if role, err := RoleOf(leaf); err != nil || role != RoleAgent {
+		t.Errorf("agent role = %q, %v; want %q", role, err, RoleAgent)
 	}
 	if leaf.Subject.CommonName != "agent-dev-work" {
 		t.Errorf("subject must be rebuilt from the expected name, got %q", leaf.Subject.CommonName)
@@ -217,9 +281,10 @@ func TestSignAgentCSRIgnoresRequestedExtensions(t *testing.T) {
 // agent is permitted to do.
 func TestRenewedCertHasSameShapeAsIssued(t *testing.T) {
 	ca := mustCA(t)
-	fresh, err := ca.IssueAgentCert("agent-dev-work", 0)
+	firstCSR, _ := makeCSR(t, "agent-dev-work", nil)
+	fresh, err := ca.SignAgentCSR(firstCSR, "agent-dev-work", 0)
 	if err != nil {
-		t.Fatalf("IssueAgentCert: %v", err)
+		t.Fatalf("SignAgentCSR (fresh): %v", err)
 	}
 	csrPEM, _ := makeCSR(t, "agent-dev-work", nil)
 	renewed, err := ca.SignAgentCSR(csrPEM, "agent-dev-work", 0)
