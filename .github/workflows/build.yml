@@ -86,3 +86,15 @@ jobs:
           name: frontend-dist
           path: console/frontend/dist
           retention-days: 7
+
+  # Agent Debian 包安装/升级冒烟 (Docker, 与 scripts/test-agent-deb.sh 相同入口)
+  agent-package:
+    name: Agent package install smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build and smoke-test the .deb
+        run: scripts/test-agent-deb.sh

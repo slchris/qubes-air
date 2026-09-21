@@ -62,3 +62,17 @@ scripts/build-agent-deb.sh
 
 The [Dockerfile](Dockerfile) defines the cross-compilation and package layout. Build success does not
 replace installation, upgrade, bootstrap and real-provider acceptance tests.
+
+## Install and upgrade smoke test
+
+```bash
+make agent-deb-test            # or: scripts/test-agent-deb.sh
+```
+
+Builds an old and the current package, then inside `debian:bookworm-slim` installs the old one
+(resolving the `python3` dependency), checks the installed layout and version output, exercises the
+startup refusals (missing mTLS paths, no identity and no bootstrap token, missing revocation URL,
+empty allowlist), upgrades to the current build and verifies an operator conffile edit survives,
+then removes the package. It needs Docker and network access for apt and is deliberately not part of
+`make pre-commit`; CI runs it in the `agent-package` job. First bootstrap against a real console
+remains a QA-01 item.

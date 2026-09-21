@@ -5,7 +5,8 @@
 .PHONY: help build clean dev test agent-deb publish-agent-deb release-agent \
 	pre-commit audit check-tools diff-check test-race lint-new gosec-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
-	frontend-audit-new frontend-audit lint-all gosec-all complexity-all shellcheck-all
+	frontend-audit-new frontend-audit lint-all gosec-all complexity-all shellcheck-all \
+	agent-deb-test
 
 # 默认目标
 help:
@@ -21,6 +22,7 @@ help:
 	@echo "  clean          Clean build artifacts"
 	@echo ""
 	@echo "  agent-deb         构建 qubes-air-agent .deb (Docker 内交叉编译 amd64)"
+	@echo "  agent-deb-test    旧包安装 + 当前包升级冒烟 (Docker, 需网络装依赖)"
 	@echo "  publish-agent-deb 上传 .deb 到 artifact store, 回读校验, 打印 console 配置"
 	@echo "  release-agent     agent-deb + publish-agent-deb 一条龙"
 	@echo ""
@@ -187,6 +189,11 @@ DEB ?=
 agent-deb:
 	@echo "Building qubes-air-agent .deb (amd64)..."
 	VERSION=$(VERSION) scripts/build-agent-deb.sh
+
+# 安装/升级冒烟需要 Docker 与网络(容器内 apt 安装 python3 依赖), 因而不进 pre-commit;
+# 在 agent 打包/发布相关改动前手动运行, CI 也跑同一脚本。
+agent-deb-test:
+	scripts/test-agent-deb.sh
 
 publish-agent-deb:
 	scripts/publish-agent-deb.sh $(DEB)
