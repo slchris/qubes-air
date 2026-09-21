@@ -11,7 +11,7 @@ on:
     branches: [main]
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.26'
   NODE_VERSION: '20'
 
 jobs:
@@ -74,6 +74,9 @@ jobs:
       - name: Type check
         run: npm run check
 
+      - name: Unit tests
+        run: npm run test
+
       - name: Build
         run: npm run build
 
@@ -83,29 +86,3 @@ jobs:
           name: frontend-dist
           path: console/frontend/dist
           retention-days: 7
-
-  # Terraform 验证
-  validate-terraform:
-    name: Validate Terraform
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.5'
-
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-        working-directory: terraform
-
-      - name: Terraform Init
-        run: terraform init -backend=false
-        working-directory: terraform
-
-      - name: Terraform Validate
-        run: terraform validate
-        working-directory: terraform

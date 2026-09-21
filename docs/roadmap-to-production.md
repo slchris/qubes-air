@@ -1,77 +1,46 @@
 # 当前状态与路线图
 
-更新时间：2026-07-22。这里同时记录当前能力、代码审查发现和下一步顺序；不维护旧环境兼容计划。
+整理日期：2026-09-20。本文区分当前工作区实现、已有真机验收记录和待完成验收。
+未提交代码不等于已发布版本；本轮没有重新执行真机 smoke 或恢复演练。
 
-## 已完成并真机验证
+项目已具备 Proxmox 核心闭环，仍适合受控实验与开发，尚不是通用生产发行版。
 
-- Proxmox UI 置备、流式 job log 和 agent 健康探测；
-- cloud-init 只投递公开 CA、单次 token 与 artifact digest，agent 私钥在 guest 生成；
-- agent CSR 签发、mTLS、自动续期与 bootstrap 重试；
-- compute/storage 分离，suspend/resume 挂回持久盘；
-- LUKS 数据盘，密钥不保存到远端；
-- Qubes R4.3 RemoteVM 自动注册；
-- 独立 Relay CSR、端点自动同步和 `qubesair.GrpcProxy`；
-- `Ping`、`Exec`、`FileCopy` 和 `ConnectTCP`；
-- 控制台凭据 AES-256-GCM、多版本原子轮换；
-- OpenTofu state 客户端加密和 S3/PostgreSQL backend 入口。
+## 已有验收证据
 
-## 代码审查结论
+Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记录，汇总见
+[历史验收记录](reviews/validation-history.md)。它们没有为当前全部工作区改动提供统一版本的
+回归证据，不能用作本轮发布验收。操作入口见 [runbook](runbook-remotevm.md)。
 
-### P0：先收紧远端信任边界
+## 当前代码已落地
 
-| 不足 | 当前证据 | 完成标准 |
+| 范围 | 当前行为 | 验收边界 |
 |---|---|---|
-| mTLS 只证明“同一 CA 签发”，没有证明调用方角色 | agent、Relay 和 Console 临时身份共用证书模板；agent server 未配置角色校验，`relay-call` 也未校验目标 agent 名称 | 为 agent server、Relay client、Console client 建立独立证书用途或带角色的 SAN；agent 只接受允许的调用方角色；客户端同时校验目标 Qube 身份 |
-| 远端管理服务权限过宽 | Debian unit 默认启用 `Exec`、`FileCopy`、`UnlockData`；前两者通过 `systemd-run` 以宿主 root 执行，`FileCopy` 可操作任意绝对路径 | 默认只启用 `Ping`；特权操作进入独立、窄接口的 helper；限制命令和文件路径；每次调用留下 caller、target、service 和结果审计 |
-| 证书同时被当作 client 和 server 使用 | 签发模板只有 `ClientAuth`，agent 作为 server 时靠 `ExtKeyUsageAny` 自定义验证 | 分离 server/client 身份并使用正确 EKU；删除为绕过用途校验而存在的宽松验证 |
+| 原生编排 | `NativeExecutor` + Proxmox REST/SSH，`qube_infra` 记录资源身份；旧 Terraform 入口已移除 | 仅注册 Proxmox；GCP/AWS 不可置备 |
+| agent 身份 | 实际入口强制角色与 CA 签名撤销状态；握手、恢复会话和长连接均检查 | 状态源可达性为新增部署要求；缓存和重放时间界限见安全控制，尚未真机部署 |
+| 远端服务 | 默认只启用 Ping；Exec 使用 JSON argv，FileCopy 使用目录描述符；均继承沙箱 | 不保留 shell 文本/宿主 scope 入口；允许的程序自身仍需审查 |
+| 请求与认证 | 浏览器用 HttpOnly、SameSite=Strict session；Bearer 保留给 CLI/MCP；变更请求要求 control scope | session TTL 默认 12h；设置页的 timeout/2FA/通知尚未接入 |
+| API 安全基线 | 安全响应头、CORS、生产配置拒绝不安全默认值、请求体上限、限流、结构化操作者审计 | 不代表完整多租户身份体系或审计归档系统 |
+| 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并清理端点/RemoteVM | 部分失败只允许继续 purge；不能保证清除历史备份里的密钥 |
+| 数据密钥 | 新 Qube 使用随机 256-bit DEK，保存在加密凭据库 | 代码仍有 master 派生密钥回退；未使用独立 DEK 的盘不具备同等删除属性 |
+| 重启对账 | queued → failed、running → unknown，Qube → error；保留资源 checkpoint 及 purge 意图 | 显式重试原动作；不自动重放队列或跨进程接管 |
+| 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 仍需断线、取消、超时和重启场景的自动化回归 |
+| 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 有实现与单测，尚无离机恢复演练及 RTO 记录 |
+| 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 本轮 pre-commit/audit 已通过；不替代提交后真机回归 |
+| 前端测试 | vitest 会话/API 单测接入 Makefile 和 CI | 尚缺组件/E2E 关键流程测试 |
 
-完成这些修复前，不应把“dom0 policy 是唯一强制授权边界”当作已经完全成立：持有 fleet 证书的
-内部节点目前可以直接连接另一个 agent。
+实现入口：`internal/provider`、`internal/orchestrator/native.go`、`internal/service/reconcile.go`、
+`internal/service/qube_service.go`、`internal/service/datakey.go`、`internal/middleware`、
+`internal/backup`（均位于 `console/backend/`）。
 
-### P1：修正数据销毁、身份与编排可靠性
+## 后续工作
 
-| 不足 | 当前证据 | 完成标准 |
-|---|---|---|
-| 单个 Qube 不能 crypto-shred | 所有 LUKS key 由同一个 `qubes-air-luks-master` 和 Qube ID 派生；删除记录后仍可重新派生 | 改为可独立删除的 per-Qube 随机 DEK/secret，并提供迁移、备份、恢复和轮换流程 |
-| “删除”只有 release，没有真正 purge | API DELETE 只销毁 compute 并保留数据盘、证书和数据库记录；`ActionDestroy` 没有用户入口 | 增加明确二次确认的 purge；销毁盘、撤销身份、清理 RemoteVM/endpoint/记录，并报告每一步结果 |
-| job queue 重启后无法自动对账 | queue 在内存中；启动时把 queued/running job 标记为 `outcome unknown`，没有基于 state/provider 的自动 reconciliation | 持久化可恢复队列和幂等键；启动时执行 refresh/plan 与动作级对账，区分“失败”和“结果未知” |
-| 响应大小限制在缓冲后才检查 | invoker 先把 stdout 全量写入 `bytes.Buffer`，再检查 16 MiB | 使用有界 writer/stream，在超限时中止服务，覆盖超量输出和取消测试 |
-| 更新接口绕过创建校验 | Qube rename/spec update 直接写库，没有复用名称和规格校验 | 更新前执行与创建相同的名称、规格和状态约束，防止把无效对象写进 Terraform source of truth |
+[TODO 清单](TODO.md) 是优先级、依赖与验收条件的唯一维护入口。P0 代码已完成本轮加固，
+配置与验收边界见[安全控制](security-controls.md)。REL-01/02 的恢复契约已落地，
+见[生命周期验收](reviews/2026-09-20-lifecycle.md)；接下来推进密钥/备份边界、恢复演练与真机回归。
 
-### P2：控制台安全与产品语义
-
-- 当前只有一个静态 Bearer token；留空即关闭认证，前端还把 token 长期保存于 `localStorage`。
-  需要短期 session、HttpOnly/SameSite cookie、操作级授权和明确操作者审计。
-- 设置页中的 session timeout、2FA、邮件和 webhook 目前只保存配置，没有执行效果。实现前应隐藏或标记为
-  “未接入”，避免形成错误安全预期。
-- API 缺少统一的请求体上限、速率限制和 CSP/HSTS/frame 等安全响应头；生产模式应对空 token、宽
-  CORS、未加密 state 等关键配置 fail closed，而不只是打印 warning。
-- CORS 对不允许的 Origin 会返回 allowlist 第一项；应返回空并添加 `Vary: Origin`。
-- `Exec`/`FileCopy` 通过文本 trailer 表示失败且恒返回成功，调用方无法稳定区分 transport 成功和业务
-  失败。协议应分别传输 exit code、stdout 和 stderr。
-
-### P3：补齐尚未完成的产品和工程能力
-
-- 无缝桌面仍需验收 appmenu、单击启动、多窗口、退出状态和断线恢复。
-- Proxmox 是唯一完整 provider；GCP 私网可达性未闭环，AWS 仍是占位实现，多 credential zone 也受
-  单 provider 实例限制。完成前不宣称多云等价。
-- 监控的 CPU/磁盘和账单 API 是 placeholder，GCP/AWS 容量查询未实现；UI 应隐藏占位结果或清楚标注。
-- SQLite、CA、credential store 和 job log 构成单控制台故障域；需要经过演练的加密备份/恢复、schema
-  migration 版本和 CA 灾难恢复流程。
-- CI 中 `gosec -no-fail`、`tfsec --soft-fail`、`govulncheck continue-on-error` 会放过安全失败；构建仍用
-  Terraform 1.5，而当前 state 加密路径要求 OpenTofu。关键扫描应阻断合并并固定 Action 版本。
-- Go 测试覆盖较完整，但前端没有单元/E2E 测试，远端 qrexec 脚本和真实多主机网络链路也缺少自动化
-  回归。补充前端交互、agent 包安装、超时/断线/重启和真机 smoke test。
-- 删除未使用的 transport、非现行 dom0 安装入口和失效源码注释；文档链接与“已实现后仍写 TODO”检查进入
-  CI。若项目按开源方式发布，还需要补充明确的仓库许可证和安全报告入口。
-
-## 推荐执行顺序
-
-1. 证书角色隔离、目标身份校验和 agent 侧调用方授权；
-2. 收紧默认远端服务，拆分 root helper，并修复有界输出；
-3. 实现 per-Qube key、真实 purge 和恢复/销毁演练；
-4. 补 job reconciliation、更新校验与 API 安全基线；
-5. 再完成桌面闭环、provider、监控账单和测试矩阵。
+本轮门禁证据见[P0 安全加固记录](reviews/2026-09-20-p0-security.md)，
+此前失败保留在[工作区检查记录](reviews/2026-09-20-workspace.md)；
+每次提交仍必须重新执行当前阶段的 `make pre-commit`，发布和大范围安全合并还需 `make audit`。
 
 ## 不在当前承诺内
 

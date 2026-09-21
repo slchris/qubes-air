@@ -33,6 +33,6 @@ fi
 
 echo ""
 echo "=== Public Keys ==="
-echo "age:       $(cat $KEY_DIR/age.pub 2>/dev/null || echo 'N/A')"
+echo "age:       $(cat "$KEY_DIR/age.pub" 2>/dev/null || echo 'N/A')"
 echo ""
 echo "Add these public keys to your remote Zone configuration"

@@ -74,18 +74,3 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
-
-  # Terraform Provider
-  - package-ecosystem: "terraform"
-    directory: "/terraform"
-    schedule:
-      interval: "weekly"
-      day: "tuesday"
-      time: "06:00"
-      timezone: "Asia/Shanghai"
-    open-pull-requests-limit: 3
-    commit-message:
-      prefix: "deps(terraform)"
-    labels:
-      - "dependencies"
-      - "terraform"

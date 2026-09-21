@@ -34,8 +34,8 @@ make release-agent VERSION=<version>
 3. Zone：绑定 provider、infrastructure 和 credential；
 4. Qube：选择模板、资源、Zone、是否加密数据盘。
 
-创建后观察 Jobs 页的流式日志。成功的最低标准是 Terraform apply 完成，随后
-`agent_health` 在 bootstrap settle window 内变为 `healthy`。
+创建后观察 Jobs 页的流式日志。成功的最低标准是 provider provision 完成（storage + compute），
+随后 `agent_health` 在 bootstrap settle window 内变为 `healthy`。
 
 ## 4. 检查 bootstrap
 
@@ -95,10 +95,13 @@ qubesdb-read /remote-endpoint/<remote-name>
 
 从 policy 允许的本地 AppVM：
 
+执行 Exec 前必须显式启用服务并允许 `/usr/bin/id`；FileCopy 也需启用服务及允许目标目录。
+默认仅 Ping 可用。Exec 使用 JSON 参数列表并继承 agent 沙箱，配置与限制见[安全控制](security-controls.md)。
+
 ```bash
 qrexec-client-vm <remotevm> qubesair.Ping
 
-printf 'uname -a; id\n' |
+printf '%s\n' '["/usr/bin/id"]' |
   qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
@@ -115,16 +118,13 @@ printf 'uname -a; id\n' |
 
 ## 8. 存算分离验收
 
-推荐通过控制台 start/stop 流程操作。直接 OpenTofu 调试时可用：
+通过控制台 start/stop（suspend/resume）流程操作。底层由 provider 适配器实现：
 
-```bash
-make tf-suspend QUBE=<name> ENV=<environment>
-make tf-resume  QUBE=<name> ENV=<environment>
-```
+- suspend：停止并删除计算实例，`qube_infra` 保留 storage VM 与数据盘；
+- resume：从模板重建计算实例，挂回同一数据盘。
 
 确认 suspend 后持久数据盘仍在，resume 后挂回同一盘，agent 恢复 healthy，RemoteVM endpoint
-更新，测试文件仍可读。命令式 target 是临时操作；长期意图应写入 tfvars 的
-`compute_running`。
+更新，测试文件仍可读。数据盘有 `protected` 保护，purge 需显式确认。
 
 ## 9. 加密盘验收
 
@@ -136,7 +136,7 @@ make tf-resume  QUBE=<name> ENV=<environment>
 - 单个 compute 故障：先 suspend/resume，不删除 data disk；
 - agent 发布故障：恢复上一组 package URL/SHA/version 后重建 compute；
 - RemoteVM 元数据错误：修正属性和 endpoint，不要先删云盘；
-- 永久销毁：先按[凭据销毁流程](credential-destruction.md)吊销凭据和丢弃 LUKS 密钥，再删
-  云资源与 RemoteVM。
+- 永久销毁：按[凭据销毁流程](credential-destruction.md)确认目标并调用 purge，再逐项核验
+  资源、身份与备份策略；清理完成前需要保留有效的 provider 操作凭据。
 
 更细的检查项见[自检清单](remotevm-selfcheck.md)。

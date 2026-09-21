@@ -25,7 +25,7 @@
 `make pre-commit` 以 `HEAD` 为增量基线，确保当前阶段不新增质量债务。需要指定其他基线时使用：
 
 ```bash
-make BASE_REV=origin/main TF_BIN=tofu pre-commit
+make BASE_REV=origin/main pre-commit
 ```
 
 里程碑、release、合并大范围安全/transport/PKI 改动前还必须运行 `make audit`。完整审计会检查
@@ -43,11 +43,7 @@ make BASE_REV=origin/main TF_BIN=tofu pre-commit
 | Go 格式 | `gofmt`、`goimports` 由 `golangci-lint` formatter 检查 |
 | 前端 | `npm ci && npm run check && npm run build`；必须 0 error、0 warning；依赖变化运行 `npm audit --audit-level=high` |
 | Shell | 所有本阶段新增或修改的 shell/shebang 文件必须通过 ShellCheck |
-| Terraform | OpenTofu `init -backend=false`、`validate`、`fmt -check -recursive` |
 | 文档 | 本地 Markdown 链接必须存在；架构/流程图使用 Mermaid；命令和路径必须可验证 |
-
-本地只有 Terraform 时，可用 `make TF_BIN=terraform pre-commit` 做 HCL 校验；涉及 state 加密、
-backend 或 release 验收时必须使用 OpenTofu，不能用 Terraform 的成功替代。
 
 ## 4. Lint 和复杂度例外
 
@@ -60,15 +56,15 @@ backend 或 release 验收时必须使用 OpenTofu，不能用 Terraform 的成�
 
 ## 5. 安全开发规则
 
-- 不得把 provider credential、API token、CA/private key、LUKS key、bootstrap token、state
-  passphrase 或真实基础设施地址提交到仓库、日志、测试 fixture 或前端 bundle。
-- 所有外部输入在进入文件路径、命令参数、Terraform target、qrexec service、网络 endpoint 前使用
+- 不得把 provider credential、API token、CA/private key、LUKS key、bootstrap token
+  或真实基础设施地址提交到仓库、日志、测试 fixture 或前端 bundle。
+- 所有外部输入在进入文件路径、命令参数、provider target、qrexec service、网络 endpoint 前使用
   allowlist 校验；禁止依赖 shell escaping 作为唯一保护。
 - 禁止新增 `sh -c`、`bash -c`、任意绝对路径写入或 root helper，除非接口被明确收窄并有授权、审计
   与攻击面测试。
 - TLS 必须同时验证 CA、证书用途、调用方角色和目标身份。使用 `InsecureSkipVerify` 时必须配置完整的
   `VerifyConnection`，并有错误 CA、错误角色、错误 target 和过期证书测试。
-- cloud-init 和 Terraform state 不得包含私钥；一次性 token 也按 secret 处理。
+- cloud-init 和生成的身份/状态文件不得包含私钥；一次性 token 也按 secret 处理。
 - 删除、purge、密钥轮换、CA 操作和基础设施 destroy 必须显式确认目标、支持幂等，并报告部分失败。
 - API 新端点必须定义认证、授权、请求体上限、超时、审计字段和敏感响应处理。
 
@@ -77,7 +73,8 @@ backend 或 release 验收时必须使用 OpenTofu，不能用 Terraform 的成�
 - Bug 修复先补能复现问题的测试，再修实现。
 - 并发、队列、续期和状态转换必须覆盖 race、取消、超时、重启以及重复请求。
 - PKI/mTLS 必须覆盖正反例，不能只有“正确证书连接成功”。
-- provider 代码至少通过 fmt/validate；宣称可用前还要有真实 provider smoke test 和销毁验证。
+- provider 适配器至少通过 `go test` 与 `golangci-lint`；宣称可用前还要有真实 provider smoke test
+  （provision → suspend → resume → purge）和销毁验证。
 - shell/qrexec 服务要覆盖输入为空、非法 service/path/argument、超量输入输出和非零退出。
 - 前端交互变化至少通过 Svelte check/build；关键流程应补组件或 E2E 测试，而不是只依赖手工点击。
 

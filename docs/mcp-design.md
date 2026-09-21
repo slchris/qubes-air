@@ -1,115 +1,54 @@
-# MCP 接入设计
+# MCP 接入
 
-让 LLM 客户端（Claude Code / OpenClaw 等）通过 MCP 操作 Qubes Air 控制面，
-并且**不新增任何特权路径**。
+MCP 是 Console API 的非特权客户端，不直接持有 CA、provider 凭据或数据密钥。
+本页描述当前实现；待办统一维护在 [TODO](TODO.md)，不再按已经结束的 Phase 1/2 重复叙述。
 
-## 非目标
-
-- 不实现第二套授权引擎：MCP 的授权就是 Console API 的授权。
-- MCP 进程不持有 CA 私钥、云 API 凭据、Relay 私钥或 LUKS 密钥。
-- 不绕过 dom0 policy。数据面调用与浏览器 / CLI 走完全相同的路径。
-- 不对外监听。transport 只有 stdio，以及后续阶段绑定 loopback / Tailscale 的 HTTP。
-
-## 架构
+## 当前路径
 
 ```mermaid
 flowchart LR
-  Client["MCP 客户端 / LLM"] -->|"MCP（stdio）"| MCP["MCP Server<br/>console AppVM 内独立进程"]
-  MCP -->|"loopback + Bearer token"| API["Console API /api/v1"]
-  API --> Tofu["OpenTofu 编排"]
-  API --> PKI["Console CA"]
-  API --> Dom0["dom0 policy"]
-  Dom0 --> Relay["Relay"]
-  Relay -->|mTLS| Agent["远端 agent"]
-  Tofu --> Proxmox["Proxmox"]
-  MCP -.->|"computer-use（默认关闭）"| Desktop["桌面会话"]
-  Relay -.->|StreamTCP| Desktop
-  Agent -.->|"Xpra / RFB"| GUI["远端 GUI"]
+  Client["MCP 客户端"] -->|"stdio / JSON-RPC"| MCP["qubes-air-mcp"]
+  MCP -->|"loopback HTTP / Bearer"| API["Console API"]
+  API --> Provider["原生 provider"]
+  API --> Policy["dom0 policy / qrexec"]
+  Policy --> Relay["Relay"]
+  Relay -->|"mTLS"| Agent["agent"]
 ```
 
-## 关键决定
+入口为 `console/backend/cmd/qubes-air-mcp`，协议与工具注册在 `console/backend/internal/mcp`。
+支持 initialize、tools/list、tools/call、ping。当前传输是 stdio；HTTP transport 尚未实现。
+Console API 目标限制为 loopback，客户端拒绝重定向，避免凭据发送到其他目标。
 
-### 1. 收口到 Console API
+## 工具与授权
 
-MCP server 不直接调用 service 层，而是作为 Console API 的 loopback HTTP 客户端。
-
-这样认证、授权、请求体上限和审计只有一条路径，MCP 不可能拿到比 API 更大的权限。
-代价是多一次本机 HTTP 往返 —— 值得，因为替代方案是把授权逻辑复制一份。
-
-### 2. 工具分层
-
-| 层 | 内容 | 默认 |
+| 类别 | 当前能力 | 启用条件 |
 |---|---|---|
-| 只读 | qube / zone / job / 日志 / 监控概览 / 凭据**元数据** | 注册 |
-| 控制 | create / start / stop / suspend / resume / ack alert | 需要 `--scope control` |
-| computer-use | 应用清单、启动应用、桌面帧、输入注入 | **不注册**，需要 `--enable-computer-use` |
+| 只读 | Qube、Zone、job、日志、监控概览、凭据元数据 | 默认注册；指标是否真实以 API placeholder 为准 |
+| 控制 | 创建、启动/停止、suspend/resume、purge 等 API 操作 | MCP control scope，并持有 API 允许控制的 token |
+| 桌面应用 | desktop_apps_list、desktop_app_launch | 显式 enable-computer-use；启动还需 control 权限 |
+| 桌面帧/输入 | desktop_frame_get、desktop_input_send | 尚未实现，调用明确失败 |
 
-写端点已经带上阶段新增的 `MaxBodySize` 中间件；MCP 侧不重复实现，只做转发。
+MCP 不直接调用 service 层，认证、请求体上限与审计走 Console API 的同一条路径。
+API 的 BodyLimit 默认 1 MiB；MCP 不以重复实现取代它。
 
-### 3. 凭据处理
+Console 支持 `{name, token, scope}` token 配置，scope 为 read-only 或 control。已认证的
+GET/HEAD/OPTIONS 请求可用只读 scope，其余方法需要 control。单一 api_token 按 control
+处理；生产模式拒绝无 token 配置。按 zone/qube 的逐对象授权尚未实现。
 
-- 凭据类端点只回元数据，永不回 secret 值 —— 这一点由 Console API 决定，MCP 不额外放宽。
-- MCP server 只持有 Console API 的 Bearer token。
-- token 从环境变量或配置文件读，不进命令行参数（避免进 `ps`）。
+Token 从环境或配置读取，不放命令行；凭据端点仅返回元数据。MCP 的 scope 与 API token
+权限都应检查，不能只依靠 MCP 工具列表隐藏某个操作。purge 仍需名称确认，不绕过 API 语义。
 
-### 4. computer-use 红线
+## 桌面能力
 
-这是最难收口的一层：它是「以用户身份操作图形界面」，不是「读数据」。
+应用列表通过 `GET /api/v1/qubes/{id}/appmenus` 调用 qubes.GetAppmenus；应用启动通过
+`POST /api/v1/qubes/{id}/apps/{app}/launch` 调用 qubes.StartApp，app id 在上游调用前校验。
+已有应用列表/启动原语不代表完整 computer-use 或桌面验收完成。
 
-- 默认关闭，注册表里压根没有这些工具。
-- 开启后仍需 dom0 policy `ask` 逐次确认。
-- 本地必须有可见的「接管中」提示，且随时可中断。
-- 复用既有 `qubesair.ConnectTCP` / `StreamTCP+`（Xpra / RFB），不新增对外端口。
-
-## 分阶段
-
-### Phase 1（本次落地）
-
-- `internal/mcp`：JSON-RPC 2.0 + stdio 传输、`initialize` / `tools/list` / `tools/call` / `ping`
-- `cmd/qubes-air-mcp`：stdio 主循环
-- 工具：只读 + 控制两类，全部映射到既有 `/api/v1` 端点
-- 作用域：在 MCP 层强制（`--scope`）
-- computer-use 工具组**不注册**
-- 测试：协议编解码、工具清单、作用域拒绝、上游 4xx/5xx 透传、超时、未知工具
-
-### Phase 2（本次）
-
-**2a — 作用域下推到 API 层（分域 token）**
-
-Phase 1 的作用域只在 MCP 层强制，那是「实现约束」不是「权限约束」：一个 read-only 的 MCP 进程
-如果被换成一个直接打 API 的脚本，权限就没有了边界。因此把作用域做进 Console API：
-
-- `AuthConfig` 增加 `tokens`：`[{name, token, scope}]`，`scope` 为 `read-only` 或 `control`。
-- 中间件解析 Bearer token 得到作用域，挂到请求上下文；
-- **按方法收口**：`GET` / `HEAD` / `OPTIONS` 只需要任意已认证作用域，其余方法一律需要 `control`。
-  按方法而不是逐个路由标注，是为了让以后新加的写端点**默认就是受限的**（fail-closed）。
-- 单一 `api_token` 继续可用，按 `control` 处理（它是管理员令牌，不是遗留兼容分支）。
-- 未配置任何 token 时保持现状：认证关闭并按启动日志告警。
-
-**2b — computer-use：应用清单与启动应用（真实动作）**
-
-复用既有 qrexec 通路，不新造协议：
-
-- `GET /api/v1/qubes/{id}/appmenus`（read-only）→ 触发 `qubes.GetAppmenus`
-- `POST /api/v1/qubes/{id}/apps/{app}/launch`（control）→ 触发 `qubes.StartApp+<app>`
-- app id 必须按 allowlist 校验（`remote/qubes-rpc/qubes.StartApp` 自己用的就是
-  `[A-Za-z0-9._+-]`），不合法时**不得发出任何上游调用**。
-
-MCP 侧把 `desktop_apps_list` / `desktop_app_launch` 从 stub 换成真实实现。
-
-**2c — 帧与输入（仍未实现，明确记录）**
-
-`desktop_frame_get` / `desktop_input_send` 需要一个 RFB / Xpra 客户端接上既有
-`qubesair.StreamTCP+` 通道。这本身是一个独立的协议实现，不在本次范围内；两个工具
-**保持显式失败**，不会假装可用。
-
-### 仍未实现（Phase 3 候选）
-
-- computer-use 的帧与输入（见 2c）
-- HTTP transport：绑定 lo / Tailscale，复用同一套 Bearer 与作用域校验
+帧与输入需要实现 RFB/Xpra 客户端及既有通道适配。可见接管提示、随时中断、dom0 policy 和
+输入授权是后续验收要求，不能描述为当前已提供的 UI。见 [MCP-01](TODO.md) 与 GUI-01。
 
 ## 验收
 
-- `go test -race ./...` 通过
-- `make BASE_REV=origin/main pre-commit` 通过
-- 新增的安全控制都有失败路径测试：作用域拒绝、未知工具、上游错误、超时
+协议编解码、注册工具、作用域拒绝、未知工具、上游错误和超时已有测试；每次改动仍需实际
+运行门禁。新增工具必须覆盖越权、非法输入和取消/失败路径。真实桌面验收另行记录，不能用
+MCP 单元测试代替。整体信任边界还受 [agent 当前限制](grpc-transport-design.md#证书验证)约束。

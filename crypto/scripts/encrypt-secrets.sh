@@ -6,7 +6,6 @@
 set -euo pipefail
 
 AGE_PUB_FILE="${AGE_PUB_FILE:-$HOME/.qubes-air/keys/age.pub}"
-SOPS_CONFIG="$(dirname "$0")/../sops/.sops.yaml"
 
 if [ ! -f "$AGE_PUB_FILE" ]; then
     echo "Error: age public key not found at $AGE_PUB_FILE"

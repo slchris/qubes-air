@@ -12,8 +12,8 @@ Qubes Air 让本地 Qubes AppVM 通过熟悉的 qrexec 接口使用远端普通 
 | 组件 | 职责 | 不应持有 |
 |---|---|---|
 | dom0 | RemoteVM 元数据、qrexec policy、调用改写 | 云凭据、CA 私钥、远端数据密钥 |
-| console AppVM | Web/API、OpenTofu 编排、PKI、健康探测、证书续期 | Relay/agent 私钥 |
-| vault | 存放人工管理的云凭据和 state passphrase；无网络 | 工作负载数据 |
+| console AppVM | Web/API、provider 原生编排、PKI、健康探测、证书续期 | Relay/agent 私钥 |
+| vault | 存放人工管理的云凭据；无网络 | 工作负载数据 |
 | Relay AppVM | 接收 RemoteVM 改写调用，经 mTLS 连接 agent | 云 API 凭据、console CA 私钥 |
 | RemoteVM | dom0 中的远端身份记录；不可启动 | 任何运行时数据 |
 | remote agent | 执行允许的服务，承载文件/TCP 流 | 云凭据、console CA 私钥 |
@@ -21,7 +21,7 @@ Qubes Air 让本地 Qubes AppVM 通过熟悉的 qrexec 接口使用远端普通 
 
 Qubes 侧部署由独立的
 [qubes-salt-config](https://github.com/slchris/qubes-salt-config) 管理。本仓库负责应用、
-transport、agent、Terraform/OpenTofu 和打包。
+transport、agent、provider 适配器和打包。
 
 ## 两条路径
 
@@ -30,8 +30,8 @@ transport、agent、Terraform/OpenTofu 和打包。
 ```mermaid
 flowchart LR
   Browser["浏览器"] --> API["Console API"]
-  API --> OpenTofu["OpenTofu"]
-  OpenTofu --> Proxmox["Proxmox"]
+  API --> Adapter["provider adapter（按 zone）"]
+  Adapter --> Proxmox["Proxmox API"]
   Proxmox -->|"cloud-init：CA、一次性 token、artifact digest"| Agent["agent :8443"]
   API -->|"bootstrap / health / cert renewal / data unlock"| Agent
 ```
@@ -77,12 +77,12 @@ RemoteVM 不是一台本地 VM，而是一条包含 `relayvm`、`transport_rpc` 
 | 服务 | 用途 | 默认风险处理 |
 |---|---|---|
 | `qubesair.Ping` | 连通性与身份检查 | 可按 tag 放行 |
-| `qubesair.Exec` | 以宿主 root 执行命令 | dom0 默认 `ask`；Debian agent 包当前默认启用 |
-| `qubesair.FileCopy` | 以宿主 root push/pull 任意绝对路径 | dom0 默认 `ask`；Debian agent 包当前默认启用 |
+| `qubesair.Exec` | 在 agent 沙箱内执行允许程序 | dom0 默认 `ask`；agent 侧默认**关闭**，需在 agent.env 设 `QUBESAIR_EXEC_ALLOW`（允许的可执行文件列表） |
+| `qubesair.FileCopy` | 在 agent 沙箱内 push/pull 文件 | dom0 默认 `ask`；agent 侧默认**关闭**，需设 `QUBESAIR_FILECOPY_ROOTS`（允许的绝对目录列表，经 realpath 校验） |
 | `qubesair.ConnectTCP` | 在 mTLS 通道内流式转发 TCP | 只允许显式目标/端口 |
 | `qubes.GetAppmenus` | 枚举远端桌面应用 | 无私密参数 |
 | `qubes.StartApp` | 在 Xpra display 启动应用 | app id 严格校验 |
-| `qubesair.UnlockData` | 解锁/初始化 LUKS 数据盘 | 密钥由控制台派生并通过 mTLS 使用 |
+| `qubesair.UnlockData` | 解锁/初始化 LUKS 数据盘 | 控制台读取 per-Qube 密钥并通过 mTLS 使用；仍有派生密钥回退路径 |
 
 ## 存算分离与加密
 
@@ -93,14 +93,14 @@ Proxmox provider 把短生命周期计算 VM 和持久数据盘分开：
 - 数据盘可使用 LUKS，默认策略可由 `QUBES_AIR_ENCRYPT_DATA_DEFAULT` 控制；
 - agent 身份跟内容/实例绑定，resume 时由现行 bootstrap/续期流程恢复，不复制私钥。
 
-OpenTofu state 可在客户端加密后写入 S3 兼容或 PostgreSQL backend，见
-[terraform-state.md](terraform-state.md)。
+计算实例与数据盘的身份记录在 console 的 `qube_infra` 表中，是唯一真源；编排不依赖
+Terraform/OpenTofu，也没有 state 文件。设计见 [Provider 原生编排](provider-design.md)。
 
 ## 安全边界
 
-1. **本地 dom0 应当是授权根。** 正常 RemoteVM 调用必须经过 dom0 policy；但当前 agent 只校验
-   fleet CA、未校验调用方角色，持有同一 CA 证书的内部节点仍可能直接连接 agent。这是必须优先
-   修复的信任边界缺口，见[路线图](roadmap-to-production.md)。
+1. **本地 dom0 是正常 RemoteVM 调用的授权根。** agent 校验客户端 CA、用途、角色、签名撤销
+   状态与服务 allowlist；客户端校验目标身份。Provider 的 HTTPS 与 SSH 也强制服务器身份验证。
+   生效时限、信任配置和失败行为见[安全控制](security-controls.md)，不等于逐对象授权。
 2. **远端和云平台不可信。** 敏感数据必须在上传前加密；销毁依赖丢弃本地密钥，而不是覆写
    云盘。
 3. **console 是高价值控制面。** 它持有 CA 和基础设施权限，应是专用 AppVM，API 必须认证、

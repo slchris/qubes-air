@@ -19,7 +19,7 @@ on:
     - cron: '0 6 * * *'
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.26'
   NODE_VERSION: '20'
 
 jobs:
@@ -47,8 +47,7 @@ jobs:
           git diff --exit-code go.mod go.sum
 
       - name: Check for vulnerabilities
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...
-        continue-on-error: true
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 && govulncheck ./...
 
       - name: List outdated dependencies
         run: go list -u -m all
