@@ -16,6 +16,7 @@
 | [快速入门](quickstart.md) | 第一次本地运行或准备真机部署 |
 | [本地开发](local-dev.md) | 用 Docker Compose 开发控制台 |
 | [RemoteVM runbook](runbook-remotevm.md) | 真机创建、验收和排错 |
+| [Proxmox 回归 runbook](runbook-qa01.md) | 把源码/构建/环境绑定后跑 QA-01 并留记录 |
 | [RemoteVM 自检](remotevm-selfcheck.md) | 逐层确认 dom0、Relay、agent 与服务 |
 
 ## 当前设计

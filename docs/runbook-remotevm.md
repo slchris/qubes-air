@@ -129,7 +129,12 @@ printf '%s\n' '["/usr/bin/id"]' |
 ## 9. 加密盘验收
 
 对启用加密的 Qube，确认远端只看到已打开的 mapper，持久盘静态内容是 LUKS 密文；console
-日志不得打印派生密钥。首次初始化、resume 解锁都应通过 agent mTLS 服务完成。
+日志不得打印密钥。首次初始化与 resume 解锁都应通过 agent mTLS 服务完成。
+
+旧盘（per-qube DEK 之前创建）首次解锁会经 `qubesair.RekeyData` 迁移到独立密钥：日志应出现
+`migrated ... removed the legacy keyslot`，远端 `cryptsetup luksDump` 只剩一个 keyslot。
+agent 需在 `QUBESAIR_ALLOW` 中允许该服务，否则迁移失败并在下次 resume 重试。逐项步骤见
+[Proxmox 回归 runbook](runbook-qa01.md) §5。
 
 ## 10. 回滚与删除
 
