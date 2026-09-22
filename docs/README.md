@@ -17,6 +17,7 @@
 | [本地开发](local-dev.md) | 用 Docker Compose 开发控制台 |
 | [RemoteVM runbook](runbook-remotevm.md) | 真机创建、验收和排错 |
 | [Proxmox 回归 runbook](runbook-qa01.md) | 把源码/构建/环境绑定后跑 QA-01 并留记录 |
+| [真机验收清单](acceptance-real-machine.md) | 有真机窗口时一次跑完 lifecycle、备份恢复与 PVE 主机键 |
 | [RemoteVM 自检](remotevm-selfcheck.md) | 逐层确认 dom0、Relay、agent 与服务 |
 
 ## 当前设计
