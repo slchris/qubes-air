@@ -23,9 +23,17 @@ die() {
 command -v docker >/dev/null 2>&1 || die "docker is required but not on PATH"
 docker info >/dev/null 2>&1 || die "docker is installed but the daemon is not reachable"
 
-# A version that sorts below any real build, so installing the current package
-# over it is an upgrade no matter what git describe returns.
-OLD_VERSION="0.0.1+smoke-old"
+# A version that sorts below every other Debian version, so installing the current
+# package over it is always an upgrade.
+#
+# The '~' is load-bearing: dpkg orders '~' before everything, including the end of
+# the string, so `0~smoke-old` loses to `0.0.1`, to a bare-hash build (`4f52953`)
+# and to a sanitized letter-leading hash (`0.0.0+e0ea088`) alike. The previous value
+# `0.0.1+smoke-old` did not: on a tagless repository the current version comes from
+# the commit hash, so whether this test saw an upgrade or "packages were downgraded"
+# depended on whether that hash started with a digit — green locally, red in CI for
+# the same commit (`e0ea088`).
+OLD_VERSION="0~smoke-old"
 NEW_VERSION="${VERSION:-$(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo 0.0.0+smoke-new)}"
 
 shopt -s nullglob
