@@ -8,19 +8,27 @@
 [明确不是部署方式](local-dev.md)（第 40 行）；真正的控制台是 `qubes-salt-config` 的 `salt/qubesair`
 部署的 systemd 服务，本仓库不复制第二份部署入口。
 
-## 1. 三个制品与它们的钉法
+## 1. 四个制品与它们的钉法
 
-发布产物（[release.yml](../.github/workflows/release.yml) 第 10-19 行）与它们在 Salt 里的键：
+发布产物（[release.yml](../.github/workflows/release.yml) 第 10-15 行）与它们在 Salt 里的键：
 
 | 制品 | 装在哪 | 钉在 `salt/config.jinja` 的 `qubesair` 块 |
 |---|---|---|
 | `qubes-air-console`（linux/amd64，cgo） | 控制台 AppVM 的 `bin_dir` | `console_binary_source` + `console_binary_sha256` |
+| `qubes-air-backup`（linux/amd64，cgo） | 备份 timer 所在的机器（由 `qubes-salt-config` 的 `salt/qubesair/backup.sls` 落盘） | `backup.binary_source` + `backup.binary_sha256` |
 | `qubes-air-console-web.tar.gz`（vite `dist/` 的单个归档） | 控制台 AppVM 的 `web_root` | `console_web_source` + `console_web_sha256` |
 | `qubes-air-agent_<version>_amd64.deb` | 每个 provision 出来的远端 qube | `agent_package_url` + `agent_package_sha256` + `agent_package_version` |
 | `SHA256SUMS` | 不作为制品安装 | 上面这些摘要的来源 |
 
 `SHA256SUMS` 不是形式主义：投递到 guest 的是**无认证的明文 HTTP**，钉在 cloud-init 身份文档里的
 摘要是那条链路上唯一的完整性控制（[bootstrap-design](bootstrap-design.md) §6）。
+
+`qubes-air-backup` 不走 guest 投递（cloud-init 那条链路不碰它）：它的摘要钉在
+`cfg.qubesair.backup.binary_sha256`，URL 由 `backup.binary_source` 给，取的就是发布页 `SHA256SUMS`
+里 `qubes-air-backup` 那一行。这条钉法是 M1-5 的备份 state 能启用的前提——那个 state 默认关闭，
+要求操作者先准备好按摘要钉住的二进制，缺一项就以失败结束 run，而不是渲染一个"什么都没备份"的
+绿色 timer。在它之前，这个二进制没有任何发布产物，只能手工交叉编译（G-G5），而它正是灾难恢复时
+唯一能读出归档的程序。
 
 升级的动作就是把这两处（控制台、agent）的 pin 换成新值，然后应用状态：
 
@@ -109,7 +117,9 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 
 控制台二进制在**链接期**被写入三项元数据（包 [internal/buildinfo](../console/backend/internal/buildinfo/buildinfo.go)；
 注入点是 `Makefile` 的 `build-backend` 与 [release.yml](../.github/workflows/release.yml) 的
-Build console binary 步骤），`/health` 与 `--version` 报的是同一组：
+Build console binary 步骤），`/health` 与 `--version` 报的是同一组。`qubes-air-backup` 走**同一份**
+注入（`Makefile` 的 `build-backup`、release.yml 的 Build backup binary 步骤），`--version` 报同样
+四个字段：
 
 | 字段 | 来源 | 读法 |
 |---|---|---|
@@ -139,7 +149,16 @@ qubes-air-console version=v1.2.3 revision=a70df74c78ee729aedc1eedeb59f0c5cb1811c
 才说明跑着的确实是那份制品；`revision` 对得上发布页/`git log`、`build_time` 与制品构建时间不矛盾，
 才排除"拿着旧二进制当新版本"。
 
-发布流程自己会校验这件事：release.yml 的 Build console binary 步骤在打包前把制品的 `--version` 读回来，**逐字段**检查——`version` 必须等于本次 release 版本、`revision` 与 `build_time` 不得是 `unknown`、`tree` 必须是 `clean` 或 `dirty`，任一不满足就 `FATAL` 失败、不发版（每个字段是独立的 `-X`，只查 `version` 会漏掉兄弟 flag 的拼写错误）。所以"制品四个字段齐全"不是靠人记得。
+`qubes-air-backup --version` 打印的是同一组字段（同一份 `buildinfo`、同一行格式），所以在备份机器上
+用同样的命令读同一份构建身份：它既说明那个二进制是发布制品，也是和 `backup.binary_sha256` 钉的
+文件对上的读数。
+
+发布流程自己会校验这件事：release.yml 的两个构建步骤都调用同一个
+`scripts/build-release-binary.sh`，它在打包前把制品的 `--version` 读回来，**逐字段**检查——`version`
+必须等于本次 release 版本、`revision` 与 `build_time` 不得是 `unknown`、`tree` 必须是 `clean` 或
+`dirty`，任一不满足就 `FATAL` 失败、不发版（每个字段是独立的 `-X`，只查 `version` 会漏掉兄弟 flag
+的拼写错误）。console 与 backup 走同一份校验，所以它不可能只覆盖其中一个；"制品四个字段齐全"
+不是靠人记得。
 
 页眉（Header）显示的版本就是同一份 `version`：它启动时读 `/health`，`unknown` 或服务不可达时**不显示**任何版本，而不是退回一个常量。
 

@@ -36,7 +36,7 @@ agent 包用 `make release-agent VERSION=<version>` 发布，记录输出的
 | console digest | |
 | agent deb version + sha256 | |
 | 模板名称 / VMID / 内容摘要 | |
-| PVE 版本（`pveversion -v`） | |
+| PVE 版本（`pveversion -v`） | 9.2.10 |
 | Qubes / Relay / dom0 policy 版本 | |
 | Zone / 节点 / datastore | |
 | 是否存在未迁移的旧加密盘 | 是 / 否 |
@@ -47,7 +47,15 @@ agent 包用 `make release-agent VERSION=<version>` 发布，记录输出的
 
 - console 必须配置 `QUBES_AIR_PROXMOX_SSH_KNOWN_HOSTS_FILE`（SEC-03 起 provisioning
   必需），内容为集群节点的**带外核对过**的主机键；salt 默认指到
-  `<data_dir>/ssh/pve_known_hosts`。
+  `<data_dir>/ssh/pve_known_hosts`。指纹**不能从** PVE API 取：`/nodes/{node}/certificates/info`
+  只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"，所以在任一节点上导出后逐条比对：
+
+  ```bash
+  for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done
+  ```
+
+  把输出的每一行与 console 的 `pve_known_hosts` 里同类型的键核对（2026-09-22 的带外会话确认
+  集群版本与 snippet datastore，但没拿到指纹，这一步只能节点侧做）。
 - dom0 必须已应用 `mgmt.remotevm.register`（服务 + policy），否则注册静默失败、release
   与 purge 会在注销 RemoteVM 时失败。
 - `QUBESAIR_REVOCATION_URL` 必须从 guest 可达（可用临时 LAN 转发，QA 后撤销）。

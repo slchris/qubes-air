@@ -2,7 +2,7 @@
 #
 # 常用构建和开发命令
 
-.PHONY: help build clean dev test agent-deb publish-agent-deb release-agent \
+.PHONY: help build build-backup clean dev test agent-deb publish-agent-deb release-agent \
 	pre-commit audit check-tools diff-check test-race lint-new gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
@@ -14,6 +14,7 @@ help:
 	@echo ""
 	@echo "  build          Build all components"
 	@echo "  build-backend  Build Go backend"
+	@echo "  build-backup   Build backup CLI (qubes-air-backup)"
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
@@ -60,6 +61,14 @@ CONSOLE_STAMP = \
 build-backend:
 	@echo "Building Go backend..."
 	@cd console/backend && $(CONSOLE_STAMP) && go build -ldflags "$$ldflags" -o bin/qubes-air-console ./cmd/server
+
+# qubes-air-backup 复用同一份 $(CONSOLE_STAMP)：两个命令同模块、同读
+# internal/buildinfo，-X 的三个变量名一模一样。变量名里的 "console" 是它引入时的
+# 作用域，不是包的范围 —— 为 backup 再拼一份 -X 只会让两处在下次改名后分叉，而
+# -X 落空是静默的（改名只在 cmd/*/version_test.go 的真构建里变红）。
+build-backup:
+	@echo "Building backup CLI..."
+	@cd console/backend && $(CONSOLE_STAMP) && go build -ldflags "$$ldflags" -o bin/qubes-air-backup ./cmd/qubes-air-backup
 
 build-frontend:
 	@echo "Building Svelte frontend..."
