@@ -456,7 +456,9 @@ func TestProbeTLSConfig_VerifiesRatherThanSkips(t *testing.T) {
 	require.NotNil(t, cfg.VerifyPeerCertificate, "verification must not be skipped outright")
 	assert.Equal(t, uint16(tls.VersionTLS13), cfg.MinVersion)
 
-	// Signed by this CA: accepted, despite carrying no SAN and only ClientAuth.
+	// Signed by this CA: accepted, despite carrying no SAN for the dialed
+	// address (an agent certificate gets ServerAuth from pki.ekuForRole; the CN
+	// pin, not a SAN, is what binds it to this qube).
 	ours, err := ca.IssueAgentCert("agent-probe-qube", time.Minute)
 	require.NoError(t, err)
 	assert.NoError(t, cfg.VerifyPeerCertificate(derOf(t, ours.CertPEM), nil))

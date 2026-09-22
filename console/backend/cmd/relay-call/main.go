@@ -118,7 +118,14 @@ func run() error {
 		return err
 	}
 
-	log.Printf("target=%s service=%s endpoint=%s stream=%v", remoteName, service, endpoint, streamMode)
+	// service is argv[1] verbatim: parseRelayTarget does not validate it, and the
+	// qrexec wrapper passes everything after the first "+" straight through, so
+	// quote it — a newline in it would otherwise forge a line in the relay log.
+	// (remoteName and endpoint are already resolved values from the credential
+	// store; service is the raw one. gosec's G706 cannot see this sink because
+	// the taint crosses parseRelayTarget, so the %q here is deliberate rather
+	// than scanner-driven, matching the sibling sinks in must/logSafe below.)
+	log.Printf("target=%s service=%q endpoint=%s stream=%v", remoteName, service, endpoint, streamMode)
 	if streamMode {
 		// Pipe stdin ↔ remote loopback port ↔ stdout over mTLS; no LAN port.
 		if err := dialAndStream(ctx, pair, pool, endpoint, remoteName, service); err != nil {

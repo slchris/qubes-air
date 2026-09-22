@@ -496,17 +496,16 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		Certificates: []tls.Certificate{pair},
 		RootCAs:      pool,
 		MinVersion:   tls.VersionTLS13,
-		// Hostname verification is replaced, NOT weakened. Two facts about the
-		// agent's certificate make the default path reject a perfectly good
-		// agent: it carries no SAN for the address we dial (it is issued per
-		// qube name, and the address is whatever DHCP handed the VM), and it is
-		// issued with ExtKeyUsageClientAuth only — the same certificate the
-		// agent presents as a client — so a ServerAuth check fails too.
+		// Hostname verification is replaced, NOT weakened. The agent's
+		// certificate is issued per qube name and carries no SAN for the address
+		// we dial (that address is whatever DHCP handed the VM), so the default
+		// hostname check rejects a perfectly good agent. The usage is not the
+		// reason: an agent certificate gets ServerAuth from pki.ekuForRole, which
+		// is exactly what the callback below enforces.
 		//
 		// So the chain is verified by hand below, against this CA and this CA
 		// only. An unsigned or wrongly-signed certificate is still rejected;
-		// what is skipped is the name and the usage, neither of which carries
-		// any trust here.
+		// what is skipped is the name, which the callback replaces with a CN pin.
 		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs verifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, 0, len(rawCerts))
