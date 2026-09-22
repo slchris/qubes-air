@@ -167,6 +167,14 @@ jobs:
           body: |
             Artifacts for deploying the console and provisioning remote qubes.
 
+            **The real-hardware lifecycle has not been verified for this
+            release.** provision → suspend → resume → purge, the backup
+            create/prune/restore drill and the PVE host-key fingerprint
+            comparison are still unproven on real hardware; `make audit` and the
+            checks below say nothing about that, so nothing here should be read
+            as if they had been run. The checklist and what each step still owes:
+            `docs/acceptance-real-machine.md` in the repository.
+
             **Pin the digests.** Delivery to a guest is unauthenticated plain
             HTTP; the SHA256 recorded in the cloud-init identity document is the
             only integrity control on that hop. Take the values from

@@ -43,7 +43,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-3 合并 main | 已完成 `5f0fd88` | 21/21 全绿后用 **merge commit** 合并（不能用 squash/rebase：会改写 `4f52953` 这些已被 QA 记录的 revision，已核对仍在 main 历史里）；合并后在 main 上重跑 `make audit` **rc=0** |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
-| M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行 |
+| M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行；真机窗口一到就按[真机验收清单](acceptance-real-machine.md) 一次跑完 |
 
 ### 0.3 M1 执行结果（本轮，2026-09-22）
 
@@ -60,7 +60,7 @@ M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 �
 | M1-13 不信任代理 | 随 M0 | `SetTrustedProxies(nil)` + 负向测试（G-H5） |
 | M1-14 `/health` 真实语义 | [#13](https://github.com/slchris/qubes-air/pull/13) `4ba2165` | 真实读写探测 + 调度器心跳（执行 job 时预算 = 该 job 超时 + 15s）；未认证路由的写按 2s 窗口节流（UD-1g） |
 | M1-15 日志流不被 WriteTimeout 截断 | 随 M0 | 流自管每事件写截止时间（G-H6） |
-| M1-2/3/4/9 | — | **环境阻塞**：需要真机 dom0/Qubes + PVE |
+| M1-2/3/4/9 | — | **环境阻塞**：需要真机 dom0/Qubes + PVE；执行步骤已收进[真机验收清单](acceptance-real-machine.md)（M1-2/3/4 见该页 §B，M1-9 的 DEK 迁移不在其中，仍按 `runbook-qa01.md` §5） |
 | M1-8 带外核对 | — | **PVE 半边已核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**SSH 指纹半边仍缺**：API 取不到主机键（`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点 HTTP 501 "not implemented"），需一条节点侧命令，已写进 `runbook-qa01.md` §2 |
 | M1-10 首次 release | — | 需要对外发布的决定（打 `v*` tag），且"用 release URL 置备"需要真实 provider |
 
@@ -221,14 +221,17 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
 
+真机执行步骤统一收在[真机验收清单](acceptance-real-machine.md)：每条只给命令、跑在哪一侧、预期输出、
+失败含义（M1-2/3/4 见 §B，M1-5 见 §C，M1-8 的指纹半边见 §D）。
+
 - [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败；**部署侧也已到位**（2026-09-22）：`qubes-salt-config` `v0.1.0` 把两个键写进 `console.env`（冒号分隔，空=未设置=guest 内禁用），此前该 state 从不写这两个键，于是控制台无论怎么配都会下发空白名单 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
-- [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）
-- [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）
-- [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
-- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**外部仓已完成**：`qubes-salt-config` `v0.1.0` 的 `salt/qubesair/backup.sls`+`backup.top`（`RequiresMountsFor` 离机目录、create→prune 两段 `ExecStart`、`Persistent=true` + rc.local 每次启动补跑一次，因为 timer 的补跑戳存在根卷上、随 AppVM 关机丢失；默认关闭，需操作者挂载介质/钉二进制摘要/自建口令文件）；**剩余**：真机 apply 一次并确认 timer 触发与"最新归档可恢复"，且需先解决 G-G5（`qubes-air-backup` 无发布产物）—— 依赖：无（G-C2）
+- [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）；命令与预期输出见[真机验收清单](acceptance-real-machine.md) 步骤 10-13
+- [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）；见[真机验收清单](acceptance-real-machine.md) 步骤 14-16
+- [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）；见[真机验收清单](acceptance-real-machine.md) 步骤 27-28
+- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**外部仓已完成**：`qubes-salt-config` `v0.1.0` 的 `salt/qubesair/backup.sls`+`backup.top`（`RequiresMountsFor` 离机目录、create→prune 两段 `ExecStart`、`Persistent=true` + rc.local 每次启动补跑一次，因为 timer 的补跑戳存在根卷上、随 AppVM 关机丢失；默认关闭，需操作者挂载介质/钉二进制摘要/自建口令文件）；**剩余**：真机 apply 一次并确认 timer 触发与"最新归档可恢复"，且需先解决 G-G5（`qubes-air-backup` 无发布产物）—— 依赖：无（G-C2）；真机步骤见[真机验收清单](acceptance-real-machine.md) 步骤 21-28
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出四个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）；**注**：该限制已由 M2-10 解除，`docs/upgrade-rollback.md` §3.1/§3.2 已同步为"构建身份 + 摘要两条都看"
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
-- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— **PVE 半边已带外核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**指纹半边未核对，且不能经 API 取得**：`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"；只能在任一节点上跑 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done`，把输出与 console 的 `pve_known_hosts` 逐条比对（命令与做法已写进 `docs/runbook-qa01.md` §2），所以本项**仍不勾选** —— 依赖：无（G-B5）
+- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— **PVE 半边已带外核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**指纹半边未核对，且不能经 API 取得**：`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"；只能在任一节点上跑 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done`，把输出与 console 的 `pve_known_hosts` 逐条比对（命令与做法已写进 `docs/runbook-qa01.md` §2），所以本项**仍不勾选** —— 依赖：无（G-B5）；完整比对与替换步骤见[真机验收清单](acceptance-real-machine.md) 步骤 29-33
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）
 - [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
