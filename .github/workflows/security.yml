@@ -94,3 +94,8 @@ jobs:
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The action only auto-detects `gitleaks.toml` without the leading dot
+          # (README: "create a `gitleaks.toml` at the root of the repo"), while
+          # the gitleaks CLI discovers `.gitleaks.toml`. Point the action at the
+          # one file the CLI uses instead of keeping two copies in sync.
+          GITLEAKS_CONFIG: .gitleaks.toml

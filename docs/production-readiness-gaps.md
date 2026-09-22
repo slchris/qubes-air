@@ -64,7 +64,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-A1 | 本地 `main` 领先 `origin/main` **20 个 commit**，`kixpower/sprint-1` 再领先 3 个；这批 commit（含 P0 安全加固、REL/DATA-01、QA-01 修复）从未被 CI 覆盖 | `git rev-list --left-right --count origin/main...main` → `0 20`；`git log --oneline origin/main..main` | **A-阻塞** | push 后 7 个 workflow 在目标 SHA 全绿；[qa-signoff-1](qa/qa-signoff-1.md) 的 `ci_pending` 转 PASS |
+| G-A1 | 本地 `main` 领先 `origin/main` **20 个 commit**，`kixpower/sprint-1` 再领先 3 个；这批 commit（含 P0 安全加固、REL/DATA-01、QA-01 修复）从未被 CI 覆盖 | `git rev-list --left-right --count origin/main...main` → `0 20`；`git log --oneline origin/main..main` | **A-阻塞** | push 后 7 个 workflow 在目标 SHA 全绿；`docs/qa/qa-signoff-1.md` 的 `ci_pending` 转 PASS（该签署记录未纳入版本库，故只写路径不建链接） |
 | G-A2 | 工作停在 `kixpower/sprint-1`，未合并回 `main`（`main` 是 20 commit 的另一个头） | `git merge-base --is-ancestor kixpower/sprint-1 main` → 否 | **A-阻塞** | sprint 分支合入 `main` 且合并后 CI 绿 |
 | G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:959`；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
 | G-A4 | 从未发布过任何版本：无 tag、无 release | `git tag -l` 为空 | A-需要（B-阻塞） | 至少一次 `v*` tag 走通 [release.yml](../.github/workflows/release.yml) 并产出 `SHA256SUMS` |
@@ -123,7 +123,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-F3 | 存量 `nolint` 24 处，无"何时可移除"的退出条件 | PROJECT_BRIEF §9.2 R-TECH-5 | 技术债 | 每处补退出条件或删除 |
 | G-F4 | 前端 15 个组件仅 5 个有测试；`QubeList.svelte` 970 行只覆盖 7 个用例 | `console/frontend/src/components/`；PROJECT_BRIEF §9.2 R-TECH-4 | 技术债 | 大组件拆分 + 关键路径测试 |
 | G-F5 | 工具链不一致：CI 内 Node 20 与 `release.yml` 的 22 并存；本机无 `yamllint`，`yaml-lint` job 本地不可复现 | PROJECT_BRIEF §3 已知不一致、§6 门禁环境缺口 | 技术债 | 统一运行时版本；补齐本地工具 |
-| G-F6 | 文档遗留：服务表未覆盖 policy 实际授权的 5 个服务（R-DOC-4）；`UnlockData:4-6` 注释仍写 master 派生密钥（QA O-5）；`runtime-context.md` 写"10 张表"实为 9 表 7 索引（QA O-2） | PROJECT_BRIEF §9.1 R-DOC-4；[qa-signoff-1](qa/qa-signoff-1.md) O-2/O-5 | 技术债 | 逐条与代码比对后修正，附 `文件:行号` |
+| G-F6 | 文档遗留：服务表未覆盖 policy 实际授权的 5 个服务（R-DOC-4）；`UnlockData:4-6` 注释仍写 master 派生密钥（QA O-5）；`runtime-context.md` 写"10 张表"实为 9 表 7 索引（QA O-2） | PROJECT_BRIEF §9.1 R-DOC-4；QA 签署记录 O-2/O-5 | 技术债 | 逐条与代码比对后修正，附 `文件:行号` |
 | G-F7 | `go-licenses check` 是否转为 blocking 未定（移除 `\|\| true` 后仍带 `continue-on-error`） | [sprint-1 计划](sprint-1/plan.md) §1.5 开放问题 | 技术债 | 在 CI 上确认其真实退出状态后决定 |
 | G-F8 | ~~本地与 CI 的安全扫描不是同一个程序~~ **已修（`5f1bf72`）**，门禁因此不等价：本地 `make gosec-all` 跑 golangci-lint 内嵌 gosec（认 `//nolint:gosec`，由 `.golangci.yml` 配置），CI 跑独立 `gosec@v2.29.0`（认 `#nosec`）。同一个 revision 本地 0 条、CI **29 条**。今日 CI 首跑才发现 | `Makefile`:145-146（golangci-lint）vs `.github/workflows/security.yml` 的 `gosec` job（`go install ...@v2.29.0` + `gosec -fmt sarif ./...`）；差异由 commit `6a2623e` 引入该 pin 时产生 | 已解除 | ✅ 新增 `make gosec-ci`（同版本 `@v2.29.0`、同参数、仅输出格式不同）并接进 `make audit`；`-exclude-generated` 两边一致，实测只排掉 2 个 protoc 生成文件（123→121 文件 / 29400→28491 行）。本地 `make audit` 与 CI 现对同一 revision 得到同一结论 |
 
@@ -238,6 +238,15 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
   建议先按 M1-11 复现再修，不要把"应该会超时"当成已证实的故障。
 - **G-B2/G-B3 的工作量**取决于 M1-1 的下发设计（配置放在 Zone 还是 Qube 层），尚未定；本文按"先在 Zone 层给默认值 + Qube 层可覆盖"估算为 M 级。
 - 本文的 Sprint 数估算（A 档 2 个、B 档再 3+）是**排序用的粗估**，不是承诺；实际取决于真机环境可用性与 M0 暴露的 CI 问题数量。
+- **三处只会出现在本地全盘扫描里的 gitleaks 假阳性**（`--no-git` 扫描整个工作树时命中，PR 范围的 commit 扫描不会命中，
+  所以不挡 CI）：`internal/keyring/keyring_test.go`:12、`internal/repository/credential_repository_test.go`:15 是占位 key 字面量；
+  `internal/pki/ca_test.go`:72 命中的是 PEM 头字面量 `-----BEGIN EC PRIVATE KEY-----`，而那段测试恰恰在断言 CA 私钥**不得**
+  出现在 bundle 里。**故意不把它们加进 `.gitleaks.toml` 放行清单**：按值放行 PEM 头会把真正的 EC 私钥一并放过，
+  按路径放行又会放过该文件里将来真被粘贴进来的密钥——记录在此，等它真的挡住某次 PR 时用 `regexTarget = "line"`
+  精确到那一行代码再放行。
+- **CodeQL 的行级归属副作用**：给 4 处既有 `InsecureSkipVerify` 加抑制注释后，CodeQL 把这 4 条**既有**告警重新算作
+  "本 PR 新增"（`Disabled TLS certificate check`），check run 因此失败。这不是新缺陷，但需要一次显式处置
+  （逐条 dismiss 并写明理由，或保留可见性接受该 check 红）。
 
 ## 6. 复现本文结论
 
