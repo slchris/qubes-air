@@ -1,0 +1,30 @@
+# Gitleaks 配置。
+#
+# 为什么需要这个文件：默认规则会把两处**占位 fixture** 判为凭据——
+#   console/backend/internal/agent/rekeydata_service_test.go 的 testOldKey/testNewKey
+#     （分别是 "old-key-old-master-derived-key-material" 与
+#      "new-key-per-qube-random-dek-material" 的 base64，自述其虚构性）
+#   console/backend/internal/config/config_test.go 的 32 字节开发占位串
+#     （与 docker-compose.yml 里同一个值，早已公开）
+# 它们已经落在本仓库的历史提交里（`dfcddd6`、`837db8e`），且 PR 扫描覆盖整个 commit 区间，
+# 所以只能按值放行，不能靠改工作树清掉。
+#
+# 排除范围：只按**值**放行上面三个字符串，不排除文件、不排除规则、不排除任何其他提交。
+# 其余全部内容仍走默认规则。
+#
+# 风险影响（AGENTS.md 要求扫描排除项必须说明）：真实密钥要与下面某个字符串逐字节相同才会漏过。
+# 这三个串都是自述式的虚构值（一个是自身描述文字的 base64，一个是文档化的开发占位值），
+# 因此残余风险是"无"而不是"小"。任何新增排除都必须同样按值给出理由。
+#
+# 引入时间：2026-09-22，首次对积压 commit 跑 CI 时（见 docs/production-readiness-gaps.md §2.A）。
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "placeholder fixtures flagged by generic-api-key; not credentials"
+regexes = [
+  '''b2xkLWtleS1vbGQtbWFzdGVyLWRlcml2ZWQta2V5LW1hdGVyaWFs''',
+  '''bmV3LWtleS1wZXItcXVicy1yYW5kb20tZGVrLW1hdGVyaWFs''',
+  '''0123456789abcdef0123456789abcdef''',
+]
