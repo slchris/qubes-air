@@ -35,6 +35,7 @@
 
 | 文档 | 内容 |
 |---|---|
+| [生产部署安全要求](deployment-requirements.md) | TLS/loopback、生产模式、密钥保管、审计留存、snippet 与 bootstrap 窗口的硬要求与核对方式 |
 | [P0 安全控制](security-controls.md) | 签名撤销源、Exec/FileCopy 请求边界与 provider 身份配置 |
 | [凭据与轮换](credential-vault.md) | vault、控制台密钥、Relay/agent 证书 |
 | [凭据销毁](credential-destruction.md) | Zone、VM 和整机事件处理 |
