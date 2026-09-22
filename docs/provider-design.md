@@ -48,7 +48,7 @@ flowchart TB
 | Provision | 预先记录 VMID → EnsureStorage → 记录卷 → 预先记录 compute VMID → EnsureCompute → 等待 agent 可达 |
 | Resume | 复用已记录数据盘，EnsureCompute 并保存身份，等待 agent 可达 |
 | Suspend / Release | StopCompute，保留 storage 与数据盘，更新记录 |
-| Purge | 确认名称、原子记录 purge 意图并撤销身份，解除保护、删除当前 key，入队 Destroy |
+| Purge | 确认名称、原子记录 purge 意图并撤销身份，入队 Destroy；解除保护、删除当前 key 是该 job 的第一步（入队被拒时不执行） |
 | Destroy | 拒绝仍受保护的记录；StopCompute → 保存变化 → DestroyStorage/snippet → 逐资源核验 → 删除 infra 记录 |
 | Status / Address | Describe，读取实际状态或地址 |
 

@@ -9,16 +9,20 @@
 作废未兑换 bootstrap token。数据库触发器拒绝随后插入该 Qube 的证书/token，防止并发签发
 在撤销后恢复身份。迁移使用 schema 2；不能把该数据库交给仅支持 schema 1 的旧程序。
 
-随后解除数据盘保护、再次幂等撤销身份、删除当前数据密钥，最后入队删除 provider 资源。
-部分失败返回错误，保留 purge 意图，状态回到 error；Start、Release 和编辑会被数据库拒绝，
+随后**入队 destroy job**；解除数据盘保护、再次幂等撤销身份、删除当前数据密钥是这个 job
+自己的第一步，在 job 行落库之后、provider 销毁之前由单 worker 执行（`Runner.Submit` 的
+`Step`，见 `internal/orchestrator/runner.go`:71-99、`:316-346`）。入队被拒（队列满、runner
+关闭、job 落库失败）时这三步都不执行：磁盘保护未解除、DEK 未删、没有 provider 调用；但
+claim 已经生效——`purge_requested` 已置位、授权已撤销，所以 qube 仍只能重试 purge，不能
+resume。部分失败保留 purge 意图，状态回到 error；Start、Release 和编辑会被数据库拒绝，
 只能再次确认原名后重试 purge。界面提供 Retry purge。请求取消后的失败状态写入有独立的
 5 秒期限；写入本身失败也会报告，需要恢复数据库后重新启动进行对账。
 
 | 中断位置 | 保留事实与恢复方式 |
 |---|---|
 | 原子 claim 失败 | 不执行后续副作用；修复数据库或等待在途操作结束 |
-| 解除保护、撤销或删 key 失败 | 保留 purge_requested；修复错误后重新确认并重试 purge |
-| 入队失败 | 已发生的撤销/删 key 不回滚；重试 purge，不能恢复计算实例 |
+| 入队被拒（队列满 / runner 关闭 / job 落库失败） | 磁盘保护未解除、DEK 未删、没有 provider 调用；claim 的 `purge_requested` 与授权撤销已发生且不回滚；修复后重试 purge，不能恢复计算实例 |
+| job 第一步失败（解除保护 / 撤销身份 / 删 key） | job failed，错误里列出已完成步骤；磁盘未被销毁；修复错误后重新确认并重试 purge |
 | compute 删除失败/仍存在 | 保留 VMID；重试停止与删除，不提前清空 ID |
 | holder 删除失败 | 保留 holder/data volume 身份；重试原资源 |
 | holder 缺失但数据盘仍在 | 保留 infra 并报告残留；核对该盘的所有权及引用后单独处置，再重试核验 |

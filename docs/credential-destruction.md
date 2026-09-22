@@ -23,8 +23,9 @@
 2. 如需保留数据，先备份并验证恢复；记录保留备份意味着仍保留相应解密能力。
 3. release/suspend 只删除 compute、保留数据盘。彻底销毁使用
    `POST /api/v1/qubes/{id}/purge`，需要 control scope 和请求体 `{"confirm":"<qube 名>"}`。
-4. purge 接受 released/suspended/stopped/error，先原子记录不可逆意图、撤销证书和 bootstrap token，再解除保护、删除当前库内数据密钥，
-   再入队销毁资源；正常完成后 Qube 保留 `purged` 记录并清理端点/RemoteVM。若该盘尚未迁移到
+4. purge 接受 released/suspended/stopped/error，先原子记录不可逆意图、撤销证书和 bootstrap token（与 claim 同一写事务），
+   再入队 destroy job；解除保护、删除当前库内数据密钥是这个 job 的第一步，**入队被拒时不会执行**（磁盘保护未解除、DEK 未删、无 provider 调用，
+   但意图与授权撤销已生效，只能重试 purge）；正常完成后 Qube 保留 `purged` 记录并清理端点/RemoteVM。若该盘尚未迁移到
    独立 DEK，删除库内记录不会让保留副本不可恢复，需先迁移或明确接受这一点。
 5. 检查 job log 和 provider：分别核验 compute、storage holder、数据盘、证书和 RemoteVM，
    按保留政策处置已知快照与密钥备份。
