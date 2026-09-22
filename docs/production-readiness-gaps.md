@@ -35,6 +35,9 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-2 失败① Secret Scanning | 已修 `fa2b8a4` | 4 条全是占位 fixture；按值放行，理由与风险写在 `.gitleaks.toml` |
 | M0-2 失败② Agent package install smoke | 已修 `3afbcd7` | 版本排序依赖 commit hash 首字符（字母开头 → `0.0.0+<hash>` → 被判降级）；`0~smoke-old` 修掉 |
 | M0-2 失败③ GoSec Security Scan | 已修 `a118c3c` + `5f1bf72` | 29 条存量发现：28 条处理完、1 条（bootstrap G402）作为显式规则豁免登记（G-H11）；根因 G-F8 的门禁不等价一并修掉 |
+| 第二轮 CI | 21 个 check：**19 通过 / 2 失败** | gosec 与 deb 冒烟已转绿；新失败是 Secret Scanning（gitleaks 版本差异，见 G-F9）与 CodeQL（4 条既有告警被重新归属，见下） |
+| M0-2 CodeQL 4 条 | 已处置（dismiss） | 3 条 `go/disabled-certificate-check` 按 false positive（CodeQL 不建模 `VerifyConnection` 回调，而 `AGENTS.md` §5 要求的正是该回调）、第 4 条（bootstrap）按 won't fix 并引用 G-H11；查询保持开启，将来真出现无回调的 `InsecureSkipVerify` 仍会被抓 |
+| M0-2 审查驱动的补修 | 已改（待提交） | 独立审查确认 18 条抑制理由成立，另查出并已修：relay-call:121 同类日志注入、agentprobe 注释把 EKU 写反、`AGENTS.md` 行号引用错、`pre-commit` 未跑 CI 那个 gosec 程序（新增 `gosec-ci-new` 增量接入）；新登记 G-F10（两处入口缺 G402 负例测试） |
 | M0-2 本地全量门禁 | 通过 | `make audit` exit 0（含新 `gosec-ci`）；`make pre-commit` exit 0；`go vet ./...`、`gofmt -l` 干净；独立 `gosec@v2.29.0 -exclude-generated` 0 条 |
 | M0-3 合并 main | 待第二轮 CI 全绿 | 合并必须用 merge commit：squash/rebase 会改写 `4f52953` 这些已被 QA 记录的 revision |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
@@ -124,6 +127,8 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-F4 | 前端 15 个组件仅 5 个有测试；`QubeList.svelte` 970 行只覆盖 7 个用例 | `console/frontend/src/components/`；PROJECT_BRIEF §9.2 R-TECH-4 | 技术债 | 大组件拆分 + 关键路径测试 |
 | G-F5 | 工具链不一致：CI 内 Node 20 与 `release.yml` 的 22 并存；本机无 `yamllint`，`yaml-lint` job 本地不可复现 | PROJECT_BRIEF §3 已知不一致、§6 门禁环境缺口 | 技术债 | 统一运行时版本；补齐本地工具 |
 | G-F6 | 文档遗留：服务表未覆盖 policy 实际授权的 5 个服务（R-DOC-4）；`UnlockData:4-6` 注释仍写 master 派生密钥（QA O-5）；`runtime-context.md` 写"10 张表"实为 9 表 7 索引（QA O-2） | PROJECT_BRIEF §9.1 R-DOC-4；QA 签署记录 O-2/O-5 | 技术债 | 逐条与代码比对后修正，附 `文件:行号` |
+| G-F9 | **同一类"本地工具 ≠ CI 工具"再次出现，这次是 gitleaks 版本**：CI 里 `gitleaks-action` 固定捆绑 **8.24.3**，本机 CLI 是 **8.30.1**。`.gitleaks.toml` 用新式 `[[allowlists]]` 时，8.30.1 生效、8.24.3 **静默忽略**——配置被读入（日志有 `using gitleaks config from GITLEAKS_CONFIG env var`）、4 条 fixture 照报，于是"本地 0 漏"是**空证据**。已改为两边都认的单数 `[allowlist]` 并写进配置注释 | 实机复现：`GOBIN=/tmp/gl824 go install github.com/zricethezav/gitleaks/v8@v8.24.3`，同配置同范围下 8.24.3 报 4 条 / 8.30.1 报 0 条；改单数后两者都 `no leaks found`，且塞入真密钥仍被抓到 | A-已解除（配置已修） | 扫 `yaml`/`toml`/检查脚本类配置改动后，一律用 CI 那一侧的版本复验；把"CI 各 action 捆绑的工具版本"记进文档（与 G-F8 同一根因） |
+| G-F10 | **两处新加抑制的 G402 校验没有负例测试**：`cmd/pingcheck` 与 `cmd/relay-call` 都没有 `_test.go`（实测 0 个），而 `AGENTS.md` 第 65-66 行要求 `InsecureSkipVerify` 必须有"错误 CA、错误角色、错误 target、过期证书"四类反例。两处校验代码本身经独立审查确认完整（CA + ServerAuth + `RoleOf == RoleAgent` + CN 都在，回调也确实装在会上线的 `tls.Config` 上），缺的是把它们钉住的测试 | 独立审查读代码确认 `cmd/pingcheck/main.go`:92-117、`cmd/relay-call/main.go`:342-370；对照 `internal/service/agentprobe_test.go` 已有错误 CA/无证书/垃圾证书/错误 target 四类负例，而这些包一个都没有 | A-需要（不挡 M0，挡"安全控制必须有失败路径测试"这条规则） | 把两处内联回调提成有名函数，按 agentprobe 的负例矩阵补齐四类；`internal/transport/grpc/role_enforcement_test.go` 只覆盖服务端配置，不能替代 |
 | G-F7 | `go-licenses check` 是否转为 blocking 未定（移除 `\|\| true` 后仍带 `continue-on-error`） | [sprint-1 计划](sprint-1/plan.md) §1.5 开放问题 | 技术债 | 在 CI 上确认其真实退出状态后决定 |
 | G-F8 | ~~本地与 CI 的安全扫描不是同一个程序~~ **已修（`5f1bf72`）**，门禁因此不等价：本地 `make gosec-all` 跑 golangci-lint 内嵌 gosec（认 `//nolint:gosec`，由 `.golangci.yml` 配置），CI 跑独立 `gosec@v2.29.0`（认 `#nosec`）。同一个 revision 本地 0 条、CI **29 条**。今日 CI 首跑才发现 | `Makefile`:145-146（golangci-lint）vs `.github/workflows/security.yml` 的 `gosec` job（`go install ...@v2.29.0` + `gosec -fmt sarif ./...`）；差异由 commit `6a2623e` 引入该 pin 时产生 | 已解除 | ✅ 新增 `make gosec-ci`（同版本 `@v2.29.0`、同参数、仅输出格式不同）并接进 `make audit`；`-exclude-generated` 两边一致，实测只排掉 2 个 protoc 生成文件（123→121 文件 / 29400→28491 行）。本地 `make audit` 与 CI 现对同一 revision 得到同一结论 |
 
@@ -153,7 +158,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:41、`:63-66`、`:1107-1115`；[release.yml](../.github/workflows/release.yml) 第 106 行；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
 | G-H9 | agent 的 systemd 单元 5 次启动失败即永久放弃，且无告警路径；原因消失后不会自愈，需要人工 `systemctl reset-failed` | `packaging/agent-deb/qubes-air-agent.service`:10-11、`:32-33`；启动失败路径 `cmd/qubes-air-agent/main.go`:97-116 | A-需要 | 放弃状态对操作者可见，runbook 写明恢复步骤 |
 | G-H10 | 置备规格无上下限校验（`validateQubeSpec` 只拒绝负数），而 PVE 磁盘**不能缩回**——一次笔误永久占用集群存储 | `internal/service/qube_service.go`:510-518；`internal/provider/proxmox/adapter.go`:170、`:232-235`、`:395-399` | A-需要 / B-阻塞 | 上下限校验（或 per-zone 配额），越界在 API 层拒绝 |
-| G-H11 | **bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免**：console 拨号尚在 bootstrap 的 agent 时 `InsecureSkipVerify: true`（`:387`）且没有 `VerifyConnection`，对端只有进程内随机生成、随进程丢弃的自签名占位证书。代码注释说明了原因（"proves nothing and is trusted by nobody；token 才是认证"），token 也确实由 agent 出示并单次消费（console 不发送 token），所以不是"抄近路"；但 `AGENTS.md` 第 60-63 行要求 `InsecureSkipVerify` 必须配完整 `VerifyConnection`，而这里**没有任何可提前 pin 的身份**——豁免已写进 `:368-387` 的注释并在本行登记 | `internal/service/agentbootstrap.go`:368-387、`:266-276`（token 由 agent 出示）；`internal/agent/bootstrap.go`:406-414（占位证书）；`AGENTS.md` 第 60-63 行 | A-需要（豁免已登记，非静默） | 二选一：①把"首次 bootstrap 必须在受信 LAN 内 + token 单次 1 小时 TTL"写成部署硬要求（与 G-D7 同一枚 token）；②彻底修：占位证书密钥改由 token 经 HKDF 派生，console 据此 pin 对端公钥——无 CA 也能做到真正的对端认证。②需要真机验证，不在 M0 范围 |
+| G-H11 | **bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免**：console 拨号尚在 bootstrap 的 agent 时 `InsecureSkipVerify: true`（`:387`）且没有 `VerifyConnection`，对端只有进程内随机生成、随进程丢弃的自签名占位证书。代码注释说明了原因（"proves nothing and is trusted by nobody；token 才是认证"），token 也确实由 agent 出示并单次消费（console 不发送 token），所以不是"抄近路"；但 `AGENTS.md` 第 65-66 行要求 `InsecureSkipVerify` 必须配完整 `VerifyConnection`，而这里**没有任何可提前 pin 的身份**——豁免已写进 `:368-387` 的注释并在本行登记 | `internal/service/agentbootstrap.go`:368-387、`:266-276`（token 由 agent 出示）；`internal/agent/bootstrap.go`:406-414（占位证书）；`AGENTS.md` 第 65-66 行 | A-需要（豁免已登记，非静默） | 二选一：①把"首次 bootstrap 必须在受信 LAN 内 + token 单次 1 小时 TTL"写成部署硬要求（与 G-D7 同一枚 token）；②彻底修：占位证书密钥改由 token 经 HKDF 派生，console 据此 pin 对端公钥——无 CA 也能做到真正的对端认证。②需要真机验证，不在 M0 范围 |
 
 ## 3. TODO List
 
@@ -244,9 +249,21 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
   出现在 bundle 里。**故意不把它们加进 `.gitleaks.toml` 放行清单**：按值放行 PEM 头会把真正的 EC 私钥一并放过，
   按路径放行又会放过该文件里将来真被粘贴进来的密钥——记录在此，等它真的挡住某次 PR 时用 `regexTarget = "line"`
   精确到那一行代码再放行。
-- **CodeQL 的行级归属副作用**：给 4 处既有 `InsecureSkipVerify` 加抑制注释后，CodeQL 把这 4 条**既有**告警重新算作
-  "本 PR 新增"（`Disabled TLS certificate check`），check run 因此失败。这不是新缺陷，但需要一次显式处置
-  （逐条 dismiss 并写明理由，或保留可见性接受该 check 红）。
+- **CodeQL 的行级归属副作用（已处置）**：给 4 处既有 `InsecureSkipVerify` 加抑制注释后，CodeQL 把这 4 条**既有**告警重新算作
+  "本 PR 新增"（`Disabled TLS certificate check`），check run 因此失败。这不是新缺陷：3 处已有完整 `VerifyConnection`，
+  按 false positive dismiss；bootstrap 那处按 won't fix dismiss 并引用 G-H11。**未采用**排除查询的做法——那会让整仓永久
+  不再检查这一类问题，而 dismiss 只针对这 4 条、查询仍然生效。
+- **工具版本差异是这一类问题的共同根因**：G-F8 是 gosec（内嵌 vs 独立），G-F9 是 gitleaks（8.30.1 vs action 捆绑的 8.24.3）。
+- **gosec 这批抑制经过一次独立审查（另一上下文，同厂商）**，结论与它自己读到的代码都留在会话记录里：
+  它**确认**了 18 条 `#nosec` 的理由都对该行成立、29 条发现与改动一一对应、bootstrap 那处是**披露**而非隐藏，
+  并读了 gosec v2.29.0 的指令解析源码（`analyzer.go:1003-1025` 认规则 ID、`:927-943` 注册注释行范围）验证抑制机制。
+  它**发现并已修**的问题：①`cmd/relay-call/main.go`:121 还有一处同类日志注入（`service` 未校验就进日志，
+  gosec 的污点分析穿不过 `parseRelayTarget` 所以没报）；②`internal/service/agentprobe.go` 与 `agentprobe_test.go`
+  的注释写成"agent 证书只带 ClientAuth"，而 `ekuForRole(RoleAgent)` 实际给的是 ServerAuth——与四行之下的抑制理由自相矛盾；
+  ③本文件引用 `AGENTS.md` 行号写成 60-63，实际规则在 65-66；④`make pre-commit` 只跑内嵌 gosec（见 G-F10 与下面的门禁说明）。
+  **局限**：该审查的全仓 gosec 复跑两次超时，所以"29 → 0"里的**全局 0** 依据是我的 v2.29.0 运行 + 它的逐条对应，
+  不是它自己独立跑出来的；跨厂商那一路观察在产出前就失败了，因此这批安全判断**没有厂商独立的证据通道**。
+  两次都出现"本地绿、CI 红"，且第二次本地结论是**空证据**。结论：凡扫描器配置改动，必须用 CI 侧的版本复验，不能只用本机 CLI。
 
 ## 6. 复现本文结论
 
