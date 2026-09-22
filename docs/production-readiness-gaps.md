@@ -204,7 +204,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [ ] **M1-12** purge 不可逆步骤与入队解耦：入队成功后再销毁，或失败时报告"已销毁的部分"并留审计记录 —— 依赖：无（G-H3）
 - [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）
 - [ ] **M1-14** 让 `/health` 有真实语义：执行一次真实读写探测，覆盖 worker/队列，并更新恢复 checklist —— 依赖：无（G-H2）
-- [ ] **M1-15** 修 job 日志流的 WriteTimeout 矛盾（流式响应不受整体超时限制），同步 `runtime-defaults` 与前端回退 —— 依赖：无（G-H6）
+- [x] **M1-15** 修 job 日志流的 WriteTimeout 矛盾：流自己管每次事件的写截止时间（`streamWriteWindow` 30s，每事件重置），写失败即结束流而不是空转到 5 分钟；`runtime-defaults` 登记 UD-6b，前端回退逻辑核对后无需改动（G-H6）
 
 ### M2 — A 档收尾与可维护性
 

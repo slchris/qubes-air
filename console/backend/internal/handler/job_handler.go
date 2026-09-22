@@ -169,7 +169,23 @@ const streamPollInterval = 750 * time.Millisecond
 // gets a terminal event carrying the last offset and reconnects — to the stream
 // if it can, to the offset poller if it cannot. The cap is the design working,
 // not a timeout to be tuned up.
+//
+// The cap only means something if the connection is still writable when it
+// arrives. http.Server.WriteTimeout (15s, see cmd/server/main.go) applies to the
+// whole response, so it used to fail every write from second 15 onwards and the
+// terminal event this design depends on was never sent — the client saw a
+// stalled connection, not a clean end. LogStream therefore takes its own
+// per-event write window.
 const streamMaxDuration = 5 * time.Minute
+
+// streamWriteWindow bounds ONE event's write.
+//
+// Longer than the server's global WriteTimeout, which is sized for ordinary
+// responses, so a stream is not truncated by it; short enough that a client
+// which stops accepting bytes is treated as gone instead of parking the handler
+// inside a write. It is refreshed per event, so it bounds a single write and
+// never the stream's total length — that stays streamMaxDuration.
+const streamWriteWindow = 30 * time.Second
 
 // LogStream pushes a job's operation output as Server-Sent Events.
 //
@@ -199,11 +215,14 @@ func (h *JobHandler) LogStream(c *gin.Context) {
 	// A ResponseWriter that cannot flush would buffer the whole stream and
 	// deliver it at the end — the opposite of streaming. Refuse rather than
 	// silently behave like a slow non-stream; the client falls back to polling.
-	flusher, ok := c.Writer.(http.Flusher)
-	if !ok {
+	if _, ok := c.Writer.(http.Flusher); !ok {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
 		return
 	}
+	// The stream owns its write deadline (streamWriteWindow). Left to the
+	// server's WriteTimeout, every write would fail 15 seconds in and the events
+	// — including the terminal one — would be dropped silently.
+	rc := http.NewResponseController(c.Writer)
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -213,7 +232,7 @@ func (h *JobHandler) LogStream(c *gin.Context) {
 	c.Header("X-Accel-Buffering", "no")
 
 	if h.logs == nil {
-		writeSSE(c, flusher, gin.H{
+		_ = writeSSE(c, rc, gin.H{
 			"offset": 0, "data": "", "running": false,
 			"state": job.State, "note": "job logs are not enabled on this console",
 		})
@@ -232,8 +251,12 @@ func (h *JobHandler) LogStream(c *gin.Context) {
 	defer ticker.Stop()
 
 	// Send whatever already exists immediately, so a client attaching to a job
-	// mid-run does not wait a poll interval to see the backlog.
-	offset = h.pushChunk(c, flusher, id, offset)
+	// mid-run does not wait a poll interval to see the backlog. A failed write
+	// here means the client is already gone: it resumes from the offset it last
+	// saw, so there is nobody left to tell.
+	if offset, err = h.pushChunk(c, rc, id, offset); err != nil {
+		return
+	}
 
 	for {
 		// Re-read the job each iteration: "running" is what tells the client to
@@ -242,9 +265,11 @@ func (h *JobHandler) LogStream(c *gin.Context) {
 		cur, err := h.jobs.GetByID(ctx, id)
 		if err == nil && cur.State != orchestrator.JobRunning && cur.State != orchestrator.JobQueued {
 			// Drain any final bytes written between the last tick and the job
-			// ending, then send a terminal event and stop.
-			offset = h.pushChunk(c, flusher, id, offset)
-			writeSSE(c, flusher, gin.H{"offset": offset, "data": "", "running": false, "state": cur.State})
+			// ending, then send a terminal event and stop. The terminal event is
+			// the client's signal to reconnect, so a failed write is reported by
+			// the reconnecting client rather than here.
+			offset, _ = h.pushChunk(c, rc, id, offset)
+			_ = writeSSE(c, rc, gin.H{"offset": offset, "data": "", "running": false, "state": cur.State})
 			return
 		}
 
@@ -258,34 +283,59 @@ func (h *JobHandler) LogStream(c *gin.Context) {
 			// cut mid-event.
 			return
 		case <-ticker.C:
-			offset = h.pushChunk(c, flusher, id, offset)
+			next, err := h.pushChunk(c, rc, id, offset)
+			if err != nil {
+				// A write that fails is the honest end of the stream: the client
+				// is gone or stopped reading, and the offset it last received is
+				// what it reconnects with. Spinning here until the 5-minute cap
+				// is what used to happen, and it looked like a healthy stream
+				// from the server's side.
+				return
+			}
+			offset = next
 		}
 	}
 }
 
 // pushChunk reads new log bytes from offset and, if any, emits one SSE event.
-// Returns the offset to continue from — unchanged when there was nothing new.
-func (h *JobHandler) pushChunk(c *gin.Context, flusher http.Flusher, id string, offset int64) int64 {
+//
+// It returns the offset to continue from — unchanged when there was nothing new
+// — together with the write error, if any. The offset stays meaningful on error:
+// it is the last one the client can be assumed to have received, which is what
+// it reconnects with.
+func (h *JobHandler) pushChunk(c *gin.Context, rc *http.ResponseController, id string, offset int64) (int64, error) {
 	data, next, err := h.logs.ReadFrom(id, offset, maxLogChunk)
 	if err != nil {
-		writeSSE(c, flusher, gin.H{"offset": offset, "error": err.Error()})
-		return offset
+		// A read failure is the console's problem, not the client's: report it as
+		// an event so the operator sees why the stream went quiet.
+		return offset, writeSSE(c, rc, gin.H{"offset": offset, "error": err.Error()})
 	}
 	if len(data) == 0 {
-		return next
+		return next, nil
 	}
-	writeSSE(c, flusher, gin.H{"offset": next, "data": string(data), "running": true})
-	return next
+	return next, writeSSE(c, rc, gin.H{"offset": next, "data": string(data), "running": true})
 }
 
-// writeSSE marshals one event and flushes it. A write error means the client is
-// gone; the surrounding loop notices through the request context, so this need
-// not return anything.
-func writeSSE(c *gin.Context, flusher http.Flusher, payload gin.H) {
+// writeSSE marshals one event, writes it under this stream's own write deadline
+// and flushes, returning the error instead of swallowing it.
+//
+// The error is the only reliable way to notice a client that stopped reading:
+// the request context does not necessarily fire while the connection is still
+// open, and a swallowed write error is exactly how the stream used to spin to
+// the 5-minute cap sending nothing.
+func writeSSE(c *gin.Context, rc *http.ResponseController, payload gin.H) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return err
 	}
-	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", b)
-	flusher.Flush()
+	// Refresh the deadline per event: it bounds one write, not the stream. A
+	// ResponseWriter that cannot carry a deadline (some test doubles) is not a
+	// reason to drop the event — the write below reports its own failure.
+	if err := rc.SetWriteDeadline(time.Now().Add(streamWriteWindow)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", b); err != nil {
+		return err
+	}
+	return rc.Flush()
 }
