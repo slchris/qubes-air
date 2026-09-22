@@ -39,7 +39,8 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-2 CodeQL 4 条 | 已处置（dismiss） | 3 条 `go/disabled-certificate-check` 按 false positive（CodeQL 不建模 `VerifyConnection` 回调，而 `AGENTS.md` §5 要求的正是该回调）、第 4 条（bootstrap）按 won't fix 并引用 G-H11；查询保持开启，将来真出现无回调的 `InsecureSkipVerify` 仍会被抓 |
 | M0-2 审查驱动的补修 | 已改（待提交） | 独立审查确认 18 条抑制理由成立，另查出并已修：relay-call:121 同类日志注入、agentprobe 注释把 EKU 写反、`AGENTS.md` 行号引用错、`pre-commit` 未跑 CI 那个 gosec 程序（新增 `gosec-ci-new` 增量接入）；新登记 G-F10（两处入口缺 G402 负例测试） |
 | M0-2 本地全量门禁 | 通过 | `make audit` exit 0（含新 `gosec-ci`）；`make pre-commit` exit 0；`go vet ./...`、`gofmt -l` 干净；独立 `gosec@v2.29.0 -exclude-generated` 0 条 |
-| M0-3 合并 main | 待第二轮 CI 全绿 | 合并必须用 merge commit：squash/rebase 会改写 `4f52953` 这些已被 QA 记录的 revision |
+| 第四轮 CI | **21/21 全绿** | 三项历史失败（Secret Scanning、Docs and CI Gates、CodeQL）全部转绿，无一项靠抑制或跳过 |
+| M0-3 合并 main | 已完成 `5f0fd88` | 21/21 全绿后用 **merge commit** 合并（不能用 squash/rebase：会改写 `4f52953` 这些已被 QA 记录的 revision，已核对仍在 main 历史里）；合并后在 main 上重跑 `make audit` **rc=0** |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
 | M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行 |
@@ -62,6 +63,20 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 ## 2. 缺口清单
 
 阻塞列含义：**A-阻塞** = 不解决就不能算 A 档；**A-需要** = A 档应有、可短期绕过；**B-阻塞** = 只挡对外发布；技术债 = 不挡可用性，挡长期回归风险。
+
+### 0.2 M0 收尾结果（2026-09-22）
+
+M0 的产出不是"CI 绿了"，而是**第一次把积压的 24 个 commit 交给 CI 后暴露了什么**：
+
+1. **三个真实失败，没有一个能靠抑制关掉**：gitleaks 的配置发现路径、deb 升级测试的版本排序、29 条 gosec 存量发现。
+2. **一类系统性根因**：本地门禁与 CI 不是同一程序——gosec 内嵌 vs 独立（G-F8）、gitleaks 8.30.1 vs action 捆绑的 8.24.3（G-F9）。
+   两次都表现为"本地绿、CI 红"，第二次本地结论是**空证据**。已用 `gosec-ci`/`gosec-ci-new` 把 CI 那一侧接进本地门禁。
+3. **两个顺带修掉的生产缺陷**：限流键/审计来源可被 `X-Forwarded-For` 伪造；编排 job 15 分钟超时短于自述的 15-25 分钟 provision。
+4. **三项登记而非抹平的东西**：G-H11（bootstrap 无可 pin 身份，对 `AGENTS.md` §5 的显式豁免）、G-D7（snippet share 把一次性 token 落到 0644，
+   转为 M1-7 的部署硬要求）、G-F10（两处 G402 校验缺负例测试）。
+
+M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 lifecycle 冒烟）与 **M0-6**（`qubes-salt-config` 的 QA-01 改动提交并打 tag）
+都需要 dom0/Qubes 入口，本机没有。
 
 ### 2.A 交付链（最先做，且是其余一切的前置）
 
@@ -168,7 +183,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 - [x] **M0-1** 把 `kixpower/sprint-1`（含本地 `main` 的 20 个 commit）push 到 `origin`，触发全部 workflow —— 已完成：首轮 21 个 check，18 通过 / 3 失败（G-A1）
 - [x] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 已完成：gitleaks 按值放行 `fa2b8a4`、deb 版本排序 `3afbcd7`、gosec 29 条 `a118c3c` + 门禁等价 `5f1bf72`；第二轮 CI 复验（G-A1）
-- [ ] **M0-3** 合并 `kixpower/sprint-1` → `main`（**必须 merge commit，不能 squash/rebase**，否则改写 QA 记录的 revision），合并后重跑 `make audit` —— 依赖：M0-1（G-A2）
+- [x] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 已完成：`5f0fd88`（merge commit，保留 QA 记录的 revision），`main` 上 `make audit` rc=0（G-A2）
 - [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
 - [ ] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 依赖：M0-3（G-B6）
 - [ ] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 依赖：无（G-G4）
