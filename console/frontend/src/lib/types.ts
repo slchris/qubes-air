@@ -214,11 +214,19 @@ export interface ApiError {
   details?: Record<string, string>;
 }
 
-// Health check response
+// Health check response. Mirrors the console's GET /health body exactly: the
+// server sends one shape whether or not it is healthy, so a probe never parses
+// two schemas. `worker.dispatcher` is "disabled" when orchestration is off,
+// which is a configuration rather than an outage.
 export interface HealthResponse {
   status: string;
   database: string;
-  timestamp: string;
+  worker: {
+    dispatcher: string;
+    queued?: number;
+    running?: number;
+  };
+  version: string;
 }
 
 // Status response
