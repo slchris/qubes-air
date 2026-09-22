@@ -77,8 +77,15 @@ jobs:
       - name: Check for vulnerabilities
         run: npm audit --audit-level=high
 
-      - name: Check for outdated packages
-        run: npm outdated || true
+      - name: Check for outdated packages (report only)
+        # Informational, not a gate: `npm outdated` exits 1 whenever upgrades
+        # exist — that is its report, not a failure. The gate for dependencies
+        # here is the `npm audit --audit-level=high` step above.
+        # It no longer ends in `|| true` (AGENTS.md §2.4 forbids discarding the
+        # exit status); tolerating the step is stated where a reviewer can see it,
+        # and scripts/check-workflow-gates.mjs rejects `|| true` outright.
+        run: npm outdated
+        continue-on-error: true
 
   # Dependabot 配置验证
   dependabot-config:
@@ -111,7 +118,14 @@ jobs:
         run: go install github.com/google/go-licenses@latest
 
       - name: Check Go licenses
+        # Non-blocking ON PURPOSE, and stated here rather than hidden in the
+        # command: this step was `... || true`, which discarded the exit status so
+        # the step went green whatever go-licenses reported (AGENTS.md §2.4).
+        # Removal of `|| true` does not change the job's outcome — the step already
+        # carried continue-on-error — but a failure now shows as a failed step
+        # instead of a green one. Whether to make it blocking is an open issue in
+        # docs/sprint-1/partitions/p2-nongo.md (needs a CI-env run to confirm).
         run: |
           cd console/backend
-          go-licenses check ./... --disallowed_types=forbidden,restricted || true
+          go-licenses check ./... --disallowed_types=forbidden,restricted
         continue-on-error: true
