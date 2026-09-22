@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/audit"
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
@@ -39,8 +40,7 @@ import (
 )
 
 const (
-	appName    = "qubes-air-console"
-	appVersion = "0.1.0"
+	appName = "qubes-air-console"
 
 	// orchestratorShutdownGrace is how long an orchestration job may finish
 	// during shutdown. A real provision takes minutes; cutting one short is what
@@ -62,12 +62,15 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	flag.Parse()
 
+	// The build reports its own provenance (internal/buildinfo), from the linker
+	// stamps rather than from a constant: --version for a release artifact on
+	// disk, the startup line for a service already running.
 	if *showVersion {
-		fmt.Printf("%s v%s\n", appName, appVersion)
+		fmt.Printf("%s %s\n", appName, buildinfo.Get())
 		os.Exit(0)
 	}
 
-	log.Printf("%s v%s starting...", appName, appVersion)
+	log.Printf("%s starting: %s", appName, buildinfo.Get())
 
 	// Load configuration
 	cfg, err := config.Load(*configPath)
@@ -1022,8 +1025,12 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	r.Use(securityHeaders())
 	r.Use(corsMiddleware(cfg))
 
+	// Read once and hand the same report to every route that serves it: two
+	// readers of the linker stamps could disagree only by drifting apart.
+	build := buildinfo.Get()
+
 	// /health is intentionally left unauthenticated for liveness probes.
-	r.GET("/health", healthHandler(deps.db, deps.runner))
+	r.GET("/health", healthHandler(deps.db, deps.runner, build))
 	handler.RegisterRevocations(r, deps.revocations)
 
 	// There is deliberately NO /bootstrap route. The HTTP endpoint that used to
@@ -1059,7 +1066,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	deps.monitoringHandler.RegisterRoutes(v1)
 	deps.settingsHandler.RegisterRoutes(v1)
 
-	v1.GET("/status", statusHandler(deps.db))
+	v1.GET("/status", statusHandler(deps.db, build))
 
 	registerWebUI(r, cfg)
 
@@ -1205,11 +1212,21 @@ type healthWorker struct {
 
 // healthBody is the body of GET /health. It has the same shape whether or not
 // the console is healthy, so a probe never parses two schemas.
+//
+// The four build fields are what an operator compares between a running service
+// and a release artifact (`--version` reports the same values, same names).
+// They are additive: `version` stayed a string, because the frontend
+// (console/frontend/src/lib/types.ts) and the compose liveness probe already
+// read this body. `unknown` in any of them means the binary was built without
+// the linker stamps — see internal/buildinfo.
 type healthBody struct {
-	Status   string       `json:"status"`
-	Database string       `json:"database"`
-	Worker   healthWorker `json:"worker"`
-	Version  string       `json:"version"`
+	Status    string              `json:"status"`
+	Database  string              `json:"database"`
+	Worker    healthWorker        `json:"worker"`
+	Version   string              `json:"version"`
+	Revision  string              `json:"revision"`
+	BuildTime string              `json:"build_time"`
+	Tree      buildinfo.TreeState `json:"tree"`
 }
 
 // healthHandler returns a health check endpoint handler.
@@ -1227,14 +1244,21 @@ type healthBody struct {
 // The probe is throttled (see healthProbe): the route cannot require a token, so
 // anyone who can reach the port can ask for a database write, and those writes
 // take SQLite's single writer lock away from real job traffic.
-func healthHandler(db *database.DB, runner *orchestrator.Runner) gin.HandlerFunc {
+//
+// build is a parameter rather than a call to buildinfo.Get here so the build
+// report is testable at the wire level, and so this route and /status cannot
+// report two different builds.
+func healthHandler(db *database.DB, runner *orchestrator.Runner, build buildinfo.Info) gin.HandlerFunc {
 	probe := newHealthProbe(db.HealthCheck, healthProbeInterval, time.Now)
 	return func(c *gin.Context) {
 		body := healthBody{
-			Status:   statusHealthy,
-			Database: dbConnected,
-			Worker:   reportWorker(runner),
-			Version:  appVersion,
+			Status:    statusHealthy,
+			Database:  dbConnected,
+			Worker:    reportWorker(runner),
+			Version:   build.Version,
+			Revision:  build.Revision,
+			BuildTime: build.BuildTime,
+			Tree:      build.Tree,
 		}
 		if err := probe.check(c.Request.Context()); err != nil {
 			body.Status, body.Database = statusUnhealthy, dbDisconnected
@@ -1317,10 +1341,14 @@ func (p *healthProbe) check(ctx context.Context) error {
 }
 
 // statusHandler returns system status information.
-func statusHandler(_ *database.DB) gin.HandlerFunc {
+//
+// The version is the same stamped string /health reports, for the same reason:
+// a status route that answered from a different source would be the second
+// source of truth this change exists to remove.
+func statusHandler(_ *database.DB, build buildinfo.Info) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"version": appVersion,
+			"version": build.Version,
 			"name":    appName,
 		})
 	}

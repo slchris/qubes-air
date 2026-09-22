@@ -23,8 +23,16 @@
 >
 > 均已逐条重算。M2-9 单实例锁再次改动 `internal/config/config.go` 与 `cmd/server/main.go`，
 > 这两个文件的引用行号已按本次改动后的工作树重算（其余文件本轮未改动，沿用上次结果）。
+>
+> 2026-09-22 M2-10 追加：新增 console 构建身份（§1.1 UD-23，新增
+> `internal/buildinfo` 包）。该改动删掉了 `cmd/server/main.go` 的 `appVersion` 常量并接入
+> 链接期注入，§1.1 中指向 `cmd/server/main.go` 的四条引用（UD-1d/UD-1e/UD-1g/UD-1i）已按本次
+> 工作树逐条重算并逐条验证（`configureTrustedProxies`、`JobTimeoutSeconds` 接线、
+> `healthProbeInterval`、`bootLocked` 及其调用点与 `log.Fatalf`）；`internal/config/config.go`
+> 等本轮未改动的文件沿用上次结果。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
-> [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)。
+> [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
+> [升级与回滚](upgrade-rollback.md) §3.2。
 
 ## 1. 运维默认值
 
@@ -35,12 +43,13 @@
 | UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:628`（`RateLimitPerSec: 20`）、`:629`（`RateLimitBurst: 40`） |
 | UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:436`（`DefaultMaxBodyBytes`） |
 | UD-1c | 浏览器会话 TTL | **12 小时** | `internal/middleware/session.go:18`（`DefaultSessionTTL`） |
-| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1005`（`configureTrustedProxies`）、`:1017`（在 `setupRouter` 里调用） |
-| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:620`（接线） |
+| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1008`（`configureTrustedProxies`）、`:1020`（在 `setupRouter` 里调用） |
+| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:623`（接线） |
 | UD-1f | `/health` 的编排 dispatcher 心跳：空闲轮询间隔 / 判死阈值 | **5s / 15s**（阈值 = 3 次丢拍）；dispatcher 正在执行 job 时预算再加该 job 的超时（UD-1e）。**无配置键**（编译期常量） | `internal/orchestrator/health.go:11`（`DispatcherPollInterval`）、`:22`（`DispatcherStaleAfter`） |
-| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1276`（`healthProbeInterval`） |
+| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1300`（`healthProbeInterval`） |
 | UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验 | `config/config.go:237`（`AgentExecAllow`）、`:241`（`AgentFileCopyRoots`）、`:751`/`:754`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go`；写入 `internal/service/cloudinit.go:299` |
-| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:124`（`bootLocked`：先取锁再 boot）、`:84`（main 的唯一调用点）、`:90`（失败即 `log.Fatalf`） |
+| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:127`（`bootLocked`：先取锁再 boot）、`:87`（main 的唯一调用点）、`:93`（失败即 `log.Fatalf`） |
+| UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1030`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1251`（`healthHandler` 入参）、`:1228`/`:1229`（`healthBody` 的 `build_time`/`tree` 键）、`:1348`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
 
 ### 1.2 transport（Relay ↔ console / agent）
 
