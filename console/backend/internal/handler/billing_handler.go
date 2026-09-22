@@ -46,7 +46,7 @@ type UsageItem struct {
 // and human-readable signal that a real cost source is not wired up yet.
 //
 // A truthful implementation would estimate cost from each qube's spec (vCPU/
-// memory/disk from tfvars) multiplied by its running duration, or read actual
+// memory/disk from the qube spec) multiplied by its running duration, or read actual
 // invoices from the cloud provider's billing API. See TODO below.
 const placeholderNote = "PLACEHOLDER: billing is not yet integrated with a cost source. " +
 	"Values are not real. Wire up per-qube spec-based estimation or a provider billing API."

@@ -64,7 +64,10 @@ func TestRevocationSurvivesSessionResumption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
-	agentBundle, err := ca.IssueAgentCert("agent-remote-dev", 0)
+	// A Relay/Console client identity: role-appropriate for connecting TO an
+	// agent. The test is about revocation vs session resumption, not roles, so
+	// only the fact that this is an allowed client role matters here.
+	agentBundle, err := ca.IssueAgentCert("console-relay", 0)
 	if err != nil {
 		t.Fatalf("issue agent cert: %v", err)
 	}

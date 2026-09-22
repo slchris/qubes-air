@@ -23,17 +23,18 @@ func (f *fakeQrexec) Call(_ context.Context, target, service string, input []byt
 }
 
 func TestRegisterSendsOneLineToDom0(t *testing.T) {
-	f := &fakeQrexec{out: "register: DONE — remote-dev-1 -> remote-dev-1"}
+	f := &fakeQrexec{out: "register: DONE — remote-dev-1 -> dev-1"}
 	r := NewRemoteVMRegistrar(f, true)
 
-	if err := r.Register(context.Background(), "remote-dev-1"); err != nil {
+	if err := r.Register(context.Background(), "dev-1"); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if f.target != "dom0" || f.service != "qubesair.RegisterRemoteVM" {
 		t.Errorf("called %s/%s, want dom0/qubesair.RegisterRemoteVM", f.target, f.service)
 	}
-	// Local and remote name are the same string by design; see Register's doc.
-	if f.input != "register remote-dev-1 remote-dev-1\n" {
+	// The addressing shell is remote-<qube>; the REMOTE name is the bare qube
+	// name, which is also its hostname and agent certificate subject.
+	if f.input != "register remote-dev-1 dev-1\n" {
 		t.Errorf("input = %q", f.input)
 	}
 }
@@ -42,7 +43,7 @@ func TestDeregisterSendsName(t *testing.T) {
 	f := &fakeQrexec{out: "deregister: DONE"}
 	r := NewRemoteVMRegistrar(f, true)
 
-	if err := r.Deregister(context.Background(), "remote-dev-1"); err != nil {
+	if err := r.Deregister(context.Background(), "dev-1"); err != nil {
 		t.Fatalf("Deregister: %v", err)
 	}
 	if f.input != "deregister remote-dev-1\n" {
@@ -60,7 +61,7 @@ func TestRefusalOnStdoutIsAnError(t *testing.T) {
 	} {
 		f := &fakeQrexec{out: body}
 		r := NewRemoteVMRegistrar(f, true)
-		err := r.Register(context.Background(), "remote-dev-1")
+		err := r.Register(context.Background(), "dev-1")
 		if err == nil {
 			t.Errorf("body %q was accepted as success", body)
 			continue
@@ -74,7 +75,7 @@ func TestRefusalOnStdoutIsAnError(t *testing.T) {
 func TestTransportErrorPropagates(t *testing.T) {
 	f := &fakeQrexec{err: errors.New("qrexec call failed: Request refused")}
 	r := NewRemoteVMRegistrar(f, true)
-	if err := r.Register(context.Background(), "remote-dev-1"); err == nil {
+	if err := r.Register(context.Background(), "dev-1"); err == nil {
 		t.Fatal("a failed qrexec call was reported as success")
 	}
 }
@@ -109,7 +110,7 @@ func TestArgumentsWithWhitespaceAreRejected(t *testing.T) {
 	f := &fakeQrexec{out: "ok"}
 	r := NewRemoteVMRegistrar(f, true)
 
-	for _, bad := range []string{"", "remote-dev-1 sys-net", "remote\tdev", "remote\ndev"} {
+	for _, bad := range []string{"", "dev 1 sys-net", "dev\t1", "dev\n1"} {
 		if err := r.Register(context.Background(), bad); err == nil {
 			t.Errorf("accepted %q as a qube name", bad)
 		}
@@ -124,8 +125,8 @@ func TestArgumentsWithWhitespaceAreRejected(t *testing.T) {
 func TestQuietVariantsDoNotPanicOrCallWhenDisabled(t *testing.T) {
 	f := &fakeQrexec{}
 	r := NewRemoteVMRegistrar(f, false)
-	r.RegisterQuietly(context.Background(), "remote-dev-1")
-	r.DeregisterQuietly(context.Background(), "remote-dev-1")
+	r.RegisterQuietly(context.Background(), "dev-1")
+	r.DeregisterQuietly(context.Background(), "dev-1")
 	if f.calls != 0 {
 		t.Errorf("disabled registrar made %d calls", f.calls)
 	}
@@ -135,7 +136,7 @@ func TestRegisterQuietlySwallowsFailure(t *testing.T) {
 	f := &fakeQrexec{err: errors.New("boom")}
 	r := NewRemoteVMRegistrar(f, true)
 	// Must not panic and must not propagate — the provision already succeeded.
-	r.RegisterQuietly(context.Background(), "remote-dev-1")
+	r.RegisterQuietly(context.Background(), "dev-1")
 	if f.calls != 1 {
 		t.Errorf("expected one attempt, got %d", f.calls)
 	}

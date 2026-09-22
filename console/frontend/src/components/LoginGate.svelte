@@ -8,19 +8,26 @@
   not to collect a username and password that do not exist.
 -->
 <script lang="ts">
-  import { setApiToken } from '../lib/api';
+  import { login } from '../lib/api';
   import { auth } from '../lib/auth.svelte';
 
   let token = $state('');
   let revealed = $state(false);
+  let error = $state('');
 
-  function submit(event: Event): void {
+  async function submit(event: Event): Promise<void> {
     event.preventDefault();
     const trimmed = token.trim();
     if (!trimmed) return;
-    // setApiToken notifies the gate, which re-evaluates and lets the app render.
-    setApiToken(trimmed);
-    token = '';
+    error = '';
+    try {
+      // Exchanges the token for an HttpOnly session cookie; the token itself is
+      // not kept, and the gate re-evaluates once the exchange succeeds.
+      await login(trimmed);
+      token = '';
+    } catch (e) {
+      error = e instanceof Error ? e.message : 'Login failed';
+    }
   }
 </script>
 
@@ -28,7 +35,9 @@
   <form class="card" onsubmit={submit}>
     <h1>Qubes Air Console</h1>
 
-    {#if auth.wasRejected}
+    {#if error}
+      <p class="alert error">{error}</p>
+    {:else if auth.wasRejected}
       <p class="alert error">
         The server rejected this token. It may have been rotated, mistyped, or
         copied from a different deployment.
@@ -36,7 +45,7 @@
     {:else}
       <p class="lede">
         This console authenticates with an API token. Paste it once; it is
-        stored in this browser only.
+        exchanged for a short-lived session in this browser and never stored.
       </p>
     {/if}
 

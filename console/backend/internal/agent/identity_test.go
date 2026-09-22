@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io/fs"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -123,18 +124,25 @@ func keysOf(m map[string]string) []string {
 	return out
 }
 
-// certFor mints a certificate for pub, signed by ca, with the given common
-// name. It is how the console's signing side is stood in for.
+// certFor mints an AGENT server certificate for pub, signed by ca, with the
+// given common name. It is how the console's signing side is stood in for, so
+// it carries the same role and usage the real signer issues (server auth +
+// role=agent), or the agent would rightly reject its own identity.
 func certFor(t *testing.T, ca *pki.CA, pub *ecdsa.PublicKey, cn string, lifetime time.Duration) string {
 	t.Helper()
+	roleURI, err := url.Parse("spiffe://qubes-air/role/agent")
+	if err != nil {
+		t.Fatalf("build role URI: %v", err)
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: cn, Organization: []string{"Qubes Air Agent"}},
 		NotBefore:             time.Now().Add(-5 * time.Minute),
 		NotAfter:              time.Now().Add(lifetime),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		URIs:                  []*url.URL{roleURI},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.Cert, pub, ca.Key)
 	if err != nil {

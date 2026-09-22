@@ -4,21 +4,20 @@
 
 | 材料 | 当前保存位置 | 说明 |
 |---|---|---|
-| Provider API 凭据 | console 加密 credential store | 运行 OpenTofu 时按需解密并注入进程环境，不写 tfvars |
-| Console CA 与 LUKS master | console 加密 credential store | CA 私钥和 master 不离开 console |
+| Provider API 凭据 | console 加密 credential store | 调用 provider adapter 时按需解密，只交给该次调用 |
+| Console CA、per-Qube DEK 与迁移用 master | console 加密 credential store | CA 私钥与 master 不分发；数据密钥经 agent mTLS 使用 |
 | Console credential 加密密钥 | console 部署 secret | 32 字节 AES-256 key；支持多版本轮换 |
 | Agent 私钥 | remote guest | guest 生成，只提交 CSR |
 | Relay 私钥 | Relay `/rw` | Relay 生成，经 qrexec 提交 CSR |
-| State passphrase | 无网络 vault | `tf-with-passphrase.sh` 经受控 qrexec 读取 |
 | age/SOPS 私钥 | 无网络 vault | 只用于仍采用 SOPS 的离线配置材料 |
 
-Console 编排从自己的 AES-GCM credential store 读取 provider secret。离线 vault 保存 state
-passphrase、恢复材料和人工备份。
+Console 编排从自己的 AES-GCM credential store 读取 provider secret。离线 vault 保存恢复
+材料和人工备份。
 
 ## 红线
 
 - 私钥、token、passphrase 和真实 credential 不进 Git；
-- Provider credential 不作为 Terraform variable，避免写进 state；
+- Provider credential 不写进任何生成配置或状态文件；
 - Relay/agent 私钥在持有方生成，不通过 vault 或 console 分发；
 - `docker-compose.yml` 的 token/key 只用于本地开发；
 - console 数据库备份必须连同加密 key 的恢复策略一起设计，但两者不要放在同一未加密位置；
@@ -47,16 +46,15 @@ QUBES_AIR_ENCRYPTION_KEYS='v1:<32-byte-key>'
 
 ## Provider credential
 
-通过 UI/API 创建 credential，再让 Zone 的 `credential_id` 引用它。当前根模块对 Proxmox 和
-GCP 各只有一个 provider 实例；同类 provider 配置多个带 credential 的 Zone 会明确失败，
-不会随机选择。
+通过 UI/API 创建 credential，再让 Zone 的 `credential_id` 引用它。当前原生执行器按调用
+解析目标 Zone 的凭据并构造 Proxmox 适配器；GCP/AWS 尚未注册适配器。多 Zone 的完整现场
+验收仍需单独记录，不能沿用旧 Terraform 根模块的单实例限制描述当前行为。
 
 运行 job 时：
 
-- Proxmox token 注入 `PROXMOX_VE_API_TOKEN`；
-- GCP service-account JSON 注入 `GOOGLE_CREDENTIALS`；
-- Proxmox snippet 上传所需 SSH key 从受限文件读取并注入子进程，不写入 tfvars；
-- job 结束后 secret 不应保留在生成的 Terraform 配置里。
+- Proxmox 凭据直接交给本次调用的原生 API 客户端；
+- Proxmox snippet 上传所需 SSH key 从受限文件读取，只在调用时使用；
+- job 结束后 secret 不应留在任何生成文件或日志里。
 
 优先使用可单独吊销、最小权限、每环境独立的 token。
 
@@ -102,12 +100,6 @@ caller 到 console 的 policy，以及 console 是否把 CN 钉死为真实 call
 首次证书由单次 token + CSR 获得；后续在现有 mTLS 身份下续期。Console 保存签发记录和 CA，
 不保存 agent 私钥。不要用复制 identity directory 的方式修复某台 VM。
 
-## State passphrase
-
-多台 Qubes 主机共享同一远程 state 时，passphrase 必须相同，但 backend 登录身份应每台主机
-独立、可单独吊销。日常使用 `make tf-secure ...`，详见
-[terraform-state.md](terraform-state.md)。
-
 ## 备份与恢复
 
 至少分别备份：
@@ -115,8 +107,10 @@ caller 到 console 的 policy，以及 console 是否把 CN 钉死为真实 call
 - console 数据库；
 - 当前及仍被引用的旧 encryption key version；
 - console CA 恢复材料；
-- `qubes-air-luks-master`；
-- OpenTofu state passphrase 和 backend 凭据。
+- 凭据库中的 per-Qube DEK，以及仅供旧盘迁移读取的 `qubes-air-luks-master`。
 
-丢失 `qubes-air-luks-master` 会让所有由它派生密钥的加密数据盘不可恢复。删除前先按
+数据库备份已经包含这些凭据的密文；恢复还需要对应 keyring。历史备份保留的密钥不会因
+当前库中的 purge 而消失，详见[灾难恢复](disaster-recovery.md)。
+
+丢失 `qubes-air-luks-master` 会让尚未迁移的旧加密盘无法解锁或迁移。删除前先按
 [凭据销毁流程](credential-destruction.md)确认影响范围。

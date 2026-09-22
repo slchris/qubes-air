@@ -59,10 +59,10 @@ type AgentProbeRunner interface {
 
 // AgentAddressReader learns a qube's address from the infrastructure.
 //
-// This exists because the console does not otherwise find out: terraform emits
-// ip_address in its remote_qubes output, but nothing was reading it back, so
+// This exists because the console does not otherwise find out: the provider
+// reports a qube's address via Describe, but nothing recorded it, so
 // qubes.ip_address stayed empty and there was no address to dial. Optional —
-// implemented by *orchestrator.TerraformExecutor, absent when orchestration is
+// implemented by *orchestrator.NativeExecutor, absent when orchestration is
 // disabled.
 type AgentAddressReader interface {
 	Address(ctx context.Context, qubeName string) (string, error)
@@ -92,7 +92,7 @@ type settleRequest struct {
 //
 //   - After a provision or resume succeeds, retry-probe the qube until its agent
 //     answers or a bounded budget runs out. A single immediate probe cannot work
-//     here: terraform returns before cloud-init has installed the agent, so every
+//     here: the provider returns before cloud-init has installed the agent, so every
 //     healthy qube would be reported unreachable.
 //   - Sweep every running qube on an interval, so an agent that dies LATER is
 //     noticed. Without this a qube that was healthy once reads healthy forever.
@@ -198,9 +198,9 @@ func (m *AgentHealthMonitor) Start() {
 // Settle asks the monitor to watch a qube whose job just succeeded.
 //
 // It returns immediately, which is the contract that matters: this is called
-// from the orchestrator's completion hook, on the single terraform worker
+// from the orchestrator's completion hook, on the single orchestration worker
 // goroutine. Waiting here for an agent to come up would stall every queued
-// apply behind a qube that is merely booting.
+// job behind a qube that is merely booting.
 func (m *AgentHealthMonitor) Settle(qubeID, qubeName, action string) {
 	if m == nil {
 		return
@@ -215,7 +215,7 @@ func (m *AgentHealthMonitor) Settle(qubeID, qubeName, action string) {
 	select {
 	case m.queue <- settleRequest{qubeID: qubeID, qubeName: qubeName, action: action}:
 	default:
-		// Dropped rather than blocking the terraform worker. Recoverable — the
+		// Dropped rather than blocking the orchestration worker. Recoverable — the
 		// reconciler sweeps every running qube anyway — so this costs a delayed
 		// first reading, not a lost one. Still said out loud: a queue this full
 		// means provisioning is outrunning probing.
@@ -242,7 +242,7 @@ func (m *AgentHealthMonitor) settleLoop() {
 // settle probes one qube repeatedly until its agent answers or the budget ends.
 //
 // The retry is the point. cloud-init installs the agent only after the VM
-// reports its address, so at the moment terraform returns the agent is reliably
+// reports its address, so at the moment the provider returns the agent is reliably
 // absent. Probing once would mark every healthy qube unreachable — a signal
 // worse than none, because a field that cries wolf gets ignored, and the next
 // genuinely dead agent goes unnoticed exactly like the one that started this.
@@ -319,11 +319,19 @@ func (m *AgentHealthMonitor) reconcileLoop() {
 
 // reconcile probes every running qube once.
 //
-// Running only. A suspended qube has no compute instance, so an unreachable
-// agent there is the expected state and probing it would fill the health column
-// with failures that mean nothing.
+// Creating and resuming are included on purpose. A qube that is still coming up
+// has compute and may already be running its agent, and that is exactly when its
+// address must be recorded: the provision job now WAITS for the agent, and the
+// bootstrapper can only reach an agent whose address is known. Probing only
+// "running" would deadlock — the job needs the agent, the agent needs bootstrap,
+// bootstrap needs the address, and the address was only written for a qube that
+// had already succeeded. Suspended/released qubes stay excluded: no compute
+// means an unreachable agent is the expected state, and probing would fill the
+// health column with failures that mean nothing.
 func (m *AgentHealthMonitor) reconcile() {
-	qubes, err := m.qubes.ListByStatus(m.base, []models.QubeStatus{models.QubeStatusRunning})
+	qubes, err := m.qubes.ListByStatus(m.base, []models.QubeStatus{
+		models.QubeStatusRunning, models.QubeStatusCreating, models.QubeStatusResuming,
+	})
 	if err != nil {
 		log.Printf("agenthealth: could not list running qubes to re-probe: %v", err)
 		return
@@ -376,8 +384,8 @@ func (m *AgentHealthMonitor) probeQube(
 // refreshAddress fills in a qube's IP from the infrastructure when the console
 // does not have one.
 //
-// Only when it is missing: terraform is the authority on the address, but
-// asking it costs a subprocess, and a qube that already answers on a known
+// Only when it is missing: the provider is the authority on the address, but
+// asking it costs an API call, and a qube that already answers on a known
 // address has nothing to gain from re-reading it. A failure here is not fatal —
 // the probe then reports "no address", which is its own honest diagnosis.
 func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qube) {
@@ -385,8 +393,8 @@ func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qu
 		return
 	}
 
-	// Bounded: reading terraform output shells out, and an unbounded wait here
-	// would hold a probe worker on a wedged terraform state lock.
+	// Bounded: asking the provider costs an API call, and an unbounded wait here
+	// would hold a probe worker on a slow or wedged provider.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -397,7 +405,7 @@ func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qu
 		return
 	}
 	if err != nil {
-		log.Printf("agenthealth: qube %q has no recorded address and terraform could not supply one: %v",
+		log.Printf("agenthealth: qube %q has no recorded address and the provider could not supply one: %v",
 			qube.Name, err)
 		return
 	}
@@ -409,7 +417,7 @@ func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qu
 	if err := m.qubes.UpdateIPAddress(ctx, qube.ID, addr); err != nil {
 		// The probe can still proceed on the in-memory value; only the saving
 		// failed. Reported so a persistently unsaved address is visible rather
-		// than showing up as terraform being shelled out to on every sweep.
+		// than showing up as a provider call on every sweep.
 		log.Printf("agenthealth: qube %q address %s could not be recorded: %v", qube.Name, addr, err)
 	}
 }
@@ -417,10 +425,10 @@ func (m *AgentHealthMonitor) refreshAddress(ctx context.Context, qube *models.Qu
 // Shutdown stops probing and waits for the workers, up to grace.
 //
 // The base context is canceled BEFORE waiting, unlike orchestrator.Runner
-// which waits first. The asymmetry is intentional: an abandoned terraform apply
-// strands real infrastructure, while an abandoned probe leaves nothing behind
-// at all. A settle worker can be mid-sleep in a five-minute budget, and waiting
-// that out would turn every restart into a five-minute outage.
+// which waits first. The asymmetry is intentional: an abandoned provisioning
+// operation strands real infrastructure, while an abandoned probe leaves nothing
+// behind at all. A settle worker can be mid-sleep in a five-minute budget, and
+// waiting that out would turn every restart into a five-minute outage.
 //
 // Both the cancel and the channel close are needed. Closing alone would leave a
 // worker sleeping inside settle; canceling alone would leave settleLoop parked

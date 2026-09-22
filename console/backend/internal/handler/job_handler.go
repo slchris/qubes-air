@@ -20,7 +20,7 @@ import (
 // infrastructure change this console made, including the ones that failed.
 type JobHandler struct {
 	jobs *repository.JobRepository
-	// logs serves what terraform printed. Nil when orchestration is disabled or
+	// logs serves what the operation printed. Nil when orchestration is disabled or
 	// the log directory could not be created; the endpoint then reports that
 	// plainly instead of looking like a job with no output.
 	logs *orchestrator.JobLogStore
@@ -99,9 +99,9 @@ func (h *JobHandler) List(c *gin.Context) {
 // poll loop, resend the same megabytes on every tick.
 const maxLogChunk = 256 * 1024
 
-// Log returns the terraform output of a job, from ?offset= onwards.
+// Log returns the operation output of a job, from ?offset= onwards.
 //
-// Offset-based polling rather than a streamed connection: an apply runs for
+// Offset-based polling rather than a streamed connection: a provision runs for
 // twenty minutes, and a held-open connection through the qrexec TCP forward
 // this console is reached over is a connection to lose. The client asks for
 // what it has not seen, which reads the same whether the job is still running,
@@ -141,9 +141,9 @@ func (h *JobHandler) Log(c *gin.Context) {
 	}
 
 	// running tells the client whether to poll again. Derived from the job
-	// record rather than from "the log stopped growing": a slow terraform step
+	// record rather than from "the log stopped growing": a slow provider call
 	// prints nothing for minutes at a time, and treating that as completion is
-	// how a UI decides an apply finished while it is still going.
+	// how a UI decides an operation finished while it is still going.
 	c.JSON(http.StatusOK, gin.H{
 		"offset":  next,
 		"data":    string(data),
@@ -155,7 +155,7 @@ func (h *JobHandler) Log(c *gin.Context) {
 // streamPollInterval is how often the stream checks for new log output.
 //
 // Short enough that lines appear as they are written, not so short that an idle
-// terraform step spins the CPU reopening a file. It is the SAME source the
+// provider call spins the CPU reopening a file. It is the SAME source the
 // offset endpoint reads — the stream is a push wrapper over the exact bytes a
 // poller would fetch, so a client that loses the stream and falls back sees no
 // gap and no duplication.
@@ -171,10 +171,10 @@ const streamPollInterval = 750 * time.Millisecond
 // not a timeout to be tuned up.
 const streamMaxDuration = 5 * time.Minute
 
-// LogStream pushes a job's terraform output as Server-Sent Events.
+// LogStream pushes a job's operation output as Server-Sent Events.
 //
 // It exists alongside Log, not instead of it. Streaming gives an operator the
-// output line-by-line as terraform prints it; the offset poller is the fallback
+// output line-by-line as the operation prints it; the offset poller is the fallback
 // the client degrades to when this connection drops, which over a qrexec
 // forward it eventually will. Both read the same JobLogStore, so switching
 // between them is seamless.

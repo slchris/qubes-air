@@ -41,7 +41,7 @@ BACKEND_PORT=9000 FRONTEND_PORT=3000 docker compose up
 `qubes-salt-config` 的 `salt/qubesair` 部署，token 是生成的、密钥是真的。
 **这里的凭据在 git 里，任何真实环境都不要复用。**
 
-编排（`QUBES_AIR_ORCHESTRATOR_ENABLED`）默认**关**：开了它会 shell 到 terraform
+编排（`QUBES_AIR_ORCHESTRATOR_ENABLED`）默认**关**：开了它会调用 provider adapter
 去操作真集群。要开就明确地开，并且用你确实打算用的那份凭据。
 
 ## 常见问题
@@ -70,3 +70,17 @@ docker compose restart backend
 在这里改好 WebUI 之后，走正常发布路径上机器：打 tag → CI 产出
 `qubes-air-console-web.tar.gz` 和二进制 → 在 `salt/config.jinja` 里钉版本和
 SHA256 → 应用 `qubesair.console`。见 [`salt/qubesair/README.md`](https://github.com/slchris/qubes-salt-config/blob/main/salt/qubesair/README.md)。
+
+## 本地质量门禁
+
+需将 Go 1.26、golangci-lint、govulncheck、Node/npm、Python 3 与 ShellCheck 加入 PATH。
+本轮验证使用 Go 1.26.8、golangci-lint 2.12.2、govulncheck 1.1.4。
+
+```bash
+make check-tools
+make pre-commit
+make audit
+```
+
+容器测试必须挂载整个仓库并以 `console/backend` 为工作目录，测试会读取 `remote/` 和
+`packaging/`。Exec/FileCopy 测试需要 Python 3；开发镜像已包含该依赖。

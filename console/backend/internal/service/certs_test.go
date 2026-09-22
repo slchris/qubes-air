@@ -54,6 +54,12 @@ func (m *memCredStore) Create(_ context.Context, req models.CredentialCreateRequ
 	return &c, nil
 }
 
+func (m *memCredStore) Delete(_ context.Context, id string) error {
+	delete(m.creds, id)
+	delete(m.secrets, id)
+	return nil
+}
+
 // closedDB returns a database that has been closed, so writes fail the way an
 // unavailable database does rather than panicking as a nil handle would.
 func closedDB(t *testing.T) *database.DB {

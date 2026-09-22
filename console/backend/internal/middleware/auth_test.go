@@ -24,7 +24,7 @@ func newScopedRouter(t *testing.T, apiToken string, scoped []Token) *gin.Engine 
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(ScopedAuth(apiToken, scoped))
+	r.Use(ScopedAuth(apiToken, scoped, nil))
 	r.Use(RequireControl())
 	r.GET("/protected", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 	r.POST("/protected", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
@@ -139,7 +139,7 @@ func TestScopedAuth_CaseInsensitiveScheme(t *testing.T) {
 func TestScopeFromContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(ScopedAuth("", scopedCreds()))
+	r.Use(ScopedAuth("", scopedCreds(), nil))
 	r.GET("/p", func(c *gin.Context) {
 		scope, authed := ScopeFromContext(c)
 		c.JSON(http.StatusOK, gin.H{"scope": scope, "authed": authed})
@@ -155,7 +155,7 @@ func TestScopeFromContext(t *testing.T) {
 func TestScopeFromContext_Disabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.Use(ScopedAuth("", nil))
+	r.Use(ScopedAuth("", nil, nil))
 	r.GET("/p", func(c *gin.Context) {
 		scope, authed := ScopeFromContext(c)
 		c.JSON(http.StatusOK, gin.H{"scope": scope, "authed": authed})
@@ -167,20 +167,25 @@ func TestScopeFromContext_Disabled(t *testing.T) {
 }
 
 // TestMatchScope — matching scans every credential (no early return) across
-// differing token lengths and picks the right scope.
+// differing token lengths and picks the right subject and scope.
 func TestMatchScope(t *testing.T) {
 	creds := newCredentials("", scopedCreds())
 
-	_, ok := matchScope("short-admin", creds)
+	subject, scope, zones, ok := matchCredential("short-admin", creds)
 	assert.False(t, ok)
+	assert.Empty(t, subject)
+	assert.Empty(t, string(scope))
+	assert.Empty(t, zones)
 
-	got, ok := matchScope(readToken, creds)
+	subject, scope, zones, ok = matchCredential(readToken, creds)
 	assert.True(t, ok)
-	assert.Equal(t, ScopeReadOnly, got)
+	assert.Equal(t, ScopeReadOnly, scope)
+	assert.Empty(t, zones, "a fleet-wide credential carries no zone restriction")
+	assert.NotEmpty(t, subject, "the matched credential's name is the audit subject")
 
-	got, ok = matchScope(controlToken, creds)
+	_, scope, _, ok = matchCredential(controlToken, creds)
 	assert.True(t, ok)
-	assert.Equal(t, ScopeControl, got)
+	assert.Equal(t, ScopeControl, scope)
 }
 
 func TestValidScope(t *testing.T) {

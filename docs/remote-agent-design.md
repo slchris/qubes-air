@@ -32,11 +32,13 @@
 
 ## 服务执行
 
-Agent 只接受启动参数中显式列出的服务。`Exec` 与文件操作使用独立 systemd scope，既能执行
-必要命令，又不放松 agent 主进程的 unit 沙箱。`FileCopy` 对路径、大小、超时和原子写入做
+Agent 只接受启动参数中显式列出的服务。`Exec` 与文件操作继承 agent 的 unit 沙箱，
+不使用 systemd-run 绕到宿主命名空间。`FileCopy` 对路径、大小、超时和原子写入做
 约束；`ConnectTCP` 是 byte stream，不解释上层协议。
 
-这些限制是纵深防御。高风险服务仍应在 dom0 使用 `ask` 或按 caller/target 精确授权。
+Exec 使用有界 JSON 参数列表直接执行；FileCopy 使用不跟随符号链接的目录描述符限定读写。
+实际 agent 必须配置签名撤销状态源。配置和失败语义见[安全控制](security-controls.md)。
+这些措施不能代替本地 dom0 授权，也不限制获准程序自身的业务能力。
 
 ## 身份生命周期
 

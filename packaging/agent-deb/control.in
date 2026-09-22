@@ -27,14 +27,14 @@ Maintainer: Qubes Air <slarlenesu@gmail.com>
 Section: admin
 Priority: optional
 Installed-Size: @INSTALLED_SIZE@
-Depends: systemd, hostname
+Depends: systemd, hostname, python3
 Homepage: https://github.com/slchris/qubes-air
 Description: Qubes Air RemoteVM agent
  Gives a non-Qubes remote host qrexec semantics without Xen vchan, so that a
  cloud or LAN VM can serve as a RemoteVM for a Qubes Air deployment.
  .
  The agent listens for the local relay over mutual TLS and executes the qrexec
- services installed under /etc/qubes-rpc. Its certificates and its
- /etc/qubes-air/agent.env are delivered separately by the console via
- cloud-init; the unit is enabled on install but not started, because without
- those files the agent will — correctly — refuse to run.
+ services installed under /etc/qubes-rpc. Cloud-init delivers the public CA,
+ one-shot bootstrap token and agent.env. The agent generates its private key
+ locally and obtains its certificate through CSR bootstrap. The unit is
+ enabled on install; cloud-init starts it after preparing configuration.

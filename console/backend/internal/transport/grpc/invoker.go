@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/slchris/qubes-air/console/internal/qrexec"
+	"github.com/slchris/qubes-air/console/internal/transport"
 )
 
 // qrexecClient is the subset of *qrexec.Client the invoker needs. Declaring it
@@ -11,6 +12,7 @@ import (
 // qrexec-client-vm (inject a fake).
 type qrexecClient interface {
 	Call(ctx context.Context, target, service string, input []byte) ([]byte, error)
+	CallResult(ctx context.Context, target, service string, input []byte) (qrexec.Result, error)
 }
 
 // QrexecInvokerImpl is the remote-side executor: on the Remote-Relay host it
@@ -37,7 +39,12 @@ func newQrexecInvokerWith(qc qrexecClient) *QrexecInvokerImpl {
 }
 
 // Invoke runs the forward qrexec call locally (post remote-dom0 re-check) and
-// returns its response. Name validation happens in qrexec.Client.Call.
-func (i *QrexecInvokerImpl) Invoke(ctx context.Context, target, service string, in []byte) ([]byte, error) {
-	return i.qc.Call(ctx, target, service, in)
+// returns its stdout, stderr and exit code. Name validation happens in
+// qrexec.Client.CallResult. A non-zero exit is a result, not an error.
+func (i *QrexecInvokerImpl) Invoke(ctx context.Context, target, service string, in []byte) (transport.Result, error) {
+	res, err := i.qc.CallResult(ctx, target, service, in)
+	if err != nil {
+		return transport.Result{}, err
+	}
+	return transport.Result{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}, nil
 }

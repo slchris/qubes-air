@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/middleware"
+	"github.com/slchris/qubes-air/console/internal/pki"
 	"gopkg.in/yaml.v3"
 )
 
@@ -74,56 +75,38 @@ type TransportConfig struct {
 
 // OrchestratorConfig configures how start/stop actions map to real
 // infrastructure. When Enabled is false (the default) the console uses a no-op
-// executor: it flips the DB status without invoking terraform. This keeps the
-// console runnable on machines without a cloud/terraform environment.
+// executor: it flips the DB status without touching a cloud. This keeps the
+// console runnable on machines without provider access.
 //
-// When Enabled is true, start/stop shell out to terraform in TerraformDir to
-// perform compute/storage separation (suspend/resume).
+// When Enabled is true, start/stop drive the zone's provider adapter directly
+// to perform compute/storage separation (suspend/resume). A zone with no
+// registered adapter is refused at operation time.
 type OrchestratorConfig struct {
-	// Enabled turns on the real TerraformExecutor. Env: QUBES_AIR_ORCHESTRATOR_ENABLED.
+	// AgentRevocationURL is reachable from guests and serves signed CA revocations.
+	AgentRevocationURL string `yaml:"agent_revocation_url"`
+	// Enabled turns on the native provider executor. Env: QUBES_AIR_ORCHESTRATOR_ENABLED.
 	Enabled bool `yaml:"enabled"`
-	// TerraformDir is the terraform root directory to run in (required when
-	// Enabled). Env: QUBES_AIR_TERRAFORM_DIR.
-	TerraformDir string `yaml:"terraform_dir"`
-	// TerraformBinary overrides the terraform executable (default "terraform").
-	// Env: QUBES_AIR_TERRAFORM_BINARY.
-	TerraformBinary string `yaml:"terraform_binary"`
-	// VarFile is the OPERATOR-owned base -var-file (endpoint, node, zone
-	// toggles). It must NOT define remote_qubes — see GeneratedVarFile.
-	// Env: QUBES_AIR_TERRAFORM_VAR_FILE.
-	VarFile string `yaml:"var_file"`
-	// GeneratedVarFile is the CONSOLE-owned var-file holding the remote_qubes
-	// map rendered from the database. Relative paths resolve against
-	// TerraformDir. It is always passed to terraform AFTER VarFile, because
-	// terraform lets the last -var-file win for a given variable — that
-	// ordering is what stops a hand-edited tfvars from silently overriding the
-	// console's view of which qubes exist.
-	// Env: QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE.
-	GeneratedVarFile string `yaml:"generated_var_file"`
 	// AgentIdentityDir holds the rendered cloud-init documents that deliver
 	// each agent's bootstrap credential — a public CA and a one-shot token,
 	// NEVER a private key (docs/bootstrap-design.md §9). Files are still 0600
 	// for the token, but a leak here is bounded to one qube's next boot rather
 	// than a 90-day identity.
 	//
-	// Terraform is given the PATH of a file, never its content: source_file
-	// records only the path and volume id in state, while inlining the content
-	// would put the token into state in plaintext.
-	//
 	// With AgentSnippetDatastore set this is instead a MOUNT of the shared
-	// storage the PVE nodes read snippets from, and the modes above change
+	// storage the PVE nodes read snippets from, and the delivery mode changes
 	// accordingly — see that field.
 	// Env: QUBES_AIR_AGENT_IDENTITY_DIR.
 	AgentIdentityDir string `yaml:"agent_identity_dir"`
 	// AgentSnippetDatastore names the Proxmox datastore that AgentIdentityDir
 	// is a mount of — e.g. "cephfs". Setting it switches identity delivery from
-	// "terraform uploads over SFTP" to "the console writes where the nodes
-	// already read", which is what takes node root SSH off the provisioning
-	// path (docs/bootstrap-design.md §4.4).
+	// "the console uploads the snippet over SSH" to "the console writes where
+	// the nodes already read", which is what takes node root SSH off the
+	// provisioning path (docs/bootstrap-design.md §4.4).
 	//
-	// Empty keeps the SFTP path, which is the one proven on real hardware.
-	// Both are kept because this changes how every qube is provisioned, and a
-	// switch that cannot be flipped back would make a bad night unrecoverable.
+	// Empty keeps the SSH upload path, which is the one proven on real
+	// hardware. Both are kept because this changes how every qube is
+	// provisioned, and a switch that cannot be flipped back would make a bad
+	// night unrecoverable.
 	//
 	// The datastore MUST declare the "snippets" content type. Note that a
 	// datastore can appear to work without declaring it — `pvesm path` may
@@ -138,8 +121,8 @@ type OrchestratorConfig struct {
 	// AgentListen is the address the remote agent binds on (default 0.0.0.0:8443).
 	// Env: QUBES_AIR_AGENT_LISTEN.
 	AgentListen string `yaml:"agent_listen"`
-	// ProxmoxSSHKeyFile is the private key the terraform provider uses to SSH
-	// into PVE nodes, and ProxmoxSSHUsername the login (default "root").
+	// ProxmoxSSHKeyFile is the private key the console uses to SSH into PVE
+	// nodes, and ProxmoxSSHUsername the login (default "root").
 	//
 	// Required for provisioning UNLESS AgentSnippetDatastore is set: uploading a
 	// cloud-init snippet writes /var/lib/vz/snippets/ on the node over SSH and
@@ -148,17 +131,18 @@ type OrchestratorConfig struct {
 	// identity, so without this every provision fails partway — after the VM
 	// has been cloned, which leaves a half-built qube behind.
 	//
-	// With shared-storage delivery the console writes the snippet itself and
-	// terraform only references it, so nothing in the provisioning path needs
-	// to log into a node and this may be left empty.
+	// With shared-storage delivery the console writes the snippet itself and the
+	// adapter only references it, so nothing in the provisioning path needs to
+	// log into a node and this may be left empty.
 	//
-	// A PATH, not the key itself: the content is read at call time and passed
-	// to terraform as a TF_VAR_, so it never lands in the terraform root or in
-	// state. Keeping the path in config means the unit file and any process
-	// listing show a filename rather than a private key.
+	// A PATH, not the key itself: the content is read at call time, so it never
+	// enters the config surface as a secret. Keeping the path in
+	// config means the unit file and any process listing show a filename rather
+	// than a private key.
 	// Env: QUBES_AIR_PROXMOX_SSH_KEY_FILE / QUBES_AIR_PROXMOX_SSH_USERNAME.
-	ProxmoxSSHKeyFile  string `yaml:"proxmox_ssh_key_file"`
-	ProxmoxSSHUsername string `yaml:"proxmox_ssh_username"`
+	ProxmoxSSHKnownHostsFile string `yaml:"proxmox_ssh_known_hosts_file"`
+	ProxmoxSSHKeyFile        string `yaml:"proxmox_ssh_key_file"`
+	ProxmoxSSHUsername       string `yaml:"proxmox_ssh_username"`
 	// RegisterRemoteVM makes the console tell dom0 about each provisioned qube,
 	// via the qubesair.RegisterRemoteVM qrexec service, so local qubes can
 	// address it. Without it the fleet is reachable only from this console.
@@ -211,7 +195,7 @@ type OrchestratorConfig struct {
 	// serves them over plain HTTP, so anyone on the LAN can replace the .deb.
 	// The digest is trustworthy anyway because it travels in the cloud-init
 	// identity document, which reaches the guest over a path we control
-	// (console -> terraform SFTP -> Proxmox snippet -> cloud-init).
+	// (console -> Proxmox snippet -> cloud-init).
 	// Env: QUBES_AIR_AGENT_PACKAGE_SHA256.
 	AgentPackageSHA256 string `yaml:"agent_package_sha256"`
 	// AgentPackageVersion is the version this console expects to deliver.
@@ -219,6 +203,12 @@ type OrchestratorConfig struct {
 	// guest log line and an audit trail name a specific build.
 	// Env: QUBES_AIR_AGENT_PACKAGE_VERSION.
 	AgentPackageVersion string `yaml:"agent_package_version"`
+	// AgentAllowedServices is the allowlist written into each new agent's
+	// agent.env as QUBESAIR_ALLOW. Defaults to the reachability probe only:
+	// Exec, FileCopy and UnlockData run with host root and are opt-in, so a
+	// default provision does not hand a fresh host root-capable primitives.
+	// Env: QUBES_AIR_AGENT_ALLOWED_SERVICES (comma-separated).
+	AgentAllowedServices []string `yaml:"agent_allowed_services"`
 	// AgentProbeIntervalSeconds is how often every running qube's agent is
 	// re-probed (default 60). Zero or negative DISABLES the periodic reconciler,
 	// which leaves agent health frozen at whatever the last probe found.
@@ -241,7 +231,7 @@ type OrchestratorConfig struct {
 	// the console keeps retrying before calling the agent unreachable
 	// (default 300).
 	//
-	// A newly built qube CANNOT answer when terraform returns: cloud-init only
+	// A newly built qube CANNOT answer when the provider returns: cloud-init only
 	// starts downloading and installing the agent once the VM has reported its
 	// address. Probing once at job completion would therefore mark every healthy
 	// qube unreachable. The budget is bounded rather than infinite so that a
@@ -299,14 +289,51 @@ type OrchestratorConfig struct {
 	// loudly at startup rather than left to be discovered.
 	// Env: QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS.
 	AgentBootstrapIntervalSeconds int `yaml:"agent_bootstrap_interval_seconds"`
+	// JobTimeoutSeconds bounds ONE orchestration job end to end (default 2700).
+	//
+	// A real provision clones a template, installs the agent package, attaches
+	// and unlocks the data disk. joblog.go and job_handler.go both document that
+	// as 15-25 minutes on hardware, and the package install step alone has been
+	// measured at 857 seconds. The bound exists so a wedged provider call cannot
+	// hold a worker forever, but a bound shorter than the work it wraps does not
+	// fail safely: the job is canceled mid-flight after the VM and its disk
+	// already exist, leaving a failed job and half-built infrastructure to
+	// reconcile by hand.
+	//
+	// Zero or negative falls back to the runner's default rather than disabling
+	// the bound.
+	// Env: QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS.
+	JobTimeoutSeconds int `yaml:"job_timeout_seconds"`
 }
 
 // ServerConfig holds HTTP server configuration.
+// DefaultMaxBodyBytes bounds request bodies when nothing else is configured. It
+// is generous for the console's JSON payloads (zone/qube specs, settings) while
+// stopping a single client from streaming unbounded data into memory.
+const DefaultMaxBodyBytes int64 = 1 << 20
+
 type ServerConfig struct {
 	Host string    `yaml:"host"`
 	Port int       `yaml:"port"`
 	Mode string    `yaml:"mode"`
 	TLS  TLSConfig `yaml:"tls"`
+
+	// Production makes the console FAIL CLOSED on configuration that is merely
+	// warned about in development: an empty API token (auth disabled), the
+	// well-known development encryption key, and a wildcard CORS origin. Env:
+	// QUBES_AIR_PRODUCTION.
+	Production bool `yaml:"production"`
+
+	// MaxBodyBytes caps the size of any request body read by the API. Env:
+	// QUBES_AIR_MAX_BODY_BYTES. Zero or negative falls back to
+	// DefaultMaxBodyBytes, so an unset value is still bounded.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+
+	// RateLimitPerSec and RateLimitBurst bound requests per client. Env:
+	// QUBES_AIR_RATE_LIMIT_PER_SEC, QUBES_AIR_RATE_LIMIT_BURST. Non-positive
+	// values fall back to the middleware defaults.
+	RateLimitPerSec float64 `yaml:"rate_limit_per_sec"`
+	RateLimitBurst  int     `yaml:"rate_limit_burst"`
 
 	// WebRoot is the directory holding the built frontend (index.html plus
 	// assets/). Empty disables serving it, which is the default: the API is
@@ -390,6 +417,10 @@ type ScopedToken struct {
 	Token string `yaml:"token"`
 	// Scope is "read-only" or "control" (config.ScopeReadOnly / ScopeControl).
 	Scope string `yaml:"scope"`
+	// Zones restricts the token to these zone IDs. Empty means fleet-wide: the
+	// token may address every zone and the fleet-only endpoints. A non-empty
+	// list is an object-level allowlist enforced by middleware.RequireZones.
+	Zones []string `yaml:"zones"`
 }
 
 // devEncryptionKey is the well-known insecure key used only when no key is
@@ -467,9 +498,12 @@ func (c *Config) Keyring() (*keyring.Keyring, error) {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
-			Port: 8080,
-			Mode: gin.ReleaseMode,
+			Host:            "0.0.0.0",
+			Port:            8080,
+			Mode:            gin.ReleaseMode,
+			MaxBodyBytes:    DefaultMaxBodyBytes,
+			RateLimitPerSec: 20,
+			RateLimitBurst:  40,
 			TLS: TLSConfig{
 				Enabled:  false,
 				CertFile: "",
@@ -496,10 +530,11 @@ func DefaultConfig() *Config {
 		},
 		Orchestrator: OrchestratorConfig{
 			// Disabled by default: start/stop only flip DB status (no-op
-			// executor). Enable and set terraform_dir to drive real suspend/
-			// resume.
-			Enabled:         false,
-			TerraformBinary: "terraform",
+			// executor). Enable to drive the zone's provider adapter.
+			Enabled: false,
+			// Privileged agent services are opt-in; a fresh qube gets only the
+			// reachability probe unless this is widened deliberately.
+			AgentAllowedServices: []string{"qubesair.Ping"},
 			// Agent probing defaults ON even with orchestration disabled: it
 			// reads infrastructure rather than changing it, and a console that
 			// only reports agent health when someone remembered to switch it on
@@ -513,6 +548,8 @@ func DefaultConfig() *Config {
 			AgentCertRenewIntervalSeconds:  3600,
 			AgentCertRenewThresholdPercent: 33,
 			AgentBootstrapIntervalSeconds:  60,
+			// 45 minutes, against a documented 15-25 minute provision.
+			JobTimeoutSeconds: 2700,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -613,17 +650,23 @@ func (c *Config) loadFromEnv() {
 	if enabled := os.Getenv("QUBES_AIR_ORCHESTRATOR_ENABLED"); enabled != "" {
 		c.Orchestrator.Enabled = strings.ToLower(enabled) == "true"
 	}
-	if dir := os.Getenv("QUBES_AIR_TERRAFORM_DIR"); dir != "" {
-		c.Orchestrator.TerraformDir = dir
+	if v := os.Getenv("QUBES_AIR_PRODUCTION"); v != "" {
+		c.Server.Production = strings.ToLower(v) == "true"
 	}
-	if bin := os.Getenv("QUBES_AIR_TERRAFORM_BINARY"); bin != "" {
-		c.Orchestrator.TerraformBinary = bin
+	if v := os.Getenv("QUBES_AIR_MAX_BODY_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.Server.MaxBodyBytes = n
+		}
 	}
-	if varFile := os.Getenv("QUBES_AIR_TERRAFORM_VAR_FILE"); varFile != "" {
-		c.Orchestrator.VarFile = varFile
+	if v := os.Getenv("QUBES_AIR_RATE_LIMIT_PER_SEC"); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil && n > 0 {
+			c.Server.RateLimitPerSec = n
+		}
 	}
-	if genVarFile := os.Getenv("QUBES_AIR_TERRAFORM_GENERATED_VAR_FILE"); genVarFile != "" {
-		c.Orchestrator.GeneratedVarFile = genVarFile
+	if v := os.Getenv("QUBES_AIR_RATE_LIMIT_BURST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.Server.RateLimitBurst = n
+		}
 	}
 	if v := os.Getenv("QUBES_AIR_AGENT_SNIPPET_DATASTORE"); v != "" {
 		c.Orchestrator.AgentSnippetDatastore = v
@@ -633,6 +676,12 @@ func (c *Config) loadFromEnv() {
 	}
 	if listen := os.Getenv("QUBES_AIR_AGENT_LISTEN"); listen != "" {
 		c.Orchestrator.AgentListen = listen
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_REVOCATION_URL"); v != "" {
+		c.Orchestrator.AgentRevocationURL = v
+	}
+	if v := os.Getenv("QUBES_AIR_PROXMOX_SSH_KNOWN_HOSTS_FILE"); v != "" {
+		c.Orchestrator.ProxmoxSSHKnownHostsFile = v
 	}
 	if v := os.Getenv("QUBES_AIR_PROXMOX_SSH_KEY_FILE"); v != "" {
 		c.Orchestrator.ProxmoxSSHKeyFile = v
@@ -660,6 +709,9 @@ func (c *Config) loadFromEnv() {
 	}
 	if v := os.Getenv("QUBES_AIR_AGENT_PACKAGE_VERSION"); v != "" {
 		c.Orchestrator.AgentPackageVersion = v
+	}
+	if v := os.Getenv("QUBES_AIR_AGENT_ALLOWED_SERVICES"); v != "" {
+		c.Orchestrator.AgentAllowedServices = splitCSV(v)
 	}
 	// Parsed with Atoi and applied only on success, matching the transport
 	// timings below. A typo therefore keeps the default rather than silently
@@ -692,6 +744,11 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentBootstrapIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.JobTimeoutSeconds = n
 		}
 	}
 
@@ -787,17 +844,38 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// If real orchestration is enabled, a terraform working directory is
-	// mandatory — otherwise start/stop would fail at runtime.
-	if c.Orchestrator.Enabled && c.Orchestrator.TerraformDir == "" {
-		return fmt.Errorf("orchestrator.enabled is true but orchestrator.terraform_dir is not set")
+	// Production must not run with the well-known development key or a wildcard
+	// CORS origin: both are silent downgrades on a networked control plane, and
+	// a warning in a journal is not a control.
+	if c.Server.Production {
+		if c.UsesDevEncryptionKey() {
+			return fmt.Errorf("server.production is true but the well-known development " +
+				"encryption key is in use; set encryption_key/encryption_keys")
+		}
+		for _, o := range c.CORS.AllowedOrigins {
+			if o == "*" {
+				return fmt.Errorf("server.production is true but cors.allowed_origins contains \"*\"; " +
+					"restrict it to the console's own origins")
+			}
+		}
 	}
+
+	// Real orchestration no longer requires a terraform working directory. The
+	// native provider executor drives each zone's API directly and records
+	// resource identities in qube_infra, so the console starts on a machine
+	// with no terraform installed; a zone with no registered adapter fails
+	// loudly at operation time.
 
 	// A package URL without a digest would have every new qube install, as root,
 	// whatever the unauthenticated artifact store happened to be serving.
 	// Refusing at startup is the loud place to catch it: the renderer's own
 	// fallback is a qube that comes up with no agent, which is only discovered
 	// when something tries to reach it.
+	if c.Orchestrator.Enabled || c.Orchestrator.AgentRevocationURL != "" {
+		if err := pki.ValidateRevocationURL(c.Orchestrator.AgentRevocationURL); err != nil {
+			return err
+		}
+	}
 	if err := validateAgentPackage(c.Orchestrator.AgentPackageURL, c.Orchestrator.AgentPackageSHA256); err != nil {
 		return err
 	}
@@ -826,6 +904,28 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateTokenZones checks the object-level allowlist of one token. An empty
+// list is the fleet-wide spelling; "*" is rejected so the two cannot be
+// confused, and a zone ID that is not exactly a configured value (stray
+// whitespace, empty entry, duplicate) is refused rather than silently making
+// the allowlist match nothing.
+func validateTokenZones(i int, t ScopedToken) error {
+	seen := make(map[string]bool, len(t.Zones))
+	for j, zone := range t.Zones {
+		if zone == "" || strings.TrimSpace(zone) != zone {
+			return fmt.Errorf("auth.tokens[%d] (%q): zones[%d] must be a non-empty zone id without surrounding whitespace", i, t.Name, j)
+		}
+		if zone == "*" {
+			return fmt.Errorf("auth.tokens[%d] (%q): use an empty zones list for a fleet-wide token, not %q", i, t.Name, zone)
+		}
+		if seen[zone] {
+			return fmt.Errorf("auth.tokens[%d] (%q): duplicate entry in zones: %q", i, t.Name, zone)
+		}
+		seen[zone] = true
+	}
+	return nil
+}
+
 // validateAuth fails fast on a malformed token list.
 //
 // A bad scope or an empty token must stop the console at startup rather than
@@ -842,6 +942,16 @@ func (c *Config) validateAuth() error {
 			return fmt.Errorf("auth.tokens[%d] (%q): scope must be %q or %q, got %q",
 				i, t.Name, middleware.ScopeReadOnly, middleware.ScopeControl, t.Scope)
 		}
+		if err := validateTokenZones(i, t); err != nil {
+			return err
+		}
+	}
+	// Fail closed in production: an empty token disables authentication, which
+	// on a networked control plane means anyone who can reach the port can drive
+	// the fleet. Development keeps the warning instead.
+	if c.Server.Production && c.Auth.APIToken == "" && len(c.Auth.Tokens) == 0 {
+		return fmt.Errorf("server.production is true but auth.api_token is empty; " +
+			"authentication would be disabled")
 	}
 	return nil
 }
@@ -893,7 +1003,18 @@ func (c *Config) IsTLSEnabled() bool {
 	return c.Server.TLS.Enabled
 }
 
-// JobLogDir is where terraform output is kept, one file per job.
+// splitCSV trims a comma-separated environment list, dropping empty entries.
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// JobLogDir is where operation output is kept, one file per job.
 //
 // Derived from the database path rather than configured separately: the DSN is
 // already the answer to "where does this console keep things it must not lose",

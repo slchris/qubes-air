@@ -40,6 +40,44 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "production without an API token fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = ""
+				c.Auth.Tokens = nil
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with the development encryption key fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with wildcard CORS fails closed",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+				c.CORS.AllowedOrigins = []string{"*"}
+			},
+			wantErr: true,
+		},
+		{
+			name: "production with token, real key and restricted CORS is valid",
+			modify: func(c *Config) {
+				c.Server.Production = true
+				c.Auth.APIToken = "prod-token"
+				c.Security.EncryptionKey = "0123456789abcdef0123456789abcdef"
+				c.CORS.AllowedOrigins = []string{"https://console.local"}
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid port zero",
 			modify: func(c *Config) {
 				c.Server.Port = 0
@@ -70,18 +108,10 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "orchestrator enabled without terraform dir",
+			name: "orchestrator enabled uses native executor",
 			modify: func(c *Config) {
 				c.Orchestrator.Enabled = true
-				c.Orchestrator.TerraformDir = ""
-			},
-			wantErr: true,
-		},
-		{
-			name: "orchestrator enabled with terraform dir",
-			modify: func(c *Config) {
-				c.Orchestrator.Enabled = true
-				c.Orchestrator.TerraformDir = "/tf"
+				c.Orchestrator.AgentRevocationURL = "https://console.example/pki/revocations"
 			},
 			wantErr: false,
 		},
@@ -477,4 +507,54 @@ func TestConfig_AgentProbeEnvGarbageKeepsTheDefault(t *testing.T) {
 
 	assert.Equal(t, DefaultConfig().Orchestrator.AgentProbeIntervalSeconds,
 		cfg.Orchestrator.AgentProbeIntervalSeconds)
+}
+
+// TestConfig_JobTimeoutOutlivesAProvision — the default bound has to sit above
+// the documented 15-25 minute provision, not inside it. A bound below the work
+// it wraps cancels a healthy job after its VM and disk already exist.
+func TestConfig_JobTimeoutOutlivesAProvision(t *testing.T) {
+	assert.GreaterOrEqual(t, DefaultConfig().Orchestrator.JobTimeoutSeconds, 30*60,
+		"the default job timeout must clear the documented 15-25 minute provision")
+
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS", "120")
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 120, cfg.Orchestrator.JobTimeoutSeconds)
+
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS", "forever")
+	cfg, err = Load("")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultConfig().Orchestrator.JobTimeoutSeconds,
+		cfg.Orchestrator.JobTimeoutSeconds, "an unparseable value keeps the default")
+}
+
+func TestOrchestratorRequiresRevocationURL(t *testing.T) {
+	c := DefaultConfig()
+	c.Orchestrator.Enabled = true
+	assert.Error(t, c.Validate())
+}
+
+// TestConfig_ValidateTokenZones — a zone allowlist must be an exact list of
+// zone IDs; a wildcard or a sloppy entry is refused so a misconfigured token
+// cannot silently match nothing (or everything).
+func TestConfig_ValidateTokenZones(t *testing.T) {
+	valid := func(zones []string) *Config {
+		cfg := DefaultConfig()
+		cfg.Auth.Tokens = []ScopedToken{{Name: "t", Token: "v", Scope: "read-only", Zones: zones}}
+		return cfg
+	}
+	require.NoError(t, valid(nil).Validate())
+	require.NoError(t, valid([]string{"z1", "z2"}).Validate())
+
+	for name, zones := range map[string][]string{
+		"empty entry":  {""},
+		"whitespace":   {" z1"},
+		"wildcard":     {"*"},
+		"duplicate":    {"z1", "z1"},
+		"empty middle": {"z1", ""},
+	} {
+		err := valid(zones).Validate()
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "zones", name)
+	}
 }

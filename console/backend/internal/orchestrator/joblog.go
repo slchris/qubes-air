@@ -6,20 +6,22 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/slchris/qubes-air/console/internal/provider"
 )
 
-// Job logs: what terraform printed, while it was printing it.
+// Job logs: what the provider operation reported, while it was happening.
 //
 // A provision takes 15-25 minutes on real hardware. Before this, the only
-// record was Job.Error, written once the process had already exited — so for
+// record was Job.Error, written once the operation had already ended — so for
 // the whole run the console could say nothing beyond "running", and a failure
-// arrived as one wall of stderr with no indication of how far it had got. The
-// operator's view of a long apply was indistinguishable from a hung one.
+// arrived as one wall of text with no indication of how far it had got. The
+// operator's view of a long provision was indistinguishable from a hung one.
 //
 // Written to a file per job rather than accumulated in memory: the output of a
-// large apply is unbounded, several jobs' worth would sit in the process
-// forever, and a file survives a console restart mid-apply — which is exactly
-// when someone wants to know what happened.
+// large provision is unbounded, several jobs' worth would sit in the process
+// forever, and a file survives a console restart mid-operation — which is
+// exactly when someone wants to know what happened.
 
 // logSinkKey carries the writer for the job currently executing.
 //
@@ -30,13 +32,16 @@ import (
 // which it is today and which nothing enforces.
 type logSinkKey struct{}
 
-// WithLogSink returns a context whose terraform invocations copy their output
+// WithLogSink returns a context whose provider operations copy their output
 // to w in addition to buffering it.
 func WithLogSink(ctx context.Context, w io.Writer) context.Context {
 	if w == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, logSinkKey{}, w)
+	// Both keys: the executor's own output reader uses logSink, and provider
+	// adapters read the writer through the provider package so they do not have
+	// to import the orchestrator.
+	return provider.WithLogWriter(context.WithValue(ctx, logSinkKey{}, w), w)
 }
 
 // logSinkFrom returns the sink for this context, or nil.
@@ -55,7 +60,7 @@ func NewJobLogStore(dir string) (*JobLogStore, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("job log dir is empty")
 	}
-	// 0700: the output includes terraform's rendering of resource attributes,
+	// 0700: the output includes provider responses that describe infrastructure,
 	// which is not a credential store but is not public either.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create job log dir %q: %w", dir, err)

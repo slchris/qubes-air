@@ -7,7 +7,7 @@
 # 本脚本【只动本地】:
 #   1. shred 删除本地该 Zone/VM 的 LUKS 密钥材料 (兑现"密钥只在本地" -> 云密文永久不可解);
 #   2. 删除本地 vault 里该 Zone 的凭据文件 (若在本机可访问);
-#   3. 打印运维需手动完成的云侧动作 (吊销 API key、terraform destroy) —— 脚本【不】碰云, 防误删。
+#   3. 打印运维需手动完成的云侧动作 (吊销 API key、destroy 云资源) —— 脚本【不】碰云, 防误删。
 #
 # 用法:
 #   decommission-zone.sh --zone <zone-name> [--shred-luks-key] [--cred <name> ...]
@@ -105,7 +105,7 @@ elif [ -n "$ZONE" ]; then
     log_warn "  rm -f $CRED_DIR/<该Zone的token文件>"
 fi
 
-# --- 3. 云侧 + terraform: 提示手动 (脚本不碰云, 防误删) ---
+# --- 3. 云侧: 提示手动 (脚本不碰云, 防误删) ---
 cat <<EOF
 
 $(log_info "=== 本地 crypto-shred 完成; 以下需手动完成 (脚本不自动执行) ===")
@@ -113,8 +113,7 @@ $(log_info "=== 本地 crypto-shred 完成; 以下需手动完成 (脚本不自�
      Proxmox: pveum user token remove <user> <tokenid>
      GCP:     gcloud iam service-accounts keys delete <KEY_ID> --iam-account=<SA>
      AWS:     aws iam delete-access-key --access-key-id <ID>
-  [terraform] 销毁云资源 (阶段1 模块, 本阶段不改):
-     terraform destroy -target=<对应资源>
+  [控制台] 先 suspend/删除该 Zone 的 Qube, 再 purge 数据盘 (数据盘有 protected 保护, 需显式确认)
   [控制台] 删除凭据记录: DELETE /api/v1/credentials/{id}
   [远端信任] 撤销远端 authorized_keys 里对应 relay 公钥; dom0: qvm-remove ${VM:-<remote-vm>}
 
@@ -124,7 +123,7 @@ EOF
 
 # =====================================================================
 # 待真机确认:
-#   [D1] 远端盘 LUKS keyfile 的真实路径/命名 (阶段1 packer/terraform 定); 若非
+#   [D1] 远端盘 LUKS keyfile 的真实路径/命名 (由 packer 模板/编排约定定); 若非
 #        $LUKS_KEY_DIR/<name>.key, 用 LUKS_KEY_DIR 环境变量或改约定。
 #   [D2] 本脚本在 dom0 还是 vault-cloud 执行: LUKS 密钥在哪个 qube 就在哪跑步骤 1;
 #        凭据文件在 vault-cloud, 步骤 2 通常在 vault-cloud 内跑。按你的密钥布局分别执行。

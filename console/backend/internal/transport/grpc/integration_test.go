@@ -11,9 +11,12 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/slchris/qubes-air/console/internal/transport"
 )
 
 // fakeInvoker executes forward calls on the "remote" side: it upper-cases-tag
@@ -23,19 +26,19 @@ type fakeInvoker struct {
 	calls []string
 }
 
-func (f *fakeInvoker) Invoke(_ context.Context, target, service string, in []byte) ([]byte, error) {
+func (f *fakeInvoker) Invoke(_ context.Context, target, service string, in []byte) (transport.Result, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, target+"/"+service)
 	f.mu.Unlock()
-	return []byte("remote-handled:" + string(in)), nil
+	return transport.Result{Stdout: []byte("remote-handled:" + string(in))}, nil
 }
 
 // tagInvoker echoes back handled[target/service]:input — used by the shared
 // startTestServer/dialAndCall helpers.
 type tagInvoker struct{}
 
-func (tagInvoker) Invoke(_ context.Context, target, service string, in []byte) ([]byte, error) {
-	return []byte("handled[" + target + "/" + service + "]:" + string(in)), nil
+func (tagInvoker) Invoke(_ context.Context, target, service string, in []byte) (transport.Result, error) {
+	return transport.Result{Stdout: []byte("handled[" + target + "/" + service + "]:" + string(in))}, nil
 }
 
 // startTestServer stands up a real mTLS gRPC server on a random localhost port
@@ -160,6 +163,71 @@ func TestClientServerRoundTrip(t *testing.T) {
 	}
 }
 
+// exitInvoker reports a failed command: stdout, separate stderr, non-zero exit.
+type exitInvoker struct{}
+
+func (exitInvoker) Invoke(_ context.Context, _, _ string, _ []byte) (transport.Result, error) {
+	return transport.Result{Stdout: []byte("partial"), Stderr: []byte("boom"), ExitCode: 7}, nil
+}
+
+// TestCallResultCarriesExitCodeAndStderr is the point of the structured protocol
+// change: a command that ran and failed must arrive with its exit code and
+// stderr intact, rather than as a transport error or text appended to stdout.
+func TestCallResultCarriesExitCodeAndStderr(t *testing.T) {
+	caCert, caKey := mkCA(t)
+	serverTLS := mkServerTLS(t, caCert, caKey)
+	clientTLS := mkClientTLS(t, caCert, caKey)
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := lis.Addr().String()
+	_ = lis.Close()
+
+	srv := NewServer(ServerConfig{Listen: addr, TLS: serverTLS}, exitInvoker{})
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	defer srvCancel()
+	go func() { _ = srv.Serve(srvCtx) }()
+	waitDial(t, addr)
+
+	cli := NewClient(ClientConfig{
+		RemoteEndpoint: addr,
+		RelayName:      "sys-relay-test",
+		RemoteName:     "remote-test",
+		KeepAlive:      200 * time.Millisecond,
+		ReconnectMin:   20 * time.Millisecond,
+		ReconnectMax:   200 * time.Millisecond,
+		TLS:            clientTLS,
+	}, nil)
+	cliCtx, cliCancel := context.WithCancel(context.Background())
+	defer cliCancel()
+	go func() { _ = cli.Start(cliCtx) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		callCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		res, err := cli.CallResult(callCtx, "remote-gpu", "qubesair.Exec", []byte("x"))
+		cancel()
+		if err == nil {
+			if res.ExitCode != 7 {
+				t.Fatalf("exit code = %d, want 7", res.ExitCode)
+			}
+			if string(res.Stdout) != "partial" {
+				t.Errorf("stdout = %q, want partial", res.Stdout)
+			}
+			if string(res.Stderr) != "boom" {
+				t.Errorf("stderr = %q, want boom", res.Stderr)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CallResult never succeeded: %v", err)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+}
+
 // TestClientCallInvalidName ensures name validation rejects bad input before
 // anything hits the wire.
 func TestClientCallInvalidName(t *testing.T) {
@@ -213,6 +281,13 @@ func mkLeaf(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, cn stri
 		tmpl.DNSNames = []string{"localhost"}
 	} else {
 		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	}
+	if cn != "no-role" {
+		role := "relay"
+		if isServer {
+			role = "agent"
+		}
+		tmpl.URIs = []*url.URL{{Scheme: "spiffe", Host: "qubes-air", Path: "/role/" + role}}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
 	if err != nil {

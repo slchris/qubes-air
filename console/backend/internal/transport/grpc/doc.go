@@ -3,19 +3,20 @@
 //
 // STATUS: implemented + integration-tested; NOT real-machine validated.
 //   - client.go / server.go are implemented (not skeletons).
+//   - invoker.go (QrexecInvokerImpl) shells to `qrexec-client-vm` on the remote
+//     host; reverse.go (NewReverseHandler) routes REMOTE_TO_LOCAL calls to the
+//     local dom0 (policy C: ask); vaultcerts.go fetches mTLS certs from
+//     vault-cloud via qrexec ask.
 //   - integration_test.go stands up a real mTLS server, dials it, and drives a
 //     forward Call end-to-end through the Tunnel — it passes under `go test`.
-//   - Still TODO (outside this package): a concrete QrexecInvoker that shells to
-//     `qrexec-client-vm` on the remote host; a ReverseHandler that routes
-//     REMOTE_TO_LOCAL calls to the local dom0 (policy C: ask); mTLS certs fetched
-//     from vault-cloud via qrexec ask; Salt/dom0 deployment; real-machine tests.
+//   - Still not done: Salt/dom0 deployment and real-machine tests.
 //
 // Regenerating the proto (only needed if proto/relay_transport.proto changes):
 //
-//	protoc --proto_path=proto --go_out=. --go-grpc_out=. \
-//	  --go_opt=module=github.com/slchris/qubes-air/console \
-//	  --go-grpc_opt=module=github.com/slchris/qubes-air/console \
-//	  proto/relay_transport.proto
+//	cd proto
+//	protoc --go_out=../internal/transport/relaypb --go_opt=paths=source_relative \
+//	  --go-grpc_out=../internal/transport/relaypb --go-grpc_opt=paths=source_relative \
+//	  relay_transport.proto
 //	# → internal/transport/relaypb/{relay_transport.pb.go, _grpc.pb.go}
 //
 // Roles:

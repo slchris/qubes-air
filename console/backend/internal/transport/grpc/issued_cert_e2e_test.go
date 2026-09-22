@@ -38,7 +38,7 @@ func TestIssuedCertAuthenticatesEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA: %v", err)
 	}
-	relayBundle, err := ca.IssueAgentCert("agent-relay", 0)
+	relayBundle, err := ca.IssueAgentCert("console-relay", 0)
 	if err != nil {
 		t.Fatalf("issue relay cert: %v", err)
 	}

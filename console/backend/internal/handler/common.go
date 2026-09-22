@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -16,7 +17,15 @@ type ErrorResponse struct {
 }
 
 // respondError sends a standardized error response.
+//
+// A body that exceeded middleware.BodyLimit's cap is reported as 413 rather than
+// the generic 400 a bind error would otherwise produce, so the caller can tell
+// "too large" apart from "malformed".
 func respondError(c *gin.Context, code int, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		code = http.StatusRequestEntityTooLarge
+	}
 	c.JSON(code, ErrorResponse{
 		Error:   http.StatusText(code),
 		Message: err.Error(),

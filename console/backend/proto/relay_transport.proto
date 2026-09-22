@@ -8,7 +8,7 @@
 //     家庭 NAT 后可用（relay 只出站、不监听）。
 //   - 一条 Tunnel 上用 request_id 多路复用多个 qrexec 调用（正向 + 反向回程共用）。
 //   - 认证：mTLS（客户端证书 + 服务端证书），证书/私钥存 vault-cloud，
-//     用时经 qrexec ask 下发（替代原 relay SSH 私钥）。[TODO 实现]
+//     用时经 qrexec ask 下发（替代原 relay SSH 私钥）。实现见 grpc/vaultcerts.go。
 //
 // 【安全模型】授权决策只发生在**本地 dom0**：
 //   - 正向：本地 dom0 policy A/B 放行并改写后，请求才进入本 Tunnel。
@@ -111,6 +111,13 @@ message DataChunk {
 // EndOfStream：某个 stream_id 的数据结束。
 message EndOfStream {
   uint32 stream_id = 1;
+  // exit_code：执行结果退出码，只在 stream_id=1（响应体）的 EOS 上有意义。
+  //
+  // 这是把「传输成功」与「命令成功」分开的字段：EOS 正常到达即传输成功，
+  // exit_code != 0 表示服务/命令本身失败。调用方据此判断，而不是解析 stdout
+  // 里的文本 trailer（旧 qubesair.Exec/FileCopy 协议就是这么做的，无法与真正
+  // 的输出稳定区分）。非命令类服务恒为 0。
+  int32 exit_code = 2;
 }
 
 // CallError：调用级错误（该 request_id 失败，Tunnel 仍存活）。

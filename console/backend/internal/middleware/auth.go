@@ -26,11 +26,25 @@ func ValidScope(s string) bool {
 	return Scope(s) == ScopeReadOnly || Scope(s) == ScopeControl
 }
 
-// ScopeContextKey is the gin context key holding the authenticated requests'
-// granted scope (a string, see ScopeFromContext).
-const ScopeContextKey = "middleware.auth.scope"
+// Context keys set by ScopedAuth.
+const (
+	// ScopeContextKey holds the granted scope (a string, see ScopeFromContext).
+	ScopeContextKey = "middleware.auth.scope"
+	// SubjectContextKey holds the credential's name (never its value), used for
+	// operation audit. See SubjectFromContext.
+	SubjectContextKey = "middleware.auth.subject"
+	// ZonesContextKey holds the object-level restriction of the credential: the
+	// zone IDs it may address. Absent means fleet-wide (see ZoneScopeFromContext).
+	ZonesContextKey = "middleware.auth.zones"
+)
 
-// Token is one accepted bearer credential and the scope it grants.
+// sessionLoginPath is the one route exempt from the Bearer requirement: it
+// authenticates the token from its own request body so a browser can exchange
+// the token for a session cookie.
+const sessionLoginPath = "/api/v1/session"
+
+// Token is one accepted bearer credential, the scope it grants and the zone
+// objects it may address.
 type Token struct {
 	// Name labels the token in logs; it carries no authority.
 	Name string
@@ -38,6 +52,10 @@ type Token struct {
 	Value string
 	// Scope is the scope granted to a request using this token.
 	Scope Scope
+	// Zones restricts the token to these zone IDs. Empty means fleet-wide: the
+	// token may address every zone and the fleet-only endpoints. A non-empty
+	// list is an object-level allowlist enforced by RequireZones.
+	Zones []string
 }
 
 // credential is the prehashed form of a Token, so every request matches
@@ -46,6 +64,7 @@ type credential struct {
 	name   string
 	digest [32]byte
 	scope  Scope
+	zones  []string
 }
 
 // newCredentials builds the matcher list: the legacy single api_token, when
@@ -69,24 +88,33 @@ func newCredentials(apiToken string, scoped []Token) []credential {
 			name:   t.Name,
 			digest: sha256.Sum256([]byte(t.Value)),
 			scope:  t.Scope,
+			zones:  append([]string(nil), t.Zones...),
 		})
 	}
 	return creds
 }
 
-// ScopedAuth returns a Gin middleware that requires a valid Bearer token on
-// every request. apiToken and the entries of scoped form the credential set;
-// the legacy single api_token is treated as control scope. When NO credential
-// is configured, authentication is DISABLED and all requests pass through (the
-// caller should log a startup warning).
+// MatchToken reports whether candidate is a configured credential, returning its
+// subject label (never the value), scope and zone restriction. The session
+// endpoint authenticates the token from its request body through this and stores
+// the restriction in the session, so a browser cannot address more than its
+// token may.
+func MatchToken(apiToken string, scoped []Token, candidate string) (subject string, scope Scope, zones []string, ok bool) {
+	return matchCredential(candidate, newCredentials(apiToken, scoped))
+}
+
+// ScopedAuth returns a Gin middleware that authenticates every request with EITHER
+// a valid session cookie OR a Bearer token. apiToken and the entries of scoped
+// form the credential set; the legacy single api_token is treated as control
+// scope. When NO credential is configured, authentication is DISABLED and all
+// requests pass through (the caller should log a startup warning).
 //
-// On success the granted scope is stored in the request context under
-// ScopeContextKey so downstream middleware (RequireControl) can read it.
-// Matching runs in constant time across the WHOLE credential list: every
-// candidate is hashed once and compared against all prehashed digests, never
-// returning early, so neither the number of credentials nor any single
-// credential's length leaks through the comparison.
-func ScopedAuth(apiToken string, scoped []Token) gin.HandlerFunc {
+// On success the granted scope and the subject label are stored in the request
+// context for RequireControl and the audit log. Matching runs in constant time
+// across the WHOLE credential list: every candidate is hashed once and compared
+// against all prehashed digests, never returning early, so neither the number of
+// credentials nor any single credential's length leaks through the comparison.
+func ScopedAuth(apiToken string, scoped []Token, sessions *SessionStore) gin.HandlerFunc {
 	creds := newCredentials(apiToken, scoped)
 	authDisabled := len(creds) == 0
 
@@ -96,39 +124,68 @@ func ScopedAuth(apiToken string, scoped []Token) gin.HandlerFunc {
 			return
 		}
 
+		// The login endpoint authenticates the token in its own body; requiring a
+		// Bearer here would make exchanging a token for a session impossible.
+		if c.Request.Method == http.MethodPost && c.Request.URL.Path == sessionLoginPath {
+			c.Next()
+			return
+		}
+
+		if sessions != nil {
+			if cookie, err := c.Cookie(SessionCookieName); err == nil {
+				if sess, ok := sessions.Get(cookie); ok {
+					setAuthContext(c, sess.Subject, sess.Scope, sess.Zones)
+					c.Next()
+					return
+				}
+			}
+		}
+
 		token, ok := bearerToken(c.Request.Header.Get("Authorization"))
 		if !ok {
 			unauthorized(c)
 			return
 		}
-		scope, ok := matchScope(token, creds)
+		subject, scope, zones, ok := matchCredential(token, creds)
 		if !ok {
 			unauthorized(c)
 			return
 		}
-		c.Set(ScopeContextKey, string(scope))
+		setAuthContext(c, subject, scope, zones)
 		c.Next()
 	}
 }
 
-// matchScope returns the scope granted by candidate, scanning every credential
-// in constant time. Comparing SHA-256 digests of a fixed length removes the
-// raw length difference from the comparison, and iterating the whole list
-// without an early return means which position matched (or that none did) does
-// not leak either.
-func matchScope(candidate string, creds []credential) (Scope, bool) {
+func setAuthContext(c *gin.Context, subject string, scope Scope, zones []string) {
+	c.Set(ScopeContextKey, string(scope))
+	c.Set(SubjectContextKey, subject)
+	if len(zones) > 0 {
+		c.Set(ZonesContextKey, append([]string(nil), zones...))
+	}
+}
+
+// matchCredential returns the subject label and scope granted by candidate,
+// scanning every credential in constant time. Comparing SHA-256 digests of a
+// fixed length removes the raw length difference from the comparison, and
+// iterating the whole list without an early return means which position matched
+// (or that none did) does not leak either.
+func matchCredential(candidate string, creds []credential) (string, Scope, []string, bool) {
 	digest := sha256.Sum256([]byte(candidate))
 	var (
-		found Scope
-		ok    bool
+		subject string
+		found   Scope
+		zones   []string
+		ok      bool
 	)
 	for _, cd := range creds {
 		if subtle.ConstantTimeCompare(digest[:], cd.digest[:]) == 1 {
+			subject = cd.name
 			found = cd.scope
+			zones = cd.zones
 			ok = true
 		}
 	}
-	return found, ok
+	return subject, found, zones, ok
 }
 
 // RequireControl enforces the FAIL-CLOSED method rule: the permissive methods
@@ -176,6 +233,18 @@ func ScopeFromContext(c *gin.Context) (string, bool) {
 	return s, ok
 }
 
+// SubjectFromContext returns the credential name ScopedAuth authenticated, or
+// ("", false) when authentication is disabled. It is for audit only and carries
+// no authority.
+func SubjectFromContext(c *gin.Context) (string, bool) {
+	v, ok := c.Get(SubjectContextKey)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
 // unauthorized aborts with 401 and the Bearer challenge.
 func unauthorized(c *gin.Context) {
 	c.Header("WWW-Authenticate", "Bearer")
@@ -203,4 +272,19 @@ func bearerToken(header string) (string, bool) {
 		return "", false
 	}
 	return token, true
+}
+
+// ZoneScopeFromContext returns the zone restriction ScopedAuth resolved.
+// restricted is false when authentication is disabled or the credential is
+// fleet-wide, in which case the caller must not filter anything.
+func ZoneScopeFromContext(c *gin.Context) (zones []string, restricted bool) {
+	v, ok := c.Get(ZonesContextKey)
+	if !ok {
+		return nil, false
+	}
+	list, ok := v.([]string)
+	if !ok || len(list) == 0 {
+		return nil, false
+	}
+	return list, true
 }

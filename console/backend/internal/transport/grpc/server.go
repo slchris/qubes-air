@@ -21,6 +21,7 @@ import (
 
 	"sync"
 
+	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
 
 	"github.com/slchris/qubes-air/console/internal/transport"
@@ -83,7 +84,10 @@ const reauthorizeInterval = time.Minute
 // docs/remote-agent-design.md); the implementation's own name allow-listing is
 // defense in depth, not an authorization boundary.
 type QrexecInvoker interface {
-	Invoke(ctx context.Context, target, service string, in []byte) ([]byte, error)
+	// Invoke runs the call and returns its stdout, stderr and exit code. A
+	// non-zero exit is part of the result; err is reserved for the call not
+	// being made at all (unknown/disallowed service, timeout).
+	Invoke(ctx context.Context, target, service string, in []byte) (transport.Result, error)
 }
 
 // Server implements pb.RelayTransportServer. It only moves frames; all
@@ -134,8 +138,28 @@ func (s *Server) authorizeChain(chains [][]*x509.Certificate) error {
 		return fmt.Errorf("no verified certificate chain")
 	}
 	leaf := chains[0][0]
+	if now := time.Now(); now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+		return errors.New("client certificate is not currently valid")
+	}
 	fp := repository.Fingerprint(leaf)
 
+	// Caller authorization by role: only a Relay or the Console may open a
+	// client connection to an agent. The chain proves "one of ours"; the role
+	// proves "allowed to call". An agent certificate presented as a client (a
+	// fleet member trying to call another agent directly) is refused here.
+	role, err := pki.RoleOf(leaf)
+	if err != nil {
+		return fmt.Errorf("client certificate carries no usable role: %w", err)
+	}
+	if role != pki.RoleRelay && role != pki.RoleConsole {
+		log.Printf("grpc server: rejecting client cert %s (CN=%q): role %q is not allowed",
+			fp[:16], leaf.Subject.CommonName, role)
+		return fmt.Errorf("client role %q is not allowed to connect", role)
+	}
+
+	if s.cfg.CertRegistry == nil {
+		return nil
+	}
 	cert, err := s.cfg.CertRegistry.Authorize(context.Background(), fp)
 	if err != nil {
 		// Log the distinct cases: an unregistered certificate that nonetheless
@@ -170,7 +194,7 @@ func peerFingerprint(ctx context.Context) (string, bool) {
 
 // reauthorizeLoop tears down the tunnel once its certificate stops being
 // authorized. It exits when the tunnel does.
-func (s *Server) reauthorizeLoop(ctx context.Context, cancel context.CancelFunc, fingerprint string) {
+func (s *Server) reauthorizeLoop(ctx context.Context, cancel context.CancelFunc, fingerprint string, expiresAt time.Time) {
 	interval := s.cfg.ReauthorizeInterval
 	if interval <= 0 {
 		interval = reauthorizeInterval
@@ -183,6 +207,13 @@ func (s *Server) reauthorizeLoop(ctx context.Context, cancel context.CancelFunc,
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !time.Now().Before(expiresAt) {
+				cancel()
+				return
+			}
+			if s.cfg.CertRegistry == nil {
+				continue
+			}
 			if _, err := s.cfg.CertRegistry.Authorize(ctx, fingerprint); err != nil {
 				if ctx.Err() != nil {
 					return // tunnel already closing
@@ -241,24 +272,16 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.cfg.TLS == nil {
 		return fmt.Errorf("grpc server: nil TLS config (mTLS is required)")
 	}
-	// Require and verify the client certificate (relay identity). mTLS proves
-	// *who* connected; it is NOT authorization for a given call — that stays in
-	// the local dom0 policy.
-	if s.cfg.TLS.ClientAuth == tls.NoClientCert {
-		s.cfg.TLS.ClientAuth = tls.RequireAndVerifyClientCert
-	}
-
-	// A CA signature alone grants PERMANENT access — there is no way to take it
-	// back without a revocation mechanism. Checking the certificate against a
-	// registry we own closes that: revocation is a row update this callback
-	// reads on the next handshake, with no CRL to publish and no fetch that can
-	// silently fail. Without a registry configured, any CA-signed certificate is
-	// accepted forever, which is worth saying out loud.
-	if s.cfg.CertRegistry != nil {
-		s.cfg.TLS.VerifyConnection = s.verifyRegisteredConnection
-	} else {
-		log.Printf("grpc server: WARNING no certificate registry configured — " +
-			"any CA-signed client certificate is accepted and CANNOT be revoked")
+	s.cfg.TLS = s.cfg.TLS.Clone()
+	s.cfg.TLS.ClientAuth = tls.RequireAndVerifyClientCert
+	previous := s.cfg.TLS.VerifyConnection
+	s.cfg.TLS.VerifyConnection = func(cs tls.ConnectionState) error {
+		if previous != nil {
+			if err := previous(cs); err != nil {
+				return err
+			}
+		}
+		return s.verifyRegisteredConnection(cs)
 	}
 
 	s.applyCertSource()
@@ -332,10 +355,13 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 	// connection indefinitely — and these tunnels are deliberately long-lived,
 	// so "indefinitely" means until someone notices. Revocation has to reach a
 	// connection that is already open, or it is not revocation.
-	if s.cfg.CertRegistry != nil {
-		if fp, ok := peerFingerprint(stream.Context()); ok {
-			go s.reauthorizeLoop(ctx, cancelTunnel, fp)
+	if fp, ok := peerFingerprint(stream.Context()); ok {
+		p, _ := peer.FromContext(stream.Context())
+		info, valid := p.AuthInfo.(credentials.TLSInfo)
+		if !valid {
+			return errors.New("missing TLS peer identity")
 		}
+		go s.reauthorizeLoop(ctx, cancelTunnel, fp, info.State.VerifiedChains[0][0].NotAfter)
 	}
 
 	// Send is not concurrent-safe; serialize all sends through this mutex so
@@ -348,7 +374,7 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 	}
 
 	// --- Handshake: first frame must be a Handshake with a matching version.
-	first, err := stream.Recv()
+	first, err := receiveFrame(ctx, stream)
 	if err != nil {
 		if err == io.EOF {
 			return nil
@@ -407,10 +433,10 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 
 	// Track in-flight worker goroutines so we can wait for them on return.
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer func() { cancelTunnel(); wg.Wait() }()
 
 	for {
-		frame, err := stream.Recv()
+		frame, err := receiveFrame(ctx, stream)
 		if err != nil {
 			if err == io.EOF {
 				return nil
@@ -595,17 +621,30 @@ func (s *Server) handleForward(ctx context.Context, reqID string, hdr *pb.Reques
 	}
 
 	// Reaching here means the remote dom0/policy has re-authorized this call.
-	out, err := s.invoker.Invoke(ctx, target, service, body)
+	res, err := s.invoker.Invoke(ctx, target, service, body)
 	if err != nil {
 		_ = send(errorFrame(reqID, codeInternal, err.Error()))
 		return
 	}
-	if len(out) > 0 {
-		if err := send(dataFrame(reqID, streamResponse, out)); err != nil {
+	// stdout and stderr travel on separate streams, and the exit code on the
+	// response EOS, so the caller can tell a command that failed (non-zero exit)
+	// from a call that failed (CallError) without parsing output text.
+	if len(res.Stdout) > 0 {
+		if err := send(dataFrame(reqID, streamResponse, res.Stdout)); err != nil {
 			return
 		}
 	}
-	_ = send(eosFrame(reqID, streamResponse))
+	if len(res.Stderr) > 0 {
+		if err := send(dataFrame(reqID, streamStderr, res.Stderr)); err != nil {
+			return
+		}
+	}
+	if err := send(eosFrameExit(reqID, streamResponse, res.ExitCode)); err != nil {
+		return
+	}
+	if len(res.Stderr) > 0 {
+		_ = send(eosFrame(reqID, streamStderr))
+	}
 }
 
 // streamServicePrefix marks a request that should be TCP-proxied to a loopback

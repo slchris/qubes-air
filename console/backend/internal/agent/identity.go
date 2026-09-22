@@ -226,13 +226,12 @@ func (id *Identity) TrustsCA(der []byte) bool {
 	return false
 }
 
-// VerifyChain checks that leaf chains to this agent's CA.
+// VerifyChain checks that leaf chains to this agent's CA as a SERVER identity.
 //
-// ExtKeyUsageAny is deliberate. Agent certificates are issued with
-// ExtKeyUsageClientAuth only (pki.IssueAgentCert) yet are presented here as
-// SERVER certificates, so a ServerAuth check would reject the agent's own
-// perfectly valid identity. The console's prober makes the same allowance for
-// the same reason — see service.verifyAgentChain.
+// Agent certificates are issued with ServerAuth and the agent role (pki), so the
+// purpose check is exactly the identity this host presents. It was previously
+// ExtKeyUsageAny because the same certificate was issued ClientAuth-only and
+// reused as the server cert; the role split removed that reason.
 func (id *Identity) VerifyChain(leaf *x509.Certificate, intermediates []*x509.Certificate) error {
 	inters := x509.NewCertPool()
 	for _, c := range intermediates {
@@ -241,9 +240,14 @@ func (id *Identity) VerifyChain(leaf *x509.Certificate, intermediates []*x509.Ce
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:         id.roots,
 		Intermediates: inters,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		return fmt.Errorf("%w: %v", ErrUntrustedChain, err)
+	}
+	if role, err := pki.RoleOf(leaf); err != nil {
+		return fmt.Errorf("%w: %v", ErrUntrustedChain, err)
+	} else if role != pki.RoleAgent {
+		return fmt.Errorf("%w: role %q is not an agent", ErrUntrustedChain, role)
 	}
 	return nil
 }
@@ -516,4 +520,9 @@ func parseCertificates(pemBytes []byte) ([]*x509.Certificate, error) {
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// NewRevocationRegistry builds the agent verifier with the same pinned CA roots.
+func (id *Identity) NewRevocationRegistry(endpoint string) (*RevocationRegistry, error) {
+	return NewRevocationRegistry(endpoint, id.rootCerts)
 }

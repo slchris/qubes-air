@@ -21,7 +21,7 @@ import (
 //
 // The distinctions are the point. "The console could not reach the agent" is
 // useless to whoever has to fix it: a qube with no address yet is waiting on
-// terraform, a refused connection means the unit never started, and a rejected
+// the provider, a refused connection means the unit never started, and a rejected
 // handshake almost always means a certificate problem on a host that is
 // otherwise perfectly healthy. Collapsing those into one failure is what let a
 // dead agent look green for hours.
@@ -32,7 +32,7 @@ const (
 	AgentProbeOK AgentProbeStatus = "ok"
 	// AgentProbeNoAddress means the qube has no IP address yet, so there was
 	// nothing to dial. Not a failure of the agent — usually the qube is still
-	// being built, or terraform never learned its address.
+	// being built, or the provider never learned its address.
 	AgentProbeNoAddress AgentProbeStatus = "no_address"
 	// AgentProbeUnreachable means the address exists but TCP did not connect:
 	// refused, filtered, or timed out. The agent is not listening.
@@ -266,7 +266,7 @@ func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeRe
 	}
 
 	// No address and nothing-answers are different diagnoses. The first means
-	// the qube is not built yet (or terraform never reported an IP); the second
+	// the qube is not built yet (or the provider never reported an IP); the second
 	// means it is built and the agent is broken. Sending an operator to debug
 	// the agent when the VM has no address yet wastes the one signal we have.
 	host := strings.TrimSpace(qube.IPAddress)
@@ -496,18 +496,17 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		Certificates: []tls.Certificate{pair},
 		RootCAs:      pool,
 		MinVersion:   tls.VersionTLS13,
-		// Hostname verification is replaced, NOT weakened. Two facts about the
-		// agent's certificate make the default path reject a perfectly good
-		// agent: it carries no SAN for the address we dial (it is issued per
-		// qube name, and the address is whatever DHCP handed the VM), and it is
-		// issued with ExtKeyUsageClientAuth only — the same certificate the
-		// agent presents as a client — so a ServerAuth check fails too.
+		// Hostname verification is replaced, NOT weakened. The agent's
+		// certificate is issued per qube name and carries no SAN for the address
+		// we dial (that address is whatever DHCP handed the VM), so the default
+		// hostname check rejects a perfectly good agent. The usage is not the
+		// reason: an agent certificate gets ServerAuth from pki.ekuForRole, which
+		// is exactly what the callback below enforces.
 		//
 		// So the chain is verified by hand below, against this CA and this CA
 		// only. An unsigned or wrongly-signed certificate is still rejected;
-		// what is skipped is the name and the usage, neither of which carries
-		// any trust here.
-		InsecureSkipVerify: true, //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
+		// what is skipped is the name, which the callback replaces with a CN pin.
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs verifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, 0, len(rawCerts))
 			for _, der := range rawCerts {
@@ -547,9 +546,18 @@ func verifyAgentChain(pool *x509.CertPool, certs []*x509.Certificate, wantCN str
 	if _, err := certs[0].Verify(x509.VerifyOptions{
 		Roots:         pool,
 		Intermediates: inters,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
-		return fmt.Errorf("agent certificate is not signed by this console's CA: %w", err)
+		return fmt.Errorf("agent certificate is not a CA-signed server identity: %w", err)
+	}
+
+	// The role says what the holder is FOR. An agent certificate must be the
+	// agent's server identity; a Relay/Console client certificate that happens
+	// to answer on this address is refused rather than accepted as an agent.
+	if role, err := pki.RoleOf(certs[0]); err != nil {
+		return fmt.Errorf("agent certificate carries no usable role: %w", err)
+	} else if role != pki.RoleAgent {
+		return fmt.Errorf("peer role %q is not an agent", role)
 	}
 
 	// Chain-to-CA answers "is this OUR fleet"; it does NOT answer "is this the

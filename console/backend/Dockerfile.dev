@@ -11,7 +11,11 @@
 # open its own database. Alpine would additionally need musl-vs-glibc handling
 # for the same package, so the Debian-based image keeps the failure surface
 # small.
-FROM golang:1.25-bookworm
+FROM golang:1.26-bookworm
+
+# Python runs the bounded Exec/FileCopy services in integration tests.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src/console/backend
 

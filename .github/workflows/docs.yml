@@ -1,0 +1,35 @@
+# Qubes Air - documentation and gate integrity checks.
+#
+# Two cheap checks that CI previously did not run:
+#   - every local Markdown link resolves (a moved/renamed doc used to go
+#     unnoticed until someone clicked it);
+#   - the workflow files do not weaken their own security gates
+#     (see scripts/check-workflow-gates.mjs).
+
+name: Docs and Gates
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  docs:
+    name: Docs and CI Gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check Markdown links
+        run: node scripts/check-doc-links.mjs
+
+      - name: Check CI gate integrity
+        run: node scripts/check-workflow-gates.mjs

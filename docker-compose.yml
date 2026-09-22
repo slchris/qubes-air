@@ -41,7 +41,7 @@ services:
       # The browser talks to vite, which proxies /api here, so the allowed
       # origin is the dev server rather than this service.
       QUBES_AIR_CORS_ORIGINS: "http://127.0.0.1:5173,http://localhost:5173"
-      # Orchestration off: it would shell out to terraform against a real
+      # Orchestration off: it would call provider APIs against a real
       # cluster. Turn it on deliberately, with credentials you meant to use.
       QUBES_AIR_ORCHESTRATOR_ENABLED: "false"
     ports:

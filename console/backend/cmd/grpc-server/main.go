@@ -21,13 +21,14 @@ import (
 	"log"
 	"os"
 
+	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
 
 type echoInvoker struct{}
 
-func (echoInvoker) Invoke(_ context.Context, target, service string, in []byte) ([]byte, error) {
-	return []byte(fmt.Sprintf("handled[%s/%s]:%s", target, service, string(in))), nil
+func (echoInvoker) Invoke(_ context.Context, target, service string, in []byte) (transport.Result, error) {
+	return transport.Result{Stdout: []byte(fmt.Sprintf("handled[%s/%s]:%s", target, service, string(in)))}, nil
 }
 
 func main() {
@@ -72,7 +73,7 @@ func serverTLS(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load server cert/key: %w", err)
 	}
-	caPEM, err := os.ReadFile(caFile)
+	caPEM, err := os.ReadFile(caFile) // #nosec G304 -- caFile is the operator-supplied -ca path read at startup, not request data
 	if err != nil {
 		return nil, fmt.Errorf("read CA: %w", err)
 	}

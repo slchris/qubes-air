@@ -18,6 +18,7 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,8 +84,9 @@ type Client struct {
 
 // pendingCall accumulates a forward call's response until EOS/error.
 type pendingCall struct {
-	buf  []byte
-	done chan callResult
+	buf    []byte
+	stderr []byte
+	done   chan callResult
 }
 
 // pendingStream carries a streaming (unbuffered) forward call's response chunks
@@ -97,8 +99,10 @@ type pendingStream struct {
 }
 
 type callResult struct {
-	out []byte
-	err error
+	out      []byte
+	stderr   []byte
+	exitCode int
+	err      error
 }
 
 // compile-time check: *Client satisfies transport.Transport.
@@ -231,8 +235,30 @@ func (c *Client) keepAliveLoop(ctx context.Context) {
 // call over the Tunnel and wait for the response. The call has ALREADY passed
 // local dom0 policy before reaching here.
 func (c *Client) Call(ctx context.Context, target, service string, in []byte) ([]byte, error) {
+	res, err := c.call(ctx, target, service, in)
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 {
+		// Preserve the caller-visible contract (non-zero exit is an error) while
+		// still surfacing stdout, which the old text-trailer protocol could not.
+		return res.Stdout, fmt.Errorf("remote service %q exited %d: %s",
+			service, res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return res.Stdout, nil
+}
+
+// CallResult is Call with the outcome kept structured: stdout, stderr and the
+// service's exit code travel separately, so a caller can act on the exit code
+// instead of parsing output. It satisfies transport.ResultTransport.
+func (c *Client) CallResult(ctx context.Context, target, service string, in []byte) (transport.Result, error) {
+	return c.call(ctx, target, service, in)
+}
+
+// call sends one forward request and waits for its structured result.
+func (c *Client) call(ctx context.Context, target, service string, in []byte) (transport.Result, error) {
 	if !transport.ValidName(target) || !transport.ValidName(service) {
-		return nil, transport.ErrInvalidName
+		return transport.Result{}, transport.ErrInvalidName
 	}
 
 	reqID := uuid.NewString()
@@ -241,7 +267,7 @@ func (c *Client) Call(ctx context.Context, target, service string, in []byte) ([
 	c.mu.Lock()
 	if c.stream == nil {
 		c.mu.Unlock()
-		return nil, ErrNotConnected
+		return transport.Result{}, ErrNotConnected
 	}
 	c.inflight[reqID] = pc
 	c.mu.Unlock()
@@ -260,22 +286,25 @@ func (c *Client) Call(ctx context.Context, target, service string, in []byte) ([
 
 	// Header + request body + EOS(request). Sends are serialized by c.send.
 	if err := c.send(requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
-		return nil, fmt.Errorf("send header: %w", err)
+		return transport.Result{}, fmt.Errorf("send header: %w", err)
 	}
 	if len(in) > 0 {
 		if err := c.send(dataFrame(reqID, streamRequest, in)); err != nil {
-			return nil, fmt.Errorf("send body: %w", err)
+			return transport.Result{}, fmt.Errorf("send body: %w", err)
 		}
 	}
 	if err := c.send(eosFrame(reqID, streamRequest)); err != nil {
-		return nil, fmt.Errorf("send eos: %w", err)
+		return transport.Result{}, fmt.Errorf("send eos: %w", err)
 	}
 
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return transport.Result{}, ctx.Err()
 	case res := <-pc.done:
-		return res.out, res.err
+		if res.err != nil {
+			return transport.Result{}, res.err
+		}
+		return transport.Result{Stdout: res.out, Stderr: res.stderr, ExitCode: res.exitCode}, nil
 	}
 }
 
@@ -387,6 +416,9 @@ func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelCl
 			case streamResponse:
 				// Response body for a forward call we originated.
 				c.appendForward(reqID, d.GetPayload())
+			case streamStderr:
+				// Stderr for a forward call, kept separate from stdout.
+				c.appendForwardStderr(reqID, d.GetPayload())
 			case streamRequest:
 				// Body of an inbound reverse request.
 				if rc, ok := reverseBuf[reqID]; ok {
@@ -398,8 +430,8 @@ func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelCl
 			eos := frame.GetEos()
 			switch eos.GetStreamId() {
 			case streamResponse:
-				// Forward call complete.
-				c.completeForward(reqID, nil)
+				// Forward call complete; the EOS carries the command's exit code.
+				c.completeForward(reqID, nil, int(eos.GetExitCode()))
 			case streamRequest:
 				// Inbound reverse request fully received → route to local dom0.
 				if rc, ok := reverseBuf[reqID]; ok {
@@ -412,7 +444,7 @@ func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelCl
 			ce := frame.GetError()
 			// Error can terminate either a forward call or an in-progress reverse.
 			delete(reverseBuf, reqID)
-			c.completeForward(reqID, fmt.Errorf("remote: %s: %s", ce.GetCode(), ce.GetMessage()))
+			c.completeForward(reqID, fmt.Errorf("remote: %s: %s", ce.GetCode(), ce.GetMessage()), 0)
 		}
 	}
 }
@@ -463,9 +495,20 @@ func (c *Client) appendForward(reqID string, payload []byte) {
 	}
 }
 
+// appendForwardStderr buffers a forward call's stderr. Streaming calls
+// (CallStream) have no structured result and drop it, as before.
+func (c *Client) appendForwardStderr(reqID string, payload []byte) {
+	c.mu.Lock()
+	pc := c.inflight[reqID]
+	if pc != nil {
+		pc.stderr = append(pc.stderr, payload...)
+	}
+	c.mu.Unlock()
+}
+
 // completeForward delivers the final result (or error) to a forward-call waiter,
 // or ends a streaming call by closing its recv channel (err set first).
-func (c *Client) completeForward(reqID string, err error) {
+func (c *Client) completeForward(reqID string, err error, exitCode int) {
 	c.mu.Lock()
 	ps := c.streams[reqID]
 	pc := c.inflight[reqID]
@@ -487,7 +530,7 @@ func (c *Client) completeForward(reqID string, err error) {
 	if err != nil {
 		pc.done <- callResult{err: err}
 	} else {
-		pc.done <- callResult{out: pc.buf}
+		pc.done <- callResult{out: pc.buf, stderr: pc.stderr, exitCode: exitCode}
 	}
 }
 
@@ -535,6 +578,6 @@ func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	delta := time.Duration(rand.Int63n(int64(d) / 5)) //nolint:gosec // reconnect jitter, not security-sensitive
+	delta := time.Duration(rand.Int63n(int64(d) / 5)) // #nosec G404 -- reconnect backoff jitter to avoid a thundering herd; unpredictability buys an attacker nothing and this value never leaves the retry timer //nolint:gosec // reconnect jitter, not security-sensitive
 	return d - (delta / 2) + delta
 }

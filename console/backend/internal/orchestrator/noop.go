@@ -3,9 +3,9 @@ package orchestrator
 import "context"
 
 // NoopExecutor is an Executor that does nothing and always succeeds. It is the
-// default when no terraform environment is configured, preserving the console's
-// original behavior (flip the DB status without touching infrastructure) so
-// that existing CRUD flows and tests keep working on a machine without a cloud.
+// default when orchestration is disabled, preserving the console's original
+// behavior (flip the DB status without touching infrastructure) so that
+// existing CRUD flows and tests keep working on a machine without a cloud.
 //
 // It still validates the qube name so that even the no-op path rejects unsafe
 // input consistently with the real executor.

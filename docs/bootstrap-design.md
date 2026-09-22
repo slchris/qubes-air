@@ -17,7 +17,7 @@
 ```mermaid
 flowchart TD
   Create["Console 创建 Qube"] --> Token["生成一次性 bootstrap token（1 小时 TTL）"]
-  Token --> Provision["OpenTofu 克隆 compute 并准备持久 data disk"]
+  Token --> Provision["provider 克隆 compute 并准备持久 data disk"]
   Provision --> CloudInit["cloud-init 投递 CA、token、agent URL / SHA256 / version"]
   CloudInit --> Install["Guest 校验 SHA256，安装并启动 bootstrap listener"]
   Install --> CSR["Agent 本地生成 P-256 private key 和 CSR"]
@@ -43,7 +43,7 @@ Proxmox 真机已经跑通这条闭环。
 
 ## 4. Proxmox 置备边界
 
-Console 通过 Terraform/OpenTofu 管理 VM。cloud-init snippet 需要出现在目标节点可见的 snippet
+Console 通过 provider 原生 API 管理 VM。cloud-init snippet 需要出现在目标节点可见的 snippet
 storage；当前流程支持按内容哈希命名并上传，避免多个 Qube 共用可变路径。
 
 节点 SSH 是基础设施安装/投递手段，不是每次 guest bootstrap 的身份通道。生产环境应把权限
@@ -74,7 +74,7 @@ artifact store 可以是明文 HTTP，但完整性完全依赖 SHA256 配置来�
 
 ## 7. 身份按内容与实例绑定
 
-身份文档和 cloud-init snippet 使用内容哈希命名，不覆盖共享固定路径。这样 Terraform plan、
+身份文档和 cloud-init snippet 使用内容哈希命名，不覆盖共享固定路径。这样 provider 对账、
 Proxmox 缓存和旧 VM 不会悄悄引用被替换的身份材料。
 
 Agent 私钥只在 guest 创建。Console 保存 CA 和签发记录，不保存 agent 私钥。Relay 采用相同的
@@ -104,8 +104,8 @@ Token 具备以下属性：
 | Provider | 资源 | Bootstrap 可达性 | 状态 |
 |---|---|---|---|
 | Proxmox | compute/storage 分离 | console 可主动拨 guest | 已真机验证 |
-| GCP | 资源已有实现 | 私网地址对 console 的可信路径未闭环 | 未完成 |
-| AWS | 接口骨架 | 未设计完成 | 未完成 |
+| GCP | 当前原生适配器未实现/注册 | 私网地址对 console 的可信路径未闭环 | 不可置备 |
+| AWS | 当前原生适配器未实现/注册 | 未完成 | 不可置备 |
 
 Provider 适配必须同时回答“如何投递公开 bootstrap 材料”和“console 如何可信地连接 agent”。
 
@@ -123,8 +123,7 @@ Relay 经 mTLS 连接 agent；GUI/TCP 复用同一安全通道。
 | console CA | console | console 加密存储 | 运维/恢复流程 |
 | agent private key | remote guest | guest identity dir | agent CSR 续期 |
 | Relay private key | Relay | Relay `/rw` 持久目录 | relay bootstrap/timer |
-| data LUKS material | console 派生/控制 | 不写远端持久明文 | console |
-| OpenTofu state passphrase | vault | vault | 人工受控流程 |
+| data LUKS material | console 生成 per-Qube DEK，仍有派生回退 | 加密凭据库，不写远端持久明文 | console |
 
 ## 13. 剩余工作
 

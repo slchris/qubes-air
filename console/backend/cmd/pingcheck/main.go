@@ -83,7 +83,7 @@ func main() {
 			MinVersion:   tls.VersionTLS13,
 			// The agent's certificate carries no SAN for this address, so verify
 			// the chain by hand rather than skipping verification outright.
-			InsecureSkipVerify: true, //nolint:gosec // chain checked in VerifyConnection
+			InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below checks the leaf against this CA with ServerAuth usage, requires pki.RoleOf == RoleAgent, and pins the CN to pki.AgentCommonName(*remote) //nolint:gosec // chain checked in VerifyConnection
 			// VerifyConnection, not VerifyPeerCertificate: the latter is skipped
 			// on a resumed session, so a check that lives there can be bypassed
 			// by a client that reconnects with a cached ticket. PeerCertificates
@@ -94,12 +94,26 @@ func main() {
 					return errors.New("agent presented no certificate")
 				}
 				leaf := cs.PeerCertificates[0]
-				_, err := leaf.Verify(x509.VerifyOptions{Roots: pool,
-					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
-				if err == nil {
-					fmt.Printf("  agent 证书  : CN=%s (由本 CA 签发 ✓)\n", leaf.Subject.CommonName)
+				inters := x509.NewCertPool()
+				for _, c := range cs.PeerCertificates[1:] {
+					inters.AddCert(c)
 				}
-				return err
+				if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, Intermediates: inters,
+					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+					return err
+				}
+				if role, err := pki.RoleOf(leaf); err != nil {
+					return err
+				} else if role != pki.RoleAgent {
+					return fmt.Errorf("peer role %q is not an agent", role)
+				}
+				want := pki.AgentCommonName(*remote)
+				if leaf.Subject.CommonName != want {
+					return fmt.Errorf("agent certificate identifies %q but %s should be serving %q",
+						leaf.Subject.CommonName, *remote, want)
+				}
+				fmt.Printf("  agent 证书  : CN=%s (role=agent, 由本 CA 签发 ✓)\n", leaf.Subject.CommonName)
+				return nil
 			},
 		},
 	}, nil)

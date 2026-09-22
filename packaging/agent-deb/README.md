@@ -1,56 +1,78 @@
-# qubes-air-agent
+# qubes-air-agent package
 
-The Qubes Air RemoteVM agent. It listens for the local relay over mutual TLS and
-executes the qrexec services in `/etc/qubes-rpc`.
+The RemoteVM agent listens over mTLS and runs explicitly enabled qrexec services.
+See the [agent design](../../docs/remote-agent-design.md) and
+[bootstrap flow](../../docs/bootstrap-design.md) for the current protocol.
 
-## What this package installs
+## Installed files
 
 | Path | Purpose |
-| --- | --- |
-| `/usr/bin/qubes-air-agent` | the agent binary |
-| `/lib/systemd/system/qubes-air-agent.service` | the unit (enabled on install, **not** started) |
-| `/etc/qubes-rpc/` | qrexec service implementations |
+|---|---|
+| `/usr/bin/qubes-air-agent` | Agent binary |
+| `/lib/systemd/system/qubes-air-agent.service` | Unit enabled on installation; a stopped unit is not started by postinst |
+| `/etc/qubes-rpc/` | Service implementations |
 
-## What this package does *not* install
+On upgrade, postinst uses `try-restart` for an already running unit. Cloud-init's installer starts the
+unit after preparing its configuration. The package default service allowlist contains only Ping.
 
-`/etc/qubes-air/` — the CA, the certificate, the private key, and `agent.env` —
-is rendered by the console and delivered by cloud-init. The agent refuses to
-start without all three PEM files, so a freshly installed package intentionally
-leaves a stopped unit behind until that material arrives.
+## Identity on first boot
 
-## Diagnosing a unit that will not start
+Cloud-init provides `/etc/qubes-air/ca.pem`, `bootstrap-token` and `agent.env`, together with pinned
+artifact metadata. It does **not** deliver an agent private key or an issued agent certificate.
 
-```
+The unit supplies the CA, certificate and key **paths**. A cleanly absent certificate/key pair is
+expected on first boot: the agent generates its key locally, submits a CSR through bootstrap, then
+persists its issued identity. Corrupt, unreadable or partially present identity files are errors.
+A missing CA or missing bootstrap material is not repaired by copying a private key from Console.
+
+## Diagnostics
+
+```bash
 systemctl status qubes-air-agent
 journalctl -u qubes-air-agent -n 50
 ```
 
-Common causes, in the order they actually occur:
+- Missing `agent.env`: inspect cloud-init configuration delivery.
+- Missing or invalid CA, partial identity pair: inspect file presence and permissions without logging keys.
+- No certificate on a fresh boot: inspect token availability, Console reachability and CSR issuance.
+- `--ca, --cert and --key are all required`: mandatory path arguments were omitted.
+- `exec format error`: check package architecture with `dpkg -I`; this build targets amd64.
 
-- **`Failed to load environment files`** — `/etc/qubes-air/agent.env` is missing.
-  The console never rendered an identity for this host, or cloud-init did not run.
-- **`load key pair: no such file or directory`** — the env file arrived but the
-  certificates did not. Same cause, partial delivery.
-- **`--ca, --cert and --key are all required`** — the unit was started by hand
-  without the packaged `ExecStart`.
-- **`exec format error`** — the wrong architecture was installed. This package is
-  `amd64`; verify with `dpkg -I` before blaming anything else.
+After correcting the underlying failure, a unit that hit its start limit can be restarted:
 
-If the start limit was reached before the certificates arrived, systemd will
-refuse further starts until the failure is cleared:
-
-```
+```bash
 systemctl reset-failed qubes-air-agent
 systemctl start qubes-air-agent
 ```
 
-## Building
+Exec, FileCopy and RekeyData require Python 3 (declared as a package dependency) and explicit
+service/policy configuration. Exec accepts JSON argv, FileCopy uses directory descriptors,
+UnlockData opens the encrypted data disk and RekeyData migrates a legacy disk to its own key; all
+inherit the agent sandbox. The unit requires `QUBESAIR_REVOCATION_URL` for CA-signed revocation
+status. Deployment requirements and failure behavior are documented in
+[security controls](../../docs/security-controls.md).
+
+## Build
 
 From the repository root:
 
-```
+```bash
 scripts/build-agent-deb.sh
 ```
 
-See `packaging/agent-deb/Dockerfile` for why the build cross-compiles rather
-than emulating the target architecture.
+The [Dockerfile](Dockerfile) defines the cross-compilation and package layout. Build success does not
+replace installation, upgrade, bootstrap and real-provider acceptance tests.
+
+## Install and upgrade smoke test
+
+```bash
+make agent-deb-test            # or: scripts/test-agent-deb.sh
+```
+
+Builds an old and the current package, then inside `debian:bookworm-slim` installs the old one
+(resolving the `python3` dependency), checks the installed layout and version output, exercises the
+startup refusals (missing mTLS paths, no identity and no bootstrap token, missing revocation URL,
+empty allowlist), upgrades to the current build and verifies an operator conffile edit survives,
+then removes the package. It needs Docker and network access for apt and is deliberately not part of
+`make pre-commit`; CI runs it in the `agent-package` job. First bootstrap against a real console
+remains a QA-01 item.

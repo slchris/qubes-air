@@ -1,67 +1,124 @@
-#!/bin/bash
-# qubesair.FileCopy — 往/从本远端传一个文件。
-#
-# 由 RemoteVM agent 在收到 qrexec 服务名 "qubesair.FileCopy" 时执行。协议**全走 stdin**:
-# qrexec 服务参数字符集装不下路径 (无 '/'), 所以方向与路径也从 stdin 头一行读。
-#
-#   stdin 第一行 : "push <绝对路径>" 或 "pull <绝对路径>"
-#   push         : 头一行之后是文件内容 -> 原子写到 <路径>; stdout 回
-#                  "OK push <字节数> <sha256> <路径>"
-#   pull         : stdout 回 <路径> 的原始内容
-#
-# 上限: agent 一次应答最多 16 MiB、2 分钟, 适合配置/脚本类中小文件。
-#
-# 文件读写经 systemd-run 在**宿主命名空间**做, 绕开 agent 的沙箱(ProtectSystem 只读 /usr、
-# /etc; PrivateTmp 私有 /tmp; ProtectHome 挡 /home)—— 否则往真实文件系统写会失败, 或写进
-# agent 私有视图里、真实系统看不到。理由同 qubesair.Exec。
-# 恒退 0: invoker 在服务非零退出时丢弃 stdout, 所以错误也以文本回到 stdout。
-set -uo pipefail
+#!/usr/bin/python3
+"""Bounded file transfer inside explicitly approved directories.
 
-IFS= read -r header || { echo "FileCopy: 空请求 (stdin 头一行应为 'push|pull <绝对路径>')"; exit 0; }
-op="${header%% *}"
-path="${header#* }"
+Every path component is opened without following symlinks. All operations use
+the same directory descriptors in the agent's sandbox; no host shell is used.
+"""
 
-case "$op" in
-    push|pull) ;;
-    *) echo "FileCopy: 未知操作 '$op' (要 push 或 pull)"; exit 0 ;;
-esac
+import hashlib
+import os
+import secrets
+import stat
+import sys
 
-# 只收绝对路径, 且不含 '..' (挡目录穿越)。头一行按行读, 换行不会混进 path。
-if [[ "$path" != /* || "$path" == *".."* || -z "$path" || "$path" == "$header" ]]; then
-    echo "FileCopy: 非法或缺失路径 '$path' (需绝对路径)"; exit 0
-fi
+MAX_BYTES = 16 * 1024 * 1024
+MAX_HEADER = 4096
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
-# 在宿主命名空间跑 payload;路径经 --setenv 传, 不拼进脚本。stderr 并进 stdout, 让错误
-# 也回到调用方 (agent 非零退出会丢 stdout)。没有 systemd 时退回直接跑 (受沙箱限制)。
-host_run() {
-    if command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --pipe --wait --collect --quiet --setenv=QA_PATH="$path" -- /bin/bash -c "$1" 2>&1
-    else
-        QA_PATH="$path" /bin/bash -c "$1" 2>&1
-    fi
-}
 
-case "$op" in
-push)
-    # 头一行之后的 stdin 全部是内容, 经 --pipe 流进 cat。原子写: temp + rename。
-    host_run '
-        d="$(dirname -- "$QA_PATH")"
-        [ -d "$d" ] || { echo "FileCopy: 目标目录不存在 $d"; exit 0; }
-        [ -w "$d" ] || { echo "FileCopy: 目标目录不可写 $d"; exit 0; }
-        tmp="$(mktemp -- "$QA_PATH.XXXXXX.part")" || { echo "FileCopy: 建临时文件失败"; exit 0; }
-        cat > "$tmp"
-        sz="$(wc -c < "$tmp")"; sum="$(sha256sum < "$tmp" | cut -d" " -f1)"
-        if mv -f -- "$tmp" "$QA_PATH"; then
-            echo "OK push $sz $sum $QA_PATH"
-        else
-            rm -f -- "$tmp"; echo "FileCopy: 写入失败 $QA_PATH"
-        fi'
-    ;;
-pull)
-    host_run '
-        [ -f "$QA_PATH" ] || { echo "FileCopy: 不存在或非普通文件 $QA_PATH"; exit 0; }
-        [ -r "$QA_PATH" ] || { echo "FileCopy: 不可读 $QA_PATH"; exit 0; }
-        cat -- "$QA_PATH"'
-    ;;
-esac
-exit 0
+def reject(message, code=64):
+    print("qubesair.FileCopy: " + message, file=sys.stderr)
+    raise SystemExit(code)
+
+
+def valid_path(path):
+    return (
+        path.startswith("/")
+        and not path.startswith("//")
+        and os.path.normpath(path) == path
+        and not any(ord(c) < 32 or ord(c) == 127 for c in path)
+    )
+
+
+def read_request():
+    header = sys.stdin.buffer.readline(MAX_HEADER + 1)
+    if len(header) > MAX_HEADER or not header.endswith(b"\n"):
+        reject("missing or oversized request header")
+    try:
+        op, path = header[:-1].decode("utf-8").split(" ", 1)
+    except (ValueError, UnicodeError):
+        reject("expected push or pull and an absolute path")
+    if op not in ("push", "pull") or not valid_path(path):
+        reject("invalid operation or path")
+    configured = os.environ.get("QUBESAIR_FILECOPY_ROOTS", "")
+    if not configured:
+        reject("no allowed directories configured", 77)
+    roots = configured.split(":")
+    if any(not valid_path(root) or root == "/" for root in roots):
+        reject("invalid allowed directory configuration", 77)
+    if not any(path.startswith(root + "/") for root in roots):
+        reject("path outside allowed directories", 126)
+    return op, path
+
+
+def open_parent(path):
+    # Walk from /, including the configured root itself; no component may be
+    # swapped for a symlink between validation and use.
+    parts = path.split("/")[1:]
+    fd = os.open("/", DIR_FLAGS)
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd, parts[-1]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def push(parent, name, path):
+    payload = sys.stdin.buffer.read(MAX_BYTES + 1)
+    if len(payload) > MAX_BYTES:
+        reject("payload exceeds 16 MiB")
+    temporary = ".qubes-air-" + secrets.token_hex(16) + ".part"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        # Replacing a final symlink replaces the link, never its target.
+        os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        os.fsync(parent)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError:
+            pass
+    digest = hashlib.sha256(payload).hexdigest()
+    print("OK push {} {} {}".format(len(payload), digest, path))
+
+
+def pull(parent, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
+            reject("expected a regular file no larger than 16 MiB")
+        payload = source.read(MAX_BYTES + 1)
+        if len(payload) > MAX_BYTES:
+            reject("file exceeds 16 MiB")
+    sys.stdout.buffer.write(payload)
+
+
+def main():
+    if len(sys.argv) != 1:
+        reject("service arguments are not supported")
+    op, path = read_request()
+    parent, name = open_parent(path)
+    try:
+        if op == "push":
+            push(parent, name, path)
+        else:
+            pull(parent, name)
+    finally:
+        os.close(parent)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except OSError:
+        reject("file operation failed", 126)

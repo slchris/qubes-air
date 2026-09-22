@@ -35,7 +35,7 @@ func TestBuiltinCannotBeShadowedByFile(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Invoke %s: %v", name, err)
 		}
-		if got := strings.TrimSpace(string(out)); got != "BUILTIN" {
+		if got := strings.TrimSpace(string(out.Stdout)); got != "BUILTIN" {
 			t.Errorf("%s was served by %q; a file in the service directory overrode certificate renewal", name, got)
 		}
 	}
@@ -57,9 +57,9 @@ func TestBuiltinShadowingViaArgumentForm(t *testing.T) {
 
 	out, err := inv.Invoke(context.Background(), "console", ServiceCompleteRenewal+"+anything", nil)
 	if !errors.Is(err, ErrBuiltinTakesNoArgument) {
-		t.Fatalf("want ErrBuiltinTakesNoArgument, got out=%q err=%v", out, err)
+		t.Fatalf("want ErrBuiltinTakesNoArgument, got out=%q err=%v", out.Stdout, err)
 	}
-	if strings.Contains(string(out), "SHADOWED") {
+	if strings.Contains(string(out.Stdout), "SHADOWED") {
 		t.Error("the argument form reached the file in the service directory")
 	}
 }
@@ -80,8 +80,8 @@ func TestBuiltinIgnoresAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an allowlist that omits renewal must not disable it: %v", err)
 	}
-	if string(out) != "BUILTIN" {
-		t.Errorf("got %q", out)
+	if string(out.Stdout) != "BUILTIN" {
+		t.Errorf("got %q", out.Stdout)
 	}
 }
 
@@ -104,8 +104,8 @@ func TestBuiltinReceivesRequestBody(t *testing.T) {
 	if gotTarget != "console-probe" {
 		t.Errorf("target %q", gotTarget)
 	}
-	if string(gotBody) != `{"nonce":"abc"}` || string(out) != `{"nonce":"abc"}` {
-		t.Errorf("body %q, out %q", gotBody, out)
+	if string(gotBody) != `{"nonce":"abc"}` || string(out.Stdout) != `{"nonce":"abc"}` {
+		t.Errorf("body %q, out %q", gotBody, out.Stdout)
 	}
 }
 

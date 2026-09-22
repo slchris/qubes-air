@@ -370,7 +370,21 @@ func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr st
 		MinVersion:   tls.VersionTLS13,
 		// See the doc comment: there is no issued certificate to verify yet.
 		// The token, not the transport, authenticates the agent.
-		InsecureSkipVerify: true, //nolint:gosec // bootstrap peers hold no certificate; the one-shot token authenticates them
+		//
+		// This is a deliberate exception to AGENTS.md §5 ("InsecureSkipVerify
+		// requires a complete VerifyConnection"), recorded as G-H11 in
+		// docs/production-readiness-gaps.md. The peer holds only a per-process,
+		// self-signed placeholder (internal/agent/bootstrap.go:406), so there is
+		// no CA, role or identity that could be pinned in advance and a
+		// VerifyConnection here could only check claims an attacker also mints.
+		// What authenticates the agent is the one-shot token it presents
+		// (:266-276), which the console never sends. Residual risk: an on-path
+		// attacker during a first bootstrap can block the agent's message and
+		// redeem the token itself, obtaining a certificate for that qube name —
+		// bounded by the token's one-hour TTL and single use. Closing it means
+		// deriving the placeholder key from the token so the console can pin it
+		// (G-H11 option ②), not tightening the mode of a shared file.
+		InsecureSkipVerify: true, // #nosec G402 -- nothing exists to pin at bootstrap; the one-shot token authenticates the agent //nolint:gosec // bootstrap peers hold no certificate; the one-shot token authenticates them
 	}
 
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{

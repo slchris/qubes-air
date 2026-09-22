@@ -4,16 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 )
 
 // RemoteVM registration: telling dom0 that a provisioned qube exists.
 //
-// The console provisions with terraform, so dom0 has no way to learn a qube
-// exists — it writes terraform, not qvm-prefs. Until dom0 knows, no local qube
-// can address the machine at all: RemoteVM is the addressing shell that makes
-// `qrexec-client-vm remote-dev-1 <service>` resolvable, and without one the
-// fleet is reachable only from the console itself.
+// The console provisions through provider APIs, so dom0 has no way to learn a
+// qube exists — it writes provider state, not qvm-prefs. Until dom0 knows, no
+// local qube can address the machine at all: RemoteVM is the addressing shell
+// that makes `qrexec-client-vm remote-dev-1 <service>` resolvable, and without
+// one the fleet is reachable only from the console itself.
 //
 // The channel is the dom0 qrexec service qubesair.RegisterRemoteVM, which
 // accepts a fixed verb grammar and refuses any name outside `remote-*`. dom0
@@ -54,16 +55,32 @@ func (r *RemoteVMRegistrar) Enabled() bool {
 	return r != nil && r.enabled && r.qrexec != nil
 }
 
-// Register makes a provisioned qube addressable from local qubes.
+// RemoteVMLocalName is the dom0-side addressing shell name for a provisioned
+// qube: remote-<qube name>. The prefix is not cosmetic — the dom0 service that
+// creates the shell scopes every name it will touch to remote-*, so an
+// unprefixed call is refused (and used to fail silently, because registration
+// is quiet).
 //
-// The local name and the remote name are deliberately the same string. That is
-// not a simplification — the qube name is already the VM's hostname, the
-// agent's QUBESAIR_REMOTE_NAME and the subject of its certificate (agent-<name>,
-// see cloudinit.go). Introducing a fourth spelling here is how those four drift
-// apart, and the drift only shows up as a call that resolves to the wrong
-// machine.
+// The REMOTE name stays the bare qube name: it is already the VM's hostname,
+// the agent's QUBESAIR_REMOTE_NAME and the subject of its certificate
+// (agent-<name>, see cloudinit.go).
+func RemoteVMLocalName(qubeName string) string {
+	return "remote-" + qubeName
+}
+
+// remoteVMLocalNameRE mirrors the dom0 service's NAME_RE. Failing here keeps a
+// malformed name from becoming a refused call whose reason only shows up in the
+// console log.
+var remoteVMLocalNameRE = regexp.MustCompile(`^remote-[a-zA-Z0-9._-]+$`)
+
+// Register makes a provisioned qube addressable from local qubes as
+// remote-<qube name>.
 func (r *RemoteVMRegistrar) Register(ctx context.Context, qubeName string) error {
-	return r.call(ctx, "register", qubeName, qubeName)
+	local := RemoteVMLocalName(qubeName)
+	if !remoteVMLocalNameRE.MatchString(local) {
+		return fmt.Errorf("qube name %q cannot be registered: %q is not a valid remote-* name", qubeName, local)
+	}
+	return r.call(ctx, "register", local, qubeName)
 }
 
 // Deregister removes the addressing shell for a qube that is gone.
@@ -73,7 +90,11 @@ func (r *RemoteVMRegistrar) Register(ctx context.Context, qubeName string) error
 // and dropping its registration would mean every resume needs a re-register to
 // become addressable again.
 func (r *RemoteVMRegistrar) Deregister(ctx context.Context, qubeName string) error {
-	return r.call(ctx, "deregister", qubeName)
+	local := RemoteVMLocalName(qubeName)
+	if !remoteVMLocalNameRE.MatchString(local) {
+		return fmt.Errorf("qube name %q cannot be deregistered: %q is not a valid remote-* name", qubeName, local)
+	}
+	return r.call(ctx, "deregister", local)
 }
 
 // call sends one request line and surfaces what dom0 said.
@@ -134,6 +155,6 @@ func (r *RemoteVMRegistrar) DeregisterQuietly(ctx context.Context, qubeName stri
 	if err := r.Deregister(ctx, qubeName); err != nil {
 		log.Printf("remotevm: %q removed but its RemoteVM registration remains: %v "+
 			"(drop it by hand: qubesair.RegisterRemoteVM deregister %s)",
-			qubeName, err, qubeName)
+			qubeName, err, RemoteVMLocalName(qubeName))
 	}
 }

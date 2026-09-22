@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -19,12 +20,15 @@ import (
 	"crypto/x509"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/audit"
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
+	"github.com/slchris/qubes-air/console/internal/provider"
+	"github.com/slchris/qubes-air/console/internal/provider/proxmox"
 	"github.com/slchris/qubes-air/console/internal/qrexec"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
@@ -36,9 +40,9 @@ const (
 	appName    = "qubes-air-console"
 	appVersion = "0.1.0"
 
-	// orchestratorShutdownGrace is how long a terraform job may finish during
-	// shutdown. A real apply takes minutes; cutting one short is what leaves
-	// infrastructure that terraform has no record of.
+	// orchestratorShutdownGrace is how long an orchestration job may finish
+	// during shutdown. A real provision takes minutes; cutting one short is what
+	// leaves infrastructure the console has no record of.
 	orchestratorShutdownGrace = 10 * time.Minute
 
 	// agentHealthShutdownGrace is how long in-flight agent probes may finish.
@@ -118,6 +122,7 @@ func scopedTokens(cfg *config.Config) []middleware.Token {
 			Name:  t.Name,
 			Value: t.Token,
 			Scope: middleware.Scope(t.Scope),
+			Zones: append([]string(nil), t.Zones...),
 		})
 	}
 	return tokens
@@ -144,6 +149,7 @@ func logSecurityWarnings(cfg *config.Config) {
 
 // Dependencies holds all application dependencies.
 type Dependencies struct {
+	revocations       handler.RevocationSource
 	db                *database.DB
 	zoneHandler       *handler.ZoneHandler
 	qubeHandler       *handler.QubeHandler
@@ -152,6 +158,10 @@ type Dependencies struct {
 	billingHandler    *handler.BillingHandler
 	monitoringHandler *handler.MonitoringHandler
 	settingsHandler   *handler.SettingsHandler
+	// sessionHandler issues/clears browser session cookies (token exchange).
+	sessionHandler *handler.SessionHandler
+	// sessions backs cookie auth; shared with ScopedAuth.
+	sessions *middleware.SessionStore
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
 	// bootstrapTokens mints the tokens cloud-init delivers.
@@ -160,7 +170,11 @@ type Dependencies struct {
 	// Held here so it stays a live, injectable dependency; a service will consume
 	// it in the next stage-T wiring step.
 	transport transport.Transport
-	// runner serializes terraform work onto one goroutine. Nil when
+	// qubeRepo and jobRepo answer the object-level zone questions RequireZones
+	// asks; they are held here because the middleware is built after them.
+	qubeRepo repository.QubeRepository
+	jobRepo  *repository.JobRepository
+	// runner serializes provider work onto one goroutine. Nil when
 	// orchestration is disabled, in which case the service runs inline.
 	runner *orchestrator.Runner
 	// agents re-probes qube agents in the background so a dead one is noticed
@@ -179,8 +193,8 @@ type Dependencies struct {
 // Close releases all resources.
 func (d *Dependencies) Close() {
 	// Drain orchestration before the database goes away: the completion hook
-	// writes a qube's terminal status, and terraform gets a signal (not a kill)
-	// so it can persist state rather than stranding VMs and disks.
+	// writes a qube's terminal status, and an in-flight provider call is
+	// allowed to finish rather than being killed mid-operation.
 	if d.runner != nil {
 		d.runner.Shutdown(orchestratorShutdownGrace)
 	}
@@ -238,9 +252,9 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	if ds := cfg.Orchestrator.AgentSnippetDatastore; ds != "" {
 		// Said at startup because the two delivery paths are invisible from the
 		// outside once running, and they fail in completely different places: a
-		// broken SFTP path fails the apply, a broken share fails the VM's boot.
+		// broken SSH upload fails the provision, a broken share fails the VM's boot.
 		log.Printf("pki: delivering agent identities through datastore %q on %s; "+
-			"terraform will not upload snippets and needs no SSH to a node",
+			"the console references the snippet and needs no SSH to a node",
 			ds, cfg.Orchestrator.AgentIdentityDir)
 	}
 	if cfg.Orchestrator.AgentPackageURL == "" {
@@ -248,17 +262,18 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 			"new qubes will boot without an agent (set QUBES_AIR_AGENT_PACKAGE_URL and _SHA256)")
 	}
 
-	// The snapshot makes the database the source of truth for which qubes
-	// exist: the executor renders it to the generated var-file before every
-	// terraform invocation, and refuses to act on a qube missing from it.
-	// Terraform's provider credentials come from the encrypted credential store
-	// too, injected into the subprocess environment. They are deliberately NOT
-	// passed as terraform variables: a variable's value is written to state in
-	// plaintext, which the state design forbids for long-lived credentials.
-	exec := buildExecutor(cfg.Orchestrator,
-		service.NewQubeSnapshot(qubeRepo, zoneRepo, certIssuer),
-		service.NewTerraformEnvFunc(zoneRepo, credentialRepo,
-			cfg.Orchestrator.ProxmoxSSHKeyFile, cfg.Orchestrator.ProxmoxSSHUsername))
+	// The native provider executor is the default and only real orchestration
+	// path. The database (qube_infra) is the single source of truth for what
+	// exists — there is no terraform state file, generated var-file, or
+	// subprocess. Adapters are selected by zone type; a zone with no registered
+	// adapter fails loudly instead of silently doing nothing.
+	qubeInfraRepo := repository.NewQubeInfraRepository(db)
+	providerRegistry := provider.NewRegistry()
+	if err := registerProxmoxAdapter(providerRegistry, zoneRepo, credentialRepo, certIssuer, cfg.Orchestrator); err != nil {
+		return nil, err
+	}
+	exec := buildExecutor(cfg.Orchestrator, providerRegistry,
+		service.NewNativeQubeZoneResolver(qubeRepo, zoneRepo), qubeInfraRepo)
 
 	// One scheduler instance, shared by placement (qube service) and the
 	// capacity endpoint (zone handler).
@@ -272,9 +287,17 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		cfg.Orchestrator.AgentListen,
 		time.Duration(cfg.Orchestrator.AgentProbeTimeoutSeconds)*time.Second)
 
+	// Provision waits for the agent to answer before it reports success. A VM
+	// that was created but whose agent never comes up (a failed install, or an
+	// address another host already holds) would otherwise finish "successfully"
+	// as a qube that reads running and is silently dead.
+	if native, ok := exec.(*orchestrator.NativeExecutor); ok {
+		native.WithReachability(service.NewAgentReachability(agentProber))
+	}
+
 	certRenewals, bootstraps := newFleetMonitors(cfg, certIssuer, credentialRepo, agentCertRepo, bootstrapTokenRepo, qubeRepo)
 
-	qubeSvcOpts := newQubeServiceOptions(cfg, exec, xport, agentProber, clusterScheduler, certRenewals, certIssuer)
+	qubeSvcOpts := newQubeServiceOptions(cfg, exec, xport, agentProber, clusterScheduler, certRenewals, certIssuer, qubeInfraRepo, service.NewDataKeyManager(credentialRepo))
 
 	jobRepo := repository.NewJobRepository(db)
 	qubeSvc, runner, agents, jobLogs := startOrchestration(
@@ -303,7 +326,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	settingsRepo := repository.NewSettingsRepository(db)
 	settingsSvc := service.NewSettingsService(settingsRepo)
 
+	sessionStore := middleware.NewSessionStore(0)
 	return &Dependencies{
+		qubeRepo:          qubeRepo,
+		jobRepo:           jobRepo,
 		db:                db,
 		zoneHandler:       handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
 		qubeHandler:       handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
@@ -312,6 +338,9 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		billingHandler:    handler.NewBillingHandler(),
 		monitoringHandler: handler.NewMonitoringHandler(),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
+		revocations:       certIssuer,
+		sessionHandler:    handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
+		sessions:          sessionStore,
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
 		bootstraps:        bootstraps,
 		bootstrapTokens:   bootstrapTokenRepo,
@@ -338,11 +367,13 @@ func newCertIssuer(
 	return service.NewCertIssuer(credentialRepo, agentCertRepo,
 		cfg.Orchestrator.AgentIdentityDir, cfg.Orchestrator.AgentListen,
 		service.AgentPackage{
+			RevocationURL:     cfg.Orchestrator.AgentRevocationURL,
 			AptMirror:         cfg.Orchestrator.AptMirror,
 			AptSecurityMirror: cfg.Orchestrator.AptSecurityMirror,
 			URL:               cfg.Orchestrator.AgentPackageURL,
 			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
 			Version:           cfg.Orchestrator.AgentPackageVersion,
+			AllowedServices:   cfg.Orchestrator.AgentAllowedServices,
 		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore).
 		WithBootstrapTokens(bootstrapTokenRepo, 0)
 }
@@ -386,6 +417,8 @@ func newQubeServiceOptions(
 	clusterScheduler *service.ClusterScheduler,
 	certRenewals *service.CertRenewalMonitor,
 	certIssuer *service.CertIssuer,
+	infraRepo *repository.QubeInfraRepository,
+	dataKeys service.DataKeyStore,
 ) []service.QubeServiceOption {
 	return []service.QubeServiceOption{
 		service.WithExecutor(exec),
@@ -407,10 +440,15 @@ func newQubeServiceOptions(
 		// decides, so flipping the fleet from plaintext to encrypted (or back)
 		// is a config change, not a code change.
 		service.WithEncryptDataDefault(cfg.Orchestrator.EncryptDataDefault),
+		// Purge uses this to lift the data disk's `protected` flag, which the
+		// executor's Destroy requires before it will destroy the disk.
+		service.WithInfraStore(infraRepo),
+		// Per-qube data keys: minted at creation, deleted on purge (crypto-shred).
+		service.WithDataKeyStore(dataKeys),
 	}
 }
 
-// startOrchestration builds and starts the qube service, the terraform runner
+// startOrchestration builds and starts the qube service, the orchestration runner
 // and the agent-health monitor.
 //
 // The three are constructed together because they refer to one another: the
@@ -419,8 +457,8 @@ func newQubeServiceOptions(
 // apply finishes. That last edge is what forces the ordering below.
 //
 // The runner turns orchestration asynchronous. Without it the service falls
-// back to running terraform inline, which cannot work for real applies: they
-// take minutes against a 15s server write deadline.
+// back to running provider calls inline, which cannot work for real provisions:
+// they take minutes against a 15s server write deadline.
 func startOrchestration(
 	cfg config.OrchestratorConfig,
 	jobLogDir string,
@@ -444,11 +482,21 @@ func startOrchestration(
 	if cfg.Enabled {
 		// Jobs are persisted, not held in memory: they are the audit record of
 		// every infrastructure change this console made.
-		if n, err := jobRepo.FailUnfinished(context.Background(),
-			"console restarted while this job was in flight; outcome unknown"); err != nil {
-			log.Printf("orchestrator: could not reconcile unfinished jobs: %v", err)
-		} else if n > 0 {
-			log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
+		//
+		// A job left queued or running belongs to a process that is gone. With a
+		// real executor queued work is failed and running work becomes UNKNOWN.
+		// Compute status is diagnostic, not proof that all steps completed.
+		// A no-op executor has nothing to ask, so it
+		// keeps the flat "mark failed" behavior.
+		if _, isNoop := exec.(orchestrator.NoopExecutor); isNoop {
+			if n, err := jobRepo.FailUnfinished(context.Background(),
+				"console restarted while this job was in flight; outcome unknown"); err != nil {
+				log.Printf("orchestrator: could not reconcile unfinished jobs: %v", err)
+			} else if n > 0 {
+				log.Printf("orchestrator: marked %d unfinished job(s) failed after restart", n)
+			}
+		} else {
+			service.ReconcileUnfinishedJobs(context.Background(), jobRepo, exec, qubeRepo)
 		}
 
 		// Job logs live beside the database, under the same data directory that
@@ -480,6 +528,11 @@ func startOrchestration(
 			OnDone: makeCompletionHook(qubeRepo,
 				func() *service.AgentHealthMonitor { return agents }, registrar),
 			Logs: jobLogs,
+			// Bounds one job end to end. Wiring it explicitly keeps the
+			// configured value and the runner's fallback from drifting apart,
+			// which is how a 15-minute bound ended up under a 15-25 minute
+			// provision.
+			Timeout: time.Duration(cfg.JobTimeoutSeconds) * time.Second,
 		})
 		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
 	}
@@ -499,11 +552,11 @@ func startOrchestration(
 
 // buildAgentHealthMonitor wires the background agent prober.
 //
-// exec is passed so the monitor can read a qube's IP address back out of
-// terraform: the console has no other source for it, and without an address
-// there is nothing to probe. A non-terraform executor simply does not satisfy
-// the interface, and the monitor degrades to probing whatever addresses are
-// already recorded.
+// exec is passed so the monitor can read a qube's IP address back from the
+// provider (Describe): the console has no other source for it, and without an
+// address there is nothing to probe. An executor that cannot report addresses
+// simply does not satisfy the interface, and the monitor degrades to probing
+// whatever addresses are already recorded.
 func buildAgentHealthMonitor(
 	cfg config.OrchestratorConfig,
 	qubeRepo repository.QubeRepository,
@@ -527,7 +580,7 @@ func buildAgentHealthMonitor(
 
 // makeCompletionHook returns the callback that records a job's outcome on the
 // qube. It is the only writer of a terminal status once operations are
-// asynchronous: nothing else is still around when terraform finishes.
+// asynchronous: nothing else is still around when an operation finishes.
 //
 // It is also where the agent probe is triggered, rather than terminalStatusFor
 // in the service. Two reasons, both concrete:
@@ -541,72 +594,61 @@ func buildAgentHealthMonitor(
 //     have to agree about when a qube became probeable.
 //
 // The probe is scheduled, never performed here: this runs on the single
-// terraform worker goroutine, so waiting for an agent to boot would stall every
-// queued apply behind it.
+// orchestration worker goroutine, so waiting for an agent to boot would stall
+// every queued job behind it.
+// terminalStatusForJob maps a finished job onto the status its qube lands on. A
+// failed job is an error whatever the action; a successful one depends on what
+// the action did — Destroy is the irreversible purge, so it lands on "purged"
+// while Release keeps the disk and lands on "released".
+func terminalStatusForJob(j *orchestrator.Job) models.QubeStatus {
+	if j.State != orchestrator.JobSucceeded {
+		return models.QubeStatusError
+	}
+	switch j.Action {
+	case orchestrator.ActionProvision, orchestrator.ActionResume:
+		return models.QubeStatusRunning
+	case orchestrator.ActionSuspend:
+		return models.QubeStatusSuspended
+	case orchestrator.ActionRelease:
+		return models.QubeStatusReleased
+	case orchestrator.ActionDestroy:
+		return models.QubeStatusPurged
+	default:
+		return models.QubeStatusError
+	}
+}
+
 func makeCompletionHook(
 	qubeRepo repository.QubeRepository, agents func() *service.AgentHealthMonitor,
 	registrar *service.RemoteVMRegistrar,
 ) orchestrator.Completion {
-	return func(ctx context.Context, j *orchestrator.Job) {
-		status := models.QubeStatusError
-		if j.State == orchestrator.JobSucceeded {
-			switch j.Action {
-			case orchestrator.ActionProvision, orchestrator.ActionResume:
-				status = models.QubeStatusRunning
-			case orchestrator.ActionSuspend:
-				status = models.QubeStatusSuspended
-			case orchestrator.ActionRelease, orchestrator.ActionDestroy:
-				status = models.QubeStatusReleased
+	return func(ctx context.Context, j *orchestrator.Job) (result error) {
+		// A cleanup failure must leave a retryable error, never a terminal purge.
+		defer func() {
+			if result != nil {
+				result = errors.Join(result, qubeRepo.UpdateStatus(ctx, j.QubeID, models.QubeStatusError))
 			}
-		}
-		if err := qubeRepo.UpdateStatus(ctx, j.QubeID, status); err != nil {
-			log.Printf("orchestrator: job %s finished (%s) but recording status %q failed: %v",
-				j.ID, j.State, status, err)
-		}
-
-		// The compute VM is gone after a suspend, release or destroy, so the
-		// recorded IP now points at nothing — and on resume terraform rebuilds
-		// the VM with a new MAC that draws a fresh DHCP lease, so the address
-		// genuinely changes. Clear it here. The health monitor only re-reads an
-		// address from terraform when the stored one is empty (asking terraform
-		// costs a subprocess per probe), so without this the console keeps
-		// probing — and bootstrapping — the dead address forever, and a resumed
-		// qube never becomes reachable even though its agent is up. Measured on
-		// real hardware: a resume moved the qube from .150 to .129 while the
-		// console kept dialing .150 and reported "no route to host".
+		}()
 		if j.State == orchestrator.JobSucceeded && service.ComputeDestroyingAction(j.Action) {
 			if err := qubeRepo.UpdateIPAddress(ctx, j.QubeID, ""); err != nil {
-				log.Printf("orchestrator: job %s cleared status but clearing the stale IP failed: %v",
-					j.ID, err)
+				return fmt.Errorf("clear endpoint: %w", err)
 			}
 		}
-
-		// Only a successful provision or resume produces a VM that should have
-		// a live agent. A failed job, a suspend or a release has nothing to
-		// probe, and probing them would fill the health column with failures
-		// that mean "this qube is intentionally off".
-		// A qube the fleet no longer contains loses its addressing shell. Only
-		// on release/destroy, not on suspend: a suspended qube still exists and
-		// can be resumed, and dropping its registration would make every resume
-		// need a re-register before local qubes could reach it again.
-		if j.State == orchestrator.JobSucceeded &&
+		if j.State == orchestrator.JobSucceeded && registrar.Enabled() &&
 			(j.Action == orchestrator.ActionRelease || j.Action == orchestrator.ActionDestroy) {
-			registrar.DeregisterQuietly(ctx, j.QubeName)
+			if err := registrar.Deregister(ctx, j.QubeName); err != nil {
+				return fmt.Errorf("remove RemoteVM: %w", err)
+			}
 		}
-
-		if j.State != orchestrator.JobSucceeded ||
-			(j.Action != orchestrator.ActionProvision && j.Action != orchestrator.ActionResume) {
-			return
+		if err := qubeRepo.UpdateStatus(ctx, j.QubeID, terminalStatusForJob(j)); err != nil {
+			return err
 		}
-
-		// Tell dom0 the machine exists, so local qubes can address it at all.
-		// Registration is idempotent, so doing it on resume as well repairs a
-		// registration that was lost or never made.
-		registrar.RegisterQuietly(ctx, j.QubeName)
-		// Note what is NOT happening: the job's outcome is already recorded and
-		// is not revisited. The VM exists and the apply did its work, so a
-		// silent agent is a fact about the qube, not a failed job.
-		agents().Settle(j.QubeID, j.QubeName, string(j.Action))
+		if j.State == orchestrator.JobSucceeded &&
+			(j.Action == orchestrator.ActionProvision || j.Action == orchestrator.ActionResume) {
+			registrar.RegisterQuietly(ctx, j.QubeName)
+			agents().Settle(j.QubeID, j.QubeName, string(j.Action))
+		}
+		return nil
 	}
 }
 
@@ -616,7 +658,7 @@ func makeCompletionHook(
 // source status, so the operator can simply retry.
 func reconcileStrandedQubes(ctx context.Context, qubeRepo repository.QubeRepository) {
 	transient := []models.QubeStatus{
-		models.QubeStatusCreating, models.QubeStatusResuming,
+		models.QubeStatusPending, models.QubeStatusCreating, models.QubeStatusResuming,
 		models.QubeStatusSuspending, models.QubeStatusDeleting,
 	}
 	stranded, err := qubeRepo.ListByStatus(ctx, transient)
@@ -633,41 +675,70 @@ func reconcileStrandedQubes(ctx context.Context, qubeRepo repository.QubeReposit
 	}
 }
 
-// buildExecutor selects the orchestration executor from configuration. When
-// orchestration is disabled (the default), a NoopExecutor is returned so that
-// start/stop only update the DB status — preserving behavior on machines
-// without terraform/cloud access. When enabled, a real TerraformExecutor drives
-// compute/storage separation.
+// buildExecutor selects the orchestration executor from configuration. Without
+// orchestration, a NoopExecutor keeps start/stop as DB-only status flips so the
+// console runs on a machine with no cloud. With orchestration enabled, the
+// NativeExecutor drives each zone's provider API directly; a zone with no
+// registered adapter is refused loudly at operation time.
 func buildExecutor(
 	cfg config.OrchestratorConfig,
-	snapshot orchestrator.QubeSnapshotFunc,
-	envFn orchestrator.EnvFunc,
+	registry *provider.Registry,
+	resolver orchestrator.QubeZoneResolver,
+	store orchestrator.InfraStore,
 ) orchestrator.Executor {
 	if !cfg.Enabled {
 		log.Printf("Orchestrator: DISABLED (start/stop only update DB status; " +
-			"set orchestrator.enabled=true and orchestrator.terraform_dir to drive terraform)")
+			"set orchestrator.enabled=true to drive providers natively)")
 		return orchestrator.NewNoopExecutor()
 	}
+	log.Printf("Orchestrator: ENABLED (native provider executor; zones with no adapter are refused)")
+	return orchestrator.NewNativeExecutor(registry, resolver, store)
+}
 
-	opts := []orchestrator.TerraformOption{}
-	if cfg.TerraformBinary != "" {
-		opts = append(opts, orchestrator.WithBinary(cfg.TerraformBinary))
+// registerProxmoxAdapter wires the Proxmox provider adapter.
+//
+// Zone credentials are decrypted from the store on every call, and the SSH key
+// used for cloud-init snippet upload is read at call time, so both can be
+// rotated without restarting the console. The identity resolver is the same
+// CertIssuer that renders every other agent identity.
+func registerProxmoxAdapter(
+	registry *provider.Registry,
+	zoneRepo repository.ZoneRepository,
+	credentialRepo *repository.CredentialRepository,
+	identities proxmox.IdentityResolver,
+	cfg config.OrchestratorConfig,
+) error {
+	credentials := service.NewZoneCredentialResolver(zoneRepo, credentialRepo)
+	ctor := func(ctx context.Context, zone *models.Zone) (provider.Adapter, error) {
+		creds, err := credentials(ctx, zone.ID)
+		if err != nil {
+			return nil, err
+		}
+		var sshCfg *proxmox.SSHConfig
+		if cfg.ProxmoxSSHKeyFile != "" {
+			key, err := os.ReadFile(cfg.ProxmoxSSHKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("proxmox: read SSH key %q: %w", cfg.ProxmoxSSHKeyFile, err)
+			}
+			sshCfg = &proxmox.SSHConfig{Username: cfg.ProxmoxSSHUsername, PrivateKey: string(key), KnownHostsFile: cfg.ProxmoxSSHKnownHostsFile}
+		}
+		return proxmox.New(
+			proxmox.Config{
+				Endpoint: creds.Endpoint,
+				APIToken: creds.APIToken,
+				Username: creds.Username,
+				Password: creds.Password,
+				CAPEM:    creds.CAPEM,
+			},
+			proxmox.Options{
+				SSH:              sshCfg,
+				Identity:         identities,
+				SnippetDatastore: cfg.AgentSnippetDatastore,
+				Logf:             log.Printf,
+			},
+		)
 	}
-	if cfg.VarFile != "" {
-		opts = append(opts, orchestrator.WithVarFile(cfg.VarFile))
-	}
-	if cfg.GeneratedVarFile != "" {
-		opts = append(opts, orchestrator.WithGeneratedVarFile(cfg.GeneratedVarFile))
-	}
-	if snapshot != nil {
-		opts = append(opts, orchestrator.WithQubeSnapshot(snapshot))
-	}
-	if envFn != nil {
-		opts = append(opts, orchestrator.WithEnvFunc(envFn))
-	}
-	log.Printf("Orchestrator: ENABLED (terraform_dir=%s, binary=%s, var_file=%s, generated_var_file=%s)",
-		cfg.TerraformDir, cfg.TerraformBinary, cfg.VarFile, cfg.GeneratedVarFile)
-	return orchestrator.NewTerraformExecutor(cfg.TerraformDir, opts...)
+	return registry.Register(models.ZoneTypeProxmox, ctor)
 }
 
 // buildTransport wires the cross-machine gRPC transport. Disabled by default it
@@ -832,17 +903,43 @@ func buildBootstrapper(
 		service.DefaultBootstrapTimeout)
 }
 
+// configureTrustedProxies makes c.ClientIP() report the peer address instead of
+// a header the caller controls.
+//
+// gin trusts every proxy by default (0.0.0.0/0 and ::/0), so X-Forwarded-For was
+// believed from anyone who sent it. Both consumers of ClientIP are affected and
+// both are security-relevant: the rate limiter keys its bucket on it, so an
+// unauthenticated caller could take a fresh bucket per request by rotating the
+// header, and the audit trail recorded whatever address the caller claimed.
+//
+// No proxy is trusted because nothing in front of the console rewrites the
+// header: it is reached directly on its LAN address, or through the qrexec TCP
+// forward, which forwards bytes without adding HTTP headers. A deployment that
+// does put an HTTP proxy in front should pass that proxy's address here rather
+// than restoring the default.
+func configureTrustedProxies(r *gin.Engine) error {
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return fmt.Errorf("configure trusted proxies: %w", err)
+	}
+	return nil
+}
+
 // setupRouter creates and configures the Gin router.
 func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	gin.SetMode(cfg.Server.Mode)
 
 	r := gin.New()
+	if err := configureTrustedProxies(r); err != nil {
+		log.Fatalf("server: %v", err)
+	}
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+	r.Use(securityHeaders())
 	r.Use(corsMiddleware(cfg))
 
 	// /health is intentionally left unauthenticated for liveness probes.
 	r.GET("/health", healthHandler(deps.db))
+	handler.RegisterRevocations(r, deps.revocations)
 
 	// There is deliberately NO /bootstrap route. The HTTP endpoint that used to
 	// hang here required the agent to dial the console — the only thing in the
@@ -859,8 +956,15 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	// fail-closed method rule on top of the resolved scope: GET/HEAD/OPTIONS
 	// are open to any authenticated scope, every other method needs control.
 	v1 := r.Group("/api/v1")
-	v1.Use(middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg)))
+	v1.Use(middleware.BodyLimit(cfg.Server.MaxBodyBytes))
+	v1.Use(middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg), deps.sessions))
+	v1.Use(middleware.RateLimit(middleware.NewRateLimiter(cfg.Server.RateLimitPerSec, cfg.Server.RateLimitBurst)))
 	v1.Use(middleware.RequireControl())
+	// Audit is registered BEFORE RequireZones so a zone denial (403/404) is
+	// recorded with the subject and zone scope that caused it.
+	v1.Use(middleware.Audit(audit.NewRecorder(os.Stderr)))
+	v1.Use(middleware.RequireZones(objectZoneResolver{qubes: deps.qubeRepo, jobs: deps.jobRepo}))
+	deps.sessionHandler.RegisterRoutes(v1)
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
 	deps.infraHandler.RegisterRoutes(v1)
@@ -926,21 +1030,47 @@ func registerWebUI(r *gin.Engine, cfg *config.Config) {
 func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
-		allowedOrigin := getAllowedOrigin(origin, cfg.CORS.AllowedOrigins)
+		// The response varies by Origin, so shared caches must key on it; without
+		// this one client's allowed response can be served to another origin.
+		c.Header("Vary", "Origin")
 
-		c.Header("Access-Control-Allow-Origin", allowedOrigin)
-		c.Header("Access-Control-Allow-Methods", strings.Join(cfg.CORS.AllowedMethods, ", "))
-		c.Header("Access-Control-Allow-Headers", strings.Join(cfg.CORS.AllowedHeaders, ", "))
-		// Per the CORS spec, "Allow-Credentials: true" MUST NOT be combined
-		// with a wildcard origin. Only advertise credentials support when a
-		// specific origin is echoed back.
-		if allowedOrigin != "*" && allowedOrigin != "" {
-			c.Header("Access-Control-Allow-Credentials", "true")
+		allowedOrigin := getAllowedOrigin(origin, cfg.CORS.AllowedOrigins)
+		if allowedOrigin != "" {
+			c.Header("Access-Control-Allow-Origin", allowedOrigin)
+			c.Header("Access-Control-Allow-Methods", strings.Join(cfg.CORS.AllowedMethods, ", "))
+			c.Header("Access-Control-Allow-Headers", strings.Join(cfg.CORS.AllowedHeaders, ", "))
+			// Per the CORS spec, "Allow-Credentials: true" MUST NOT be combined
+			// with a wildcard origin. Only advertise credentials support when a
+			// specific origin is echoed back.
+			if allowedOrigin != "*" {
+				c.Header("Access-Control-Allow-Credentials", "true")
+			}
 		}
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
 			return
+		}
+		c.Next()
+	}
+}
+
+// securityHeaders sets conservative response headers for the API and the served
+// UI. HSTS is only set over TLS: sending it on plain HTTP is ignored by browsers
+// and misleading in logs.
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "no-referrer")
+		// The SPA is same-origin and loads only its own bundle; inline styles are
+		// allowed because Svelte can emit them, inline scripts are not.
+		c.Header("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "+
+				"base-uri 'self'; form-action 'self'")
+		if c.Request.TLS != nil {
+			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		c.Next()
 	}
@@ -956,10 +1086,9 @@ func getAllowedOrigin(origin string, allowedOrigins []string) string {
 			return origin
 		}
 	}
-	// If origin not in list, return first allowed origin or empty
-	if len(allowedOrigins) > 0 {
-		return allowedOrigins[0]
-	}
+	// A disallowed origin gets NO Access-Control-Allow-Origin. Echoing the first
+	// configured origin (the old behavior) tells the browser a cross-origin
+	// response came from a site it did not, which is worse than sending nothing.
 	return ""
 }
 
@@ -1039,4 +1168,41 @@ func runServer(cfg *config.Config, handler http.Handler) {
 	}
 
 	log.Println("Server stopped")
+}
+
+// objectZoneResolver answers "which zone owns this object" for the zone
+// middleware. A missing object is not an error: the middleware answers 404 for
+// both missing and foreign objects so a restricted caller cannot probe which
+// IDs exist.
+type objectZoneResolver struct {
+	qubes repository.QubeRepository
+	jobs  *repository.JobRepository
+}
+
+func (r objectZoneResolver) ZoneOfQube(ctx context.Context, qubeID string) (string, bool, error) {
+	if r.qubes == nil || qubeID == "" {
+		return "", false, nil
+	}
+	qube, err := r.qubes.GetByID(ctx, qubeID)
+	if errors.Is(err, repository.ErrQubeNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return qube.ZoneID, true, nil
+}
+
+func (r objectZoneResolver) ZoneOfJob(ctx context.Context, jobID string) (string, bool, error) {
+	if r.jobs == nil || jobID == "" {
+		return "", false, nil
+	}
+	job, err := r.jobs.GetByID(ctx, jobID)
+	if errors.Is(err, repository.ErrJobNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return r.ZoneOfQube(ctx, job.QubeID)
 }

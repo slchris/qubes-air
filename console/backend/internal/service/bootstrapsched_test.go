@@ -16,7 +16,7 @@ import (
 type fakeBootstrapQubes struct {
 	qubes []*models.Qube
 	err   error
-	// gotStatuses records what the sweep asked for, so "running only" is
+	// gotStatuses records what the sweep asked for, so the exact status set is
 	// pinned rather than assumed.
 	gotStatuses []models.QubeStatus
 }
@@ -89,8 +89,10 @@ func TestSweepOnlyDialsUncertifiedQubes(t *testing.T) {
 	bootstrapMonitorFor(qubes, certs, bs).Sweep(context.Background())
 
 	assert.Equal(t, []string{"no-cert"}, bs.dialed)
-	assert.Equal(t, []models.QubeStatus{models.QubeStatusRunning}, qubes.gotStatuses,
-		"a suspended qube has no instance to dial; sweeping one guarantees a failure every pass")
+	assert.Equal(t, []models.QubeStatus{
+		models.QubeStatusRunning, models.QubeStatusCreating, models.QubeStatusResuming,
+	}, qubes.gotStatuses,
+		"creating/resuming qubes must be bootstrapped too: the provision gate waits on the agent, and suspended/released qubes have no instance to dial")
 }
 
 // A qube whose only certificate is revoked has no working identity, so it

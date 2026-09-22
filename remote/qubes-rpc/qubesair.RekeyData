@@ -1,0 +1,174 @@
+#!/bin/bash
+# qubesair.RekeyData — move an existing data-disk LUKS container from the legacy
+# master-derived key to the qube's own data key (DEK).
+# =====================================================================================
+# This runs during a data-disk migration. The console opens the container once
+# with the derived old key, replaces it with the stored DEK, and verifies the old
+# key no longer opens it — after that the master secret is not needed for this
+# qube at all. The keys never leave RAM and are never written to disk.
+#
+# Contract:
+#   stdin  : one JSON object {"old":"<base64>","new":"<base64>"}. Both keys arrive
+#            over the agent's verified mTLS channel.
+#   stdout : one JSON line {"rekeyed":bool,"old_key_removed":bool,"reason":"...","detail":"..."}.
+#            reason is machine-readable ("already", "change_failed", "remove_failed",
+#            "no_key", "not_luks", "no_disk", "malformed", ...). ALWAYS exit 0 so
+#            the invoker returns our stdout instead of swallowing it on a non-zero
+#            exit (same reason qubesair.Exec exits 0 — see internal/agent/invoker.go).
+#
+# Safety:
+#   - Never formats and never overwrites: a disk that is not LUKS is refused.
+#   - Atomic first: luksChangeKey leaves the old key valid if it fails. The
+#     add + remove fallback runs only after the new key has been proven to open
+#     the container, so there is no ordering that locks the data away.
+#   - Idempotent: "new opens, old does not" reports success without touching the
+#     container, so a retry after a crash or a lost reply is safe.
+#   - Keys never appear in argv or on disk: stdin -> shell variable -> process
+#     substitution, with the privileged half under systemd-run.
+#
+# Requires python3, which the agent package already declares for Exec/FileCopy.
+# =====================================================================================
+set +e
+
+# Re-exec target for the privileged half. Derived from $0 so the absolute
+# installed path (/etc/qubes-rpc/qubesair.RekeyData) and the test copy behave
+# the same; readlink -f is Linux-only, hence the guarded use.
+SELF="$0"
+if readlink -f "$0" >/dev/null 2>&1; then
+    SELF="$(readlink -f "$0")"
+fi
+# Two base64 data keys plus JSON framing fit far below this; the cap exists so a
+# hostile caller cannot make the service buffer unbounded input.
+MAX_REQUEST_BYTES=8192
+KEY_SHAPE='^[A-Za-z0-9+/=_-]{32,128}$'
+# Overridable so a nonstandard disk layout (and the service tests) can point at
+# the container explicitly; empty means the default Proxmox scsi1 slot.
+DATA_DISK="${QUBESAIR_DATA_DISK:-}"
+
+emit() {
+    printf '{"rekeyed":%s,"old_key_removed":%s,"reason":"%s","detail":"%s"}\n' "$1" "$2" "$3" "$4"
+}
+
+# ---- privileged inner half: old and new keys as two lines on stdin ----
+if [ "${1:-}" = "__rekey" ]; then
+    IFS= read -r old
+    IFS= read -r new
+
+    dev="$DATA_DISK"
+    if [ -z "$dev" ]; then
+        for p in /dev/disk/by-path/*-scsi-0:0:0:1; do
+            [ -e "$p" ] || continue
+            dev="$(readlink -f "$p")"
+            break
+        done
+    fi
+    if [ -z "$dev" ] || [ ! -e "$dev" ]; then
+        emit false false no_disk "no data disk attached"
+        exit 0
+    fi
+
+    if ! cryptsetup isLuks "$dev" >/dev/null 2>&1; then
+        emit false false not_luks "data disk is not a LUKS container; refusing to touch it"
+        exit 0
+    fi
+
+    # --test-passphrase verifies a key without creating a mapping.
+    opens_with() {
+        cryptsetup open --test-passphrase --key-file=<(printf %s "$1") "$dev" >/dev/null 2>&1
+    }
+
+    if opens_with "$new"; then
+        if ! opens_with "$old"; then
+            emit true true already "the disk already answers to the new key only"
+            exit 0
+        fi
+        # Both keys work: a previous attempt added the new key but did not get to
+        # remove the old one. Remove it now, and only report success once the old
+        # key is proven dead.
+        if cryptsetup luksRemoveKey --key-file=<(printf %s "$old") "$dev" >/dev/null 2>&1 \
+                && ! opens_with "$old"; then
+            emit true true "" "legacy keyslot removed"
+        else
+            emit true false remove_failed "the new key works but the legacy keyslot could not be removed"
+        fi
+        exit 0
+    fi
+
+    if ! opens_with "$old"; then
+        emit false false no_key "neither key opens the container"
+        exit 0
+    fi
+
+    # Only the old key opens the container: replace it atomically.
+    if cryptsetup luksChangeKey --key-file=<(printf %s "$old") "$dev" <(printf %s "$new") >/dev/null 2>&1; then
+        if opens_with "$new" && ! opens_with "$old"; then
+            emit true true "" "rekeyed"
+            exit 0
+        fi
+    fi
+
+    # Fallback: add the new key, prove it opens, only then remove the old one.
+    if ! cryptsetup luksAddKey --key-file=<(printf %s "$old") "$dev" <(printf %s "$new") >/dev/null 2>&1 \
+            || ! opens_with "$new"; then
+        emit false false change_failed "the new key could not be added; the old key is unchanged"
+        exit 0
+    fi
+    if cryptsetup luksRemoveKey --key-file=<(printf %s "$old") "$dev" >/dev/null 2>&1 \
+            && ! opens_with "$old"; then
+        emit true true "" "rekeyed via add and remove"
+    else
+        emit true false remove_failed "the new key works but the legacy keyslot could not be removed"
+    fi
+    exit 0
+fi
+
+# ---- outer half: sandboxed. Validate the request, re-exec the inner. ----
+if ! command -v python3 >/dev/null 2>&1; then
+    emit false false no_python "python3 is required to parse the rekey request"
+    exit 0
+fi
+
+payload="$(head -c $((MAX_REQUEST_BYTES + 1)) 2>/dev/null)"
+if [ "${#payload}" -gt "$MAX_REQUEST_BYTES" ]; then
+    emit false false oversize "request exceeds ${MAX_REQUEST_BYTES} bytes"
+    exit 0
+fi
+
+if ! keys="$(printf '%s' "$payload" | python3 -c '
+import json
+import sys
+
+try:
+    request = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+old = request.get("old")
+new = request.get("new")
+if not isinstance(old, str) or not isinstance(new, str):
+    sys.exit(1)
+print(old)
+print(new)
+' 2>/dev/null)"; then
+    emit false false malformed 'request must be a JSON object with old and new base64 string fields'
+    exit 0
+fi
+old="$(printf '%s\n' "$keys" | sed -n 1p)"
+new="$(printf '%s\n' "$keys" | sed -n 2p)"
+
+if ! printf '%s' "$old" | grep -Eq "$KEY_SHAPE" || ! printf '%s' "$new" | grep -Eq "$KEY_SHAPE"; then
+    emit false false bad_key "old and new must each be one base64 data key"
+    exit 0
+fi
+if [ "$old" = "$new" ]; then
+    emit false false same_key "old and new keys are identical; nothing to change"
+    exit 0
+fi
+
+if command -v systemd-run >/dev/null 2>&1; then
+    printf '%s\n%s\n' "$old" "$new" | systemd-run --pipe --wait --collect --quiet -- "$SELF" __rekey 2>/dev/null
+else
+    # No systemd (rare): run directly. cryptsetup may hit the sandbox, but a
+    # clear failure JSON beats silently doing nothing.
+    printf '%s\n%s\n' "$old" "$new" | "$SELF" __rekey
+fi
+exit 0

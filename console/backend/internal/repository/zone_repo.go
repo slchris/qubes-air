@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
@@ -26,6 +27,9 @@ type ZoneRepository interface {
 type ZoneListOptions struct {
 	Status string
 	Type   string
+	// Zones, when non-empty, restricts the result to these zone IDs. It is how
+	// a zone-scoped credential's list request is narrowed to what it may see.
+	Zones  []string
 	Limit  int
 	Offset int
 }
@@ -135,6 +139,17 @@ func buildZoneListQuery(opts ZoneListOptions) (string, []interface{}) {
 	if opts.Type != "" {
 		query += " AND type = ?"
 		args = append(args, opts.Type)
+	}
+
+	if len(opts.Zones) > 0 {
+		placeholders := make([]string, len(opts.Zones))
+		for i, zoneID := range opts.Zones {
+			placeholders[i] = "?"
+			args = append(args, zoneID)
+		}
+		// #nosec G202 -- only "?" placeholders are concatenated; the IDs travel
+		// as bound arguments.
+		query += " AND id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
 	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"

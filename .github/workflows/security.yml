@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.25'
+  GO_VERSION: '1.26'
 
 jobs:
   # Go 安全扫描 (gosec)
@@ -39,8 +39,13 @@ jobs:
       - name: Run Gosec
         working-directory: console/backend
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          gosec -no-fail -fmt sarif -out gosec-results.sarif ./...
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          # No -no-fail: a finding must fail the job, not just be uploaded.
+          # -exclude-generated: internal/transport/relaypb/*.pb.go is emitted by
+          # protoc-gen-go and not hand-maintained, so its unsafe.Pointer use
+          # (G103) is protoc's output rather than code anyone here edits. Same
+          # flag as `make gosec-ci`, so local and CI scan the same files.
+          gosec -fmt sarif -out gosec-results.sarif -exclude-generated ./...
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4
@@ -59,7 +64,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy (filesystem mode)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -86,28 +91,11 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Terraform 安全扫描
-  tfsec:
-    name: Terraform Security Scan
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: terraform
-          additional_args: --format sarif --out results.sarif.json --soft-fail
-
-      - name: Upload tfsec SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: results.sarif.json
-          category: tfsec
-        if: always() && hashFiles('results.sarif.json') != ''
+          # The action only auto-detects `gitleaks.toml` without the leading dot
+          # (README: "create a `gitleaks.toml` at the root of the repo"), while
+          # the gitleaks CLI discovers `.gitleaks.toml`. Point the action at the
+          # one file the CLI uses instead of keeping two copies in sync.
+          GITLEAKS_CONFIG: .gitleaks.toml

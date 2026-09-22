@@ -25,8 +25,8 @@ import (
 // the LOOKUP NAMES a secret is stored under, not the secret — the value they
 // address never appears in this file.
 const (
-	caCertCredentialName = "qubes-air-ca-cert" //nolint:gosec // G101: a store key, not a credential
-	caKeyCredentialName  = "qubes-air-ca-key"  //nolint:gosec // G101: a store key, not a credential
+	caCertCredentialName = "qubes-air-ca-cert" // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
+	caKeyCredentialName  = "qubes-air-ca-key"  // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
 	caCredentialType     = "pki"
 )
 
@@ -47,7 +47,7 @@ type CertIssuer struct {
 	// remote, so the qube can never bootstrap.
 	//
 	// Its meaning depends on snippetDatastore: with it empty, this is a private
-	// staging directory terraform uploads FROM over SFTP; with it set, this is
+	// staging directory the adapter uploads FROM over SSH; with it set, this is
 	// a mount of the shared storage the PVE nodes read snippets from directly.
 	identityDir string
 	// snippetDatastore names the Proxmox datastore backing identityDir, and
@@ -93,6 +93,9 @@ type CredentialStore interface {
 	GetSecret(ctx context.Context, id string) (string, error)
 	List(ctx context.Context) ([]models.Credential, error)
 	Create(ctx context.Context, req models.CredentialCreateRequest) (*models.Credential, error)
+	// Delete removes a credential. Purge uses it to crypto-shred a qube's data
+	// key: with the key gone, the disk's ciphertext is unrecoverable.
+	Delete(ctx context.Context, id string) error
 }
 
 // NewCertIssuer builds an issuer over the credential store and registry.
@@ -129,10 +132,10 @@ func (c *CertIssuer) WithBootstrapTokens(tokens BootstrapTokenStore, ttl time.Du
 // IdentityPath returns where a qube's rendered identity file lives, or "" when
 // delivery is not configured or runs over shared storage.
 //
-// Empty in shared-storage mode on purpose: this path exists so terraform can
-// UPLOAD the file over SFTP, and in that mode terraform must not upload
+// Empty in shared-storage mode on purpose: this path exists so the adapter can
+// UPLOAD the file over SSH, and in that mode the adapter must not upload
 // anything — the file is already where the nodes read it. Returning a path
-// there would make terraform re-upload it into node-local storage and
+// there would make the adapter re-upload it into node-local storage and
 // reintroduce the SSH requirement the mode exists to remove.
 func (c *CertIssuer) IdentityPath(qubeName string) string {
 	if c.identityDir == "" || c.snippetDatastore != "" {
@@ -148,8 +151,8 @@ func (c *CertIssuer) IdentityPath(qubeName string) string {
 // load-bearing choice. The file name carries a hash of its own content
 // (ContentAddressedSnippetName), so it cannot be recomputed from the qube name
 // — which makes an in-memory map tempting, and wrong: a console restart would
-// lose every name, tfvars would render qubes with no identity, and terraform
-// would happily rebuild running VMs without one. The share is where the file
+// lose every name, the executor would render qubes with no identity, and the
+// provider would happily rebuild running VMs without one. The share is where the file
 // actually is, so the share is what gets asked.
 func (c *CertIssuer) IdentityVolumeID(qubeName string) string {
 	if c.snippetDatastore == "" || c.identityDir == "" {
@@ -225,7 +228,7 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
 		}
 		if c.snippetDatastore != "" {
 			// Shared storage: the console writes where the nodes already read,
-			// so terraform uploads nothing and needs no SSH to a hypervisor.
+			// so the adapter uploads nothing and needs no SSH to a hypervisor.
 			name, err := WriteSharedAgentUserData(c.identityDir, qube.Name, userData)
 			if err != nil {
 				return fmt.Errorf("persist identity for %q on the share: %w", qube.Name, err)
@@ -248,9 +251,9 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
 // defaultBootstrapTokenTTL is how long a minted token stays redeemable.
 //
 // Sized against MEASURED provisioning, not intuition. The window that has to
-// fit inside it is "terraform starts the apply" through "the agent is up and
-// the console has dialed it", and section 7.4 records a provision spending 14
-// minutes in apt alone before that was fixed. A token that felt short —
+// fit inside it is "the provider starts provisioning" through "the agent is up
+// and the console has dialed it", and section 7.4 records a provision spending
+// 14 minutes in apt alone before that was fixed. A token that felt short —
 // five minutes, say — would expire during one slow boot, and the failure only
 // becomes visible when the console dials and is refused, long after the apply
 // reported success.
@@ -269,21 +272,19 @@ func (c *CertIssuer) tokenTTL() time.Duration {
 // ReissueFor replaces a qube's agent identity, retiring whatever it held before.
 //
 // This is the resume path, and it exists because a suspended qube CANNOT renew.
-// Suspend DESTROYS the compute instance and keeps only the data disk (see
-// terraform/modules/remote-qube-base: compute_running=false), so there is no
-// agent process to renew against — the renewal sweep skips suspended qubes for
-// exactly that reason. A qube suspended across its whole renewal window is
-// therefore resumed with an EXPIRED certificate, and the agent deliberately
-// refuses to start without a valid one rather than serve its qrexec services to
-// anyone on the LAN. Nothing about that qube looks wrong until someone tries to
-// use it, and by then it is locked out with no way back in over the mTLS
-// channel that would have fixed it.
+// Suspend DESTROYS the compute instance and keeps only the data disk, so there
+// is no agent process to renew against — the renewal sweep skips suspended
+// qubes for exactly that reason. A qube suspended across its whole renewal
+// window is therefore resumed with an EXPIRED certificate, and the agent
+// deliberately refuses to start without a valid one rather than serve its
+// qrexec services to anyone on the LAN. Nothing about that qube looks wrong
+// until someone tries to use it, and by then it is locked out with no way back
+// in over the mTLS channel that would have fixed it.
 //
 // Resume is where that closes, and closing it there costs nothing: resume
-// already destroys and rebuilds the compute instance, so a fresh identity rides
-// along on a cloud-init document terraform was going to render and upload
-// anyway. It also means a resumed qube always starts from a full certificate
-// lifetime instead of whatever was left of an old one.
+// already rebuilds the compute instance and delivers a fresh cloud-init
+// identity as part of that. It also means a resumed qube always starts from a
+// full certificate lifetime instead of whatever was left of an old one.
 //
 // Revocation happens BEFORE issuance, never after. RevokeByQube revokes every
 // row belonging to the qube, so running it afterwards would revoke the
@@ -318,6 +319,11 @@ func (c *CertIssuer) ReissueFor(ctx context.Context, qube *models.Qube, reason s
 // Called when a qube is purged: a decommissioned machine must not keep a
 // working credential.
 func (c *CertIssuer) RevokeFor(ctx context.Context, qubeID, reason string) error {
+	if c.tokens != nil {
+		if _, err := c.tokens.InvalidateForQube(ctx, qubeID, time.Now()); err != nil {
+			return fmt.Errorf("invalidate bootstrap tokens: %w", err)
+		}
+	}
 	n, err := c.certs.RevokeByQube(ctx, qubeID, reason)
 	if err != nil {
 		return err

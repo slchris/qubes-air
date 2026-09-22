@@ -16,12 +16,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/slchris/qubes-air/console/internal/transport"
 )
 
 // DefaultServiceDir is where qrexec service implementations live, matching the
@@ -120,15 +123,24 @@ func validServiceName(name string) bool {
 	return true
 }
 
-// Invoke runs a qrexec service and returns its stdout.
+// Invoke runs a qrexec service and returns its stdout, stderr and exit code.
+//
+// A non-zero exit is part of the RESULT, not an error: the caller decides
+// whether it matters. err is reserved for the call not being made (unknown or
+// disallowed service, timeout, output over the cap). This is what removes the
+// old need for a service script to swallow its exit code and append a text
+// trailer — the structure now carries it.
 //
 // target is accepted for interface compatibility and recorded for logging, but
 // carries no authority: on a single remote there is only one place a service
 // can run, and treating a network-supplied name as a routing decision would be
 // trusting the caller to address us correctly.
-func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []byte) ([]byte, error) {
+func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []byte) (result transport.Result, err error) {
+	started := time.Now()
+	defer func() { logInvocation(target, service, started, result.ExitCode, &err) }()
+
 	if !validServiceName(service) {
-		return nil, fmt.Errorf("%w: %q", ErrInvalidServiceName, service)
+		return transport.Result{}, fmt.Errorf("%w: %q", ErrInvalidServiceName, service)
 	}
 
 	// Qubes services may be invoked as "name+argument"; the implementation file
@@ -141,13 +153,17 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 	// script in ServiceDir serve a request the builtin was supposed to answer.
 	if fn := i.builtin(name); fn != nil {
 		if arg != "" {
-			return nil, fmt.Errorf("%w: %q", ErrBuiltinTakesNoArgument, service)
+			return transport.Result{}, fmt.Errorf("%w: %q", ErrBuiltinTakesNoArgument, service)
 		}
-		return fn(ctx, target, in)
+		out, err := fn(ctx, target, in)
+		if err != nil {
+			return transport.Result{}, err
+		}
+		return transport.Result{Stdout: out}, nil
 	}
 
 	if len(i.Allowed) > 0 && !i.Allowed[name] {
-		return nil, fmt.Errorf("%w: %q", ErrServiceNotAllowed, service)
+		return transport.Result{}, fmt.Errorf("%w: %q", ErrServiceNotAllowed, service)
 	}
 
 	dir := i.ServiceDir
@@ -158,12 +174,19 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownService, name)
+		return transport.Result{}, fmt.Errorf("%w: %q", ErrUnknownService, name)
 	}
 	if info.Mode()&0o111 == 0 {
-		return nil, fmt.Errorf("%w: %q exists but is not executable", ErrUnknownService, name)
+		return transport.Result{}, fmt.Errorf("%w: %q exists but is not executable", ErrUnknownService, name)
 	}
 
+	return i.run(ctx, target, service, arg, path, in)
+}
+
+// run executes a resolved service file and maps its termination to a structured
+// result. Split out of Invoke so the name/builtin/allowlist dispatch and the
+// process handling are not one long function.
+func (i *LocalInvoker) run(ctx context.Context, target, service, arg, path string, in []byte) (transport.Result, error) {
 	timeout := i.Timeout
 	if timeout <= 0 {
 		timeout = DefaultCallTimeout
@@ -178,20 +201,16 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 		cmd.Args = append(cmd.Args, arg)
 	}
 	cmd.Stdin = bytes.NewReader(in)
+	cmd.Env = i.serviceEnv(target, service)
 
-	// A deliberately minimal environment. The agent's own environment may hold
-	// credentials (its TLS key path, endpoints); a service script has no need
-	// of them and inheriting wholesale is how such things leak into logs.
-	cmd.Env = []string{
-		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"QUBESAIR_REMOTE_NAME=" + i.RemoteName,
-		"QREXEC_REMOTE_DOMAIN=" + target,
-		"QREXEC_SERVICE_FULL_NAME=" + service,
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Bounded buffers: a service that floods stdout is stopped AT the cap, not
+	// buffered in full and rejected afterwards. stdout overflow aborts the call;
+	// stderr is truncated silently (it is only a diagnostic) so a chatty service
+	// cannot exhaust the agent either way.
+	stdout := &capWriter{limit: maxResponseBytes, abortOnOverflow: true}
+	stderr := &capWriter{limit: maxResponseBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	// Without WaitDelay the timeout above does not actually bound the call.
 	//
@@ -208,19 +227,89 @@ func (i *LocalInvoker) Invoke(ctx context.Context, target, service string, in []
 	// decides the outcome; this only stops the cleanup from outliving it.
 	cmd.WaitDelay = 2 * time.Second
 
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	if stdout.overflow {
+		return transport.Result{}, fmt.Errorf("%w: %q produced more than %d bytes", ErrResponseTooLarge, service, maxResponseBytes)
+	}
+	res := transport.Result{Stdout: stdout.buf.Bytes(), Stderr: stderr.buf.Bytes()}
+	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("service %q timed out after %s", service, timeout)
+			return transport.Result{}, fmt.Errorf("service %q timed out after %s: %w", service, timeout, ctx.Err())
 		}
-		// stderr is the service's own diagnostic and is the most useful thing an
-		// operator can be shown, so it is surfaced rather than swallowed.
-		return nil, fmt.Errorf("service %q failed: %v: %s",
-			service, err, strings.TrimSpace(stderr.String()))
+		if ctx.Err() != nil {
+			return transport.Result{}, fmt.Errorf("service %q canceled: %w", service, ctx.Err())
+		}
+		var exit *exec.ExitError
+		if errors.As(runErr, &exit) {
+			// The service ran and reported failure; that is a result the caller
+			// may act on, not a failure to run it.
+			res.ExitCode = exit.ExitCode()
+			return res, nil
+		}
+		return res, fmt.Errorf("service %q failed: %w", service, runErr)
 	}
-	if stdout.Len() > maxResponseBytes {
-		return nil, fmt.Errorf("%w: %q returned %d bytes", ErrResponseTooLarge, service, stdout.Len())
+	return res, nil
+}
+
+// capWriter is an io.Writer that keeps at most limit bytes. With
+// abortOnOverflow it makes the write fail, which stops exec's copy goroutine and
+// surfaces as the command's error; otherwise it truncates and reports the write
+// as complete, so a chatty stream cannot grow memory without failing the call.
+type capWriter struct {
+	buf             bytes.Buffer
+	limit           int
+	abortOnOverflow bool
+	overflow        bool
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if w.limit <= 0 || w.buf.Len()+len(p) <= w.limit {
+		return w.buf.Write(p)
 	}
-	return stdout.Bytes(), nil
+	if room := w.limit - w.buf.Len(); room > 0 {
+		_, _ = w.buf.Write(p[:room])
+	}
+	w.overflow = true
+	if w.abortOnOverflow {
+		return 0, ErrResponseTooLarge
+	}
+	return len(p), nil
+}
+
+// serviceEnv is the deliberately minimal environment a service script gets. The
+// agent's own environment may hold credentials (its TLS key path, endpoints); a
+// service has no need of them and inheriting wholesale is how such things leak
+// into logs. The only pass-throughs are the opt-in gates for the privileged
+// services, read from agent.env so widening Exec/FileCopy is a reviewed config
+// change rather than an implicit default.
+func (i *LocalInvoker) serviceEnv(target, service string) []string {
+	env := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"QUBESAIR_REMOTE_NAME=" + i.RemoteName,
+		"QREXEC_REMOTE_DOMAIN=" + target,
+		"QREXEC_SERVICE_FULL_NAME=" + service,
+	}
+	for _, k := range []string{"QUBESAIR_EXEC_ALLOW", "QUBESAIR_FILECOPY_ROOTS"} {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
+// logInvocation records one service invocation: target, service, outcome, the
+// command's exit code and duration. The caller identity is recorded by the
+// transport layer when it accepts the client certificate, so together the two
+// lines answer "who asked what, and did it work". A non-zero exit is reported
+// alongside outcome=ok: the call ran, and the command it ran failed — two
+// different things the old text-trailer protocol could not separate.
+func logInvocation(target, service string, started time.Time, exitCode int, err *error) {
+	outcome := "ok"
+	if err != nil && *err != nil {
+		outcome = "error"
+	}
+	log.Printf("agent invoke: target=%q service=%q outcome=%s exit=%d duration=%s",
+		target, service, outcome, exitCode, time.Since(started).Round(time.Millisecond))
 }
 
 // splitServiceArg separates "service+argument" into its parts.

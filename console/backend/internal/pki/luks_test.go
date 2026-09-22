@@ -1,16 +1,23 @@
 package pki
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"strings"
 	"testing"
 )
 
-func TestDeriveDataKeyIsDeterministic(t *testing.T) {
-	master, err := NewDataMasterSecret()
-	if err != nil {
-		t.Fatalf("NewDataMasterSecret: %v", err)
+func testMaster(t *testing.T) string {
+	t.Helper()
+	buf := make([]byte, dataMasterLen)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatalf("generate test master: %v", err)
 	}
+	return base64.RawURLEncoding.EncodeToString(buf)
+}
+
+func TestDeriveDataKeyIsDeterministic(t *testing.T) {
+	master := testMaster(t)
 	// The same (master, qubeID) must always yield the same key — this is what
 	// lets a resumed compute VM unlock the same container. A non-deterministic
 	// derivation would lock the data away on the first resume.
@@ -35,10 +42,7 @@ func TestDeriveDataKeyIsDeterministic(t *testing.T) {
 }
 
 func TestDeriveDataKeyIsPerQube(t *testing.T) {
-	master, err := NewDataMasterSecret()
-	if err != nil {
-		t.Fatalf("NewDataMasterSecret: %v", err)
-	}
+	master := testMaster(t)
 	a, _ := DeriveDataKey(master, "qube-abc")
 	b, _ := DeriveDataKey(master, "qube-xyz")
 	if a == b {
@@ -47,8 +51,7 @@ func TestDeriveDataKeyIsPerQube(t *testing.T) {
 }
 
 func TestDeriveDataKeyDiffersByMaster(t *testing.T) {
-	m1, _ := NewDataMasterSecret()
-	m2, _ := NewDataMasterSecret()
+	m1, m2 := testMaster(t), testMaster(t)
 	if m1 == m2 {
 		t.Fatal("two fresh masters collided; the CSPRNG is broken or fixed")
 	}
@@ -60,7 +63,7 @@ func TestDeriveDataKeyDiffersByMaster(t *testing.T) {
 }
 
 func TestDeriveDataKeyRejectsBadInput(t *testing.T) {
-	good, _ := NewDataMasterSecret()
+	good := testMaster(t)
 	if _, err := DeriveDataKey(good, ""); err == nil {
 		t.Fatal("empty qube id must be refused")
 	}

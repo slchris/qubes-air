@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -46,6 +47,7 @@ func (h *QubeHandler) RegisterRoutes(rg *gin.RouterGroup) {
 		qubes.POST("", h.Create)
 		qubes.PUT("/:id", h.Update)
 		qubes.DELETE("/:id", h.Delete)
+		qubes.POST("/:id/purge", h.Purge)
 		qubes.POST("/:id/start", h.Start)
 		qubes.POST("/:id/stop", h.Stop)
 		qubes.GET("/:id/reachable", h.CheckReachable)
@@ -88,6 +90,11 @@ func parseQubeListOptions(c *gin.Context) repository.QubeListOptions {
 	}
 	if qubeType := c.Query("type"); qubeType != "" {
 		opts.Type = qubeType
+	}
+	// A zone-scoped credential sees only qubes in its zones (see the zone
+	// handler for the same reasoning).
+	if zones, restricted := middleware.ZoneScopeFromContext(c); restricted {
+		opts.Zones = zones
 	}
 
 	return opts
@@ -165,6 +172,34 @@ func (h *QubeHandler) Delete(c *gin.Context) {
 	})
 }
 
+// Purge handles POST /qubes/:id/purge.
+//
+// Irreversible: it destroys the persistent data disk and revokes the agent
+// identity. The caller MUST confirm by naming the qube in the request body
+// ({"confirm":"<name>"}); release (DELETE) is the reversible step that keeps the
+// disk. The qube must already have no compute instance (released/suspended/
+// stopped/error).
+func (h *QubeHandler) Purge(c *gin.Context) {
+	id := c.Param("id")
+
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		respondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := h.qubeSvc.Purge(c.Request.Context(), id, req.Confirm); err != nil {
+		handleQubeError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"message": "purge started: the data disk and agent identity will be destroyed",
+	})
+}
+
 // Start handles POST /qubes/:id/start.
 func (h *QubeHandler) Start(c *gin.Context) {
 	id := c.Param("id")
@@ -175,7 +210,7 @@ func (h *QubeHandler) Start(c *gin.Context) {
 		return
 	}
 
-	// 202: the terraform apply has been queued, not performed. The qube is in a
+	// 202: the provider operation has been queued, not performed. The qube is in a
 	// transient status and settles when the job completes.
 	respondOperation(c, http.StatusAccepted, op)
 }
@@ -190,7 +225,7 @@ func (h *QubeHandler) Stop(c *gin.Context) {
 		return
 	}
 
-	// 202: the terraform apply has been queued, not performed. The qube is in a
+	// 202: the provider operation has been queued, not performed. The qube is in a
 	// transient status and settles when the job completes.
 	respondOperation(c, http.StatusAccepted, op)
 }
@@ -302,6 +337,10 @@ func handleQubeError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrInvalidQubeName):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrInvalidQubeType):
+		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrInvalidQubeSpec):
+		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrPurgeConfirmation):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrInvalidAppID):
 		respondError(c, http.StatusBadRequest, err)

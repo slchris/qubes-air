@@ -2,13 +2,14 @@ package scheduler
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/slchris/qubes-air/console/internal/providerhttp"
 )
 
 // Credentials describe how to reach one Proxmox cluster.
@@ -24,7 +25,7 @@ type Credentials struct {
 	APIToken string
 	Username string
 	Password string
-	Insecure bool
+	CAPEM    string
 }
 
 // Valid reports whether the credentials are usable.
@@ -52,19 +53,13 @@ type ProxmoxProvider struct {
 const ticketTTL = 90 * time.Minute
 
 // NewProxmoxProvider builds a capacity provider for one cluster.
-func NewProxmoxProvider(creds Credentials) *ProxmoxProvider {
+func NewProxmoxProvider(creds Credentials) (*ProxmoxProvider, error) {
 	creds.Endpoint = strings.TrimRight(creds.Endpoint, "/")
-	return &ProxmoxProvider{
-		creds: creds,
-		// #nosec G402 -- InsecureSkipVerify is opt-in per credential and mirrors
-		// the terraform provider's own switch for self-signed clusters.
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: creds.Insecure, MinVersion: tls.VersionTLS12},
-			},
-		},
+	client, err := providerhttp.NewClient(creds.Endpoint, creds.CAPEM, 15*time.Second)
+	if err != nil {
+		return nil, err
 	}
+	return &ProxmoxProvider{creds: creds, client: client}, nil
 }
 
 // clusterResource is the subset of /cluster/resources this needs.
