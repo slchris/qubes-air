@@ -5,7 +5,9 @@
 
 > 范围与判据：只写从当前代码读到的值。**凡本文件未列的默认值一律以代码为准**；本文件不描述
 > 部署实例的真实配置（env / `config.example.yaml` 里的值），也不替代各专题文档的契约说明。
-> 表中位置均相对仓库根；行号对应 Sprint 1 基线 `fae0aea`，改代码后需同步本文件。
+> 表中位置均相对仓库根；行号对应仓库当前提交，改代码后须在同一 commit 同步本文件。上次全量核对
+> 的基线与 Sprint 1 一致（`fae0aea`）；其后只有 `internal/config/config.go` 与
+> `cmd/server/main.go` 的行号发生位移，已逐条重算。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)。
 
@@ -15,9 +17,11 @@
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:490`（`RateLimitPerSec: 20`）、`:491`（`RateLimitBurst: 40`） |
-| UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:298`（`DefaultMaxBodyBytes`） |
+| UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:505`（`RateLimitPerSec: 20`）、`:506`（`RateLimitBurst: 40`） |
+| UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:313`（`DefaultMaxBodyBytes`） |
 | UD-1c | 浏览器会话 TTL | **12 小时** | `internal/middleware/session.go:18`（`DefaultSessionTTL`） |
+| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:920`（`configureTrustedProxies`）、`:932`（在 `setupRouter` 里调用） |
+| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:306`（字段）、`:552`（默认值）、`internal/orchestrator/runner.go:146`（`DefaultJobTimeout`）、`cmd/server/main.go:535`（接线） |
 
 ### 1.2 transport（Relay ↔ console / agent）
 

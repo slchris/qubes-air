@@ -36,6 +36,8 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-2 失败② Agent package install smoke | 已修 `3afbcd7` | 版本排序依赖 commit hash 首字符（字母开头 → `0.0.0+<hash>` → 被判降级）；`0~smoke-old` 修掉 |
 | M0-2 失败③ GoSec Security Scan | 处理中 | 29 条存量发现，根因是 G-F8 的门禁不等价 |
 | M0-3 合并 main | 待 CI 全绿 | — |
+| M1-11 job 超时 | 已完成（本 commit） | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
+| M1-13 XFF 可伪造 | 已完成（本 commit） | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
 | M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行 |
 
 ## 1. 判定基线
@@ -63,7 +65,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 |---|---|---|---|---|
 | G-A1 | 本地 `main` 领先 `origin/main` **20 个 commit**，`kixpower/sprint-1` 再领先 3 个；这批 commit（含 P0 安全加固、REL/DATA-01、QA-01 修复）从未被 CI 覆盖 | `git rev-list --left-right --count origin/main...main` → `0 20`；`git log --oneline origin/main..main` | **A-阻塞** | push 后 7 个 workflow 在目标 SHA 全绿；[qa-signoff-1](qa/qa-signoff-1.md) 的 `ci_pending` 转 PASS |
 | G-A2 | 工作停在 `kixpower/sprint-1`，未合并回 `main`（`main` 是 20 commit 的另一个头） | `git merge-base --is-ancestor kixpower/sprint-1 main` → 否 | **A-阻塞** | sprint 分支合入 `main` 且合并后 CI 绿 |
-| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:930`；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
+| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:959`；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
 | G-A4 | 从未发布过任何版本：无 tag、无 release | `git tag -l` 为空 | A-需要（B-阻塞） | 至少一次 `v*` tag 走通 [release.yml](../.github/workflows/release.yml) 并产出 `SHA256SUMS` |
 
 ### 2.B 真机验收（A 档最大的一块）
@@ -92,7 +94,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
 | G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 238-249 行；[security-controls](security-controls.md) 第 82 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
-| G-D2 | console 默认可以明文 HTTP 对外服务（TLS 是可选配置 `IsTLSEnabled`），session cookie 因此不能带 `Secure`；部署文档只要求"受限 CORS"，未把 TLS 或"仅 loopback"写成硬要求 | `cmd/server/main.go`:1112-1125（HTTP/HTTPS 二选一）；`handler/session_handler.go`:80-83（`secure` 由调用方决定） | **A-阻塞** | 生产部署要求成文（TLS 或仅本机监听），并在部署 checklist 中可核对 |
+| G-D2 | console 默认可以明文 HTTP 对外服务（TLS 是可选配置 `IsTLSEnabled`），session cookie 因此不能带 `Secure`；部署文档只要求"受限 CORS"，未把 TLS 或"仅 loopback"写成硬要求 | `cmd/server/main.go`:1141-1154（HTTP/HTTPS 二选一）；`handler/session_handler.go`:80-83（`secure` 由调用方决定） | **A-阻塞** | 生产部署要求成文（TLS 或仅本机监听），并在部署 checklist 中可核对 |
 | G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:45 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
 | G-D4 | 无外部安全审计/渗透测试；现有结论来自自查与 P0 加固记录 | [P0 安全记录](reviews/2026-09-20-p0-security.md) 范围自述 | B-阻塞 | 一次独立审计或明确声明"未审计" |
 | G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:39-52 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
@@ -115,7 +117,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
 | G-F1 | 覆盖率 61.0% 无阈值门禁；`cmd/*` 13 个入口包近乎 0% | [sprint-1 进展](sprint-1/progress.md) 第 102-104 行 | 技术债 | 覆盖率阈值门禁 + 入口包冒烟测试 |
-| G-F2 | 热路径复杂度：`Tunnel` 262 行 / gocyclo 44；`loadFromEnv` 199 行 / gocyclo 71；`Validate` gocyclo 28 | PROJECT_BRIEF §9.2 R-TECH-1/2 | 技术债 | 按业务步骤拆分，不调阈值（`AGENTS.md` 第 44-46 行） |
+| G-F2 | 热路径复杂度：`Tunnel` 262 行 / gocyclo 44；`loadFromEnv` 199 行 / gocyclo 71；`Validate` gocyclo 28。本阶段新增一个配置项即印证了这条判断：`loadFromEnv` 变为 **204 行 / gocyclo 73**（`gocyclo -top` 实测） | PROJECT_BRIEF §9.2 R-TECH-1/2；实测见 [runtime-defaults](runtime-defaults.md) 的 config.go 行号位移 | 技术债 | 按业务步骤拆分，不调阈值（`AGENTS.md` 第 44-46 行）；拆分前每加一个配置项都会继续推高 |
 | G-F3 | 存量 `nolint` 24 处，无"何时可移除"的退出条件 | PROJECT_BRIEF §9.2 R-TECH-5 | 技术债 | 每处补退出条件或删除 |
 | G-F4 | 前端 15 个组件仅 5 个有测试；`QubeList.svelte` 970 行只覆盖 7 个用例 | `console/frontend/src/components/`；PROJECT_BRIEF §9.2 R-TECH-4 | 技术债 | 大组件拆分 + 关键路径测试 |
 | G-F5 | 工具链不一致：CI 内 Node 20 与 `release.yml` 的 22 并存；本机无 `yamllint`，`yaml-lint` job 本地不可复现 | PROJECT_BRIEF §3 已知不一致、§6 门禁环境缺口 | 技术债 | 统一运行时版本；补齐本地工具 |
@@ -139,14 +141,14 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-H1 | **编排 job 硬编码 15 分钟超时，而代码三处自述一次 provision 要 15-25 分钟**；`RunnerConfig.Timeout` 在 server 装配处没传，也没有对应配置项 | `internal/orchestrator/runner.go`:135-146、`:238`；`cmd/server/main.go`:525-531（未传 Timeout）；自述时长见 `internal/orchestrator/joblog.go`:15、`internal/handler/job_handler.go`:166、`console/frontend/src/lib/api.ts`:391 | **A-阻塞** | 超时可配置且默认值覆盖真机长尾；真机长 provision 不因超时落 failed；默认值登记进[runtime-defaults](runtime-defaults.md) |
-| G-H2 | `GET /health` 只做 `PingContext`，而 go-sqlite3 的 `Ping` 在连接对象非 nil 时直接返回 nil（不发 SQL、不碰库文件）——磁盘满/只读/库文件丢失时仍报 healthy；也不检查 worker、队列、巡检 | `cmd/server/main.go`:912、`:1067-1088`；`internal/database/database.go`:84-86；`mattn/go-sqlite3@v1.14.22/sqlite3_go18.go`:18-23；被 `docker-compose.yml`:52-55 当 liveness probe、[灾难恢复](disaster-recovery.md) 第 69 行当恢复判据 | **A-阻塞** | 健康检查真正执行一次读写探测并覆盖 worker/队列；恢复 checklist 的判据随之更新 |
-| G-H3 | **purge 的不可逆步骤在入队之前执行**：`prepare` 先解除盘保护、吊销身份、删 DEK，随后才 `Submit`；队列满或客户端断开使 Submit 失败时只回滚状态——数据已不可解密，却没有 job、`jobs` 表无记录、错误文本不提部分执行 | `internal/service/qube_service.go`:596-615、`:682-686`、`:715-721`；`internal/orchestrator/runner.go`:179-211 | **A-阻塞** | 入队成功后再执行不可逆步骤，或失败时显式报告"已销毁的部分"并留审计记录（`AGENTS.md` 第 66 行要求报告部分失败） |
+| G-H1 | ~~编排 job 硬编码 15 分钟超时~~ **已修（见本 commit）**：原 `DefaultJobTimeout` 为 15 分钟且装配处没传 `RunnerConfig.Timeout`，而代码三处自述一次 provision 要 15-25 分钟。真机复现仍待 M0-5，本次依据是静态证据（proxmox `WaitTask` 只等到 ctx 过期，下层单请求 30s 不是约束点） | 修前 `internal/orchestrator/runner.go`:135-138；修后 `:134-146`（`DefaultJobTimeout = 45 * time.Minute`）、`:246`；`cmd/server/main.go`:525-536 显式传 `cfg.JobTimeoutSeconds`；配置项 `internal/config/config.go`:306、默认值 `:552`；自述时长 `internal/orchestrator/joblog.go`:15、`internal/handler/job_handler.go`:166 | 已解除 | ✅ 默认值登记进 [runtime-defaults](runtime-defaults.md) UD-1e；剩余：真机长 provision 不落 failed（M0-5） |
+| G-H2 | `GET /health` 只做 `PingContext`，而 go-sqlite3 的 `Ping` 在连接对象非 nil 时直接返回 nil（不发 SQL、不碰库文件）——磁盘满/只读/库文件丢失时仍报 healthy；也不检查 worker、队列、巡检 | `cmd/server/main.go`:941、`:1096-1117`；`internal/database/database.go`:84-86；`mattn/go-sqlite3@v1.14.22/sqlite3_go18.go`:18-23；被 `docker-compose.yml`:52-55 当 liveness probe、[灾难恢复](disaster-recovery.md) 第 69 行当恢复判据 | **A-阻塞** | 健康检查真正执行一次读写探测并覆盖 worker/队列；恢复 checklist 的判据随之更新 |
+| G-H3 | **purge 的不可逆步骤在入队之前执行**：`prepare` 先解除盘保护、吊销身份、删 DEK，随后才 `Submit`；队列满或客户端断开使 Submit 失败时只回滚状态——数据已不可解密，却没有 job、`jobs` 表无记录、错误文本不提部分执行 | `internal/service/qube_service.go`:596-615、`:682-686`、`:715-721`；`internal/orchestrator/runner.go`:187-219 | **A-阻塞** | 入队成功后再执行不可逆步骤，或失败时显式报告"已销毁的部分"并留审计记录（`AGENTS.md` 第 66 行要求报告部分失败） |
 | G-H4 | job 日志只写不删、无保留策略，也不在备份/恢复范围内：恢复后 `jobs` 表有历史而日志文件不存在，UI 静默显示空日志 | `internal/orchestrator/joblog.go`:59-103；`internal/backup/backup.go`:96-99（只对数据库 `VACUUM INTO`）；[灾难恢复](disaster-recovery.md) 第 43-45 行备份清单 | A-需要 | 保留/轮转策略 + 纳入备份清单；若明确不备份，UI 需能区分"无日志"与"日志丢失" |
-| G-H5 | **限流键与审计来源 IP 都取自 `c.ClientIP()`，而路由是 `gin.New()` 且全仓没有 `SetTrustedProxies`**；gin v1.9.1 默认信任 `0.0.0.0/0`、`::/0`，客户端可任意伪造 `X-Forwarded-For` 绕过未认证限流并污染审计来源 | `cmd/server/main.go`:905、`:929-938`（登录在同一条链上）；`internal/middleware/ratelimit.go`:96；`internal/middleware/audit.go`:36；`gin@v1.9.1/gin.go`:33-42（默认可信网段） | **A-阻塞** | 显式设置可信代理或改用 `RemoteAddr`；用伪造 XFF 的负向测试证明限流与审计来源不可绕过 |
-| G-H6 | 实时 job 日志流被 15 秒 `WriteTimeout` 截断：handler 按 5 分钟设计，15 秒后写入必然失败，而 handler 丢弃写错误继续空转到 5 分钟——"干净结束 + 按 offset 重连"的契约不会发生 | `cmd/server/main.go`:1106-1107；`internal/handler/job_handler.go`:164-172、`:229-263`、`:284-290`；[runtime-defaults](runtime-defaults.md) 第 38 行登记的正是该不可达行为 | A-需要 | 流式响应不受整体 WriteTimeout 限制（或把上限改成可达值），并同步文档与前端回退逻辑 |
+| G-H5 | ~~限流键与审计来源 IP 可被 `X-Forwarded-For` 伪造~~ **已修（见本 commit）**：路由是 `gin.New()` 且全仓没有 `SetTrustedProxies`，而 gin v1.9.1 默认可信网段为 `0.0.0.0/0`、`::/0` | 修后 `cmd/server/main.go`:920（`configureTrustedProxies` → `SetTrustedProxies(nil)`）、`:932`（`setupRouter` 里调用）；负向测试 `cmd/server/security_test.go`；[runtime-defaults](runtime-defaults.md) UD-1d | 已解除 | ✅ 反向验证：把修复改成空操作后，新测试在"ClientIP 报的是伪造地址"和"换 XFF 就换到新桶"两条断言上均失败 |
+| G-H6 | 实时 job 日志流被 15 秒 `WriteTimeout` 截断：handler 按 5 分钟设计，15 秒后写入必然失败，而 handler 丢弃写错误继续空转到 5 分钟——"干净结束 + 按 offset 重连"的契约不会发生 | `cmd/server/main.go`:1135-1136；`internal/handler/job_handler.go`:164-172、`:229-263`、`:284-290`；[runtime-defaults](runtime-defaults.md) 第 38 行登记的正是该不可达行为 | A-需要 | 流式响应不受整体 WriteTimeout 限制（或把上限改成可达值），并同步文档与前端回退逻辑 |
 | G-H7 | 无单实例保护：启动即执行 `reconcileStrandedQubes` / `ReconcileUnfinishedJobs`，会把另一个仍在运行的实例的在途 job 标成 failed/unknown、qube 覆盖成 error；DSN 无排他锁，也无 flock/pidfile | `cmd/server/main.go`:317、`:499`；`internal/service/reconcile.go`:30-58；`internal/database/database.go`:62-64 | A-需要 | 排他锁/pidfile，或把"只跑一个实例"写成部署硬要求并在启动时自检 |
-| G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:41、`:63-66`、`:1078-1086`；[release.yml](../.github/workflows/release.yml) 第 106 行；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
+| G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:41、`:63-66`、`:1107-1115`；[release.yml](../.github/workflows/release.yml) 第 106 行；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
 | G-H9 | agent 的 systemd 单元 5 次启动失败即永久放弃，且无告警路径；原因消失后不会自愈，需要人工 `systemctl reset-failed` | `packaging/agent-deb/qubes-air-agent.service`:10-11、`:32-33`；启动失败路径 `cmd/qubes-air-agent/main.go`:97-116 | A-需要 | 放弃状态对操作者可见，runbook 写明恢复步骤 |
 | G-H10 | 置备规格无上下限校验（`validateQubeSpec` 只拒绝负数），而 PVE 磁盘**不能缩回**——一次笔误永久占用集群存储 | `internal/service/qube_service.go`:510-518；`internal/provider/proxmox/adapter.go`:170、`:232-235`、`:395-399` | A-需要 / B-阻塞 | 上下限校验（或 per-zone 配额），越界在 API 层拒绝 |
 
@@ -175,9 +177,9 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）
-- [ ] **M1-11** 修 job 超时：`Timeout` 可配置、默认值覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` —— 依赖：无（G-H1，**先复现**：真机跑一次超过 15 分钟的 provision）
+- [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
 - [ ] **M1-12** purge 不可逆步骤与入队解耦：入队成功后再销毁，或失败时报告"已销毁的部分"并留审计记录 —— 依赖：无（G-H3）
-- [ ] **M1-13** 修 `X-Forwarded-For` 可伪造：显式设置可信代理或改用 `RemoteAddr`，加负向测试 —— 依赖：无（G-H5）
+- [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）
 - [ ] **M1-14** 让 `/health` 有真实语义：执行一次真实读写探测，覆盖 worker/队列，并更新恢复 checklist —— 依赖：无（G-H2）
 - [ ] **M1-15** 修 job 日志流的 WriteTimeout 矛盾（流式响应不受整体超时限制），同步 `runtime-defaults` 与前端回退 —— 依赖：无（G-H6）
 
@@ -253,9 +255,9 @@ sed -n '58,66p' remote/qubes-rpc/qubesair.Exec
 git diff --name-only fae0aea 4f52953 | grep -E '\.go$|\.svelte$'   # 只应出现 _test.go
 
 # §2.H：job 超时默认值 vs 代码自述的真机时长
-grep -n "DefaultJobTimeout" console/backend/internal/orchestrator/runner.go   # 15m
+grep -n "DefaultJobTimeout" console/backend/internal/orchestrator/runner.go   # 45m
 grep -rn "15-25 minutes" console/backend                                      # provision 的真机时长
-sed -n '525,531p' console/backend/cmd/server/main.go                          # RunnerConfig 未传 Timeout
+sed -n '525,536p' console/backend/cmd/server/main.go                          # RunnerConfig 现在显式传 Timeout
 
 # §2.H：/health 的真实语义（依赖源码：Ping 不发 SQL）
 sed -n '84,87p' console/backend/internal/database/database.go
