@@ -203,7 +203,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
 - [ ] **M1-12** purge 不可逆步骤与入队解耦：入队成功后再销毁，或失败时报告"已销毁的部分"并留审计记录 —— 依赖：无（G-H3）
 - [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）
-- [ ] **M1-14** 让 `/health` 有真实语义：执行一次真实读写探测，覆盖 worker/队列，并更新恢复 checklist —— 依赖：无（G-H2）
+- [x] **M1-14** 让 `/health` 有真实语义：真实读写探测（建表/写 marker/读回 + `PRAGMA database_list` 与 `os.Stat` 识破"库文件已删仍可写"）、覆盖 job 调度器心跳（空闲 3 次丢拍 = 15s 判死；**正在执行 job 时预算 = 该 job 超时 + 15s**，避免长 provision 被误判而遭 compose 重启）、队列/运行数只做信息不做判据、未认证路由的写按 2s 窗口节流、恢复判据文档同步 —— 依赖：无（G-H2）
 - [ ] **M1-15** 修 job 日志流的 WriteTimeout 矛盾（流式响应不受整体超时限制），同步 `runtime-defaults` 与前端回退 —— 依赖：无（G-H6）
 
 ### M2 — A 档收尾与可维护性

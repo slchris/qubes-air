@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -99,6 +100,15 @@ type Runner struct {
 
 	queue chan *Job
 
+	// beatNs is when the dispatcher last reported for duty, in Unix
+	// nanoseconds; zero means it never has. See health.go for the staleness
+	// rules /health applies to it.
+	beatNs atomic.Int64
+	// running counts the jobs the worker is executing. The worker is a single
+	// goroutine, so today this is 0 or 1; it is a counter rather than a flag so
+	// it stays correct if the pool ever grows.
+	running atomic.Int32
+
 	// base is the lifetime context for all provider work. It is deliberately
 	// derived from context.Background() and never from an HTTP request: a
 	// client disconnect must not abort an operation midway, because a
@@ -167,7 +177,12 @@ func NewRunner(cfg RunnerConfig) *Runner {
 }
 
 // Start spawns the single worker goroutine.
+//
+// The heartbeat is stamped before the goroutine is spawned, not only inside it:
+// a probe arriving in the window between the two would otherwise read a worker
+// that has not reported, which is the opposite of what just happened.
 func (r *Runner) Start() {
+	r.beat(time.Now())
 	r.wg.Add(1)
 	go r.loop()
 }
@@ -220,15 +235,40 @@ func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Act
 }
 
 // loop is the single worker. Everything it runs is serialized by construction.
+//
+// It selects on a ticker instead of ranging over the queue so that WAITING for
+// work is itself observable. A worker parked forever on an empty queue and a
+// worker that has exited look identical from outside — jobs never run while the
+// process keeps answering HTTP — and that is the failure /health has to see. A
+// closed queue still yields its buffered jobs before the receive reports closed,
+// so Shutdown drains what is already accepted exactly as it did with range, and
+// cancellation of base remains the escape hatch for a shutdown that runs out of
+// patience.
 func (r *Runner) loop() {
 	defer r.wg.Done()
-	// Ranging (rather than selecting on base.Done) means Shutdown can close the
-	// queue and have the worker drain what is already accepted before exiting.
-	// Cancellation of base remains the escape hatch for a shutdown that runs
-	// out of patience, and it lets the in-flight operation stop cleanly.
-	for job := range r.queue {
-		r.run(job)
+	ticker := time.NewTicker(DispatcherPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case job, ok := <-r.queue:
+			if !ok {
+				return
+			}
+			r.runJob(job)
+			r.beat(time.Now())
+		case <-ticker.C:
+			r.beat(time.Now())
+		}
 	}
+}
+
+// runJob executes one job and keeps the queue state /health reports in step with
+// it: while this runs the worker cannot poll, which is why the health budget
+// allows for a job in flight.
+func (r *Runner) runJob(job *Job) {
+	r.running.Add(1)
+	defer r.running.Add(-1)
+	r.run(job)
 }
 
 // run executes one job and records its outcome.

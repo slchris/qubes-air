@@ -3,8 +3,12 @@ package database
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -31,6 +35,11 @@ func DefaultConfig() *Config {
 // DB wraps the SQL database connection.
 type DB struct {
 	db *sql.DB
+
+	// probeMu serializes health probes. A probe proves a write reached the file
+	// by writing a marker and reading it back, which only means anything if no
+	// other probe can overwrite that marker in between.
+	probeMu sync.Mutex
 }
 
 // New creates a new database connection.
@@ -80,10 +89,136 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-// HealthCheck verifies database connectivity.
+// HealthCheck verifies that the console's database can be written to and read
+// back.
+//
+// It is deliberately NOT a Ping. With mattn/go-sqlite3 a Ping on an established
+// connection returns nil without sending any SQL, so a full disk, a read-only
+// filesystem or a database file deleted underneath the process all reported
+// "healthy" while every real write failed. /health is the docker-compose
+// liveness probe and the criterion docs/disaster-recovery.md uses to declare a
+// restore good, so a green check that cannot go red is worse than no check.
+//
+// What it proves: the database file is still at the path SQLite has open, a
+// write transaction against it commits, and the committed row is visible to a
+// later read. What it does NOT prove: that pages the probe never touches are
+// uncorrupted (that is PRAGMA integrity_check, too expensive for a check that
+// runs every few seconds), that a provider or an agent is reachable, or that
+// orchestration is running at all — the dispatcher reports that separately
+// (internal/orchestrator).
 func (d *DB) HealthCheck(ctx context.Context) error {
-	return d.db.PingContext(ctx)
+	// Held across the whole write-then-read pair so two concurrent probes cannot
+	// read each other's marker and report a failure that never happened.
+	d.probeMu.Lock()
+	defer d.probeMu.Unlock()
+
+	if err := d.probeDatabaseFile(ctx); err != nil {
+		return err
+	}
+
+	if _, err := d.db.ExecContext(ctx, createHealthProbeTable); err != nil {
+		return fmt.Errorf("health probe: create probe table: %w", err)
+	}
+
+	marker, err := newProbeMarker()
+	if err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(ctx, writeHealthProbeMarker, marker, time.Now().UTC()); err != nil {
+		return fmt.Errorf("health probe: write marker: %w", err)
+	}
+
+	var readBack string
+	if err := d.db.QueryRowContext(ctx, readHealthProbeMarker).Scan(&readBack); err != nil {
+		return fmt.Errorf("health probe: read marker: %w", err)
+	}
+	if readBack != marker {
+		return fmt.Errorf("health probe: marker did not round-trip: wrote %q, read %q", marker, readBack)
+	}
+	return nil
 }
+
+// probeDatabaseFile checks that the main database file is still where SQLite has
+// it open.
+//
+// The write half of the probe cannot see a deletion on its own: POSIX keeps an
+// unlinked file writable through the descriptor the process already holds, so
+// every write would keep succeeding against an inode nothing can open again —
+// the console would report healthy while all its data was unreachable. PRAGMA
+// database_list reports the path SQLite itself resolved (relative DSNs
+// included), so this needs no second copy of the configured path. An in-memory
+// database reports no file and has nothing to lose, so it is skipped, not
+// failed.
+func (d *DB) probeDatabaseFile(ctx context.Context) error {
+	rows, err := d.db.QueryContext(ctx, listDatabases)
+	if err != nil {
+		return fmt.Errorf("health probe: list databases: %w", err)
+	}
+	defer rows.Close()
+
+	var file string
+	for rows.Next() {
+		var (
+			seq  int
+			name string
+			path string
+		)
+		if err := rows.Scan(&seq, &name, &path); err != nil {
+			return fmt.Errorf("health probe: read database_list: %w", err)
+		}
+		if name == "main" {
+			file = path
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("health probe: read database_list: %w", err)
+	}
+	if file == "" {
+		return nil
+	}
+	if _, err := os.Stat(file); err != nil {
+		return fmt.Errorf("health probe: database file: %w", err)
+	}
+	return nil
+}
+
+// newProbeMarker returns a fresh random marker.
+//
+// It has to differ on every call: a constant would let the read satisfy itself
+// from a value an earlier probe wrote, which is exactly the "the write went
+// nowhere" failure this probe exists to catch.
+func newProbeMarker() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("health probe: marker: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// The probe table holds exactly ONE row (id is pinned to 1 by the CHECK). The
+// probe runs on every liveness poll, so it rewrites that row rather than
+// appending: the database file cannot grow for as long as the console runs, and
+// the write-ahead log these writes pass through is bounded by SQLite's own
+// auto-checkpoint.
+//
+// It is created here rather than in migrate() because it is not application
+// schema: a database restored from a backup taken before this probe existed must
+// still pass its first check, and the IF NOT EXISTS form is what makes that work
+// without a schema-version step.
+const createHealthProbeTable = `
+CREATE TABLE IF NOT EXISTS _health_probe (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	marker     TEXT NOT NULL,
+	checked_at DATETIME NOT NULL
+)`
+
+const writeHealthProbeMarker = `
+INSERT INTO _health_probe (id, marker, checked_at) VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET marker = excluded.marker, checked_at = excluded.checked_at`
+
+const readHealthProbeMarker = `SELECT marker FROM _health_probe WHERE id = 1`
+
+const listDatabases = `PRAGMA database_list`
 
 // SchemaVersion is the schema this build creates and expects.
 //

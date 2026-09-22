@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -938,7 +939,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	r.Use(corsMiddleware(cfg))
 
 	// /health is intentionally left unauthenticated for liveness probes.
-	r.GET("/health", healthHandler(deps.db))
+	r.GET("/health", healthHandler(deps.db, deps.runner))
 	handler.RegisterRevocations(r, deps.revocations)
 
 	// There is deliberately NO /bootstrap route. The HTTP endpoint that used to
@@ -1092,29 +1093,143 @@ func getAllowedOrigin(origin string, allowedOrigins []string) string {
 	return ""
 }
 
-// healthHandler returns a health check endpoint handler.
-func healthHandler(db *database.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		status := "healthy"
-		dbStatus := "connected"
+// Health states reported by /health. Only "unhealthy" is a failure — and
+// "disabled" is not one at all: with orchestration off there is no worker to be
+// late, and operations run inline by design.
+const (
+	statusHealthy   = "healthy"
+	statusUnhealthy = "unhealthy"
 
-		if err := db.HealthCheck(c.Request.Context()); err != nil {
-			status = "unhealthy"
-			dbStatus = "disconnected"
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"status":   status,
-				"database": dbStatus,
-				"version":  appVersion,
-			})
-			return
+	dbConnected    = "connected"
+	dbDisconnected = "disconnected"
+
+	dispatcherAlive    = "alive"
+	dispatcherStale    = "stale"
+	dispatcherDisabled = "disabled"
+)
+
+// healthWorker is the worker/queue section of the /health body.
+type healthWorker struct {
+	// Dispatcher is whether the job worker reported for duty recently.
+	Dispatcher string `json:"dispatcher"`
+	// Queued and Running describe the queue. Informational: with a finite worker
+	// pool a legitimately queued job can wait a long time, so neither is a
+	// failure signal.
+	Queued  int `json:"queued"`
+	Running int `json:"running"`
+}
+
+// healthBody is the body of GET /health. It has the same shape whether or not
+// the console is healthy, so a probe never parses two schemas.
+type healthBody struct {
+	Status   string       `json:"status"`
+	Database string       `json:"database"`
+	Worker   healthWorker `json:"worker"`
+	Version  string       `json:"version"`
+}
+
+// healthHandler returns a health check endpoint handler.
+//
+// It is the docker-compose liveness probe and the criterion
+// docs/disaster-recovery.md uses before trusting a restored database, so it has
+// to be able to go red for the failures that actually stop the console working:
+// the database cannot be written (a Ping cannot see that — see
+// database.HealthCheck) and the job dispatcher is gone, which leaves queued work
+// never running while the process answers every request.
+//
+// The failure detail stops at the status words: /health is unauthenticated so a
+// probe needs no token, and the underlying errors carry filesystem paths.
+//
+// The probe is throttled (see healthProbe): the route cannot require a token, so
+// anyone who can reach the port can ask for a database write, and those writes
+// take SQLite's single writer lock away from real job traffic.
+func healthHandler(db *database.DB, runner *orchestrator.Runner) gin.HandlerFunc {
+	probe := newHealthProbe(db.HealthCheck, healthProbeInterval, time.Now)
+	return func(c *gin.Context) {
+		body := healthBody{
+			Status:   statusHealthy,
+			Database: dbConnected,
+			Worker:   reportWorker(runner),
+			Version:  appVersion,
+		}
+		if err := probe.check(c.Request.Context()); err != nil {
+			body.Status, body.Database = statusUnhealthy, dbDisconnected
+		}
+		if body.Worker.Dispatcher == dispatcherStale {
+			body.Status = statusUnhealthy
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"status":   status,
-			"database": dbStatus,
-			"version":  appVersion,
-		})
+		code := http.StatusOK
+		if body.Status != statusHealthy {
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, body)
 	}
+}
+
+// reportWorker maps the runner's liveness snapshot onto the response body. A nil
+// runner means orchestration is disabled, which is a configuration, not an
+// outage, so it must not make the endpoint red.
+func reportWorker(runner *orchestrator.Runner) healthWorker {
+	h := runner.Health()
+	if !h.Enabled {
+		return healthWorker{Dispatcher: dispatcherDisabled}
+	}
+	state := dispatcherStale
+	if h.DispatcherAlive {
+		state = dispatcherAlive
+	}
+	return healthWorker{Dispatcher: state, Queued: h.Queued, Running: h.Running}
+}
+
+// healthProbeInterval bounds how often /health may write to the database.
+//
+// Shorter than any sane probe interval (docker-compose polls every 5s), so a
+// probe still sees a fresh write in practice; long enough that a stream of
+// requests — from a broken monitor or from someone who can reach an
+// unauthenticated port — cannot turn into a stream of write transactions
+// competing with job traffic for SQLite's single writer lock.
+const healthProbeInterval = 2 * time.Second
+
+// healthProbe runs the database probe at most once per interval, and never
+// caches a failure.
+//
+// The cost of throttling is the staleness it buys: a database that stops being
+// writable is noticed on the next probe after the window, not on the next
+// request. That is bounded by the interval and far below docker-compose's own
+// restart threshold.
+//
+// Only success is cached: a database that stops being writable must go red as
+// soon as a probe sees it, rather than after the window expires, and caching a
+// failure would hide the recovery just as badly.
+type healthProbe struct {
+	mu       sync.Mutex
+	probe    func(context.Context) error
+	interval time.Duration
+	now      func() time.Time
+	lastOK   time.Time
+}
+
+func newHealthProbe(probe func(context.Context) error, interval time.Duration, now func() time.Time) *healthProbe {
+	return &healthProbe{probe: probe, interval: interval, now: now}
+}
+
+// check probes if the last success has aged out, and returns the probe's error
+// otherwise. The mutex is held across the probe so a burst of concurrent
+// requests produces one write, not one each.
+func (p *healthProbe) check(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.lastOK.IsZero() && p.now().Sub(p.lastOK) < p.interval {
+		return nil
+	}
+	if err := p.probe(ctx); err != nil {
+		p.lastOK = time.Time{}
+		return err
+	}
+	p.lastOK = p.now()
+	return nil
 }
 
 // statusHandler returns system status information.

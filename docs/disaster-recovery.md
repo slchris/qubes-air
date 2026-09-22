@@ -66,7 +66,10 @@ qubes-air-backup create \
 
 4. 确保恢复后的进程持有**原来同一个** keyring 密钥（`QUBES_AIR_ENCRYPTION_KEYS`）；换一把
    密钥会让库内凭据与 CA 私钥无法解密。
-5. 启动控制台：`systemctl start qubes-air-console`；确认 `/health` 正常。
+5. 启动控制台：`systemctl start qubes-air-console`；确认 `/health` 返回 `status: healthy`。
+   该检查会真的写入一行探测标记再读回（并单独对编排 dispatcher 的心跳判活）：能发现库文件被删、
+   目录/文件只读、磁盘写满，以及 dispatcher 已死不再消费队列。它**不**证明 provider 可达或 agent
+   在线（看第 6 步），也不做全库完整性校验（那是 `PRAGMA integrity_check` 的事）。
 6. 抽查：列出 zone/qube（`GET /api/v1/zones`、`/qubes`）、对某 qube 触发一次 agent ping
    （`agent_health` 应为 `healthy`）、确认 `agent_certs` 中已有证书仍在其有效期内。
 
