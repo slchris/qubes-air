@@ -43,10 +43,17 @@ agent 包用 `make release-agent VERSION=<version>` 发布，记录输出的
 
 ## 2. 前置配置核验
 
+2026-09-22 的真机回归暴露过以下缺口，执行前逐项确认：
+
+- console 必须配置 `QUBES_AIR_PROXMOX_SSH_KNOWN_HOSTS_FILE`（SEC-03 起 provisioning
+  必需），内容为集群节点的**带外核对过**的主机键；salt 默认指到
+  `<data_dir>/ssh/pve_known_hosts`。
+- dom0 必须已应用 `mgmt.remotevm.register`（服务 + policy），否则注册静默失败、release
+  与 purge 会在注销 RemoteVM 时失败。
+- `QUBESAIR_REVOCATION_URL` 必须从 guest 可达（可用临时 LAN 转发，QA 后撤销）。
 - `agent.env` 的 `QUBESAIR_ALLOW` 至少含 Ping；本轮要验证 Exec/FileCopy；
   若存在旧加密盘，必须同时包含 `qubesair.UnlockData` 和 `qubesair.RekeyData`。
-- `QUBESAIR_REVOCATION_URL` 从 guest 可达。
-- provider credential、Proxmox CA、SSH known_hosts 按[安全控制](security-controls.md)配置。
+- provider credential、Proxmox CA 按[安全控制](security-controls.md)配置。
 
 ## 3. 生命周期回归
 

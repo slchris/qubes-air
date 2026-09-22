@@ -50,10 +50,11 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **NET-01：静态 IP 池现场验收。** 代码已有 ip_pool/gateway 与占用探测。
   验收：在明确保留且不与 DHCP 重叠的测试网段完成分配、冲突、池耗尽、重试、resume 与清理；
   不把探测成功当作全局地址分配锁。
-- [ ] **QA-01：完整 Proxmox 回归记录。** 执行材料已就绪：
-  [回归 runbook](runbook-qa01.md) 规定源码/构建/环境绑定、生命周期与 Exec/FileCopy 步骤、
-  数据盘迁移核验和记录模板。剩余：在真机执行并把结果写入 `docs/reviews/`。
-  验收：资源无残留、证书/RemoteVM 状态正确、日志无 secret；依赖 SEC-01～03、REL-01～02。
+- [ ] **QA-01：完整 Proxmox 回归记录。** 2026-09-22 已在 homelab 真机完成生命周期回归并
+  写入[记录](reviews/2026-09-22-qa01-proxmox.md)：provision→healthy→suspend→resume→release
+  →purge 全通过，RemoteVM 注册/注销与吊销状态已验证，发现并修复 `remotevm` 本地命名缺陷
+  （`1dbc87f`）。剩余：Exec/FileCopy 正值（需 console 下发允许列表）、suspend/resume 数据
+  持久性、旧盘迁移与 known_hosts 带外核对。验收条件不变。
 
 ## P2：产品与扩展
 
