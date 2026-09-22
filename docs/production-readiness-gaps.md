@@ -34,10 +34,11 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | 首轮 CI | **21 个 check：18 通过 / 3 失败** | 通过项含 Go Test、Go Lint、Frontend Lint、Build(Go/Svelte)、Docs and Gates、CodeQL(go/js)、Dependencies(Go/NPM/License)、Trivy、ShellCheck、YAML Lint |
 | M0-2 失败① Secret Scanning | 已修 `fa2b8a4` | 4 条全是占位 fixture；按值放行，理由与风险写在 `.gitleaks.toml` |
 | M0-2 失败② Agent package install smoke | 已修 `3afbcd7` | 版本排序依赖 commit hash 首字符（字母开头 → `0.0.0+<hash>` → 被判降级）；`0~smoke-old` 修掉 |
-| M0-2 失败③ GoSec Security Scan | 处理中 | 29 条存量发现，根因是 G-F8 的门禁不等价 |
-| M0-3 合并 main | 待 CI 全绿 | — |
-| M1-11 job 超时 | 已完成（本 commit） | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
-| M1-13 XFF 可伪造 | 已完成（本 commit） | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
+| M0-2 失败③ GoSec Security Scan | 已修 `a118c3c` + `5f1bf72` | 29 条存量发现：28 条处理完、1 条（bootstrap G402）作为显式规则豁免登记（G-H11）；根因 G-F8 的门禁不等价一并修掉 |
+| M0-2 本地全量门禁 | 通过 | `make audit` exit 0（含新 `gosec-ci`）；`make pre-commit` exit 0；`go vet ./...`、`gofmt -l` 干净；独立 `gosec@v2.29.0 -exclude-generated` 0 条 |
+| M0-3 合并 main | 待第二轮 CI 全绿 | 合并必须用 merge commit：squash/rebase 会改写 `4f52953` 这些已被 QA 记录的 revision |
+| M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
+| M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
 | M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行 |
 
 ## 1. 判定基线
@@ -99,6 +100,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-D4 | 无外部安全审计/渗透测试；现有结论来自自查与 P0 加固记录 | [P0 安全记录](reviews/2026-09-20-p0-security.md) 范围自述 | B-阻塞 | 一次独立审计或明确声明"未审计" |
 | G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:39-52 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
 | G-D6 | **真实基础设施地址已存在于公开历史**：仓库是 public，`10.31.0.x`（内网段、artifact store、节点名、QA-01 记录里的具体主机与吊销端点）出现在 8 个已公开文件与本次待推的 5 个新文件中，违反 `AGENTS.md` §5「不得提交真实基础设施地址」 | `git grep -lE "10\.31\.0\.[0-9]+" origin/main` → 8 个文件（含 `internal/config/config.go`、`.github/workflows/release.yml`）；待推范围新增 `docs/reviews/2026-09-22-qa01-proxmox.md` 等 5 个 | A-需要（已决策） | 2026-09-22 决定**接受**：增量暴露仅几个临时租约 IP，而改写 23 个 commit 会作废 `l2_verified_sha`/`qa_verified_sha` 整条信任链。后续新文档不得再写真实地址；是否做一次性历史清理由发布决策定 |
+| G-D7 | snippet 共享目录/文件是 `0755`/`0644`，而文件里含**一次性 bootstrap token** 与公开 CA（无私钥）——机密性完全落在"谁能挂载这个 share"上；`AGENTS.md` §5 把一次性 token 按 secret 处理，这里等于用共享目录的导出策略代替文件权限 | `internal/service/cloudinit.go`:722（`MkdirAll` 0755）、`:741-763`（`writeSnippetAtomic`，落盘前 `Chmod` 0644）；gosec G301/G302 已按"读者是节点侧另一用户"的理由抑制 | A-需要 | 写进 M1-7 部署安全要求：该 share 只导出给 PVE 节点；并把"token 落在 0644 文件"作为已知暴露面登记，而不是只留在 `#nosec` 理由里 |
 
 ### 2.E 产品功能（B 档为主）
 
@@ -108,7 +110,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-E2 | OBS-01：监控与账单是 placeholder（CPU/磁盘恒 0；无成本数据源） | `internal/handler/monitoring_handler.go`:53,55；`internal/handler/billing_handler.go`:11,51,56 | B-阻塞 | 接真实数据源；过期/缺失不得伪装为正常值；移除 placeholder |
 | G-E3 | GUI-01：无缝桌面（appmenu、单击启动、多窗口、断线恢复）未闭环 | [TODO](TODO.md) 第 61-62 行 | B-阻塞 | 桌面闭环验收，含 Xpra 与 RemoteVM 权限边界 |
 | G-E4 | 前端无 E2E 框架（无 playwright/cypress），QA-02 剩余"真实首次 bootstrap、应用启动 E2E、取消场景"只能手工 | `console/frontend/package.json` 无 E2E 依赖；[sprint-1 进展](sprint-1/progress.md) 第 343-347 行 | B-阻塞 | E2E 覆盖登录→创建→provision→purge 主路径 |
-| G-E5 | MCP-01 桌面帧与输入仍显式失败；MCP-02 HTTP transport 未决 | [TODO](TODO.md) 第 79-82 行；`cmd/qubes-air-mcp/main.go`:39 | B-阻塞 | 定义可见接管提示/中断/输入授权后再实现 |
+| G-E5 | MCP-01 桌面帧与输入仍显式失败；MCP-02 HTTP transport 未决 | [TODO](TODO.md) 第 79-82 行；`cmd/qubes-air-mcp/main.go`:40（`enableComputerUse` 的说明写明帧采集与输入注入未实现） | B-阻塞 | 定义可见接管提示/中断/输入授权后再实现 |
 | G-E6 | CLOUD-01/02：GCP/AWS 原生适配器未实现（未验收前不得宣称可用） | [TODO](TODO.md) 第 77-78 行；`AGENTS.md` 第 10 行 | B-阻塞 | 各自独立生命周期 + 销毁验收 |
 | G-E7 | UI 侧无 zone 可见性降级（AUTH-01 已声明边界） | [security-controls](security-controls.md) 第 82 行 | A-需要 | 越权对象在 UI 不可见或明确置灰 |
 
@@ -123,7 +125,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | G-F5 | 工具链不一致：CI 内 Node 20 与 `release.yml` 的 22 并存；本机无 `yamllint`，`yaml-lint` job 本地不可复现 | PROJECT_BRIEF §3 已知不一致、§6 门禁环境缺口 | 技术债 | 统一运行时版本；补齐本地工具 |
 | G-F6 | 文档遗留：服务表未覆盖 policy 实际授权的 5 个服务（R-DOC-4）；`UnlockData:4-6` 注释仍写 master 派生密钥（QA O-5）；`runtime-context.md` 写"10 张表"实为 9 表 7 索引（QA O-2） | PROJECT_BRIEF §9.1 R-DOC-4；[qa-signoff-1](qa/qa-signoff-1.md) O-2/O-5 | 技术债 | 逐条与代码比对后修正，附 `文件:行号` |
 | G-F7 | `go-licenses check` 是否转为 blocking 未定（移除 `\|\| true` 后仍带 `continue-on-error`） | [sprint-1 计划](sprint-1/plan.md) §1.5 开放问题 | 技术债 | 在 CI 上确认其真实退出状态后决定 |
-| G-F8 | **本地与 CI 的安全扫描不是同一个程序**，门禁因此不等价：本地 `make gosec-all` 跑 golangci-lint 内嵌 gosec（认 `//nolint:gosec`，由 `.golangci.yml` 配置），CI 跑独立 `gosec@v2.29.0`（认 `#nosec`）。同一个 revision 本地 0 条、CI **29 条**。今日 CI 首跑才发现 | `Makefile`:145-146（golangci-lint）vs `.github/workflows/security.yml` 的 `gosec` job（`go install ...@v2.29.0` + `gosec -fmt sarif ./...`）；差异由 commit `6a2623e` 引入该 pin 时产生 | **A-阻塞**（阻塞合并，因为 CI 是唯一权威） | 新增与 CI 同版本的本地 target 并接进 `make audit`；`make audit` 与 CI 对同一 revision 结论一致 |
+| G-F8 | ~~本地与 CI 的安全扫描不是同一个程序~~ **已修（`5f1bf72`）**，门禁因此不等价：本地 `make gosec-all` 跑 golangci-lint 内嵌 gosec（认 `//nolint:gosec`，由 `.golangci.yml` 配置），CI 跑独立 `gosec@v2.29.0`（认 `#nosec`）。同一个 revision 本地 0 条、CI **29 条**。今日 CI 首跑才发现 | `Makefile`:145-146（golangci-lint）vs `.github/workflows/security.yml` 的 `gosec` job（`go install ...@v2.29.0` + `gosec -fmt sarif ./...`）；差异由 commit `6a2623e` 引入该 pin 时产生 | 已解除 | ✅ 新增 `make gosec-ci`（同版本 `@v2.29.0`、同参数、仅输出格式不同）并接进 `make audit`；`-exclude-generated` 两边一致，实测只排掉 2 个 protoc 生成文件（123→121 文件 / 29400→28491 行）。本地 `make audit` 与 CI 现对同一 revision 得到同一结论 |
 
 ### 2.G 发布治理（B 档阻塞）
 
@@ -141,16 +143,17 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-H1 | ~~编排 job 硬编码 15 分钟超时~~ **已修（见本 commit）**：原 `DefaultJobTimeout` 为 15 分钟且装配处没传 `RunnerConfig.Timeout`，而代码三处自述一次 provision 要 15-25 分钟。真机复现仍待 M0-5，本次依据是静态证据（proxmox `WaitTask` 只等到 ctx 过期，下层单请求 30s 不是约束点） | 修前 `internal/orchestrator/runner.go`:135-138；修后 `:134-146`（`DefaultJobTimeout = 45 * time.Minute`）、`:246`；`cmd/server/main.go`:525-536 显式传 `cfg.JobTimeoutSeconds`；配置项 `internal/config/config.go`:306、默认值 `:552`；自述时长 `internal/orchestrator/joblog.go`:15、`internal/handler/job_handler.go`:166 | 已解除 | ✅ 默认值登记进 [runtime-defaults](runtime-defaults.md) UD-1e；剩余：真机长 provision 不落 failed（M0-5） |
+| G-H1 | ~~编排 job 硬编码 15 分钟超时~~ **已修（`1731d3d`）**：原 `DefaultJobTimeout` 为 15 分钟且装配处没传 `RunnerConfig.Timeout`，而代码三处自述一次 provision 要 15-25 分钟。真机复现仍待 M0-5，本次依据是静态证据（proxmox `WaitTask` 只等到 ctx 过期，下层单请求 30s 不是约束点） | 修前：`git show fae0aea:console/backend/internal/orchestrator/runner.go` 第 135-138 行；修后 `internal/orchestrator/runner.go`:134-146（`DefaultJobTimeout = 45 * time.Minute`）、`:246`；`cmd/server/main.go`:525-536 显式传 `cfg.JobTimeoutSeconds`；配置项 `internal/config/config.go`:306、默认值 `:552`；自述时长 `internal/orchestrator/joblog.go`:15、`internal/handler/job_handler.go`:166 | 已解除 | ✅ 默认值登记进 [runtime-defaults](runtime-defaults.md) UD-1e；剩余：真机长 provision 不落 failed（M0-5） |
 | G-H2 | `GET /health` 只做 `PingContext`，而 go-sqlite3 的 `Ping` 在连接对象非 nil 时直接返回 nil（不发 SQL、不碰库文件）——磁盘满/只读/库文件丢失时仍报 healthy；也不检查 worker、队列、巡检 | `cmd/server/main.go`:941、`:1096-1117`；`internal/database/database.go`:84-86；`mattn/go-sqlite3@v1.14.22/sqlite3_go18.go`:18-23；被 `docker-compose.yml`:52-55 当 liveness probe、[灾难恢复](disaster-recovery.md) 第 69 行当恢复判据 | **A-阻塞** | 健康检查真正执行一次读写探测并覆盖 worker/队列；恢复 checklist 的判据随之更新 |
 | G-H3 | **purge 的不可逆步骤在入队之前执行**：`prepare` 先解除盘保护、吊销身份、删 DEK，随后才 `Submit`；队列满或客户端断开使 Submit 失败时只回滚状态——数据已不可解密，却没有 job、`jobs` 表无记录、错误文本不提部分执行 | `internal/service/qube_service.go`:596-615、`:682-686`、`:715-721`；`internal/orchestrator/runner.go`:187-219 | **A-阻塞** | 入队成功后再执行不可逆步骤，或失败时显式报告"已销毁的部分"并留审计记录（`AGENTS.md` 第 66 行要求报告部分失败） |
 | G-H4 | job 日志只写不删、无保留策略，也不在备份/恢复范围内：恢复后 `jobs` 表有历史而日志文件不存在，UI 静默显示空日志 | `internal/orchestrator/joblog.go`:59-103；`internal/backup/backup.go`:96-99（只对数据库 `VACUUM INTO`）；[灾难恢复](disaster-recovery.md) 第 43-45 行备份清单 | A-需要 | 保留/轮转策略 + 纳入备份清单；若明确不备份，UI 需能区分"无日志"与"日志丢失" |
-| G-H5 | ~~限流键与审计来源 IP 可被 `X-Forwarded-For` 伪造~~ **已修（见本 commit）**：路由是 `gin.New()` 且全仓没有 `SetTrustedProxies`，而 gin v1.9.1 默认可信网段为 `0.0.0.0/0`、`::/0` | 修后 `cmd/server/main.go`:920（`configureTrustedProxies` → `SetTrustedProxies(nil)`）、`:932`（`setupRouter` 里调用）；负向测试 `cmd/server/security_test.go`；[runtime-defaults](runtime-defaults.md) UD-1d | 已解除 | ✅ 反向验证：把修复改成空操作后，新测试在"ClientIP 报的是伪造地址"和"换 XFF 就换到新桶"两条断言上均失败 |
+| G-H5 | ~~限流键与审计来源 IP 可被 `X-Forwarded-For` 伪造~~ **已修（`f8e154a`）**：路由是 `gin.New()` 且全仓没有 `SetTrustedProxies`，而 gin v1.9.1 默认可信网段为 `0.0.0.0/0`、`::/0` | 修后 `cmd/server/main.go`:920（`configureTrustedProxies` → `SetTrustedProxies(nil)`）、`:932`（`setupRouter` 里调用）；负向测试 `cmd/server/security_test.go`；[runtime-defaults](runtime-defaults.md) UD-1d | 已解除 | ✅ 反向验证：把修复改成空操作后，新测试在"ClientIP 报的是伪造地址"和"换 XFF 就换到新桶"两条断言上均失败 |
 | G-H6 | 实时 job 日志流被 15 秒 `WriteTimeout` 截断：handler 按 5 分钟设计，15 秒后写入必然失败，而 handler 丢弃写错误继续空转到 5 分钟——"干净结束 + 按 offset 重连"的契约不会发生 | `cmd/server/main.go`:1135-1136；`internal/handler/job_handler.go`:164-172、`:229-263`、`:284-290`；[runtime-defaults](runtime-defaults.md) 第 38 行登记的正是该不可达行为 | A-需要 | 流式响应不受整体 WriteTimeout 限制（或把上限改成可达值），并同步文档与前端回退逻辑 |
 | G-H7 | 无单实例保护：启动即执行 `reconcileStrandedQubes` / `ReconcileUnfinishedJobs`，会把另一个仍在运行的实例的在途 job 标成 failed/unknown、qube 覆盖成 error；DSN 无排他锁，也无 flock/pidfile | `cmd/server/main.go`:317、`:499`；`internal/service/reconcile.go`:30-58；`internal/database/database.go`:62-64 | A-需要 | 排他锁/pidfile，或把"只跑一个实例"写成部署硬要求并在启动时自检 |
 | G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:41、`:63-66`、`:1107-1115`；[release.yml](../.github/workflows/release.yml) 第 106 行；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
 | G-H9 | agent 的 systemd 单元 5 次启动失败即永久放弃，且无告警路径；原因消失后不会自愈，需要人工 `systemctl reset-failed` | `packaging/agent-deb/qubes-air-agent.service`:10-11、`:32-33`；启动失败路径 `cmd/qubes-air-agent/main.go`:97-116 | A-需要 | 放弃状态对操作者可见，runbook 写明恢复步骤 |
 | G-H10 | 置备规格无上下限校验（`validateQubeSpec` 只拒绝负数），而 PVE 磁盘**不能缩回**——一次笔误永久占用集群存储 | `internal/service/qube_service.go`:510-518；`internal/provider/proxmox/adapter.go`:170、`:232-235`、`:395-399` | A-需要 / B-阻塞 | 上下限校验（或 per-zone 配额），越界在 API 层拒绝 |
+| G-H11 | **bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免**：console 拨号尚在 bootstrap 的 agent 时 `InsecureSkipVerify: true`（`:387`）且没有 `VerifyConnection`，对端只有进程内随机生成、随进程丢弃的自签名占位证书。代码注释说明了原因（"proves nothing and is trusted by nobody；token 才是认证"），token 也确实由 agent 出示并单次消费（console 不发送 token），所以不是"抄近路"；但 `AGENTS.md` 第 60-63 行要求 `InsecureSkipVerify` 必须配完整 `VerifyConnection`，而这里**没有任何可提前 pin 的身份**——豁免已写进 `:368-387` 的注释并在本行登记 | `internal/service/agentbootstrap.go`:368-387、`:266-276`（token 由 agent 出示）；`internal/agent/bootstrap.go`:406-414（占位证书）；`AGENTS.md` 第 60-63 行 | A-需要（豁免已登记，非静默） | 二选一：①把"首次 bootstrap 必须在受信 LAN 内 + token 单次 1 小时 TTL"写成部署硬要求（与 G-D7 同一枚 token）；②彻底修：占位证书密钥改由 token 经 HKDF 派生，console 据此 pin 对端公钥——无 CA 也能做到真正的对端认证。②需要真机验证，不在 M0 范围 |
 
 ## 3. TODO List
 
@@ -158,10 +161,10 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 ### M0 — 让当前这版可被信任（几乎无代码，前置一切）
 
-- [ ] **M0-1** 把 `kixpower/sprint-1`（含本地 `main` 的 20 个 commit）push 到 `origin`，触发全部 workflow —— 依赖：无｜验收：`lint`/`build`/`docs`/`dependency`/`security`/`codeql` 在目标 SHA 全绿，`ci_pending` 转 PASS（G-A1）
-- [ ] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 依赖：M0-1（G-A1）
-- [ ] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 依赖：M0-1（G-A2）
-- [ ] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 依赖：无（G-A3）
+- [x] **M0-1** 把 `kixpower/sprint-1`（含本地 `main` 的 20 个 commit）push 到 `origin`，触发全部 workflow —— 已完成：首轮 21 个 check，18 通过 / 3 失败（G-A1）
+- [x] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 已完成：gitleaks 按值放行 `fa2b8a4`、deb 版本排序 `3afbcd7`、gosec 29 条 `a118c3c` + 门禁等价 `5f1bf72`；第二轮 CI 复验（G-A1）
+- [ ] **M0-3** 合并 `kixpower/sprint-1` → `main`（**必须 merge commit，不能 squash/rebase**，否则改写 QA 记录的 revision），合并后重跑 `make audit` —— 依赖：M0-1（G-A2）
+- [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
 - [ ] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 依赖：M0-3（G-B6）
 - [ ] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 依赖：无（G-G4）
 
