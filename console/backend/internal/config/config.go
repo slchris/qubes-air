@@ -13,6 +13,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/qrexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -209,6 +210,18 @@ type OrchestratorConfig struct {
 	// default provision does not hand a fresh host root-capable primitives.
 	// Env: QUBES_AIR_AGENT_ALLOWED_SERVICES (comma-separated).
 	AgentAllowedServices []string `yaml:"agent_allowed_services"`
+	// AgentExecAllow is the executable allowlist delivered to each new agent as
+	// QUBESAIR_EXEC_ALLOW: absolute program paths, colon-separated on the wire.
+	// Empty DISABLES qubesair.Exec in the guest (the agent refuses an empty
+	// allowlist rather than allowing everything), which is the safe default:
+	// the service runs commands as root on the remote host.
+	// Env: QUBES_AIR_EXEC_ALLOW (colon-separated).
+	AgentExecAllow []string `yaml:"agent_exec_allow"`
+	// AgentFileCopyRoots is the directory allowlist delivered as
+	// QUBESAIR_FILECOPY_ROOTS. Same shape and same empty-means-disabled rule.
+	// "/" is refused: it would allow every path on the host.
+	// Env: QUBES_AIR_FILECOPY_ROOTS (colon-separated).
+	AgentFileCopyRoots []string `yaml:"agent_filecopy_roots"`
 	// AgentProbeIntervalSeconds is how often every running qube's agent is
 	// re-probed (default 60). Zero or negative DISABLES the periodic reconciler,
 	// which leaves agent health frozen at whatever the last probe found.
@@ -713,6 +726,14 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_ALLOWED_SERVICES"); v != "" {
 		c.Orchestrator.AgentAllowedServices = splitCSV(v)
 	}
+	// Colon-separated, matching the agent's own format, so a value pasted from
+	// agent.env means the same thing here.
+	if v := os.Getenv("QUBES_AIR_EXEC_ALLOW"); v != "" {
+		c.Orchestrator.AgentExecAllow = splitColon(v)
+	}
+	if v := os.Getenv("QUBES_AIR_FILECOPY_ROOTS"); v != "" {
+		c.Orchestrator.AgentFileCopyRoots = splitColon(v)
+	}
 	// Parsed with Atoi and applied only on success, matching the transport
 	// timings below. A typo therefore keeps the default rather than silently
 	// resolving to 0, which for the interval would disable probing outright.
@@ -818,6 +839,15 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateAuth(); err != nil {
+		return err
+	}
+	// Checked at startup so a typo fails here rather than as a refused call
+	// inside a guest during a provision. The renderer re-checks before writing
+	// agent.env; this is the earlier, louder gate.
+	if err := qrexec.ValidatePathAllowlist("agent_exec_allow", c.Orchestrator.AgentExecAllow, false); err != nil {
+		return err
+	}
+	if err := qrexec.ValidatePathAllowlist("agent_filecopy_roots", c.Orchestrator.AgentFileCopyRoots, true); err != nil {
 		return err
 	}
 
@@ -1004,6 +1034,12 @@ func (c *Config) IsTLSEnabled() bool {
 }
 
 // splitCSV trims a comma-separated environment list, dropping empty entries.
+// splitColon splits the agent's own list format. An empty entry is kept rather
+// than dropped: "a::b" is a typo the validator must reject, not silently repair.
+func splitColon(v string) []string {
+	return strings.Split(v, ":")
+}
+
 func splitCSV(v string) []string {
 	var out []string
 	for _, p := range strings.Split(v, ",") {
