@@ -846,3 +846,63 @@ func TestNoAptMirrorLeavesImageSourcesAlone(t *testing.T) {
 	assert.NotContains(t, out, "apt:",
 		"with no mirror configured the image's own sources must be left untouched")
 }
+
+// TestPathAllowlistsAreDelivered — the two allowlists qubesair.Exec and
+// qubesair.FileCopy read from their own environment. Before this they were
+// never delivered at all, so opening the services on the console side made no
+// difference: the agent rejected every call with "service disabled" (G-B1).
+func TestPathAllowlistsAreDelivered(t *testing.T) {
+	pkg := testAgentPackage()
+	pkg.ExecAllow = []string{"/usr/bin/id", "/usr/bin/uptime"}
+	pkg.FileCopyRoots = []string{"/var/tmp"}
+	out, _ := renderWith(t, pkg)
+
+	env := fileContent(t, parseConfig(t, out), "agent.env")
+	// Colon-separated: that is the separator the services split on.
+	assert.Contains(t, env, "QUBESAIR_EXEC_ALLOW=/usr/bin/id:/usr/bin/uptime")
+	assert.Contains(t, env, "QUBESAIR_FILECOPY_ROOTS=/var/tmp")
+}
+
+// TestPathAllowlistsAreOmittedWhenEmpty — a provision that was not asked for
+// root-capable primitives must not carry the keys at all. The agent treats a
+// missing key as "service disabled", which is the same as an empty value but
+// does not claim a grant that was never made.
+func TestPathAllowlistsAreOmittedWhenEmpty(t *testing.T) {
+	out, _ := renderFixture(t)
+	env := fileContent(t, parseConfig(t, out), "agent.env")
+
+	assert.NotContains(t, env, "QUBESAIR_EXEC_ALLOW")
+	assert.NotContains(t, env, "QUBESAIR_FILECOPY_ROOTS")
+	assert.Contains(t, env, "QUBESAIR_ALLOW=qubesair.Ping")
+}
+
+// TestRenderRejectsUnsafePathAllowlists — these values become lines in a file
+// that a root service reads, so a newline is an injection and an unnormalized
+// entry is a grant the operator did not write.
+func TestRenderRejectsUnsafePathAllowlists(t *testing.T) {
+	cases := []struct {
+		name  string
+		apply func(pkg *AgentPackage)
+	}{
+		{name: "relative exec", apply: func(p *AgentPackage) { p.ExecAllow = []string{"usr/bin/id"} }},
+		{name: "exec with dotdot", apply: func(p *AgentPackage) { p.ExecAllow = []string{"/usr/bin/../../etc/shadow"} }},
+		{name: "exec with colon", apply: func(p *AgentPackage) { p.ExecAllow = []string{"/usr/bin/id:/bin/sh"} }},
+		{name: "newline injection", apply: func(p *AgentPackage) {
+			p.ExecAllow = []string{"/usr/bin/id\nQUBESAIR_ALLOW=everything"}
+		}},
+		{name: "root as filecopy root", apply: func(p *AgentPackage) { p.FileCopyRoots = []string{"/"} }},
+		{name: "relative filecopy root", apply: func(p *AgentPackage) { p.FileCopyRoots = []string{"var/tmp"} }},
+		{name: "empty entry", apply: func(p *AgentPackage) { p.ExecAllow = []string{""} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pkg := testAgentPackage()
+			tc.apply(&pkg)
+			id, _ := testIdentityDoc(t)
+			// Called directly rather than through renderWith, which asserts the
+			// render succeeded.
+			_, err := RenderAgentUserData("remote-dev", id, "0.0.0.0:8443", pkg, false)
+			require.Error(t, err, "an unsafe allowlist must fail the render, not reach the guest")
+		})
+	}
+}

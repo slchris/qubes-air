@@ -91,7 +91,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-B1 | **console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键。从 console 打开 `qubesair.Exec` 后，agent 侧仍因 allowlist 为空而拒绝全部调用 | `internal/service/cloudinit.go:275-276`；`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）；全仓 grep 该两个变量只命中 remote 脚本、文档与测试 | **A-阻塞** | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 |
+| G-B1 | **console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键。从 console 打开 `qubesair.Exec` 后，agent 侧仍因 allowlist 为空而拒绝全部调用 | `internal/service/cloudinit.go:299`；`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）；全仓 grep 该两个变量只命中 remote 脚本、文档与测试 | **A-阻塞** | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 |
 | G-B2 | Exec/FileCopy 无真机正值验收——而这是本项目对用户的核心承诺 | [QA-01 记录](reviews/2026-09-22-qa01-proxmox.md) 第 66-69 行 | **A-阻塞** | 同 G-B1；FileCopy push/pull 往返在真机留证 |
 | G-B3 | suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在） | 同上第 70 行 | **A-阻塞** | 写入文件 → suspend → resume → 读出同一内容，落记录 |
 | G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
@@ -104,7 +104,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 |---|---|---|---|---|
 | G-C1 | OPS-01 剩余：离机归档、真实 keyring、provider 资源对账、agent 信任校验、生产数据量 RTO 全部未做 | [ops01 预演](reviews/2026-09-21-ops01-restore.md) 第 52-58 行；[TODO](TODO.md) 第 46-49 行 | **A-阻塞** | 归档经网络/介质到第二台机器，用真实 keyring 恢复，实测 RTO 与人工步骤 |
 | G-C2 | 备份没有调度：仓库内只有 `qubes-air-backup` CLI 与 `internal/backup` 包，无 timer/cron 接线、无保留策略 | `grep -rn backup internal/scheduler/*.go cmd/server/main.go` 无命中；`cmd/` 下有 `qubes-air-backup` | **A-阻塞** | 备份有明确触发方式与保留策略，且被文档化为运维步骤 |
-| G-C3 | 无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过 | `internal/database/database.go:100-169`；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | **A-阻塞** | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
+| G-C3 | 无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过 | `internal/database/database.go:232`（`SchemaVersion`）、`:290-305`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | **A-阻塞** | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
 | G-C4 | 产物分发仍依赖局域网 artifact store（`10.31.0.2`），离开该网段无法 bootstrap——这正是 [release.yml](../.github/workflows/release.yml) 存在的理由，但该 workflow 从未跑过 | `release.yml` 第 1-20 行自述；`docs/bootstrap-design.md`:66-72；G-A4 | A-需要（B-阻塞） | 用 release 制品（URL + SHA256）完成一次 provision，不依赖 LAN 地址 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 132 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
 
@@ -170,7 +170,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 | G-H5 | ~~限流键与审计来源 IP 可被 `X-Forwarded-For` 伪造~~ **已修（`f8e154a`）**：路由是 `gin.New()` 且全仓没有 `SetTrustedProxies`，而 gin v1.9.1 默认可信网段为 `0.0.0.0/0`、`::/0` | 修后 `cmd/server/main.go`:920（`configureTrustedProxies` → `SetTrustedProxies(nil)`）、`:932`（`setupRouter` 里调用）；负向测试 `cmd/server/security_test.go`；[runtime-defaults](runtime-defaults.md) UD-1d | 已解除 | ✅ 反向验证：把修复改成空操作后，新测试在"ClientIP 报的是伪造地址"和"换 XFF 就换到新桶"两条断言上均失败 |
 | G-H6 | 实时 job 日志流被 15 秒 `WriteTimeout` 截断：handler 按 5 分钟设计，15 秒后写入必然失败，而 handler 丢弃写错误继续空转到 5 分钟——"干净结束 + 按 offset 重连"的契约不会发生 | `cmd/server/main.go`:1250-1251；`internal/handler/job_handler.go`:164-172、`:229-263`、`:284-290`；[runtime-defaults](runtime-defaults.md) 第 38 行登记的正是该不可达行为 | A-需要 | 流式响应不受整体 WriteTimeout 限制（或把上限改成可达值），并同步文档与前端回退逻辑 |
 | G-H7 | 无单实例保护：启动即执行 `reconcileStrandedQubes` / `ReconcileUnfinishedJobs`，会把另一个仍在运行的实例的在途 job 标成 failed/unknown、qube 覆盖成 error；DSN 无排他锁，也无 flock/pidfile | `cmd/server/main.go`:317、`:499`；`internal/service/reconcile.go`:30-58；`internal/database/database.go`:62-64 | A-需要 | 排他锁/pidfile，或把"只跑一个实例"写成部署硬要求并在启动时自检 |
-| G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:41、`:63-66`、`:1107-1115`；[release.yml](../.github/workflows/release.yml) 第 106 行；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
+| G-H8 | console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入 | `cmd/server/main.go`:42（`appVersion` 常量）、`:63-70`（`--version` 与启动日志都打印该常量）、`:1153`（`/health` 的 `version` 字段）；[release.yml](../.github/workflows/release.yml) 第 106 行（`-ldflags` 只有 `-s -w`，不注入）；对照 `packaging/agent-deb/Dockerfile`:41-45 | A-需要（与 G-C3 同一件事） | 构建注入版本，`/health` 与 `--version` 反映真实 revision |
 | G-H9 | agent 的 systemd 单元 5 次启动失败即永久放弃，且无告警路径；原因消失后不会自愈，需要人工 `systemctl reset-failed` | `packaging/agent-deb/qubes-air-agent.service`:10-11、`:32-33`；启动失败路径 `cmd/qubes-air-agent/main.go`:97-116 | A-需要 | 放弃状态对操作者可见，runbook 写明恢复步骤 |
 | G-H10 | 置备规格无上下限校验（`validateQubeSpec` 只拒绝负数），而 PVE 磁盘**不能缩回**——一次笔误永久占用集群存储 | `internal/service/qube_service.go`:516-524；`internal/provider/proxmox/adapter.go`:170、`:232-235`、`:395-399` | A-需要 / B-阻塞 | 上下限校验（或 per-zone 配额），越界在 API 层拒绝 |
 | G-H11 | **bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免**：console 拨号尚在 bootstrap 的 agent 时 `InsecureSkipVerify: true`（`:387`）且没有 `VerifyConnection`，对端只有进程内随机生成、随进程丢弃的自签名占位证书。代码注释说明了原因（"proves nothing and is trusted by nobody；token 才是认证"），token 也确实由 agent 出示并单次消费（console 不发送 token），所以不是"抄近路"；但 `AGENTS.md` 第 65-66 行要求 `InsecureSkipVerify` 必须配完整 `VerifyConnection`，而这里**没有任何可提前 pin 的身份**——豁免已写进 `:368-387` 的注释并在本行登记 | `internal/service/agentbootstrap.go`:368-387、`:266-276`（token 由 agent 出示）；`internal/agent/bootstrap.go`:406-414（占位证书）；`AGENTS.md` 第 65-66 行 | A-需要（豁免已登记，非静默） | 二选一：①把"首次 bootstrap 必须在受信 LAN 内 + token 单次 1 小时 TTL"写成部署硬要求（与 G-D7 同一枚 token）；②彻底修：占位证书密钥改由 token 经 HKDF 派生，console 据此 pin 对端公钥——无 CA 也能做到真正的对端认证。②需要真机验证，不在 M0 范围 |
@@ -190,12 +190,12 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
 
-- [ ] **M1-1** console 侧新增 Exec/FileCopy 白名单下发（`QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS` 写入 cloud-init `agent.env`），含配置校验与失败路径测试 —— 依赖：M0（G-B1）
+- [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
 - [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）
 - [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
 - [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— 依赖：无（G-C2）
-- [ ] **M1-6** 写升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 前向单向、回滚=恢复备份 —— 依赖：无（G-C3、G-G2）
+- [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出三个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）

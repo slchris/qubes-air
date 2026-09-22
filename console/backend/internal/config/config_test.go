@@ -558,3 +558,58 @@ func TestConfig_ValidateTokenZones(t *testing.T) {
 		assert.Contains(t, err.Error(), "zones", name)
 	}
 }
+
+// The allowlists are validated at startup so a typo fails here instead of
+// surfacing as a refused call inside a guest nobody is watching.
+func TestConfig_ValidateRejectsUnsafePathAllowlists(t *testing.T) {
+	cases := []struct {
+		name    string
+		modify  func(cfg *Config)
+		wantErr bool
+	}{
+		{name: "default is empty and valid", modify: func(*Config) {}},
+		{name: "absolute exec", modify: func(c *Config) { c.Orchestrator.AgentExecAllow = []string{"/usr/bin/id"} }, wantErr: false},
+		{name: "absolute filecopy root", modify: func(c *Config) { c.Orchestrator.AgentFileCopyRoots = []string{"/var/tmp"} }, wantErr: false},
+		{name: "relative exec", modify: func(c *Config) { c.Orchestrator.AgentExecAllow = []string{"usr/bin/id"} }, wantErr: true},
+		{name: "exec with dotdot", modify: func(c *Config) { c.Orchestrator.AgentExecAllow = []string{"/usr/bin/../sbin/x"} }, wantErr: true},
+		{name: "exec with colon", modify: func(c *Config) { c.Orchestrator.AgentExecAllow = []string{"/a:/b"} }, wantErr: true},
+		{name: "exec with newline", modify: func(c *Config) {
+			c.Orchestrator.AgentExecAllow = []string{"/usr/bin/id\nQUBESAIR_ALLOW=everything"}
+		}, wantErr: true},
+		{name: "filecopy root is slash", modify: func(c *Config) { c.Orchestrator.AgentFileCopyRoots = []string{"/"} }, wantErr: true},
+		{name: "filecopy root relative", modify: func(c *Config) { c.Orchestrator.AgentFileCopyRoots = []string{"var/tmp"} }, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			tc.modify(cfg)
+			err := cfg.Validate()
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// The env vars use the agent's own separator (colon) so a value copied out of a
+// guest's agent.env means the same thing on the console. An empty entry is kept
+// rather than dropped: "a::b" is a typo the validator must reject, not silently
+// repair into a list the operator did not write.
+func TestConfig_LoadFromEnv_SplitsPathAllowlistsOnColon(t *testing.T) {
+	t.Setenv("QUBES_AIR_EXEC_ALLOW", "/usr/bin/id:/usr/bin/uptime")
+	t.Setenv("QUBES_AIR_FILECOPY_ROOTS", "/var/tmp:/srv/in")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/usr/bin/id", "/usr/bin/uptime"}, cfg.Orchestrator.AgentExecAllow)
+	assert.Equal(t, []string{"/var/tmp", "/srv/in"}, cfg.Orchestrator.AgentFileCopyRoots)
+
+	// "a::b" survives parsing (splitColon keeps the empty entry) and is then
+	// refused by validation, which Load runs: the typo never reaches a provision.
+	t.Setenv("QUBES_AIR_EXEC_ALLOW", "/usr/bin/id::/bin/sh")
+	_, err = Load("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty entry")
+}
