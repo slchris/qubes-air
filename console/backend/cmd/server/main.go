@@ -25,6 +25,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
+	"github.com/slchris/qubes-air/console/internal/lockfile"
 	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
@@ -77,11 +78,26 @@ func main() {
 	logConfig(cfg)
 	logSecurityWarnings(cfg)
 
-	// Initialize dependencies
-	deps, err := initDependencies(cfg)
+	// Build the dependencies under the single-instance lock: building them is
+	// what reconciles state that may belong to a live process (see bootLocked).
+	var deps *Dependencies
+	instanceLock, err := bootLocked(cfg.LockFilePath(), func() error {
+		var bootErr error
+		deps, bootErr = initDependencies(cfg)
+		return bootErr
+	})
 	if err != nil {
-		log.Fatalf("Failed to initialize: %v", err)
+		log.Fatalf("Failed to start: %v", err)
 	}
+	// Declared before deps.Close so that it runs AFTER it: the lock is held
+	// until the database is closed. The failure paths need no cleanup — a fatal
+	// log exits the process, which closes every descriptor and releases the
+	// flock with it.
+	defer func() {
+		if err := instanceLock.Release(); err != nil {
+			log.Printf("Single-instance: releasing %s: %v", instanceLock.Path(), err)
+		}
+	}()
 	defer deps.Close()
 
 	// Setup router and run server
@@ -89,12 +105,52 @@ func main() {
 	runServer(cfg, router)
 }
 
+// bootLocked takes the process-lifetime exclusive single-instance lock at
+// lockPath and only then runs boot.
+//
+// The order is the whole point. boot builds the dependencies, and building them
+// runs reconcileStrandedQubes and ReconcileUnfinishedJobs — both of which assume
+// every transient they find was left by a process that is GONE, so they mark
+// qubes error and unfinished jobs failed/unknown. A second console started next
+// to a live one would therefore rewrite that instance's in-flight state. Taking
+// the lock first turns the overlap into a refusal to start that names the lock
+// file and, when the holder wrote one, its pid.
+//
+// An empty lockPath means the database is not a file (in-memory or unset) and no
+// other process could be sharing it, so there is nothing to exclude.
+//
+// boot is a parameter rather than inlined so the refusal is provable without a
+// real second process: a test injects a boot that records whether it ran.
+func bootLocked(lockPath string, boot func() error) (*lockfile.Lock, error) {
+	if lockPath == "" {
+		log.Printf("Single-instance: database is not a file; no lock needed")
+		return nil, boot()
+	}
+	lock, err := lockfile.Acquire(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := boot(); err != nil {
+		// Nothing is serving under this lock, so hand it back rather than
+		// making the next start wait for this process to exit.
+		_ = lock.Release()
+		return nil, err
+	}
+	log.Printf("Single-instance lock held: %s", lock.Path())
+	return lock, nil
+}
+
 // logConfig logs the current configuration (without sensitive data).
 func logConfig(cfg *config.Config) {
+	lockPath := cfg.LockFilePath()
+	if lockPath == "" {
+		lockPath = "(none: database is not a file)"
+	}
 	log.Printf("Configuration:")
 	log.Printf("  Listen: %s", cfg.Address())
 	log.Printf("  TLS: %v", cfg.IsTLSEnabled())
 	log.Printf("  Database: %s", cfg.Database.DSN)
+	log.Printf("  Instance lock: %s", lockPath)
 	log.Printf("  CORS Origins: %v", cfg.CORS.AllowedOrigins)
 	log.Printf("  Auth: %v", authStatus(cfg))
 }
