@@ -9,6 +9,7 @@
 #
 # What it publishes:
 #   qubes-air-console                  linux/amd64, cgo (go-sqlite3)
+#   qubes-air-backup                   linux/amd64, cgo (go-sqlite3)
 #   qubes-air-console-web.tar.gz       the built frontend
 #   qubes-air-agent_<version>_amd64.deb the remote agent
 #   SHA256SUMS                         checksums for all of the above
@@ -91,73 +92,44 @@ jobs:
           cache: npm
           cache-dependency-path: console/frontend/package-lock.json
 
-      # CGO_ENABLED=1 is not optional: the console uses mattn/go-sqlite3, and a
+      # CGO_ENABLED=1 is not optional: both binaries link mattn/go-sqlite3, and a
       # CGO_ENABLED=0 build compiles cleanly then fails at runtime with
       # `unknown driver "sqlite3"` — a working binary that cannot open its own
       # database. The runner is already linux/amd64, so no cross-toolchain is
       # needed here (unlike building on an arm64 Mac).
       #
-      # The three -X flags stamp the build metadata an operator reads back from a
-      # running service (GET /health) or from this artifact (--version); a build
-      # without them reports "unknown" for every field rather than a
-      # plausible-looking version (G-H8 / M2-10, docs/upgrade-rollback.md §3.1).
-      # The Makefile's build-backend passes the same three flags, so a binary a
-      # developer built and a released one report the same shape.
+      # Both steps call scripts/build-release-binary.sh instead of spelling the
+      # build out here: it writes the build metadata an operator reads back from
+      # a running service (GET /health) or from an artifact (--version), and it
+      # refuses to hand out a binary that lost a stamp (G-H8 / M2-10, G-G5). One
+      # script is the point — a second inline copy of the per-field guard could
+      # cover the console and silently miss the backup, which is exactly the
+      # drift the header above forbids.
       #
-      # The values travel through env and shell variables for the same reason the
-      # version above does: interpolating a git ref into the command line lets
-      # bash parse it as syntax. The resolved release version is reused rather
-      # than re-derived from git, so the console, the release page and the .deb
+      # The version travels through env for the same reason the Resolve version
+      # step's does: interpolating a git ref into a command line lets bash parse
+      # it as syntax. The resolved release version is reused rather than
+      # re-derived, so the console, the backup, the .deb and the release page
       # cannot disagree on what this release is called.
       - name: Build console binary
-        working-directory: console/backend
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: amd64
-          CONSOLE_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          revision="$(git rev-parse HEAD)"
-          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          stamp_pkg="github.com/slchris/qubes-air/console/internal/buildinfo"
-          ldflags="-s -w"
-          ldflags="$ldflags -X ${stamp_pkg}.version=${CONSOLE_VERSION}"
-          ldflags="$ldflags -X ${stamp_pkg}.revision=${revision}"
-          ldflags="$ldflags -X ${stamp_pkg}.buildTime=${build_time}"
-          go build -trimpath -ldflags="$ldflags" \
-            -o "${GITHUB_WORKSPACE}/dist/qubes-air-console" ./cmd/server
-          file "${GITHUB_WORKSPACE}/dist/qubes-air-console"
-          # -X that matches no variable is silently ignored, so read the stamp
-          # back out of the artifact and fail the release rather than publish a
-          # binary that cannot say which build it is. Same reasoning as the
-          # GOARCH check in packaging/agent-deb/Dockerfile: the failure this
-          # prevents is a silent one.
-          #
-          # Every field is checked, not just the version, because every field is
-          # its own -X flag and can therefore be the one that silently missed:
-          # a typo in a sibling flag (`revisions=`) leaves the version correct
-          # and that field unstamped. The artifact would then be published with
-          # `revision=unknown`, which is exactly the question (which commit is
-          # this?) the stamp exists to answer.
-          version_out="$("${GITHUB_WORKSPACE}/dist/qubes-air-console" --version)"
-          printf '%s\n' "$version_out"
-          case "$version_out" in
-            *"version=${CONSOLE_VERSION} "*) ;;
-            *) echo "FATAL: console binary does not carry the release version ${CONSOLE_VERSION}: ${version_out}" >&2; exit 1 ;;
-          esac
-          for field in revision build_time; do
-            case "$version_out" in
-              *"${field}=unknown"*)
-                echo "FATAL: console binary carries no ${field} stamp: ${version_out}" >&2; exit 1 ;;
-            esac
-          done
-          # `tree` has no `unknown`-free guarantee of its own: an unstamped
-          # version parses to `unknown`, so it is only acceptable as clean/dirty.
-          case "$version_out" in
-            *"tree=clean"*|*"tree=dirty"*) ;;
-            *) echo "FATAL: console binary carries no tree stamp: ${version_out}" >&2; exit 1 ;;
-          esac
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build-release-binary.sh ./cmd/server dist/qubes-air-console
+
+      # The backup CLI is the only program that can read an archive back, so the
+      # disaster-recovery path cannot rest on a hand-compiled binary: M1-5's Salt
+      # state pins this artifact by digest (`backup.binary_sha256`) and its
+      # ExecStart would otherwise point at something an operator built locally.
+      - name: Build backup binary
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+          VERSION: ${{ steps.version.outputs.version }}
+        run: scripts/build-release-binary.sh ./cmd/qubes-air-backup dist/qubes-air-backup
 
       - name: Build web bundle
         working-directory: console/frontend
@@ -176,7 +148,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: |
-          sha256sum qubes-air-console qubes-air-console-web.tar.gz \
+          sha256sum qubes-air-console qubes-air-backup qubes-air-console-web.tar.gz \
             qubes-air-agent_*_amd64.deb > SHA256SUMS
           cat SHA256SUMS
 
@@ -188,6 +160,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/qubes-air-console
+            dist/qubes-air-backup
             dist/qubes-air-console-web.tar.gz
             dist/qubes-air-agent_*_amd64.deb
             dist/SHA256SUMS
@@ -200,6 +173,11 @@ jobs:
             `SHA256SUMS` and set them in `salt/config.jinja`
             (`console_binary_sha256`, `console_web_sha256`,
             `agent_package_sha256`) — do not re-derive them later from memory.
+
+            `qubes-air-backup` is not delivered to a guest: it lands where the
+            backup timer runs, so the Salt state that installs it pins the same
+            digest as `backup.binary_sha256` (with `backup.binary_source` for the
+            URL). That is what replaced compiling it by hand.
 
             Download URLs have the form:
 

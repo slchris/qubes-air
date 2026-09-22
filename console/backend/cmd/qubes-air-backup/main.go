@@ -8,10 +8,16 @@
 //	qubes-air-backup create  -db /rw/config/qubesair/qubes-air.db -out-dir /secure/offhost
 //	qubes-air-backup restore -db /rw/config/qubesair/qubes-air.db -in qubesair.qab -force
 //	qubes-air-backup prune   -dir /secure/offhost -keep 14
+//	qubes-air-backup --version
 //
 // -out-dir names the archive itself (qubesair-<UTC stamp>.qab) so a systemd
 // timer can run create without a shell to expand $(date). prune keeps the
 // newest -keep archives and deletes the rest; it never runs without -dir.
+//
+// The build identity (version, revision, build_time, tree) comes from the same
+// linker stamps the console carries (internal/buildinfo) and --version reports
+// it before any subcommand, passphrase or database is touched — the release
+// guard reads it back from the artifact exactly as it does for the console.
 //
 // A restore replaces the database; the console must be stopped first, and the
 // keyring key (QUBES_AIR_ENCRYPTION_KEYS) must still be available or the
@@ -29,10 +35,12 @@ import (
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/backup"
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 )
 
-// buildVersion is overridden at link time (-X main.buildVersion=...).
-var buildVersion = "dev"
+// appName is the name every --version line starts with, the same shape the
+// console prints (`qubes-air-console version=…`).
+const appName = "qubes-air-backup"
 
 const passphraseEnv = "QUBES_AIR_BACKUP_PASSPHRASE" // #nosec G101 -- the environment variable NAME the operator sets, not a credential
 
@@ -46,7 +54,15 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: qubes-air-backup <create|restore|prune> [flags]")
+		return fmt.Errorf("usage: qubes-air-backup <create|restore|prune> [flags] (--version prints the build identity)")
+	}
+	// --version is answered before the subcommand dispatch and reads nothing but
+	// the linker stamps: the release guard runs it on a runner with no
+	// passphrase and no database, and an operator reads it off the artifact
+	// before either exists.
+	if args[0] == "--version" || args[0] == "-version" {
+		fmt.Printf("%s %s\n", appName, buildinfo.Get())
+		return nil
 	}
 	switch args[0] {
 	case "create":
@@ -90,7 +106,11 @@ func runCreate(args []string) error {
 	}
 	defer f.Close()
 
-	if err := backup.Create(context.Background(), *db, passphrase, buildVersion, f); err != nil {
+	// The archive header records which build wrote it, from the same linker stamp
+	// --version prints: an archive, the binary that wrote it and the release
+	// artifact can then be matched up without a second version scheme (which is
+	// what -X main.buildVersion used to be).
+	if err := backup.Create(context.Background(), *db, passphrase, buildinfo.Get().Version, f); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {
