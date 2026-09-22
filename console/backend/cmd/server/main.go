@@ -898,11 +898,35 @@ func buildBootstrapper(
 		service.DefaultBootstrapTimeout)
 }
 
+// configureTrustedProxies makes c.ClientIP() report the peer address instead of
+// a header the caller controls.
+//
+// gin trusts every proxy by default (0.0.0.0/0 and ::/0), so X-Forwarded-For was
+// believed from anyone who sent it. Both consumers of ClientIP are affected and
+// both are security-relevant: the rate limiter keys its bucket on it, so an
+// unauthenticated caller could take a fresh bucket per request by rotating the
+// header, and the audit trail recorded whatever address the caller claimed.
+//
+// No proxy is trusted because nothing in front of the console rewrites the
+// header: it is reached directly on its LAN address, or through the qrexec TCP
+// forward, which forwards bytes without adding HTTP headers. A deployment that
+// does put an HTTP proxy in front should pass that proxy's address here rather
+// than restoring the default.
+func configureTrustedProxies(r *gin.Engine) error {
+	if err := r.SetTrustedProxies(nil); err != nil {
+		return fmt.Errorf("configure trusted proxies: %w", err)
+	}
+	return nil
+}
+
 // setupRouter creates and configures the Gin router.
 func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	gin.SetMode(cfg.Server.Mode)
 
 	r := gin.New()
+	if err := configureTrustedProxies(r); err != nil {
+		log.Fatalf("server: %v", err)
+	}
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
 	r.Use(securityHeaders())
