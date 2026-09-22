@@ -63,8 +63,12 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   组件测试（20 个前端测试，随 pre-commit 与 CI 运行）；agent deb 的安装、依赖解析、升级
   conffile 保留、完整性、卸载与启动拒绝路径由 `make agent-deb-test`（Docker）覆盖，
   CI 有 `agent-package` job。剩余：真实首次 bootstrap、应用启动 E2E 与取消场景。
-- [ ] **AUTH-01：逐对象授权。** 在现有 read-only/control scope 上定义 zone/qube 权限与
-  多租户边界；验收跨对象和跨租户拒绝、审计归属，以及 CLI/MCP/浏览器的一致行为。
+- [x] **AUTH-01：逐对象授权。** 命名 token 可带 `zones` 白名单，session 继承该限制；
+  跨 zone 对象与不存在对象统一 404，fleet 端点对 zone token 返回 403，`GET /zones`、
+  `GET /qubes` 在查询层过滤；审计记录 `subject` 与 `zone_scope`。判定与配置见
+  [安全控制](security-controls.md#console-api-对象级授权)，自动化覆盖中间件允许/拒绝/
+  失败关闭、repository 过滤、session 继承与配置校验。边界：不是完整多租户，fleet 端点
+  不做按 zone 过滤；未做 UI 侧可见性降级。
 - [ ] **UI-01：设置接入。** 分别实现 session timeout、2FA、邮件、webhook 并提供端到端证据；
   未实现项目继续显示“未接入”，不可仅保存配置便勾选完成。
 - [ ] **OBS-01：真实监控、告警与账单。** 接入真实数据源、刷新/失败状态和费用语义；验收

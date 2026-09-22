@@ -61,7 +61,7 @@ func TestSessionLoginRejectsBadToken(t *testing.T) {
 
 func TestSessionLogoutClearsSession(t *testing.T) {
 	store := middleware.NewSessionStore(time.Hour)
-	sess, err := store.Create("api_token", middleware.ScopeControl)
+	sess, err := store.Create("api_token", middleware.ScopeControl, nil)
 	require.NoError(t, err)
 	r := sessionRouter(NewSessionHandler("secret", nil, store, false))
 

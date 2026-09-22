@@ -49,12 +49,12 @@ func (h *SessionHandler) Login(c *gin.Context) {
 		respondError(c, http.StatusBadRequest, err)
 		return
 	}
-	subject, scope, ok := middleware.MatchToken(h.apiToken, h.scoped, req.Token)
+	subject, scope, zones, ok := middleware.MatchToken(h.apiToken, h.scoped, req.Token)
 	if !ok {
 		respondError(c, http.StatusUnauthorized, errInvalidToken)
 		return
 	}
-	sess, err := h.sessions.Create(subject, scope)
+	sess, err := h.sessions.Create(subject, scope, zones)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, err)
 		return
@@ -63,6 +63,7 @@ func (h *SessionHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"subject":    sess.Subject,
 		"scope":      string(sess.Scope),
+		"zones":      sess.Zones,
 		"expires_at": sess.Expires,
 	})
 }

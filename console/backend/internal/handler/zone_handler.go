@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
@@ -77,6 +78,12 @@ func parseZoneListOptions(c *gin.Context) repository.ZoneListOptions {
 	}
 	if zoneType := c.Query("type"); zoneType != "" {
 		opts.Type = zoneType
+	}
+	// A zone-scoped credential sees only the zones it may address; the
+	// middleware already rejected fleet-only routes, so this is a filter and
+	// not an authorization check.
+	if zones, restricted := middleware.ZoneScopeFromContext(c); restricted {
+		opts.Zones = zones
 	}
 
 	return opts

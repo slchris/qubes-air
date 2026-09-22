@@ -13,7 +13,7 @@ import (
 
 func TestSessionStoreLifecycle(t *testing.T) {
 	s := NewSessionStore(time.Hour)
-	sess, err := s.Create("api_token", ScopeControl)
+	sess, err := s.Create("api_token", ScopeControl, nil)
 	require.NoError(t, err)
 	require.NotEmpty(t, sess.ID)
 
@@ -31,7 +31,7 @@ func TestSessionStoreExpires(t *testing.T) {
 	s := NewSessionStore(time.Minute)
 	base := time.Now()
 	s.now = func() time.Time { return base }
-	sess, err := s.Create("t", ScopeReadOnly)
+	sess, err := s.Create("t", ScopeReadOnly, nil)
 	require.NoError(t, err)
 
 	s.now = func() time.Time { return base.Add(2 * time.Minute) }
@@ -44,7 +44,7 @@ func TestSessionStoreExpires(t *testing.T) {
 func TestScopedAuthAcceptsSessionCookie(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := NewSessionStore(time.Hour)
-	sess, err := store.Create("api_token", ScopeControl)
+	sess, err := store.Create("api_token", ScopeControl, nil)
 	require.NoError(t, err)
 
 	r := gin.New()
@@ -70,4 +70,20 @@ func TestScopedAuthAcceptsSessionCookie(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	r.ServeHTTP(w2, bad)
 	assert.Equal(t, http.StatusUnauthorized, w2.Code)
+}
+
+// TestSessionStoreCarriesZoneScope — a session keeps the token's object-level
+// restriction and copies it, so a later mutation of the caller's slice cannot
+// widen a live session.
+func TestSessionStoreCarriesZoneScope(t *testing.T) {
+	s := NewSessionStore(time.Hour)
+	zones := []string{"z1"}
+	sess, err := s.Create("scoped", ScopeControl, zones)
+	require.NoError(t, err)
+	require.Equal(t, []string{"z1"}, sess.Zones)
+
+	zones[0] = "z2"
+	got, ok := s.Get(sess.ID)
+	require.True(t, ok)
+	assert.Equal(t, []string{"z1"}, got.Zones, "the session must not share the caller's slice")
 }

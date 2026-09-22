@@ -171,17 +171,21 @@ func TestScopeFromContext_Disabled(t *testing.T) {
 func TestMatchScope(t *testing.T) {
 	creds := newCredentials("", scopedCreds())
 
-	_, _, ok := matchCredential("short-admin", creds)
+	subject, scope, zones, ok := matchCredential("short-admin", creds)
 	assert.False(t, ok)
+	assert.Empty(t, subject)
+	assert.Empty(t, string(scope))
+	assert.Empty(t, zones)
 
-	subject, got, ok := matchCredential(readToken, creds)
+	subject, scope, zones, ok = matchCredential(readToken, creds)
 	assert.True(t, ok)
-	assert.Equal(t, ScopeReadOnly, got)
+	assert.Equal(t, ScopeReadOnly, scope)
+	assert.Empty(t, zones, "a fleet-wide credential carries no zone restriction")
 	assert.NotEmpty(t, subject, "the matched credential's name is the audit subject")
 
-	_, got, ok = matchCredential(controlToken, creds)
+	_, scope, _, ok = matchCredential(controlToken, creds)
 	assert.True(t, ok)
-	assert.Equal(t, ScopeControl, got)
+	assert.Equal(t, ScopeControl, scope)
 }
 
 func TestValidScope(t *testing.T) {

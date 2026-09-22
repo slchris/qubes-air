@@ -24,6 +24,9 @@ type Session struct {
 	// token's name, never the token itself.
 	Subject string
 	Scope   Scope
+	// Zones is the object-level restriction inherited from the token that
+	// created the session. Empty means fleet-wide.
+	Zones   []string
 	Created time.Time
 	Expires time.Time
 }
@@ -49,14 +52,22 @@ func NewSessionStore(ttl time.Duration) *SessionStore {
 	return &SessionStore{sessions: map[string]Session{}, ttl: ttl, now: time.Now}
 }
 
-// Create mints a session for subject/scope and returns it.
-func (s *SessionStore) Create(subject string, scope Scope) (Session, error) {
+// Create mints a session for subject/scope/zones and returns it. The zones are
+// copied: the session must not share the caller's slice.
+func (s *SessionStore) Create(subject string, scope Scope, zones []string) (Session, error) {
 	id, err := newSessionID()
 	if err != nil {
 		return Session{}, err
 	}
 	now := s.now().UTC()
-	sess := Session{ID: id, Subject: subject, Scope: scope, Created: now, Expires: now.Add(s.ttl)}
+	sess := Session{
+		ID:      id,
+		Subject: subject,
+		Scope:   scope,
+		Zones:   append([]string(nil), zones...),
+		Created: now,
+		Expires: now.Add(s.ttl),
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

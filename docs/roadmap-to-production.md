@@ -18,7 +18,7 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 | 原生编排 | `NativeExecutor` + Proxmox REST/SSH，`qube_infra` 记录资源身份；旧 Terraform 入口已移除 | 仅注册 Proxmox；GCP/AWS 不可置备 |
 | agent 身份 | 实际入口强制角色与 CA 签名撤销状态；握手、恢复会话和长连接均检查 | 状态源可达性为新增部署要求；缓存和重放时间界限见安全控制，尚未真机部署 |
 | 远端服务 | 默认只启用 Ping；Exec 使用 JSON argv，FileCopy 使用目录描述符；均继承沙箱 | 不保留 shell 文本/宿主 scope 入口；允许的程序自身仍需审查 |
-| 请求与认证 | 浏览器用 HttpOnly、SameSite=Strict session；Bearer 保留给 CLI/MCP；变更请求要求 control scope | session TTL 默认 12h；设置页的 timeout/2FA/通知尚未接入 |
+| 请求与认证 | 浏览器用 HttpOnly、SameSite=Strict session；Bearer 保留给 CLI/MCP；变更请求要求 control scope；命名 token 可按 zones 限制对象，session 继承 | session TTL 默认 12h；设置页的 timeout/2FA/通知尚未接入；zone token 不可用 fleet 端点 |
 | API 安全基线 | 安全响应头、CORS、生产配置拒绝不安全默认值、请求体上限、限流、结构化操作者审计 | 不代表完整多租户身份体系或审计归档系统 |
 | 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并清理端点/RemoteVM | 部分失败只允许继续 purge；不能保证清除历史备份里的密钥 |
 | 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘首次解锁原子迁移到 DEK，master 只读且仅用于迁移 | 迁移完成前旧盘仍依赖 master；agent 需先允许 RekeyData，按盘真机核验归 QA-01 |

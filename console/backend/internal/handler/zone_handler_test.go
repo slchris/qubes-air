@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/service"
@@ -203,4 +204,39 @@ func TestZoneHandler_Connect(t *testing.T) {
 	zone, err := zoneSvc.GetByID(ctx, created.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, "connected", zone.Status)
+}
+
+// TestZoneHandler_ListFilteredByZoneScope — a zone-scoped credential's list
+// request is narrowed in the query to its allowlist. The context key is set
+// here directly because ScopedAuth already has its own tests.
+func TestZoneHandler_ListFilteredByZoneScope(t *testing.T) {
+	_, zoneSvc, cleanup := setupTestRouter(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	allowed, err := zoneSvc.Create(ctx, &models.ZoneCreateRequest{Name: "Allowed", Type: models.ZoneTypeProxmox})
+	require.NoError(t, err)
+	_, err = zoneSvc.Create(ctx, &models.ZoneCreateRequest{Name: "Other", Type: models.ZoneTypeProxmox})
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	scoped := gin.New()
+	v1 := scoped.Group("/api/v1")
+	v1.Use(func(c *gin.Context) {
+		c.Set(middleware.ZonesContextKey, []string{allowed.ID})
+		c.Next()
+	})
+	NewZoneHandler(zoneSvc).RegisterRoutes(v1)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+	scoped.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body struct {
+		Zones []models.Zone `json:"zones"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Zones, 1)
+	assert.Equal(t, allowed.ID, body.Zones[0].ID)
 }

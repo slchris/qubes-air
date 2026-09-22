@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -89,6 +90,11 @@ func parseQubeListOptions(c *gin.Context) repository.QubeListOptions {
 	}
 	if qubeType := c.Query("type"); qubeType != "" {
 		opts.Type = qubeType
+	}
+	// A zone-scoped credential sees only qubes in its zones (see the zone
+	// handler for the same reasoning).
+	if zones, restricted := middleware.ZoneScopeFromContext(c); restricted {
+		opts.Zones = zones
 	}
 
 	return opts

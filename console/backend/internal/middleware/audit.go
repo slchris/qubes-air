@@ -29,6 +29,7 @@ func Audit(rec *audit.Recorder) gin.HandlerFunc {
 		}
 
 		subject, _ := SubjectFromContext(c)
+		zones, _ := ZoneScopeFromContext(c)
 		status := c.Writer.Status()
 		rec.Record(audit.Entry{
 			Subject:   subject,
@@ -39,6 +40,7 @@ func Audit(rec *audit.Recorder) gin.HandlerFunc {
 			Status:    status,
 			Outcome:   audit.Outcome(status),
 			LatencyMS: time.Since(started).Milliseconds(),
+			ZoneScope: zones,
 		})
 	}
 }

@@ -402,6 +402,10 @@ type ScopedToken struct {
 	Token string `yaml:"token"`
 	// Scope is "read-only" or "control" (config.ScopeReadOnly / ScopeControl).
 	Scope string `yaml:"scope"`
+	// Zones restricts the token to these zone IDs. Empty means fleet-wide: the
+	// token may address every zone and the fleet-only endpoints. A non-empty
+	// list is an object-level allowlist enforced by middleware.RequireZones.
+	Zones []string `yaml:"zones"`
 }
 
 // devEncryptionKey is the well-known insecure key used only when no key is
@@ -878,6 +882,28 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// validateTokenZones checks the object-level allowlist of one token. An empty
+// list is the fleet-wide spelling; "*" is rejected so the two cannot be
+// confused, and a zone ID that is not exactly a configured value (stray
+// whitespace, empty entry, duplicate) is refused rather than silently making
+// the allowlist match nothing.
+func validateTokenZones(i int, t ScopedToken) error {
+	seen := make(map[string]bool, len(t.Zones))
+	for j, zone := range t.Zones {
+		if zone == "" || strings.TrimSpace(zone) != zone {
+			return fmt.Errorf("auth.tokens[%d] (%q): zones[%d] must be a non-empty zone id without surrounding whitespace", i, t.Name, j)
+		}
+		if zone == "*" {
+			return fmt.Errorf("auth.tokens[%d] (%q): use an empty zones list for a fleet-wide token, not %q", i, t.Name, zone)
+		}
+		if seen[zone] {
+			return fmt.Errorf("auth.tokens[%d] (%q): duplicate entry in zones: %q", i, t.Name, zone)
+		}
+		seen[zone] = true
+	}
+	return nil
+}
+
 // validateAuth fails fast on a malformed token list.
 //
 // A bad scope or an empty token must stop the console at startup rather than
@@ -893,6 +919,9 @@ func (c *Config) validateAuth() error {
 		if !middleware.ValidScope(t.Scope) {
 			return fmt.Errorf("auth.tokens[%d] (%q): scope must be %q or %q, got %q",
 				i, t.Name, middleware.ScopeReadOnly, middleware.ScopeControl, t.Scope)
+		}
+		if err := validateTokenZones(i, t); err != nil {
+			return err
 		}
 	}
 	// Fail closed in production: an empty token disables authentication, which

@@ -122,6 +122,7 @@ func scopedTokens(cfg *config.Config) []middleware.Token {
 			Name:  t.Name,
 			Value: t.Token,
 			Scope: middleware.Scope(t.Scope),
+			Zones: append([]string(nil), t.Zones...),
 		})
 	}
 	return tokens
@@ -169,6 +170,10 @@ type Dependencies struct {
 	// Held here so it stays a live, injectable dependency; a service will consume
 	// it in the next stage-T wiring step.
 	transport transport.Transport
+	// qubeRepo and jobRepo answer the object-level zone questions RequireZones
+	// asks; they are held here because the middleware is built after them.
+	qubeRepo repository.QubeRepository
+	jobRepo  *repository.JobRepository
 	// runner serializes provider work onto one goroutine. Nil when
 	// orchestration is disabled, in which case the service runs inline.
 	runner *orchestrator.Runner
@@ -323,6 +328,8 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	sessionStore := middleware.NewSessionStore(0)
 	return &Dependencies{
+		qubeRepo:          qubeRepo,
+		jobRepo:           jobRepo,
 		db:                db,
 		zoneHandler:       handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
 		qubeHandler:       handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
@@ -924,7 +931,10 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	v1.Use(middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg), deps.sessions))
 	v1.Use(middleware.RateLimit(middleware.NewRateLimiter(cfg.Server.RateLimitPerSec, cfg.Server.RateLimitBurst)))
 	v1.Use(middleware.RequireControl())
+	// Audit is registered BEFORE RequireZones so a zone denial (403/404) is
+	// recorded with the subject and zone scope that caused it.
 	v1.Use(middleware.Audit(audit.NewRecorder(os.Stderr)))
+	v1.Use(middleware.RequireZones(objectZoneResolver{qubes: deps.qubeRepo, jobs: deps.jobRepo}))
 	deps.sessionHandler.RegisterRoutes(v1)
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
@@ -1129,4 +1139,41 @@ func runServer(cfg *config.Config, handler http.Handler) {
 	}
 
 	log.Println("Server stopped")
+}
+
+// objectZoneResolver answers "which zone owns this object" for the zone
+// middleware. A missing object is not an error: the middleware answers 404 for
+// both missing and foreign objects so a restricted caller cannot probe which
+// IDs exist.
+type objectZoneResolver struct {
+	qubes repository.QubeRepository
+	jobs  *repository.JobRepository
+}
+
+func (r objectZoneResolver) ZoneOfQube(ctx context.Context, qubeID string) (string, bool, error) {
+	if r.qubes == nil || qubeID == "" {
+		return "", false, nil
+	}
+	qube, err := r.qubes.GetByID(ctx, qubeID)
+	if errors.Is(err, repository.ErrQubeNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return qube.ZoneID, true, nil
+}
+
+func (r objectZoneResolver) ZoneOfJob(ctx context.Context, jobID string) (string, bool, error) {
+	if r.jobs == nil || jobID == "" {
+		return "", false, nil
+	}
+	job, err := r.jobs.GetByID(ctx, jobID)
+	if errors.Is(err, repository.ErrJobNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return r.ZoneOfQube(ctx, job.QubeID)
 }

@@ -30,6 +30,10 @@ type Entry struct {
 	Status    int
 	Outcome   string
 	LatencyMS int64
+	// ZoneScope is the object-level allowlist of the acting credential. Empty
+	// means fleet-wide; it is recorded so a denial can be attributed both to a
+	// subject and to the scope it was acting under.
+	ZoneScope []string
 }
 
 // Recorder emits entries as JSON lines.
@@ -56,7 +60,19 @@ func (r *Recorder) Record(e Entry) {
 		slog.Int("status", e.Status),
 		slog.String("outcome", e.Outcome),
 		slog.Int64("latency_ms", e.LatencyMS),
+		// "fleet" rather than an empty list: an absent field reads as "unknown"
+		// in a log, and the difference between no restriction and a restriction
+		// that matched nothing matters during an incident.
+		slog.Any("zone_scope", zoneScope(e.ZoneScope)),
 	)
+}
+
+// zoneScope renders a nil/empty allowlist as the fleet-wide label.
+func zoneScope(zones []string) string {
+	if len(zones) == 0 {
+		return "fleet"
+	}
+	return strings.Join(zones, ",")
 }
 
 // Outcome values. They are exported because callers and tests switch on them;

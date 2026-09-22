@@ -49,6 +49,39 @@ Agent 用已有公共 CA 校验精确签名数据。HTTPS 仍校验服务器证�
 使用。Console 临时探测证书不逐张登记；CA 泄露、逐对象授权、备份恢复后的撤销历史一致性
 需要单独处置，见 [TODO](TODO.md)。
 
+## Console API 对象级授权
+
+`auth.tokens[*].zones` 给命名 token 增加对象级白名单。`api_token` 与未写 `zones` 的 token 是
+fleet-wide；浏览器 session 继承登录 token 的 `zones`，因此浏览器、CLI 与 MCP 走同一套服务端
+判定，没有各自的旁路。
+
+```yaml
+auth:
+  api_token: <管理员, fleet-wide>
+  tokens:
+    - name: zone-a-control
+      token: <...>
+      scope: control
+      zones: [<zone-a-id>]
+    - name: auditor
+      token: <...>
+      scope: read-only
+```
+
+判定规则：
+
+- 白名单内对象的 `zones/:id`、`qubes/:id`（含 start/stop/release/purge）以及 job 详情/日志
+  放行；其他 Zone 的对象与不存在的对象都返回 404，不泄露 ID 是否存在。
+- 创建 Qube 时请求体的 `zone_id` 必须在白名单内，否则 403；创建 Zone 是 fleet 操作。
+- `credentials`、`infrastructure`、`settings`、`monitoring`、`billing`、`status` 和 job 汇总
+  列表是 fleet 端点，zone token 一律 403（不做半真半假的过滤视图）。
+- `GET /zones` 与 `GET /qubes` 在查询层按白名单过滤，只返回可见对象。
+- 所属关系无法解析（数据库故障、body 不可解析或超限）时失败关闭，不回退为放行。
+- 审计记录 `subject` 与 `zone_scope`（`fleet` 或 ID 列表）；被拒绝的变更请求同样入库。
+
+边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
+扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。
+
 ## Exec：JSON 参数列表
 
 stdin 必须是 JSON 字符串数组，第一项为已允许的规范绝对可执行文件路径：

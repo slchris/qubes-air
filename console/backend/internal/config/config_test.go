@@ -514,3 +514,28 @@ func TestOrchestratorRequiresRevocationURL(t *testing.T) {
 	c.Orchestrator.Enabled = true
 	assert.Error(t, c.Validate())
 }
+
+// TestConfig_ValidateTokenZones — a zone allowlist must be an exact list of
+// zone IDs; a wildcard or a sloppy entry is refused so a misconfigured token
+// cannot silently match nothing (or everything).
+func TestConfig_ValidateTokenZones(t *testing.T) {
+	valid := func(zones []string) *Config {
+		cfg := DefaultConfig()
+		cfg.Auth.Tokens = []ScopedToken{{Name: "t", Token: "v", Scope: "read-only", Zones: zones}}
+		return cfg
+	}
+	require.NoError(t, valid(nil).Validate())
+	require.NoError(t, valid([]string{"z1", "z2"}).Validate())
+
+	for name, zones := range map[string][]string{
+		"empty entry":  {""},
+		"whitespace":   {" z1"},
+		"wildcard":     {"*"},
+		"duplicate":    {"z1", "z1"},
+		"empty middle": {"z1", ""},
+	} {
+		err := valid(zones).Validate()
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "zones", name)
+	}
+}
