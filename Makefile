@@ -3,7 +3,7 @@
 # 常用构建和开发命令
 
 .PHONY: help build clean dev test agent-deb publish-agent-deb release-agent \
-	pre-commit audit check-tools diff-check test-race lint-new gosec-new \
+	pre-commit audit check-tools diff-check test-race lint-new gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
 	agent-deb-test
@@ -67,7 +67,7 @@ GOLANGCI_LINT ?= golangci-lint
 SHELLCHECK ?= shellcheck
 GOVULNCHECK ?= govulncheck
 
-pre-commit: check-tools diff-check test-race lint-new gosec-new complexity-new \
+pre-commit: check-tools diff-check test-race lint-new gosec-new gosec-ci-new complexity-new \
 	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
 
 audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
@@ -152,6 +152,18 @@ gosec-all:
 # 其中的 unsafe (G103) 是 protoc 的输出, 两个入口都排除。
 gosec-ci:
 	cd console/backend && go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt text -exclude-generated ./...
+
+# 增量版: 只扫本次改动的包, 好让 `make pre-commit` 与 CI 对 gosec 的结论也一致。
+# 独立 gosec 没有 golangci-lint 的 --new-from-rev, 所以从 BASE_REV 自己算变更包;
+# 没有变更包就跳过 —— 不退回全量扫描, 否则每次提交都要付全仓代价 (那是 `make audit` 的事)。
+GOSEC_CI_PKGS = $(shell git diff --name-only $(BASE_REV) -- console/backend \
+	| sed -n 's|^console/backend/\(.*\)/[^/]*\.go$$|./\1/...|p' | sort -u | tr '\n' ' ')
+
+gosec-ci-new:
+	@if [ -z "$(GOSEC_CI_PKGS)" ]; then echo "gosec-ci-new: 无变更 Go 包, 跳过"; else \
+		echo "gosec-ci-new: $(GOSEC_CI_PKGS)"; \
+		cd console/backend && go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt text -exclude-generated -quiet $(GOSEC_CI_PKGS); \
+	fi
 
 complexity-all:
 	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gocyclo,funlen
