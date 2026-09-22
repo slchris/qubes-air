@@ -26,6 +26,7 @@ type Config struct {
 	Auth         AuthConfig         `yaml:"auth"`
 	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
 	Transport    TransportConfig    `yaml:"transport"`
+	QubeSpec     QubeSpecConfig     `yaml:"qube_spec"`
 }
 
 // TransportConfig configures the gRPC bidirectional-stream cross-machine
@@ -319,6 +320,98 @@ type OrchestratorConfig struct {
 	JobTimeoutSeconds int `yaml:"job_timeout_seconds"`
 }
 
+// QubeSpecConfig bounds the resource sizes a qube create/update request may
+// carry. It is enforced in internal/service before the request is written or sent
+// to a provider (production-readiness gap G-H10 / plan item M2-12): a rejected
+// spec must never reach an adapter, because a PVE disk cannot be shrunk and the
+// size a typo asks for is therefore consumed for as long as that disk exists.
+//
+// The defaults hold the same numbers as service.DefaultSpecBounds; main.go maps
+// one to the other and cmd/server pins them together with a test, so the
+// configured path and the service's own fallback cannot drift apart.
+//
+// 0 is not a size, it means "unset": create replaces a zero with the type default
+// (see service.applyDefaultSpec). The minimum therefore applies only to a value
+// the caller actually gave.
+//
+// Every bound is INCLUSIVE. Every pair must satisfy min >= 1 and max >= min;
+// Validate refuses one that does not, rather than letting a transposed digit
+// either disable the check or refuse every request.
+type QubeSpecConfig struct {
+	// MinVCPU / MaxVCPU bound spec.vcpu (default 1..32). The upper bound is the
+	// UI's own create/edit maximum (console/frontend/src/components/QubeList.svelte
+	// :471, :579) and 8x the 4 cores per node of the reference cluster the
+	// scheduler was built against.
+	// Env: QUBES_AIR_QUBE_SPEC_MIN_VCPU / QUBES_AIR_QUBE_SPEC_MAX_VCPU.
+	MinVCPU int `yaml:"min_vcpu"`
+	MaxVCPU int `yaml:"max_vcpu"`
+	// MinMemoryMB / MaxMemoryMB bound spec.memory, in MB (default 512..262144).
+	// The minimum is the UI's own minimum and the size of the console's smallest
+	// VM, the data-disk holder. The MAXIMUM is a JUDGEMENT CALL, not a
+	// measurement: 256 GiB is 16x the largest built-in type default and has no
+	// basis in this repository. It is deliberately a policy bound — lower it if
+	// the cluster is smaller.
+	// Env: QUBES_AIR_QUBE_SPEC_MIN_MEMORY_MB / QUBES_AIR_QUBE_SPEC_MAX_MEMORY_MB.
+	MinMemoryMB int `yaml:"min_memory_mb"`
+	MaxMemoryMB int `yaml:"max_memory_mb"`
+	// MinDiskGB / MaxDiskGB bound the root disk, in GB (default 10..16384). The
+	// minimum is the UI's minimum; the MAXIMUM is a JUDGEMENT CALL — 16 TiB, above
+	// any volume a single-operator node presents, and it still refuses the
+	// 200000 GiB typo this bound exists for. The datastore's real ceiling is not
+	// visible to the API.
+	// Env: QUBES_AIR_QUBE_SPEC_MIN_DISK_GB / QUBES_AIR_QUBE_SPEC_MAX_DISK_GB.
+	MinDiskGB int `yaml:"min_disk_gb"`
+	MaxDiskGB int `yaml:"max_disk_gb"`
+	// MinDataDiskGB / MaxDataDiskGB bound spec.data_disk_gb, in GB (default
+	// 1..16384). The minimum is the UI's minimum; the maximum shares the root
+	// disk's judgement call, and matters more: this is the disk PVE will never
+	// shrink.
+	// Env: QUBES_AIR_QUBE_SPEC_MIN_DATA_DISK_GB / QUBES_AIR_QUBE_SPEC_MAX_DATA_DISK_GB.
+	MinDataDiskGB int `yaml:"min_data_disk_gb"`
+	MaxDataDiskGB int `yaml:"max_data_disk_gb"`
+	// MinGPUCount / MaxGPUCount bound spec.gpu.count (default 1..8). A JUDGEMENT
+	// CALL with no basis in the repository: no provider adapter reads Spec.GPU
+	// today, so there is nothing to measure.
+	// Env: QUBES_AIR_QUBE_SPEC_MIN_GPU_COUNT / QUBES_AIR_QUBE_SPEC_MAX_GPU_COUNT.
+	MinGPUCount int `yaml:"min_gpu_count"`
+	MaxGPUCount int `yaml:"max_gpu_count"`
+}
+
+// specBoundPair is one dimension's limits, so Validate can walk all of them
+// without five copies of the same two checks.
+type specBoundPair struct {
+	key      string
+	min, max int
+}
+
+// dimensions lists every bounded dimension, in the order the service checks them.
+func (q QubeSpecConfig) dimensions() []specBoundPair {
+	return []specBoundPair{
+		{"vcpu", q.MinVCPU, q.MaxVCPU},
+		{"memory_mb", q.MinMemoryMB, q.MaxMemoryMB},
+		{"disk_gb", q.MinDiskGB, q.MaxDiskGB},
+		{"data_disk_gb", q.MinDataDiskGB, q.MaxDataDiskGB},
+		{"gpu_count", q.MinGPUCount, q.MaxGPUCount},
+	}
+}
+
+// Validate refuses a bounds set that could not be enforced: a minimum below 1
+// bounds nothing, and a maximum below its minimum refuses every request. Both
+// look like a working console until someone tries to create a qube, so they are
+// caught here instead. The messages name the offending key, because a config typo
+// has to be actionable from the startup log alone.
+func (q QubeSpecConfig) Validate() error {
+	for _, d := range q.dimensions() {
+		if d.min < 1 {
+			return fmt.Errorf("qube_spec.min_%s (%d) must be at least 1; a non-positive minimum would not bound anything", d.key, d.min)
+		}
+		if d.max < d.min {
+			return fmt.Errorf("qube_spec.max_%s (%d) is below qube_spec.min_%s (%d); every request would be refused", d.key, d.max, d.key, d.min)
+		}
+	}
+	return nil
+}
+
 // ServerConfig holds HTTP server configuration.
 // DefaultMaxBodyBytes bounds request bodies when nothing else is configured. It
 // is generous for the console's JSON payloads (zone/qube specs, settings) while
@@ -571,6 +664,23 @@ func DefaultConfig() *Config {
 			KeepAliveSeconds:    20,
 			ReconnectMinSeconds: 1,
 			ReconnectMaxSeconds: 30,
+		},
+		// Bounds on every size a create/update request may carry. Same numbers
+		// as service.DefaultSpecBounds, which is what an unset/unusable set falls
+		// back to; cmd/server's TestSpecBoundsFromConfigMatchesServiceDefaults
+		// keeps the two in step. Read the field comments above before changing
+		// one: the memory/disk/gpu maxima are policy, not measured limits.
+		QubeSpec: QubeSpecConfig{
+			MinVCPU:       1,
+			MaxVCPU:       32,
+			MinMemoryMB:   512,
+			MaxMemoryMB:   262144,
+			MinDiskGB:     10,
+			MaxDiskGB:     16384,
+			MinDataDiskGB: 1,
+			MaxDataDiskGB: 16384,
+			MinGPUCount:   1,
+			MaxGPUCount:   8,
 		},
 	}
 }
@@ -827,6 +937,42 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_TRANSPORT_VAULT_CA_NAME"); v != "" {
 		c.Transport.VaultCAName = v
 	}
+
+	c.loadQubeSpecBoundsFromEnv()
+}
+
+// loadQubeSpecBoundsFromEnv reads the qube_spec bounds. One lookup per field,
+// each through intFromEnv, so a typo keeps the configured default rather than
+// resolving to 0 — which for a minimum would drop the lower bound and for a
+// maximum would refuse every request. It is a separate function rather than ten
+// more branches in loadFromEnv, which is already at its complexity limit.
+func (c *Config) loadQubeSpecBoundsFromEnv() {
+	q := &c.QubeSpec
+	q.MinVCPU = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_VCPU", q.MinVCPU)
+	q.MaxVCPU = intFromEnv("QUBES_AIR_QUBE_SPEC_MAX_VCPU", q.MaxVCPU)
+	q.MinMemoryMB = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_MEMORY_MB", q.MinMemoryMB)
+	q.MaxMemoryMB = intFromEnv("QUBES_AIR_QUBE_SPEC_MAX_MEMORY_MB", q.MaxMemoryMB)
+	q.MinDiskGB = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_DISK_GB", q.MinDiskGB)
+	q.MaxDiskGB = intFromEnv("QUBES_AIR_QUBE_SPEC_MAX_DISK_GB", q.MaxDiskGB)
+	q.MinDataDiskGB = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_DATA_DISK_GB", q.MinDataDiskGB)
+	q.MaxDataDiskGB = intFromEnv("QUBES_AIR_QUBE_SPEC_MAX_DATA_DISK_GB", q.MaxDataDiskGB)
+	q.MinGPUCount = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_GPU_COUNT", q.MinGPUCount)
+	q.MaxGPUCount = intFromEnv("QUBES_AIR_QUBE_SPEC_MAX_GPU_COUNT", q.MaxGPUCount)
+}
+
+// intFromEnv parses one integer environment variable, keeping fallback when it is
+// unset or unparseable. Same rule as the inline Atoi calls in loadFromEnv: a
+// typo leaves the previous value in place instead of silently becoming 0.
+func intFromEnv(name string, fallback int) int {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 // Validate checks if the configuration is valid.
@@ -871,6 +1017,13 @@ func (c *Config) Validate() error {
 	// falling back to the insecure default. Building the keyring validates both
 	// the single-key and multi-version forms (length, version syntax, primary).
 	if _, err := c.Keyring(); err != nil {
+		return err
+	}
+
+	// A bounds set that cannot be enforced is refused here rather than shipped:
+	// min < 1 would drop a lower bound and max < min would refuse every create,
+	// and neither is visible until someone tries to provision.
+	if err := c.QubeSpec.Validate(); err != nil {
 		return err
 	}
 

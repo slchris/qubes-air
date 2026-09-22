@@ -209,7 +209,13 @@ export interface QubeListResponse {
 
 // Error response from API
 export interface ApiError {
+  // The HTTP status text ("Bad Request"), not the reason. The reason is in
+  // `message` — see api.ts's errorMessage().
   error: string;
+  // Why the request was refused, in the console's own words (e.g. which spec
+  // bound was broken). Optional because a proxy, or an error raised before the
+  // console's own handler, can return a body without it.
+  message?: string;
   code?: string;
   details?: Record<string, string>;
 }

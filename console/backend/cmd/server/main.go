@@ -443,11 +443,37 @@ func newQubeServiceOptions(
 		// decides, so flipping the fleet from plaintext to encrypted (or back)
 		// is a config change, not a code change.
 		service.WithEncryptDataDefault(cfg.Orchestrator.EncryptDataDefault),
+		// Bounds on every resource size a create/update may carry (G-H10).
+		// Config decides, so a deployment whose hardware is larger than the
+		// defaults raises the ceiling without a code change. A set that cannot be
+		// enforced is refused at startup by config.Validate, and the service keeps
+		// its own defaults if such a set reaches it anyway.
+		service.WithSpecBounds(specBoundsFromConfig(cfg.QubeSpec)),
 		// Purge uses this to lift the data disk's `protected` flag, which the
 		// executor's Destroy requires before it will destroy the disk.
 		service.WithInfraStore(infraRepo),
 		// Per-qube data keys: minted at creation, deleted on purge (crypto-shred).
 		service.WithDataKeyStore(dataKeys),
+	}
+}
+
+// specBoundsFromConfig maps the configured qube_spec limits onto the service's
+// enforcement type. TestSpecBoundsFromConfigMatchesServiceDefaults pins the
+// mapping and both default sets together: a console with no config file must
+// enforce exactly service.DefaultSpecBounds, and a key that stops being read
+// would otherwise leave an operator tuning a value nothing consults.
+func specBoundsFromConfig(q config.QubeSpecConfig) service.SpecBounds {
+	return service.SpecBounds{
+		MinVCPU:       q.MinVCPU,
+		MaxVCPU:       q.MaxVCPU,
+		MinMemoryMB:   q.MinMemoryMB,
+		MaxMemoryMB:   q.MaxMemoryMB,
+		MinDiskGB:     q.MinDiskGB,
+		MaxDiskGB:     q.MaxDiskGB,
+		MinDataDiskGB: q.MinDataDiskGB,
+		MaxDataDiskGB: q.MaxDataDiskGB,
+		MinGPUCount:   q.MinGPUCount,
+		MaxGPUCount:   q.MaxGPUCount,
 	}
 }
 

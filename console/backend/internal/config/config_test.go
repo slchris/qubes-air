@@ -613,3 +613,108 @@ func TestConfig_LoadFromEnv_SplitsPathAllowlistsOnColon(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty entry")
 }
+
+// TestConfig_QubeSpecBoundsDefaults — the shipped bounds must be enforceable:
+// a minimum below 1 bounds nothing and a maximum below its minimum refuses every
+// request, and neither shows up until someone tries to create a qube.
+func TestConfig_QubeSpecBoundsDefaults(t *testing.T) {
+	q := DefaultConfig().QubeSpec
+
+	require.NoError(t, q.Validate(), "the shipped bounds must pass their own validation")
+	require.NoError(t, DefaultConfig().Validate())
+
+	for _, d := range q.dimensions() {
+		assert.GreaterOrEqualf(t, d.min, 1, "qube_spec.min_%s must bound something", d.key)
+		assert.GreaterOrEqualf(t, d.max, d.min, "qube_spec.max_%s must not be below its minimum", d.key)
+	}
+
+	// The three numbers the UI already constrains must stay in step with it
+	// (QubeList.svelte's own min/max), or the API would refuse what the form
+	// offers, or accept what it blocks.
+	assert.Equal(t, 1, q.MinVCPU)
+	assert.Equal(t, 32, q.MaxVCPU, "the create/edit form's max=\"32\" must be the API's maximum")
+	assert.Equal(t, 512, q.MinMemoryMB, "the form's min=\"512\" must be the API's minimum")
+	assert.Equal(t, 10, q.MinDiskGB, "the form's min=\"10\" for the root disk")
+	assert.Equal(t, 1, q.MinDataDiskGB, "the form's min=\"1\" for the data disk")
+}
+
+// TestConfig_QubeSpecBoundsFromEnv — a deployment sets these from its unit file
+// or environment. A binding that silently does not read leaves the operator
+// tuning a value the process ignores, which looks exactly like a bound that is
+// not enforced.
+func TestConfig_QubeSpecBoundsFromEnv(t *testing.T) {
+	for name, value := range map[string]string{
+		"QUBES_AIR_QUBE_SPEC_MIN_VCPU":         "2",
+		"QUBES_AIR_QUBE_SPEC_MAX_VCPU":         "64",
+		"QUBES_AIR_QUBE_SPEC_MIN_MEMORY_MB":    "1024",
+		"QUBES_AIR_QUBE_SPEC_MAX_MEMORY_MB":    "524288",
+		"QUBES_AIR_QUBE_SPEC_MIN_DISK_GB":      "20",
+		"QUBES_AIR_QUBE_SPEC_MAX_DISK_GB":      "32768",
+		"QUBES_AIR_QUBE_SPEC_MIN_DATA_DISK_GB": "5",
+		"QUBES_AIR_QUBE_SPEC_MAX_DATA_DISK_GB": "32768",
+		"QUBES_AIR_QUBE_SPEC_MIN_GPU_COUNT":    "2",
+		"QUBES_AIR_QUBE_SPEC_MAX_GPU_COUNT":    "16",
+	} {
+		t.Setenv(name, value)
+	}
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+
+	assert.Equal(t, QubeSpecConfig{
+		MinVCPU: 2, MaxVCPU: 64,
+		MinMemoryMB: 1024, MaxMemoryMB: 524288,
+		MinDiskGB: 20, MaxDiskGB: 32768,
+		MinDataDiskGB: 5, MaxDataDiskGB: 32768,
+		MinGPUCount: 2, MaxGPUCount: 16,
+	}, cfg.QubeSpec)
+}
+
+// TestConfig_QubeSpecBoundsEnvGarbageKeepsTheDefault — an unparseable value must
+// not resolve to 0. For a minimum that would drop the lower bound, and for a
+// maximum it would refuse every create, so a typo has to keep the default.
+func TestConfig_QubeSpecBoundsEnvGarbageKeepsTheDefault(t *testing.T) {
+	t.Setenv("QUBES_AIR_QUBE_SPEC_MIN_DISK_GB", "ten")
+	t.Setenv("QUBES_AIR_QUBE_SPEC_MAX_DISK_GB", "lots")
+
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultConfig().QubeSpec.MinDiskGB, cfg.QubeSpec.MinDiskGB)
+	assert.Equal(t, DefaultConfig().QubeSpec.MaxDiskGB, cfg.QubeSpec.MaxDiskGB)
+}
+
+// TestConfig_QubeSpecBoundsValidation — a bounds set that cannot be enforced is
+// refused at startup rather than applied. Both shapes are one transposed digit
+// away from a correct one, and both are invisible until a create is attempted.
+func TestConfig_QubeSpecBoundsValidation(t *testing.T) {
+	for name, modify := range map[string]func(*QubeSpecConfig){
+		"min above max":     func(q *QubeSpecConfig) { q.MinVCPU, q.MaxVCPU = 64, 32 },
+		"min zero":          func(q *QubeSpecConfig) { q.MinMemoryMB = 0 },
+		"min negative":      func(q *QubeSpecConfig) { q.MinDiskGB = -1 },
+		"max zero":          func(q *QubeSpecConfig) { q.MaxDataDiskGB = 0 },
+		"gpu min below one": func(q *QubeSpecConfig) { q.MinGPUCount = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			modify(&cfg.QubeSpec)
+
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "qube_spec.", "the message must name the key to fix")
+		})
+	}
+
+	// A bound that is merely different from the default is fine — the keys exist
+	// so a smaller cluster can lower the ceiling.
+	cfg := DefaultConfig()
+	cfg.QubeSpec.MaxVCPU = 8
+	assert.NoError(t, cfg.Validate())
+
+	// And it is refused on the LOAD path too, so a bad env var cannot start a
+	// console whose bound refuses everything.
+	t.Setenv("QUBES_AIR_QUBE_SPEC_MIN_VCPU", "64")
+	t.Setenv("QUBES_AIR_QUBE_SPEC_MAX_VCPU", "32")
+	_, err := Load("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "qube_spec.max_vcpu")
+}
