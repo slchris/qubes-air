@@ -96,16 +96,68 @@ jobs:
       # `unknown driver "sqlite3"` — a working binary that cannot open its own
       # database. The runner is already linux/amd64, so no cross-toolchain is
       # needed here (unlike building on an arm64 Mac).
+      #
+      # The three -X flags stamp the build metadata an operator reads back from a
+      # running service (GET /health) or from this artifact (--version); a build
+      # without them reports "unknown" for every field rather than a
+      # plausible-looking version (G-H8 / M2-10, docs/upgrade-rollback.md §3.1).
+      # The Makefile's build-backend passes the same three flags, so a binary a
+      # developer built and a released one report the same shape.
+      #
+      # The values travel through env and shell variables for the same reason the
+      # version above does: interpolating a git ref into the command line lets
+      # bash parse it as syntax. The resolved release version is reused rather
+      # than re-derived from git, so the console, the release page and the .deb
+      # cannot disagree on what this release is called.
       - name: Build console binary
         working-directory: console/backend
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: amd64
+          CONSOLE_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          go build -trimpath -ldflags="-s -w" \
+          set -euo pipefail
+          revision="$(git rev-parse HEAD)"
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          stamp_pkg="github.com/slchris/qubes-air/console/internal/buildinfo"
+          ldflags="-s -w"
+          ldflags="$ldflags -X ${stamp_pkg}.version=${CONSOLE_VERSION}"
+          ldflags="$ldflags -X ${stamp_pkg}.revision=${revision}"
+          ldflags="$ldflags -X ${stamp_pkg}.buildTime=${build_time}"
+          go build -trimpath -ldflags="$ldflags" \
             -o "${GITHUB_WORKSPACE}/dist/qubes-air-console" ./cmd/server
           file "${GITHUB_WORKSPACE}/dist/qubes-air-console"
+          # -X that matches no variable is silently ignored, so read the stamp
+          # back out of the artifact and fail the release rather than publish a
+          # binary that cannot say which build it is. Same reasoning as the
+          # GOARCH check in packaging/agent-deb/Dockerfile: the failure this
+          # prevents is a silent one.
+          #
+          # Every field is checked, not just the version, because every field is
+          # its own -X flag and can therefore be the one that silently missed:
+          # a typo in a sibling flag (`revisions=`) leaves the version correct
+          # and that field unstamped. The artifact would then be published with
+          # `revision=unknown`, which is exactly the question (which commit is
+          # this?) the stamp exists to answer.
+          version_out="$("${GITHUB_WORKSPACE}/dist/qubes-air-console" --version)"
+          printf '%s\n' "$version_out"
+          case "$version_out" in
+            *"version=${CONSOLE_VERSION} "*) ;;
+            *) echo "FATAL: console binary does not carry the release version ${CONSOLE_VERSION}: ${version_out}" >&2; exit 1 ;;
+          esac
+          for field in revision build_time; do
+            case "$version_out" in
+              *"${field}=unknown"*)
+                echo "FATAL: console binary carries no ${field} stamp: ${version_out}" >&2; exit 1 ;;
+            esac
+          done
+          # `tree` has no `unknown`-free guarantee of its own: an unstamped
+          # version parses to `unknown`, so it is only acceptable as clean/dirty.
+          case "$version_out" in
+            *"tree=clean"*|*"tree=dirty"*) ;;
+            *) echo "FATAL: console binary carries no tree stamp: ${version_out}" >&2; exit 1 ;;
+          esac
 
       - name: Build web bundle
         working-directory: console/frontend

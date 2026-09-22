@@ -1,14 +1,49 @@
 <!--
   Qubes Air Console - Header Component
+
+  The version here is the one the running server reports, never a literal. The
+  header used to print its own constant ("0.1.0"), which is the same masquerade
+  the build stamp exists to remove (G-H8 / M2-10): a release number no build
+  ever produced, read by the operator as "this is the build I am running". The
+  server stamps its own identity and serves it from /health, so the header asks
+  it there, and shows nothing at all when the answer is missing — no version is
+  honest, a wrong one is not.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { getHealth } from '../lib/api';
+
   interface Props {
     onMenuClick?: () => void;
   }
 
   let { onMenuClick }: Props = $props();
-  
-  const version = '0.1.0'
+
+  // Empty means "nothing to show": the server has not answered yet, could not be
+  // reached, or answered `unknown` because that binary was built without the
+  // linker stamps. Only a real answer becomes a version.
+  let version = $state('');
+
+  onMount(async () => {
+    try {
+      version = reportedVersion((await getHealth()).version);
+    } catch {
+      // An unreachable console is a real state (starting up, restarting during
+      // an upgrade) and it already shows in the connection indicator; claiming a
+      // build here would be a guess.
+      version = '';
+    }
+  });
+
+  // `unknown` is what an unstamped binary reports (console/backend/internal/
+  // buildinfo); it is the absence of a version, so it must not be rendered as
+  // one. Anything else is passed through verbatim — the string is the server's
+  // own `git describe` output, so re-spelling it (prefixing a "v", trimming the
+  // `-dirty` suffix) would make the header disagree with /health.
+  function reportedVersion(reported: string | undefined): string {
+    if (!reported || reported === 'unknown') return '';
+    return reported;
+  }
 </script>
 
 <header class="header">
@@ -26,7 +61,11 @@
     <span class="status-text">Connected</span>
   </div>
   
-  <div class="version">v{version}</div>
+  <!-- No version label until the server has given one: the element's absence is
+       the honest rendering of "unknown". -->
+  {#if version}
+    <div class="version">{version}</div>
+  {/if}
 </header>
 
 <style>

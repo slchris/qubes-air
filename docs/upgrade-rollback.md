@@ -93,22 +93,74 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 - `/health`：`status` 是否为 `healthy`、`database` 是否为 `connected`、`worker.dispatcher` 是否为
   `alive`（`disabled` 表示编排被关掉，那是配置不是故障）。该检查会真的写一行探测标记再读回，
   并对调度器心跳判活（[灾难恢复](disaster-recovery.md) 第 69-72 行）。
-- 二进制摘要：把 `bin_path` 上的文件算 sha256，与 `console_binary_sha256` 逐字比对——这比任何
-  自报版本都可靠。
+- **构建身份**：`/health` 的 `version` / `revision` / `build_time` / `tree` 四个字段就是这次构建的
+  自我标识，与制品 `--version` 打印的是同一组值（同一份链接期注入，同一份 `buildinfo.Get()`）；
+  命令与实测输出见 §3.2。
+- 二进制摘要：把 `bin_path` 上的文件算 sha256，与 `console_binary_sha256` 逐字比对。**两条都要看**：
+  摘要证明盘上的**文件**是那份制品，构建身份证明**跑着的进程**是那一份——只对摘要分不清"制品换对了
+  但服务还在跑旧二进制"（服务没重启，或重启后被 preflight 拦下）。
 - 服务状态：`systemctl status qubes-air-console`；启动脚本每次开机从 `/rw/config/rc.local` 拉起，
   并且有一道 preflight 会**拒绝启动配置不全的控制台**（`console.sls` 第 14、18 行），所以
   "起了但立刻退出"通常就是配置缺键。
 - 前端：浏览器强制刷新后确认页面能加载（旧前端配新后端会在 API 变更时表现为 400/404）。
+  页眉右侧显示的版本应与 `/health` 的 `version` 逐字相同；页眉**没有**版本也是有效答案——说明服务没答上，或跑着的是一个没注入构建身份的二进制（§3.2）。
 
-> **不要用 `/health` 的 `version` 或 `--version` 判断跑的是哪个构建。** 控制台二进制从不携带
-> 构建版本：`appVersion` 是编译期常量 `"0.1.0"`，Makefile 和 `release.yml` 都不注入
-> （缺口 G-H8，计划在 M2-10 修）。在那之前，能证明"装的是哪个构建"的只有二进制 sha256。
+### 3.2 读构建身份：运行中的服务 / 发布制品
+
+控制台二进制在**链接期**被写入三项元数据（包 [internal/buildinfo](../console/backend/internal/buildinfo/buildinfo.go)；
+注入点是 `Makefile` 的 `build-backend` 与 [release.yml](../.github/workflows/release.yml) 的
+Build console binary 步骤），`/health` 与 `--version` 报的是同一组：
+
+| 字段 | 来源 | 读法 |
+|---|---|---|
+| `version` | `git describe --tags --always --dirty`，**原样**不重写 | tag 构建＝tag 本身（`v1.2.3`）；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty` |
+| `revision` | `git rev-parse HEAD` | 完整 commit，不是缩写 |
+| `build_time` | 链接时刻，RFC 3339 UTC | 同一 commit 的两次构建靠它区分 |
+| `tree` | 从 `version` 的 `-dirty` 后缀解析 | `clean` / `dirty`；**未注入时是 `unknown`**——不知道就不说成 `clean` |
+
+**从运行中的服务读**（`/health` 无需 token，docker-compose 的 liveness probe 走的就是它）：
+
+```console
+$ curl -s http://127.0.0.1:8080/health
+{"status":"healthy","database":"connected","worker":{"dispatcher":"disabled","queued":0,"running":0},"version":"a70df74-dirty","revision":"a70df74c78ee729aedc1eedeb59f0c5cb1811cbc","build_time":"2026-09-22T12:21:38Z","tree":"dirty"}
+```
+
+上面是本机实测（`make build-backend` 从**有未提交改动的工作树**构建，所以 `version` 以 `-dirty`
+结尾、`tree` 是 `dirty`；`dispatcher` 是 `disabled`，因为复现环境按 compose 的默认关掉了编排）。
+
+**从发布制品读**（不读配置、不连库，打印完即退出，可以在一台还没部署的机器上跑）：
+
+```console
+$ ./qubes-air-console --version
+qubes-air-console version=v1.2.3 revision=a70df74c78ee729aedc1eedeb59f0c5cb1811cbc build_time=2026-09-22T12:30:00Z tree=clean
+```
+
+上面是 tag 构建的实测形状：`version` 就是 release 的 tag，`tree=clean`。两边的四个值逐字相同，
+才说明跑着的确实是那份制品；`revision` 对得上发布页/`git log`、`build_time` 与制品构建时间不矛盾，
+才排除"拿着旧二进制当新版本"。
+
+发布流程自己会校验这件事：release.yml 的 Build console binary 步骤在打包前把制品的 `--version` 读回来，**逐字段**检查——`version` 必须等于本次 release 版本、`revision` 与 `build_time` 不得是 `unknown`、`tree` 必须是 `clean` 或 `dirty`，任一不满足就 `FATAL` 失败、不发版（每个字段是独立的 `-X`，只查 `version` 会漏掉兄弟 flag 的拼写错误）。所以"制品四个字段齐全"不是靠人记得。
+
+页眉（Header）显示的版本就是同一份 `version`：它启动时读 `/health`，`unknown` 或服务不可达时**不显示**任何版本，而不是退回一个常量。
+
+**未注入的二进制读得出来是未注入**：不带 `-ldflags` 的普通 `go build ./cmd/server` 三个字段都是
+`unknown`（同一份代码的实测输出）：
+
+```console
+$ go build -o /tmp/qubes-air-console ./cmd/server && /tmp/qubes-air-console --version
+qubes-air-console version=unknown revision=unknown build_time=unknown tree=unknown
+```
+
+`unknown` 的语义是"这个二进制没有构建身份"，不是"版本号叫 unknown"：看到它就别用 `version` 判断，
+回到 sha256。反过来，改造前 `/health.version` 恒为编译期常量 `0.1.0`——那才是"看起来像版本"的假答案
+（G-H8）。另外，`console/backend/Dockerfile.dev`（`docker compose` 的开发镜像）**故意**不带注入：
+镜像与挂载里都没有 `.git`，它报 `unknown` 是实话，且它不是生产制品。
 
 ## 4. 回滚
 
 | 情形 | 手段 | 验证 |
 |---|---|---|
-| schema **未**升过（新旧 `SchemaVersion` 相同） | 把两组 pin 恢复到上一组值 → 重新 `state.apply`（`source_hash` 会拒绝不匹配的制品）→ 重启服务 | `/health` healthy；二进制 sha256 等于旧 pin |
+| schema **未**升过（新旧 `SchemaVersion` 相同） | 把两组 pin 恢复到上一组值 → 重新 `state.apply`（`source_hash` 会拒绝不匹配的制品）→ 重启服务 | `/health` healthy；二进制 sha256 等于旧 pin；且 `/health` 的 `version`/`revision` 等于**旧制品** `--version` 报的值（§3.2）——这一步才证明回滚的进程真的换回去了 |
 | schema **已**升过 | **只能**从备份恢复：`qubes-air-backup restore -db … -in … -force`（[灾难恢复](disaster-recovery.md) 第 58-65 行），并确保进程持有**同一把** keyring 密钥 | `/health` healthy，且能真的提交一个 job |
 | 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 139-145 行） | — |
 | agent 发布故障 | 恢复上一组 `agent_package_*` 后**重建** compute（同上） | 新 compute 上的 agent 能完成 bootstrap 与探测 |
@@ -133,5 +185,5 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
   上跑过一遍升级 + 回滚。真机项（M1-2~M1-4、M1-9）阻塞中。
 - **备份调度与留存策略**还没有（M1-5）：本文只写了"升级前手动备份一次"，没有"多久备一次、留多久"。
 - **首次 release 还没跑通**（M1-10）：`release.yml` 从未产出过制品，所以上表里的制品名与
-  `SHA256SUMS` 是 workflow 的意图，不是已验证的产物。
-- **版本注入未做**（G-H8 / M2-10）：所以 §3.1 只能用 sha256 认构建，不能用自报版本。
+  `SHA256SUMS` 是 workflow 的意图，不是已验证的产物；构建身份的实际形状在本地二进制上验证过
+  （§3.2），release 制品上的那一条要等 M1-10 跑通才算。

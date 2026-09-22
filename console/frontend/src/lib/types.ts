@@ -263,6 +263,11 @@ export interface ApiError {
 // server sends one shape whether or not it is healthy, so a probe never parses
 // two schemas. `worker.dispatcher` is "disabled" when orchestration is off,
 // which is a configuration rather than an outage.
+//
+// The four build fields are what `qubes-air-console --version` prints for the
+// same binary, names included. "unknown" in any of them means the binary was
+// built without the version stamps (-X .../internal/buildinfo.*), not that the
+// version is empty — see docs/upgrade-rollback.md §3.1.
 export interface HealthResponse {
   status: string;
   database: string;
@@ -272,6 +277,9 @@ export interface HealthResponse {
     running?: number;
   };
   version: string;
+  revision: string;
+  build_time: string;
+  tree: 'clean' | 'dirty' | 'unknown';
 }
 
 // Status response

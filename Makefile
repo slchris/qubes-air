@@ -30,9 +30,36 @@ help:
 # 构建
 build: build-backend build-frontend
 
+# ============================================================
+# console 构建版本注入 (M2-10 / G-H8)
+#
+# 三个值经链接期 -X 写进 console/backend/internal/buildinfo，包内没有第二份
+# 来源：未注入时 /health、--version 一律报 unknown，而不是一个看起来像版本的
+# 常量（改造前是 "0.1.0"，每个构建都一样）。
+#
+# 变量名写错时 -X 是**静默**不生效的，所以 cmd/server/version_test.go 会用
+# 同样的 -X 真构建一次二进制并执行它 —— 改名或包路径漂移会在那里变红。
+#
+# 取值放在 recipe 里的 shell 变量中，而不是 make 层的 $(shell ...)：后者把值原样
+# 插进 recipe 文本，shell 解析那一行时照旧会执行值里的 $(...) 或反引号——tag 名
+# 是仓库可控输入（本机验证：make 变量里的 v1.2.3$(touch /tmp/x) 在 recipe 里真的
+# 被执行）。命令替换的结果先落进 shell 变量、再用 "$version" 展开则只是数据，不
+# 会二次解析；release.yml 把版本经 env 传入是同一个理由。
+# ============================================================
+CONSOLE_VERSION_PKG ?= github.com/slchris/qubes-air/console/internal/buildinfo
+
+# 三个值与 -ldflags 的拼装放在一起，build-backend 与 dev 共用一份。
+# `git describe --dirty` 的 -dirty 后缀就是"工作树有未提交改动"的标记，二进制
+# 里的 tree=dirty 由它解析出来；这里不再单独传一个布尔值，免得两处说法打架。
+CONSOLE_STAMP = \
+	version="$$(git describe --tags --always --dirty 2>/dev/null || echo unknown)"; \
+	revision="$$(git rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	build_time="$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+	ldflags="-X $(CONSOLE_VERSION_PKG).version=$$version -X $(CONSOLE_VERSION_PKG).revision=$$revision -X $(CONSOLE_VERSION_PKG).buildTime=$$build_time"
+
 build-backend:
 	@echo "Building Go backend..."
-	cd console/backend && go build -o bin/qubes-air-console ./cmd/server
+	@cd console/backend && $(CONSOLE_STAMP) && go build -ldflags "$$ldflags" -o bin/qubes-air-console ./cmd/server
 
 build-frontend:
 	@echo "Building Svelte frontend..."
@@ -46,7 +73,7 @@ dev:
 	@echo "Starting development servers..."
 	@echo "Backend: http://localhost:8080"
 	@echo "Frontend: http://localhost:5173"
-	@(cd console/backend && go run ./cmd/server) & \
+	@(cd console/backend && $(CONSOLE_STAMP) && go run -ldflags "$$ldflags" ./cmd/server) & \
 	(cd console/frontend && npm run dev)
 
 # 测试

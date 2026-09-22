@@ -35,4 +35,12 @@ EXPOSE 8080
 # `go run` rather than a prebuilt binary: a restart picks up edited source with
 # no rebuild step to remember. Compilation happens on start, which costs a few
 # seconds and removes a whole class of "I changed it but it did not change".
+#
+# The version stamps (-X .../internal/buildinfo.*) are deliberately absent, not
+# forgotten. This image is built from ./console/backend, which contains no .git,
+# and the source is bind-mounted at run time, so neither the image build nor the
+# container can run `git describe`. The console then reports "unknown" in every
+# build field, which is the honest answer here — and this image is explicitly
+# not the production artifact (see the header). The stamped builds are the
+# Makefile's build-backend and .github/workflows/release.yml.
 CMD ["go", "run", "./cmd/server"]
