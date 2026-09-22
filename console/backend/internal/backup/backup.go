@@ -11,6 +11,10 @@
 // The snapshot is taken with SQLite's VACUUM INTO, which yields a consistent,
 // compact copy of a live database (including anything still in the WAL) without
 // stopping the console.
+//
+// Prune (retention.go) bounds the archive set a scheduled job leaves behind: it
+// keeps the newest N archives and deletes the rest, so "back up daily" does not
+// quietly become "fill the disk".
 package backup
 
 import (

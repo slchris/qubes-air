@@ -1,11 +1,17 @@
-// Command qubes-air-backup creates and restores encrypted console database
-// backups. See internal/backup for the format and its limits.
+// Command qubes-air-backup creates, restores and prunes encrypted console
+// database backups. See internal/backup for the format and its limits.
 //
 // The passphrase is read from QUBES_AIR_BACKUP_PASSPHRASE, never from argv: a
 // command-line argument is visible to every process on the host via ps.
 //
 //	qubes-air-backup create  -db /rw/config/qubesair/qubes-air.db -out qubesair.qab
+//	qubes-air-backup create  -db /rw/config/qubesair/qubes-air.db -out-dir /secure/offhost
 //	qubes-air-backup restore -db /rw/config/qubesair/qubes-air.db -in qubesair.qab -force
+//	qubes-air-backup prune   -dir /secure/offhost -keep 14
+//
+// -out-dir names the archive itself (qubesair-<UTC stamp>.qab) so a systemd
+// timer can run create without a shell to expand $(date). prune keeps the
+// newest -keep archives and deletes the rest; it never runs without -dir.
 //
 // A restore replaces the database; the console must be stopped first, and the
 // keyring key (QUBES_AIR_ENCRYPTION_KEYS) must still be available or the
@@ -16,8 +22,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/backup"
 )
@@ -37,27 +46,37 @@ func main() {
 
 func run(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: qubes-air-backup <create|restore> [flags]")
+		return fmt.Errorf("usage: qubes-air-backup <create|restore|prune> [flags]")
 	}
 	switch args[0] {
 	case "create":
 		return runCreate(args[1:])
 	case "restore":
 		return runRestore(args[1:])
+	case "prune":
+		return runPrune(args[1:], os.Stderr)
 	default:
-		return fmt.Errorf("unknown subcommand %q (want create or restore)", args[0])
+		return fmt.Errorf("unknown subcommand %q (want create, restore or prune)", args[0])
 	}
 }
 
 func runCreate(args []string) error {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	db := fs.String("db", "", "path to the console SQLite database (required)")
-	out := fs.String("out", "", "path to write the encrypted archive (required)")
+	out := fs.String("out", "", "path to write the encrypted archive (required unless -out-dir)")
+	outDir := fs.String("out-dir", "",
+		"directory to write qubesair-<UTC stamp>"+backup.ArchiveSuffix+" into (required unless -out)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *db == "" || *out == "" {
-		return fmt.Errorf("create requires -db and -out")
+	if *db == "" {
+		return fmt.Errorf("create requires -db")
+	}
+	if (*out == "") == (*outDir == "") {
+		return fmt.Errorf("create requires exactly one of -out or -out-dir")
+	}
+	if *outDir != "" {
+		*out = filepath.Join(*outDir, defaultArchiveName(time.Now()))
 	}
 	passphrase, err := requirePassphrase()
 	if err != nil {
@@ -108,6 +127,40 @@ func runRestore(args []string) error {
 	}
 	fmt.Fprintf(os.Stderr, "restored database to %s\n", *db)
 	return nil
+}
+
+// runPrune applies the retention policy: keep the newest -keep archives in
+// -dir and delete the rest. Every line goes to w (stderr in production) as it
+// happens, including the "nothing to delete" line a second run prints — the
+// retention policy is only trustworthy if a no-op run says it was a no-op.
+func runPrune(args []string, w io.Writer) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	dir := fs.String("dir", "", "directory holding the "+backup.ArchiveSuffix+" archives (required, no default)")
+	keep := fs.Int("keep", 0, "how many of the newest archives to keep (required, at least 1)")
+	dryRun := fs.Bool("dry-run", false, "report what would be deleted without deleting it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dir == "" {
+		return fmt.Errorf("prune requires -dir (there is no default directory to prune)")
+	}
+	if _, err := backup.Prune(*dir, *keep, backup.PruneOptions{
+		DryRun: *dryRun,
+		Logf: func(format string, args ...any) {
+			fmt.Fprintf(w, format+"\n", args...)
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// defaultArchiveName is the name -out-dir generates. It is UTC and
+// second-resolution, so a timer's archives sort by name the same way they sort
+// by modification time; a second run inside the same second therefore fails on
+// the O_EXCL open instead of overwriting the archive it just wrote.
+func defaultArchiveName(now time.Time) string {
+	return "qubesair-" + now.UTC().Format("20060102T150405Z") + backup.ArchiveSuffix
 }
 
 func requirePassphrase() (string, error) {

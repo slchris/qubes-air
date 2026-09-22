@@ -103,7 +103,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
 | G-C1 | OPS-01 剩余：离机归档、真实 keyring、provider 资源对账、agent 信任校验、生产数据量 RTO 全部未做 | [ops01 预演](reviews/2026-09-21-ops01-restore.md) 第 52-58 行；[TODO](TODO.md) 第 46-49 行 | **A-阻塞** | 归档经网络/介质到第二台机器，用真实 keyring 恢复，实测 RTO 与人工步骤 |
-| G-C2 | 备份没有调度：仓库内只有 `qubes-air-backup` CLI 与 `internal/backup` 包，无 timer/cron 接线、无保留策略 | `grep -rn backup internal/scheduler/*.go cmd/server/main.go` 无命中；`cmd/` 下有 `qubes-air-backup` | **A-阻塞** | 备份有明确触发方式与保留策略，且被文档化为运维步骤 |
+| G-C2 | 备份调度未在真机生效：保留策略已实现（`prune` 子命令）并写成运维步骤，但 unit/timer 文本按架构约定要加到外部 `qubes-salt-config`——本仓库不复制第二套部署入口，所以"有明确触发方式"目前只在文档层面成立 | 实现：`internal/backup/retention.go:74`（`Prune`）、`cmd/qubes-air-backup/main.go:136`（`runPrune`）、`:162`（`-out-dir` 生成归档名，供无 shell 的 `ExecStart` 使用）；单元与留存建议：`disaster-recovery.md`:53；仍无 timer/cron 接线（`grep -rn backup internal/scheduler/*.go cmd/server/main.go` 无命中） | **A-阻塞** | 验收条件不变：备份有明确触发方式与保留策略，且被文档化为运维步骤。剩余动作是把该 unit/timer 加进 `qubes-salt-config` 并在真机确认一次触发（与 M0-6 同类的外部仓动作） |
 | G-C3 | 无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过 | `internal/database/database.go:232`（`SchemaVersion`）、`:290-305`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | **A-阻塞** | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
 | G-C4 | 产物分发仍依赖局域网 artifact store（`10.31.0.2`），离开该网段无法 bootstrap——这正是 [release.yml](../.github/workflows/release.yml) 存在的理由，但该 workflow 从未跑过 | `release.yml` 第 1-20 行自述；`docs/bootstrap-design.md`:66-72；G-A4 | A-需要（B-阻塞） | 用 release 制品（URL + SHA256）完成一次 provision，不依赖 LAN 地址 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 132 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
@@ -194,7 +194,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）
 - [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
-- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— 依赖：无（G-C2）
+- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**剩余**：把 unit/timer 加进外部 `qubes-salt-config` 并在真机确认一次触发（与 M0-6 同类的外部仓动作）—— 依赖：无（G-C2）
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出三个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
