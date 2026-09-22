@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/qrexec"
 )
 
 // agentInstallDir is where the agent's mTLS material lands on the remote.
@@ -70,6 +71,12 @@ type AgentPackage struct {
 	// services (Exec, FileCopy, UnlockData) are opt-in, so a default provision
 	// does not hand a new host root-capable primitives it was never asked for.
 	AllowedServices []string
+	// ExecAllow and FileCopyRoots are the path allowlists for qubesair.Exec and
+	// qubesair.FileCopy, written to agent.env as QUBESAIR_EXEC_ALLOW and
+	// QUBESAIR_FILECOPY_ROOTS (colon-separated, the agent's own format). Empty
+	// means the same here as there: the service is disabled in the guest.
+	ExecAllow     []string
+	FileCopyRoots []string
 }
 
 // DefaultAllowedServices is the allowlist a provision gets when none is
@@ -166,6 +173,12 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 		if err := pki.ValidateRevocationURL(pkg.RevocationURL); err != nil {
 			return "", err
 		}
+	}
+	if err := qrexec.ValidatePathAllowlist("QUBESAIR_EXEC_ALLOW", pkg.ExecAllow, false); err != nil {
+		return "", err
+	}
+	if err := qrexec.ValidatePathAllowlist("QUBESAIR_FILECOPY_ROOTS", pkg.FileCopyRoots, true); err != nil {
+		return "", err
 	}
 	if err := id.validate(); err != nil {
 		return "", err
@@ -272,9 +285,18 @@ func writeIdentityFiles(b *strings.Builder, id AgentIdentityDoc, remoteName, lis
 	if len(allowed) == 0 {
 		allowed = DefaultAllowedServices
 	}
-	writeFile(b, agentInstallDir+"/agent.env",
-		"0644", fmt.Sprintf("QUBESAIR_REMOTE_NAME=%s\nQUBESAIR_LISTEN=%s\nQUBESAIR_ALLOW=%s\nQUBESAIR_REVOCATION_URL=%s\n",
-			remoteName, listen, strings.Join(allowed, ","), pkg.RevocationURL))
+	env := fmt.Sprintf("QUBESAIR_REMOTE_NAME=%s\nQUBESAIR_LISTEN=%s\nQUBESAIR_ALLOW=%s\nQUBESAIR_REVOCATION_URL=%s\n",
+		remoteName, listen, strings.Join(allowed, ","), pkg.RevocationURL)
+	// Omitted when empty rather than written blank: the agent treats a missing
+	// key and an empty value identically (service disabled), and an absent key
+	// keeps agent.env honest about what was actually granted.
+	if len(pkg.ExecAllow) > 0 {
+		env += "QUBESAIR_EXEC_ALLOW=" + qrexec.JoinPathAllowlist(pkg.ExecAllow) + "\n"
+	}
+	if len(pkg.FileCopyRoots) > 0 {
+		env += "QUBESAIR_FILECOPY_ROOTS=" + qrexec.JoinPathAllowlist(pkg.FileCopyRoots) + "\n"
+	}
+	writeFile(b, agentInstallDir+"/agent.env", "0644", env)
 
 	// The installer is delivered as a file rather than inlined into runcmd so
 	// its quoting is YAML's problem, not a shell-inside-a-flow-sequence problem.

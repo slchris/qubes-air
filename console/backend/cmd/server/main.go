@@ -375,6 +375,8 @@ func newCertIssuer(
 			SHA256:            cfg.Orchestrator.AgentPackageSHA256,
 			Version:           cfg.Orchestrator.AgentPackageVersion,
 			AllowedServices:   cfg.Orchestrator.AgentAllowedServices,
+			ExecAllow:         cfg.Orchestrator.AgentExecAllow,
+			FileCopyRoots:     cfg.Orchestrator.AgentFileCopyRoots,
 		}).WithSnippetDatastore(cfg.Orchestrator.AgentSnippetDatastore).
 		WithBootstrapTokens(bootstrapTokenRepo, 0)
 }
