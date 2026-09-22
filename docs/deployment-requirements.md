@@ -11,7 +11,7 @@
 
 | # | 要求 | 不满足会怎样 | 怎么核对 |
 |---|---|---|---|
-| 1 | **对外监听必须是 TLS，或只监听 loopback**（`server.host: 127.0.0.1`） | 默认 `0.0.0.0:8080` 是**明文 HTTP**，登录态与 API token 走网络可被读取；`Production` 模式**不会**因为明文而拒绝启动 | 启动日志的 `Listen:` 与 `TLS:` 两行；`ss -ltnp \| grep <port>` 看监听地址是否落在 `127.0.0.1`；`curl -sI http://<host>:<port>/health` 从另一台机器应连不上（若只监听 loopback） |
+| 1 | **对外监听必须是 TLS，或只监听 loopback**（`server.host: 127.0.0.1`） | 默认 `0.0.0.0:8080` 是**明文 HTTP**，登录态与 API token 走网络可被读取；`Production` 模式**不会**因为明文而拒绝启动 | 启动日志的 `Listen:` 与 `TLS:` 两行；`ss -ltnp \| grep <port>` 看监听地址是否落在 `127.0.0.1`；`curl -sI http://<host>:<port>/health` 从另一台机器应连不上（若只监听 loopback）。**参考部署已满足这条**：`qubes-salt-config` 的 `listen` 默认就是 loopback，并写明"控制台没有 TLS，token 是唯一屏障，绑 `0.0.0.0` 等于把未加密控制面发布给整个 LAN，走 SSH 端口转发访问"（`salt/config.jinja` 第 168-171 行） |
 | 2 | **`QUBES_AIR_PRODUCTION=true`** | 空 API token（鉴权关闭）、内置开发加密密钥、通配 CORS 只会打 `SECURITY WARNING` 而继续运行；打开后这三类直接拒绝启动 | 故意留空 `QUBES_AIR_API_TOKEN` 启动，**必须失败**；启动日志不应出现 `SECURITY WARNING` 三连 |
 | 3 | **session cookie 的 `Secure` 属性**（与要求 1 是同一件事的两面） | `secure` 直接绑在 `server.tls.enabled` 上，**没有**单独的开关：TLS 终结在反代时 console 看到的是明文请求，cookie 就不会带 `Secure`，浏览器可能明文回传登录态 | 登录后看响应头是否 `Set-Cookie: ...; Secure`。反代终结 TLS 的场景满足不了这条，所以要求 1 才要求 TLS 由 console 自己终结、或只监听 loopback |
 | 4 | **独立 API token 并按用途分权** | 与浏览器登录共用一个全权 token，任何脚本泄露都等于全权泄露 | 用 scoped token 调 `/api/v1/*`：越权的对象应得 403 而不是 200，且审计里能看到被拒的 scope |

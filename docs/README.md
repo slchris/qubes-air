@@ -39,6 +39,7 @@
 | [P0 安全控制](security-controls.md) | 签名撤销源、Exec/FileCopy 请求边界与 provider 身份配置 |
 | [凭据与轮换](credential-vault.md) | vault、控制台密钥、Relay/agent 证书 |
 | [凭据销毁](credential-destruction.md) | Zone、VM 和整机事件处理 |
+| [升级与回滚](upgrade-rollback.md) | 三个制品的钉法、协议/schema 兼容矩阵、升级顺序与回滚手段 |
 | [灾难恢复](disaster-recovery.md) | 故障域、加密备份/恢复、schema 版本与 CA 重建 |
 | [运行期默认值与数据库结构](runtime-defaults.md) | 限流/超时/退避等默认值与 SQLite 表清单，逐条给 `文件:行号` |
 
