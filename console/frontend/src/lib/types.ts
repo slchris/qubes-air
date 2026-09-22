@@ -125,6 +125,25 @@ export function isTransientStatus(status: QubeStatus): boolean {
   return TRANSIENT_QUBE_STATUSES.includes(status);
 }
 
+// Statuses where a compute instance can exist, and therefore where the agent
+// health readings describe something live.
+//
+// Mirrors computeRunning in console/backend/internal/service/qube_predicates.go:
+// running | creating | resuming. The prober and the certificate reissue path ask
+// that predicate, so nothing else can produce a fresh agent reading; a parked
+// qube (suspended/released/stopped) keeps whatever was recorded before it was
+// parked, and that stale reading must not be rendered as a live problem.
+export const COMPUTE_BEARING_QUBE_STATUSES: readonly QubeStatus[] = [
+  'running',
+  'creating',
+  'resuming',
+];
+
+/** Reports whether this qube can have a compute instance, hence a probed agent. */
+export function hasCompute(status: QubeStatus): boolean {
+  return COMPUTE_BEARING_QUBE_STATUSES.includes(status);
+}
+
 // Qube specifications
 export interface QubeSpec {
   vcpu: number;
@@ -159,6 +178,10 @@ export interface Qube {
   agent_last_healthy_at?: string;
   // The reason the last probe failed. Empty when healthy.
   agent_last_error?: string;
+  // When the current run of failed probes began. Absent while the agent answers.
+  agent_failing_since?: string;
+  // Derived by the backend when the row is read — never stored. See AgentRecovery.
+  agent_recovery?: AgentRecovery;
 }
 
 // Agent health as reported by the console's background prober.
@@ -172,6 +195,22 @@ export interface Qube {
 //   unreachable  — last probe failed (see agent_last_error)
 //   unknown      — not probed yet, or probing disabled
 export type AgentHealth = 'healthy' | 'unreachable' | 'unknown';
+
+// Whether an agent that is not answering can still come back without a human.
+//
+// These strings must match models.AgentRecovery on the backend exactly.
+//   none    — nothing is failing, or the console has no verdict yet
+//   pending — failing, but for less than the agent unit's own restart budget, so
+//             an automatic restart may still be in flight
+//   manual  — the unit has stopped restarting itself within this boot, so
+//             waiting will not fix it: it needs `systemctl reset-failed`
+//
+// "manual" is the console's reading of how long nothing has answered, NOT a
+// look inside the guest: the systemd unit is invisible from here, and a
+// filtered port or a package that was never installed read exactly the same.
+// The unit is enabled, so a reboot starts it again — with the same unfixed
+// cause it will fail again. Recovery steps: docs/runbook-remotevm.md.
+export type AgentRecovery = 'none' | 'pending' | 'manual';
 
 // Request payload for creating a qube
 export interface QubeCreateRequest {

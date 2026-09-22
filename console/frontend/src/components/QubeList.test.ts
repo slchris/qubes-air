@@ -156,3 +156,98 @@ describe('QubeList create flow', () => {
     expect(screen.getByRole('dialog', { name: /create qube/i })).toBeInTheDocument()
   })
 })
+
+// "unreachable" answers whether the agent answers; agent_recovery answers
+// whether waiting can still fix it. The list is where an operator scans for
+// trouble, so the second reading has to be visible there — and, just as
+// important, absent when it does not apply.
+describe('QubeList agent recovery state', () => {
+  it('marks an agent that has outlasted the unit restart budget', async () => {
+    const qube = qubeFixture({
+      status: 'running',
+      agent_health: 'unreachable',
+      agent_recovery: 'manual',
+      agent_failing_since: '2026-09-22T10:00:00Z',
+      agent_last_error: 'nothing is listening on 10.0.0.7:8443',
+    })
+
+    await renderWithQube(qube)
+
+    const marker = screen.getByText(/manual recovery/i)
+    expect(marker).toBeInTheDocument()
+    // The tooltip is where the limit of what the console knows is stated: it
+    // must not read as "the console saw the unit fail".
+    expect(marker.getAttribute('title')).toMatch(/cannot read the unit inside the qube/i)
+    expect(marker.getAttribute('title')).toMatch(/systemctl status qubes-air-agent/)
+    expect(marker.getAttribute('title')).toMatch(/docs\/runbook-remotevm\.md/)
+    // Nor as "the agent is gone for good": the unit is enabled and starts again
+    // at boot, so the supportable claim is that it stopped restarting itself
+    // within this boot and needs its failed state cleared.
+    expect(marker.getAttribute('title')).toMatch(/in this boot it has stopped restarting/i)
+    expect(marker.getAttribute('title')).toMatch(/systemctl reset-failed/)
+    expect(marker.getAttribute('title')).not.toMatch(/will not come back on its own/i)
+  })
+
+  // A parked qube keeps whatever agent reading it had before it was parked, and
+  // nothing probes it any more (backend: computeRunning in qube_predicates.go).
+  // Rendering that leftover as a live problem would tell an operator to run
+  // recovery steps on a qube that is not even up.
+  it.each(['suspended', 'released', 'stopped'] as const)(
+    'does not mark a parked qube (%s) that kept a manual reading',
+    async (status) => {
+      const qube = qubeFixture({
+        status,
+        agent_health: 'unreachable',
+        agent_recovery: 'manual',
+        agent_failing_since: '2026-09-22T10:00:00Z',
+      })
+
+      await renderWithQube(qube)
+
+      expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
+    },
+  )
+
+  // The mirror of the parked case, and the reason the guard is a status
+  // predicate rather than `status === 'running'`: the backend probes qubes that
+  // are still coming up, so a transient status can carry a real reading.
+  it('still marks a qube that is coming up and failing', async () => {
+    const qube = qubeFixture({
+      status: 'resuming',
+      agent_health: 'unreachable',
+      agent_recovery: 'manual',
+      agent_failing_since: '2026-09-22T10:00:00Z',
+    })
+
+    await renderWithQube(qube)
+
+    expect(screen.getByText(/manual recovery/i)).toBeInTheDocument()
+  })
+
+  it('does not mark a failure that may still be a restart in flight', async () => {
+    const qube = qubeFixture({
+      status: 'running',
+      agent_health: 'unreachable',
+      agent_recovery: 'pending',
+      agent_last_error: 'nothing is listening on 10.0.0.7:8443',
+    })
+
+    await renderWithQube(qube)
+
+    expect(screen.getByText(/^unreachable$/)).toBeInTheDocument()
+    expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
+  })
+
+  it('does not mark a healthy agent', async () => {
+    const qube = qubeFixture({
+      status: 'running',
+      agent_health: 'healthy',
+      agent_recovery: 'none',
+    })
+
+    await renderWithQube(qube)
+
+    expect(screen.getByText(/^healthy$/)).toBeInTheDocument()
+    expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
+  })
+})

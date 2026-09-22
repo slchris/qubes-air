@@ -1,6 +1,7 @@
 # 生命周期可靠性与恢复契约
 
-更新：2026-09-20。本轮实现针对单个 Console worker、可信 SQLite 数据库及同一 Proxmox Zone。
+更新：2026-09-20（2026-09-22 追加"agent 单元的启动失败预算"一节，M2-11）。本轮实现针对单个
+Console worker、可信 SQLite 数据库及同一 Proxmox Zone。
 自动化故障注入不替代真机回归；真实恢复、快照和历史密钥副本仍属 DATA-01/OPS-01/QA-01。
 
 ## Purge 的不可逆意图
@@ -82,6 +83,22 @@ Proxmox 分配 VMID 后，必须先把 node、Qube ID、VMID 写入 qube_infra�
 编辑不写回过期的生命周期状态/IP，也不能覆盖在途 claim。Runner 拒绝关闭后的提交，
 开始状态写库失败时不调用 provider，完成清理失败时不记录 succeeded。
 不提供跨多个 Console 进程的自动接管或 exactly-once 外部副作用承诺。
+
+## agent 单元的启动失败预算
+
+远端 `qubes-air-agent` 由包安装为 systemd 单元，自带启动速率限制：
+`StartLimitIntervalSec=300` / `StartLimitBurst=5` / `Restart=on-failure` / `RestartSec=5`
+（`packaging/agent-deb/qubes-air-agent.service`:10-11、`:32-33`）。所有启动失败路径都在
+`listen` 之前（`console/backend/cmd/qubes-air-agent/main.go`:97-119），失败期间端口从未打开。
+
+| 中断位置 | 保留事实与恢复方式 |
+|---|---|
+| 首次失败后 300 秒以内 | systemd 按 `RestartSec=5` 继续尝试；console 记 `agent_recovery=pending`，此时等待是合理的 |
+| 已超过该窗口 | 本次开机内单元停在 failed、不再自动重启；原因修好后仍需人工 `systemctl reset-failed qubes-air-agent` 才会再次启动（单元是 enable 的，下次开机会再试，但原因没修好只会再失败一遍），console 记 `agent_recovery=manual` |
+| console 侧 | console 不重启远端单元（agent→console 没有入站通道，console 只能拨号探测）。`manual` 的判据是"最后一次探测与失败起点的间隔 ≥ 单元窗口"（`internal/models/qube.go`:127、`:150`），只看已记录的探测时刻、不看墙钟，所以探测停止不会把它老化出来；它表示"失败已超出单元自身任何自动重启的预算"，不表示"单元命中了 start limit"——端口被过滤、包未安装、地址错误给出同一读数。界面只在有 compute 的状态（`running`/`creating`/`resuming`，同 `internal/service/qube_predicates.go` 的 `computeRunning`）显示该标记：被 suspend/release 的 qube 没有 VM、也不再被探测，残留读数不当作活动故障 |
+
+判定命令、恢复步骤与检测边界见 [RemoteVM runbook](runbook-remotevm.md) §11；阈值登记见
+[运行期默认值](runtime-defaults.md) §1.3。
 
 ## 验收范围
 

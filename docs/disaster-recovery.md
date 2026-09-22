@@ -145,7 +145,7 @@ ls -lt /secure/offhost/*.qab | head              # 归档数量与 mtime
      `internal/backup/backup.go:207`）；口令**不在归档里**，恢复只接受一把口令
      （`internal/backup/backup.go:132`），所以换了口令之后，旧归档只有拿旧口令才解得开。
   2. 内层是库内的 provider 凭据与 CA 私钥，用 keyring 密钥加密，且每条 `credentials` 行记录
-     加密它的 `key_version`（`internal/keyring/keyring.go:7`、`internal/database/database.go:541`）。
+     加密它的 `key_version`（`internal/keyring/keyring.go:7`、`internal/database/database.go:547`）。
      `cmd/rotate-key` 把现有行重加密到新版本后才会丢掉旧密钥，而它的注释写明：
      任何行仍引用某版本时**不得**删除该版本（`cmd/rotate-key/main.go:25`）。
   3. 于是"这份归档还能不能用"= 旧口令还在 **且** 归档内各行引用的 keyring 版本还在。

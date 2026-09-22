@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import { qubeStore, zoneStore } from '../lib/stores';
   import type { Zone, Qube, QubeType, QubeCreateRequest } from '../lib/types';
-  import { isTransientStatus, nodeCanFit, SCHEDULER_HEADROOM } from '../lib/types';
+  import { isTransientStatus, hasCompute, nodeCanFit, SCHEDULER_HEADROOM } from '../lib/types';
   import type { NodeInfo, CapacityKind, QuotaInfo } from '../lib/types';
   import { getZoneCapacity } from '../lib/api';
   import { ApiException } from '../lib/api';
@@ -23,6 +23,24 @@
       case 'unreachable': return 'unreachable';
       default: return 'unknown';
     }
+  }
+
+  // Marks the failures that need a human. The wording stays on what the console
+  // measured — nothing has answered for longer than the unit's own restart
+  // budget — because the unit itself is inside the guest and this process cannot
+  // read it. It also does not claim the agent is gone for good: the unit is
+  // enabled and starts again at boot, so what is actually true is that it has
+  // stopped restarting within this boot.
+  function agentRecoveryHint(q: Qube): string {
+    const since = q.agent_failing_since
+      ? ` since ${new Date(q.agent_failing_since).toLocaleString()}`
+      : '';
+    return `No probe has answered${since} — longer than the qubes-air-agent unit's whole ` +
+      `restart budget (5 starts within 300s), so in this boot it has stopped restarting ` +
+      `itself and needs systemctl reset-failed. ` +
+      `The console cannot read the unit inside the qube: check ` +
+      `systemctl status qubes-air-agent there ` +
+      `(see docs/runbook-remotevm.md).`;
   }
 
   // Subscribe to stores
@@ -370,6 +388,16 @@
             <span class="c-agent">
               <span class="agent {qube.agent_health ?? 'unknown'}"
                     title={qube.agent_last_error || ''}>{agentLabel(qube.agent_health)}</span>
+              {#if qube.agent_recovery === 'manual' && hasCompute(qube.status)}
+                <!-- A second line, not a second state: the health pill still
+                     says "unreachable", and this says what to do about it.
+                     Only where a compute instance can exist: a parked qube keeps
+                     the reading it had before it was parked, and nothing is
+                     probing it (see computeRunning in qube_predicates.go). -->
+                <span class="agent-manual" title={agentRecoveryHint(qube)}>
+                  manual recovery
+                </span>
+              {/if}
               {#if qube.agent_health === 'unreachable' && qube.agent_last_error}
                 <span class="agent-err" title={qube.agent_last_error}>{qube.agent_last_error}</span>
               {/if}
@@ -665,6 +693,11 @@
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .c-act { display: flex; gap: 0.35rem; justify-content: flex-end; }
   .c-agent { display: flex; flex-direction: column; min-width: 0; }
+  .agent-manual {
+    font: var(--footnote); color: var(--systemRed); font-weight: 500;
+    border: 1px solid currentColor; border-radius: 3px; padding: 0 0.25rem;
+    align-self: flex-start; white-space: nowrap;
+  }
   .agent-err {
     font: var(--footnote); color: var(--systemRed);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

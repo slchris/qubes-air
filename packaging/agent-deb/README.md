@@ -45,6 +45,19 @@ systemctl reset-failed qubes-air-agent
 systemctl start qubes-air-agent
 ```
 
+A unit that hit its start limit does **not** restart itself again within that boot once the cause is
+fixed: the unit sets `StartLimitIntervalSec=300` with `StartLimitBurst=5` and restarts with
+`RestartSec=5` (`qubes-air-agent.service`:10-11, `:32-33`), so once those five starts are used up it
+stays failed until the failed state is cleared. The unit is enabled
+(`[Install] WantedBy=multi-user.target`, `:44-45`; `postinst` runs `systemctl enable`), so a reboot
+does start it again — with the cause still unfixed, it just fails again. Console shows such an agent
+as `agent_health=unreachable` with `agent_recovery=manual` — which means "nothing has answered for
+longer than this unit's restart budget", not "the unit hit its start limit", because Console has no
+channel into the guest beyond the agent's own listener. The reading is only rendered for a qube that
+has a compute instance, so a suspended or released qube never shows it. Detection limits and the full
+recovery procedure, with the commands to confirm recovery, are in
+[the RemoteVM runbook](../../docs/runbook-remotevm.md) §11.
+
 Exec, FileCopy and RekeyData require Python 3 (declared as a package dependency) and explicit
 service/policy configuration. Exec accepts JSON argv, FileCopy uses directory descriptors,
 UnlockData opens the encrypted data disk and RekeyData migrates a legacy disk to its own key; all
