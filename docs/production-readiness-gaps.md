@@ -196,7 +196,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
 - [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— 依赖：无（G-C2）
 - [ ] **M1-6** 写升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 前向单向、回滚=恢复备份 —— 依赖：无（G-C3、G-G2）
-- [ ] **M1-7** 生产部署安全要求成文并核对：TLS 或仅 loopback、keyring 保管、审计留存期望、session 重启失效预期 —— 依赖：无（G-D2、G-D3、G-D5）
+- [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）
@@ -204,7 +204,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [ ] **M1-12** purge 不可逆步骤与入队解耦：入队成功后再销毁，或失败时报告"已销毁的部分"并留审计记录 —— 依赖：无（G-H3）
 - [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）
 - [x] **M1-14** 让 `/health` 有真实语义：真实读写探测（建表/写 marker/读回 + `PRAGMA database_list` 与 `os.Stat` 识破"库文件已删仍可写"）、覆盖 job 调度器心跳（空闲 3 次丢拍 = 15s 判死；**正在执行 job 时预算 = 该 job 超时 + 15s**，避免长 provision 被误判而遭 compose 重启）、队列/运行数只做信息不做判据、未认证路由的写按 2s 窗口节流、恢复判据文档同步 —— 依赖：无（G-H2）
-- [ ] **M1-15** 修 job 日志流的 WriteTimeout 矛盾（流式响应不受整体超时限制），同步 `runtime-defaults` 与前端回退 —— 依赖：无（G-H6）
+- [x] **M1-15** 修 job 日志流的 WriteTimeout 矛盾：流自己管每次事件的写截止时间（`streamWriteWindow` 30s，每事件重置），写失败即结束流而不是空转到 5 分钟；`runtime-defaults` 登记 UD-6b，前端回退逻辑核对后无需改动（G-H6）
 
 ### M2 — A 档收尾与可维护性
 

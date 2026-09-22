@@ -42,7 +42,8 @@
 | UD-4c | 单次服务响应上限 | **16 MiB** | `internal/agent/invoker.go:39`（`maxResponseBytes`） |
 | UD-4d | 服务脚本目录 | `/etc/qubes-rpc` | `internal/agent/invoker.go:32`（`DefaultServiceDir`） |
 | UD-5 | pending renewal（等待签发的私钥）TTL | **5 分钟** | `internal/agent/renewal.go:54`（`DefaultPendingRenewalTTL`） |
-| UD-6 | job 日志 SSE 流最长时长 | **5 分钟**（到点干净结束，客户端按 offset 重连） | `internal/handler/job_handler.go:172`（`streamMaxDuration`） |
+| UD-6 | job 日志 SSE 流最长时长 | **5 分钟**（到点干净结束，客户端按 offset 重连） | `internal/handler/job_handler.go:179`（`streamMaxDuration`） |
+| UD-6b | SSE 单个事件的写窗口 | **30 秒**（每个事件重置；只界定一次写，不界定整条流） | `internal/handler/job_handler.go:188`（`streamWriteWindow`） |
 | UD-9 | agent 探测超时 | **10s** | `internal/service/agentprobe.go:71`（`DefaultAgentProbeTimeout`） |
 | UD-9b | agent 默认监听端口 | **8443** | `internal/service/agentprobe.go:75`（`defaultAgentPort`） |
 | UD-9c | 新置备 qube 的 agent 就绪结算预算 / 重试间隔 | **5 分钟 / 15s** | `internal/service/agenthealth.go:27`、`:29`（`DefaultAgentSettleBudget`、`DefaultAgentSettleRetry`） |

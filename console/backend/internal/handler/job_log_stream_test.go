@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,6 +158,85 @@ func TestLogStreamUnknownJobIs404(t *testing.T) {
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/jobs/nope/log/stream", nil))
 	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// The server's WriteTimeout is sized for ordinary responses — 15 seconds in
+// production, against a 5-minute stream cap. The stream therefore has to own its
+// write deadline: without that, every write after the server's bound fails,
+// the terminal event included, and the client sits on a stalled connection
+// instead of the clean end this endpoint promises.
+func TestLogStreamOutlivesServerWriteTimeout(t *testing.T) {
+	r, jobs, logs := streamRig(t)
+	insertJob(t, jobs, "job-wt", orchestrator.JobRunning)
+
+	lf, err := logs.Create("job-wt")
+	require.NoError(t, err)
+	_, _ = lf.WriteString("before the deadline\n")
+
+	srv := httptest.NewUnstartedServer(r)
+	// Same relationship as production, scaled down so the test stays fast: the
+	// server-wide bound is far below the stream's own cap.
+	srv.Config.WriteTimeout = 1 * time.Second
+	srv.Start()
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	hreq, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/api/v1/jobs/job-wt/log/stream", nil)
+	resp, err := http.DefaultClient.Do(hreq)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	events := make(chan map[string]any, 16)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var m map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &m) == nil {
+				events <- m
+			}
+		}
+		close(events)
+	}()
+
+	require.Contains(t, recvEvent(t, events)["data"], "before the deadline")
+
+	// Sit past the server's write deadline without writing: this is the window in
+	// which the handler used to lose the ability to send anything.
+	time.Sleep(1500 * time.Millisecond)
+
+	_, _ = lf.WriteString("after the server deadline\n")
+	require.NotNil(t, waitForData(t, events, "after the server deadline"),
+		"the stream stopped delivering once the server's WriteTimeout passed")
+
+	finishJob(t, jobs, "job-wt", orchestrator.JobSucceeded)
+	_ = lf.Close()
+	require.Equal(t, "succeeded", waitForRunningFalse(t, events)["state"],
+		"the terminal event never arrived, so a client could not learn the job ended")
+}
+
+// errWriter stands in for a client that stopped reading: every write fails.
+type errWriter struct {
+	gin.ResponseWriter
+}
+
+func (w errWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write tcp: connection reset by peer")
+}
+
+// A failed write must surface rather than be swallowed, because swallowing it is
+// how the stream used to spin until the 5-minute cap sending nothing at all.
+func TestWriteSSEReportsWriteFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Writer = errWriter{ResponseWriter: c.Writer}
+
+	err := writeSSE(c, http.NewResponseController(c.Writer), gin.H{"offset": 0, "data": "x", "running": true})
+	require.Error(t, err, "a failed write must be reported to the caller")
 }
 
 func recvEvent(t *testing.T, ch <-chan map[string]any) map[string]any {
