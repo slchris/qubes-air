@@ -732,6 +732,49 @@ type claimPreparation struct {
 	inJob orchestrator.Step
 }
 
+// claimInline runs an action with no queue in the picture and settles the qube's
+// status here. It keeps the console usable (and tests synchronous) without an
+// orchestration queue.
+//
+// It also carries the job's preparation: with no job to hold a step, the step
+// runs here, immediately before the action it prepares, so there is no window in
+// between for a queue to refuse the work the step has already made irreversible.
+func (s *QubeServiceImpl) claimInline(
+	ctx context.Context,
+	qube *models.Qube,
+	action orchestrator.Action,
+	prep claimPreparation,
+	revertTo models.QubeStatus,
+) (*Operation, error) {
+	if prep.inJob != nil {
+		if err := prep.inJob(ctx); err != nil {
+			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, revertTo))
+		}
+	}
+	if err := s.runInline(ctx, qube, action); err != nil {
+		return nil, errors.Join(fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err),
+			s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
+	}
+
+	// Mirror the async completion hook: a destroyed compute VM's IP is stale,
+	// and a resume draws a fresh DHCP lease, so clear it and let the address
+	// reader re-learn the real one. Without this a resumed qube is dialed at a
+	// dead address forever. See makeCompletionHook in cmd/server.
+	if ComputeDestroyingAction(action) {
+		if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
+		return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
+	}
+	updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &Operation{Qube: updated}, nil
+}
+
 // claimAndEnqueue moves the qube into a transient status and queues the work.
 //
 // The claim comes first and is atomic: it both validates that the operation
@@ -774,39 +817,9 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 		}
 	}
 
-	// No submitter configured: run inline and settle the status here. This keeps
-	// the console usable (and tests synchronous) without an orchestration queue.
+	// No submitter configured: no queue can refuse the work, so it runs here.
 	if s.submitter == nil {
-		// There is no job to carry a step, and the whole action happens inside
-		// this call, so the step runs here: immediately before the action it
-		// prepares, with no window in between for a queue to refuse.
-		if prep.inJob != nil {
-			if err := prep.inJob(ctx); err != nil {
-				return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, revertTo))
-			}
-		}
-		if err := s.runInline(ctx, qube, action); err != nil {
-			return nil, errors.Join(fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err),
-				s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
-		}
-
-		// Mirror the async completion hook: a destroyed compute VM's IP is stale,
-		// and a resume draws a fresh DHCP lease, so clear it and let the address
-		// reader re-learn the real one. Without this a resumed qube is dialed at a
-		// dead address forever. See makeCompletionHook in cmd/server.
-		if ComputeDestroyingAction(action) {
-			if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
-				return nil, err
-			}
-		}
-		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
-			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
-		}
-		updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
-		if err != nil {
-			return nil, err
-		}
-		return &Operation{Qube: updated}, nil
+		return s.claimInline(ctx, qube, action, prep, revertTo)
 	}
 
 	// A nil step is left out rather than passed as a nil element: most actions
