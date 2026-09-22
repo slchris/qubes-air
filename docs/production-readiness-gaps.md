@@ -10,13 +10,13 @@
 
 | 档 | 定义 | 当前 | 还差什么 | 粗估 |
 |---|---|---|---|---|
-| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **未达标** | 交付链未闭环（§2.A）、核心功能无真机正值（§2.B）、恢复演练未离机（§2.C）、§2.H 的 4 条 A-阻塞运行时缺陷 | 2 个 Sprint |
+| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧已闭环，整体仍未达标**：M1 的 15 项里 8 项完成、M1-5 本仓部分完成，§2.H 的 4 条 A-阻塞运行时缺陷全部修复；剩下的 6 项没有一项能在本机做完 | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② 首次 release 与用 release URL 置备（M1-10，需对外发布时机）；③ 外部 `qubes-salt-config` 接线（备份 timer、Exec/FileCopy 白名单 env，见 M0-6 同类）；④ M1-8 需 PVE 访问核对指纹与集群版本 | 不再是 Sprint 数，取决于真机窗口与发布决定 |
 | **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未开始** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
 
-一句话判断：**工程质量面已经明显好于同阶段项目，缺的不是"代码风格或门禁"，而是"产品闭环 + 运行时语义"**——
-交付链从未在 CI 上跑过、核心功能（Exec/FileCopy）从没有端到端跑通过一次、恢复演练没离开过本机；
-另有一次独立补盲审计（§2.H）在运行时行为上找到 3 处会在**正常路径**上直接打断生产的缺陷
-（job 超时短于真机 provision 时长、purge 的不可逆步骤先于入队、健康检查实际不检查数据库）。
+一句话判断（M1 执行后更新）：**代码侧不再是距离，剩下的是"真机证据 + 发布 + 外部仓接线"**——
+§2.H 那 3 处会在正常路径上直接打断生产的缺陷（job 超时短于真机 provision、purge 的不可逆步骤先于入队、健康检查实际不检查数据库）已全部修复并有变异红证据；
+核心功能（Exec/FileCopy）的下发通道此前**根本不存在**（控制台侧开开关对 guest 无效，见 G-B1），现已补齐——但它仍然一次都没有在真机上端到端跑通过，
+所以"能用"这句话现在缺的是证据，不是代码。逐项证据见 §0.3。
 
 三个里程碑（详见 §3）：
 
@@ -44,6 +44,33 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
 | M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行 |
+
+### 0.3 M1 执行结果（本轮，2026-09-22）
+
+M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 项卡在环境或对外决定**。合并一律走 PR + 全绿 CI（`--merge`，保留 QA 记录的分支 revision）。
+
+| 项 | PR | 关键证据 |
+|---|---|---|
+| M1-1 Exec/FileCopy 白名单下发 | [#15](https://github.com/slchris/qubes-air/pull/15) `735f8f1` | 新增 `agent_exec_allow` / `agent_filecopy_roots`（冒号分隔，与 agent 的 `split(":")` 一致），写入 `agent.env`，空则整键省略；路径规则在启动配置校验与渲染时**各校验一次**。独立复验：把校验函数中和成恒真 → 配置侧 6 个、渲染侧 7 个子用例 FAIL；删掉写入 → 投递用例 FAIL |
+| M1-5 备份留存策略 | [#16](https://github.com/slchris/qubes-air/pull/16) `a500fb9` | `prune -dir -keep [-dry-run]`：`keep<1` 在任何 I/O 前拒绝、`Lstat` 不跟随符号链接、删除前逐条记录、部分失败报明已删/失败项、空跑明确说空跑；**本仓部分完成**——unit/timer 文本属外部仓 |
+| M1-6 升级/回滚契约 | [#14](https://github.com/slchris/qubes-air/pull/14) `e5f7f55` | 三制品 Salt 钉法、协议集合语义（零 flag day）、schema 前向单向（回滚二进制≠回滚数据）、升级顺序与回滚表 |
+| M1-7 部署硬要求 | [#12](https://github.com/slchris/qubes-air/pull/12) `25cc35d` | 13 条"默认不满足、代码不兜底"逐条给后果与核对命令（TLS/loopback、审计留存、session、share 导出、bootstrap 窗口） |
+| M1-11 job 超时 | 随 M0 | 默认 45 分钟覆盖真机 provision 长尾（G-H1） |
+| M1-12 purge 顺序 | [#17](https://github.com/slchris/qubes-air/pull/17) `1932d6b` | 不可逆步骤成为 destroy job 的第一步（`Runner.Submit(..., steps...)`）。独立复验：换回修复前顺序 → 拒绝入队两个子用例 FAIL；步骤移到 action 之后 → 两条顺序用例 FAIL。另核对三条承重事实（`purge_withdraw_identity` 触发器同事务、`RevokeByQube` 的 `revoked_at IS NULL`、`DeleteDataKey` 幂等） |
+| M1-13 不信任代理 | 随 M0 | `SetTrustedProxies(nil)` + 负向测试（G-H5） |
+| M1-14 `/health` 真实语义 | [#13](https://github.com/slchris/qubes-air/pull/13) `4ba2165` | 真实读写探测 + 调度器心跳（执行 job 时预算 = 该 job 超时 + 15s）；未认证路由的写按 2s 窗口节流（UD-1g） |
+| M1-15 日志流不被 WriteTimeout 截断 | 随 M0 | 流自管每事件写截止时间（G-H6） |
+| M1-2/3/4/9 | — | **环境阻塞**：需要真机 dom0/Qubes + PVE |
+| M1-8 带外核对指纹 | — | 需要本机到 PVE 的访问 |
+| M1-10 首次 release | — | 需要对外发布的决定（打 `v*` tag），且"用 release URL 置备"需要真实 provider |
+
+本轮两个由**验证**而非实现方自述发现的缺陷：
+
+1. **M1-12 的 gocyclo 越界**：`claimAndEnqueue` 被步骤接线推到复杂度 16（`AGENTS.md` 上限 15）。**`make pre-commit` 是绿的，CI 的全量 lint 才发现**——增量的 `--new-from-rev` 只看改动行，函数变复杂时旧函数体不算"新"，只有全量跑看得见。已按 §4 拆出具名步骤 `claimInline`，未调阈值。
+2. **M1-5 的留存排序陷阱**：`prune` 按 mtime 判新旧，灾难恢复时用不带 `-p` 的 `cp` 把归档搬回目录，副本会变成"最新"，下次 timer 反而把真正最新的备份挤出保留窗口。已写进 runbook（用 `cp -p` / `rsync -t` 并先 `ls -lt` 核对）。
+
+以及一条关于**门禁本身**的更正与教训（我曾据此得出错误结论，已撤回）：`golangci-lint` 的本地缓存在多个 git worktree 之间共享，脏缓存里的陈旧绝对路径会让 generated-file 过滤器整体失效——
+既能报出幻影 finding（`relaypb/*.pb.go` 的 4 条），也能**吞掉真实 finding**（上一条 gocyclo 就被吞过一次，导致我以为"仓库的 `make audit` 本身是红的"）。正确做法：**全量门禁前先 `golangci-lint cache clean`**，里程碑合并以 CI 的全量 lint 为准。
 
 ## 1. 判定基线
 
@@ -281,6 +308,10 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
   两次都出现"本地绿、CI 红"，且第二次本地结论是**空证据**。结论：凡扫描器配置改动，必须用 CI 侧的版本复验，不能只用本机 CLI。
 
 ## 6. 复现本文结论
+
+**跑全量门禁前先清缓存**（`golangci-lint cache clean`）：本地缓存在多个 git worktree 之间共享，
+脏缓存里的陈旧绝对路径会让 generated-file 过滤器整体失效——既报幻影 finding，也吞真实 finding（§0.3 末尾）。
+增量门禁（`make pre-commit`）看不到既有函数的复杂度越界，里程碑合并以 CI 的全量 lint 为准。
 
 ```bash
 # 交付链状态
