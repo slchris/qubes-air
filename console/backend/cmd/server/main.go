@@ -528,6 +528,11 @@ func startOrchestration(
 			OnDone: makeCompletionHook(qubeRepo,
 				func() *service.AgentHealthMonitor { return agents }, registrar),
 			Logs: jobLogs,
+			// Bounds one job end to end. Wiring it explicitly keeps the
+			// configured value and the runner's fallback from drifting apart,
+			// which is how a 15-minute bound ended up under a 15-25 minute
+			// provision.
+			Timeout: time.Duration(cfg.JobTimeoutSeconds) * time.Second,
 		})
 		qubeSvcOpts = append(qubeSvcOpts, service.WithJobSubmitter(runner))
 	}

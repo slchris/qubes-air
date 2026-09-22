@@ -509,6 +509,25 @@ func TestConfig_AgentProbeEnvGarbageKeepsTheDefault(t *testing.T) {
 		cfg.Orchestrator.AgentProbeIntervalSeconds)
 }
 
+// TestConfig_JobTimeoutOutlivesAProvision — the default bound has to sit above
+// the documented 15-25 minute provision, not inside it. A bound below the work
+// it wraps cancels a healthy job after its VM and disk already exist.
+func TestConfig_JobTimeoutOutlivesAProvision(t *testing.T) {
+	assert.GreaterOrEqual(t, DefaultConfig().Orchestrator.JobTimeoutSeconds, 30*60,
+		"the default job timeout must clear the documented 15-25 minute provision")
+
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS", "120")
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 120, cfg.Orchestrator.JobTimeoutSeconds)
+
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS", "forever")
+	cfg, err = Load("")
+	require.NoError(t, err)
+	assert.Equal(t, DefaultConfig().Orchestrator.JobTimeoutSeconds,
+		cfg.Orchestrator.JobTimeoutSeconds, "an unparseable value keeps the default")
+}
+
 func TestOrchestratorRequiresRevocationURL(t *testing.T) {
 	c := DefaultConfig()
 	c.Orchestrator.Enabled = true

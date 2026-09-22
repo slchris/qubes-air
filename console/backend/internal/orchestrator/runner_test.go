@@ -359,3 +359,21 @@ func TestRunnerTimeoutCannotReportSuccess(t *testing.T) {
 		t.Fatalf("timed-out operation reported %s", got.State)
 	}
 }
+
+// TestRunnerJobTimeoutComesFromConfig — the runner must use the configured
+// bound when there is one, and a bound that clears a real provision when there
+// is not. It previously fell back to 15 minutes while joblog.go and
+// job_handler.go both document a 15-25 minute provision, so a healthy job could
+// be canceled after its VM and disk already existed.
+func TestRunnerJobTimeoutComesFromConfig(t *testing.T) {
+	if got := NewRunner(RunnerConfig{}).timeout; got != DefaultJobTimeout {
+		t.Fatalf("unconfigured timeout = %s, want %s", got, DefaultJobTimeout)
+	}
+	if DefaultJobTimeout < 30*time.Minute {
+		t.Fatalf("default job timeout %s does not clear the documented 15-25 minute provision",
+			DefaultJobTimeout)
+	}
+	if got := NewRunner(RunnerConfig{Timeout: 3 * time.Second}).timeout; got != 3*time.Second {
+		t.Fatalf("configured timeout = %s, want 3s", got)
+	}
+}

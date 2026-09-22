@@ -289,6 +289,21 @@ type OrchestratorConfig struct {
 	// loudly at startup rather than left to be discovered.
 	// Env: QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS.
 	AgentBootstrapIntervalSeconds int `yaml:"agent_bootstrap_interval_seconds"`
+	// JobTimeoutSeconds bounds ONE orchestration job end to end (default 2700).
+	//
+	// A real provision clones a template, installs the agent package, attaches
+	// and unlocks the data disk. joblog.go and job_handler.go both document that
+	// as 15-25 minutes on hardware, and the package install step alone has been
+	// measured at 857 seconds. The bound exists so a wedged provider call cannot
+	// hold a worker forever, but a bound shorter than the work it wraps does not
+	// fail safely: the job is canceled mid-flight after the VM and its disk
+	// already exist, leaving a failed job and half-built infrastructure to
+	// reconcile by hand.
+	//
+	// Zero or negative falls back to the runner's default rather than disabling
+	// the bound.
+	// Env: QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS.
+	JobTimeoutSeconds int `yaml:"job_timeout_seconds"`
 }
 
 // ServerConfig holds HTTP server configuration.
@@ -533,6 +548,8 @@ func DefaultConfig() *Config {
 			AgentCertRenewIntervalSeconds:  3600,
 			AgentCertRenewThresholdPercent: 33,
 			AgentBootstrapIntervalSeconds:  60,
+			// 45 minutes, against a documented 15-25 minute provision.
+			JobTimeoutSeconds: 2700,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -727,6 +744,11 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_BOOTSTRAP_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentBootstrapIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.JobTimeoutSeconds = n
 		}
 	}
 

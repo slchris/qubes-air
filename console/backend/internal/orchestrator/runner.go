@@ -133,9 +133,17 @@ type RunnerConfig struct {
 const DefaultQueueSize = 64
 
 // DefaultJobTimeout bounds one orchestration job when the caller configures no
-// timeout. A real provision — clone a template, attach a disk, start the VM —
-// can take minutes.
-const DefaultJobTimeout = 15 * time.Minute
+// timeout.
+//
+// It has to cover the whole job, not the provider calls inside it: the context
+// built from it wraps the entire action, and provider-level waits (proxmox
+// Client.WaitTask) poll until that context expires rather than bounding
+// themselves. A provision clones a template, installs the agent package,
+// attaches and unlocks the data disk — 15-25 minutes on hardware, with the
+// package install alone measured at 857 seconds (internal/config/config.go).
+// The previous 15-minute bound sat inside that range, so a healthy provision
+// could be canceled after its VM and disk already existed.
+const DefaultJobTimeout = 45 * time.Minute
 
 // NewRunner builds a Runner. Call Start to spawn the worker.
 func NewRunner(cfg RunnerConfig) *Runner {
