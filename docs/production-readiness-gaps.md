@@ -196,7 +196,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
 - [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— 依赖：无（G-C2）
 - [ ] **M1-6** 写升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 前向单向、回滚=恢复备份 —— 依赖：无（G-C3、G-G2）
-- [ ] **M1-7** 生产部署安全要求成文并核对：TLS 或仅 loopback、keyring 保管、审计留存期望、session 重启失效预期 —— 依赖：无（G-D2、G-D3、G-D5）
+- [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）
