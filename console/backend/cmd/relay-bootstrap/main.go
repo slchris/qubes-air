@@ -103,7 +103,7 @@ func generateKeyAndCSR(cn string) (keyPEM, csrPEM string, err error) {
 // certificate it returns. qrexec-client-vm connects stdin/stdout to the console
 // service; the CSR goes in, the JSON SignedCert comes back.
 func requestCert(ctx context.Context, console, csrPEM string) (*pki.SignedCert, error) {
-	cmd := exec.CommandContext(ctx, "qrexec-client-vm", console, issueService)
+	cmd := exec.CommandContext(ctx, "qrexec-client-vm", console, issueService) // #nosec G204 -- no shell is involved; argv is passed directly to exec
 	cmd.Stdin = strings.NewReader(csrPEM)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
@@ -175,11 +175,14 @@ func writeAtomic(path, data string, mode os.FileMode) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after a successful rename
 	if _, err := tmp.WriteString(data); err != nil {
-		tmp.Close()
+		// The write failed, and that is the error worth reporting; a close error
+		// on a temp file that is removed below adds nothing.
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
+		// Same: the chmod failure is the actionable one, not the cleanup close.
+		_ = tmp.Close()
 		return err
 	}
 	if err := tmp.Close(); err != nil {

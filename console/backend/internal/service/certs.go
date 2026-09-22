@@ -25,8 +25,8 @@ import (
 // the LOOKUP NAMES a secret is stored under, not the secret — the value they
 // address never appears in this file.
 const (
-	caCertCredentialName = "qubes-air-ca-cert" //nolint:gosec // G101: a store key, not a credential
-	caKeyCredentialName  = "qubes-air-ca-key"  //nolint:gosec // G101: a store key, not a credential
+	caCertCredentialName = "qubes-air-ca-cert" // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
+	caKeyCredentialName  = "qubes-air-ca-key"  // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
 	caCredentialType     = "pki"
 )
 

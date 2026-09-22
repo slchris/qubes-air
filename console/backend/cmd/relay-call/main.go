@@ -29,6 +29,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -229,7 +230,7 @@ func mintFromCA(ca *pki.CA) (tls.Certificate, *x509.CertPool) {
 func loadProvisioned(certFile, keyFile, caFile string) (tls.Certificate, *x509.CertPool) {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	must(err)
-	caPEM, err := os.ReadFile(caFile)
+	caPEM, err := os.ReadFile(caFile) // #nosec G304 -- caFile is the operator-supplied -ca path read at startup, not request data
 	must(err)
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
@@ -313,7 +314,7 @@ func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName s
 			Certificates:       []tls.Certificate{pair},
 			RootCAs:            pool,
 			MinVersion:         tls.VersionTLS13,
-			InsecureSkipVerify: true, //nolint:gosec // chain checked in VerifyConnection
+			InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below checks the leaf against this CA with ServerAuth usage, requires pki.RoleOf == RoleAgent, and pins the CN to AgentCommonName(remoteName) //nolint:gosec // chain checked in VerifyConnection
 			VerifyConnection: func(cs tls.ConnectionState) error {
 				if len(cs.PeerCertificates) == 0 {
 					return errors.New("agent presented no certificate")
@@ -387,13 +388,21 @@ func secretNamed(ctx context.Context, r *repository.CredentialRepository, name s
 func must(err error) {
 	if err != nil {
 		// Trim the noisy wrapping some errors carry so the stderr line stays
-		// readable in a qrexec log.
-		log.Fatal(logSafe(strings.TrimSpace(err.Error()))) //nolint:gosec // G706: logSafe strips control characters before the value reaches the log
+		// readable in a qrexec log, then QUOTE it: strconv.Quote escapes
+		// newlines and control characters, so a value carrying them cannot
+		// forge a second log line. The stdlib form rather than logSafe below
+		// because gosec's G706 taint analysis only trusts stdlib sanitizers at
+		// the sink.
+		log.Fatal(strconv.Quote(strings.TrimSpace(err.Error())))
 	}
 }
 
 // logSafe strips control characters so an operator-supplied or remote value
 // cannot forge or break a log line (gosec G706).
+//
+// gosec's G706 taint analysis does not model this helper, so a sink that gosec
+// flags must call a stdlib sanitizer (strconv.Quote) at the call site instead —
+// see must above.
 func logSafe(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {

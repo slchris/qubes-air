@@ -578,6 +578,6 @@ func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	delta := time.Duration(rand.Int63n(int64(d) / 5)) //nolint:gosec // reconnect jitter, not security-sensitive
+	delta := time.Duration(rand.Int63n(int64(d) / 5)) // #nosec G404 -- reconnect backoff jitter to avoid a thundering herd; unpredictability buys an attacker nothing and this value never leaves the retry timer //nolint:gosec // reconnect jitter, not security-sensitive
 	return d - (delta / 2) + delta
 }

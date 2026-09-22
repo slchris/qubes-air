@@ -21,11 +21,11 @@ const (
 	// that was formatted before per-qube keys existed, so the disk can be
 	// rekeyed to its own DEK. The console never mints one — a fresh master
 	// cannot open any existing disk.
-	dataMasterCredentialName = "qubes-air-luks-master" //nolint:gosec // G101: a store key name, not a credential
+	dataMasterCredentialName = "qubes-air-luks-master" // #nosec G101 -- a store key name, not a credential //nolint:gosec // G101: a store key name, not a credential
 	dataMasterCredentialType = "pki"
 	// dataKeyCredentialPrefix names a qube's own data key. One credential per
 	// qube, deletable on its own — which is what makes purge a crypto-shred.
-	dataKeyCredentialPrefix = "qubes-air-luks-key-" //nolint:gosec // G101: a store key name prefix, not a credential
+	dataKeyCredentialPrefix = "qubes-air-luks-key-" // #nosec G101 -- a store key name prefix, not a credential //nolint:gosec // G101: a store key name prefix, not a credential
 	// migrationMarkerPrefix names a NON-secret flag recording that a qube's
 	// disk may still answer to the legacy master-derived key. It exists so a
 	// rekey that added the DEK but failed to remove the old keyslot is retried

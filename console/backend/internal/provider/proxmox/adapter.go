@@ -540,6 +540,10 @@ func (a *Adapter) identityCicustom(ctx context.Context, node string, q *models.Q
 	if path == "" {
 		return "", fmt.Errorf("proxmox: no agent identity available for %q; refusing to start a qube with no agent", q.Name)
 	}
+	// #nosec G304 -- the path is filepath.Join(operator-configured identity dir,
+	// "qubes-air-<name>.yaml") and <name> passed orchestrator.ValidQubeName at
+	// the API boundary, which admits no path separator. Nothing here comes from
+	// a request body.
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("proxmox: read agent identity for %q: %w", q.Name, err)

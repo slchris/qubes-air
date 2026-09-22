@@ -25,8 +25,7 @@ import (
 // buildVersion is overridden at link time (-X main.buildVersion=...).
 var buildVersion = "dev"
 
-//nolint:gosec // G101: this is the environment variable NAME, not a credential.
-const passphraseEnv = "QUBES_AIR_BACKUP_PASSPHRASE"
+const passphraseEnv = "QUBES_AIR_BACKUP_PASSPHRASE" // #nosec G101 -- the environment variable NAME the operator sets, not a credential
 
 func main() {
 	log.SetFlags(0)

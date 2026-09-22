@@ -98,7 +98,7 @@ func Create(ctx context.Context, dbPath, passphrase, buildVersion string, w io.W
 		return fmt.Errorf("backup: snapshot database: %w", err)
 	}
 
-	payload, err := os.ReadFile(snapshot)
+	payload, err := os.ReadFile(snapshot) // #nosec G304 -- snapshot is a fixed basename inside the os.MkdirTemp directory created above; no external input reaches this path
 	if err != nil {
 		return fmt.Errorf("backup: read snapshot: %w", err)
 	}
@@ -169,11 +169,15 @@ func installDatabase(dbPath string, payload []byte, force bool) error {
 	defer func() { _ = os.Remove(tmpName) }()
 
 	if _, err := tmp.Write(payload); err != nil {
-		tmp.Close()
+		// The write already failed and that error is the actionable one; a
+		// close error on a file that is about to be removed says nothing more.
+		_ = tmp.Close()
 		return fmt.Errorf("backup: write restore file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		// Same: report the sync failure, not the cleanup close. The deferred
+		// os.Remove below discards this file either way.
+		_ = tmp.Close()
 		return fmt.Errorf("backup: sync restore file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

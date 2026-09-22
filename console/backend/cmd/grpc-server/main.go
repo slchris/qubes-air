@@ -73,7 +73,7 @@ func serverTLS(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load server cert/key: %w", err)
 	}
-	caPEM, err := os.ReadFile(caFile)
+	caPEM, err := os.ReadFile(caFile) // #nosec G304 -- caFile is the operator-supplied -ca path read at startup, not request data
 	if err != nil {
 		return nil, fmt.Errorf("read CA: %w", err)
 	}

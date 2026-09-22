@@ -715,7 +715,11 @@ func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// 0755, not 0700: this directory IS the PVE snippet datastore mount and the
+	// hypervisors read it as their own user, so a tighter mode would make the
+	// snippets unreadable on the node side. Where the mount already exists (the
+	// normal case) MkdirAll is a no-op and this mode never applies at all.
+	if err := os.MkdirAll(dir, 0o755); err != nil { // #nosec G301 -- shared PVE snippet datastore: the node-side reader is a different user, and access control is the share's own export policy
 		return "", fmt.Errorf("create snippet dir: %w", err)
 	}
 
@@ -756,7 +760,7 @@ func writeSnippetAtomic(dir, name, userData string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close identity: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, 0o644); err != nil { // #nosec G302 -- the node-side reader is a different user, so 0644 is the minimum that works; the file carries only the one-time bootstrap token and the public CA (never a private key) and confidentiality comes from who can mount the datastore
 		return fmt.Errorf("chmod identity: %w", err)
 	}
 	if err := os.Rename(tmpName, filepath.Join(dir, name)); err != nil {

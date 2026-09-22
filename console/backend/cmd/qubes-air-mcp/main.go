@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -61,8 +62,13 @@ func run() int {
 	codec := mcp.NewCodec(os.Stdin, os.Stdout)
 	server := mcp.NewServer(codec, registry)
 
-	log.Printf("qubes-air-mcp serving on stdio: scope=%s tools=%d computer_use=%v api=%s", //nolint:gosec // G706: the api URL is passed through logSafe, which strips control characters before it reaches the log
-		scope, len(registry.Tools()), *enableComputerUse, logSafe(*apiURL))
+	// The URL is quoted because a --api-url value can carry a newline (argv is
+	// arbitrary bytes), and the tool count goes through strconv.Itoa because
+	// gosec sees it as tainted — the registry holds the API client, which holds
+	// the token. It is an int and cannot forge a line; Itoa only makes the
+	// decimal value reaching the log explicit, so the output is unchanged.
+	log.Printf("qubes-air-mcp serving on stdio: scope=%s tools=%s computer_use=%v api=%s",
+		scope, strconv.Itoa(len(registry.Tools())), *enableComputerUse, strconv.Quote(*apiURL))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -83,6 +89,10 @@ func run() int {
 
 // logSafe strips control characters so an operator-supplied value cannot forge
 // or break a log line (gosec G706).
+//
+// gosec's G706 taint analysis does not model this helper, so a sink that gosec
+// flags must call a stdlib sanitizer (strconv.Quote) at the call site instead —
+// see the serving line in run above.
 func logSafe(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {

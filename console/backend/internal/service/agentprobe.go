@@ -507,7 +507,7 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		// only. An unsigned or wrongly-signed certificate is still rejected;
 		// what is skipped is the name and the usage, neither of which carries
 		// any trust here.
-		InsecureSkipVerify: true, //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs verifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, 0, len(rawCerts))
 			for _, der := range rawCerts {

@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,12 +132,20 @@ func secretNamed(ctx context.Context, r *repository.CredentialRepository, name s
 
 func must(err error) {
 	if err != nil {
-		log.Fatal(logSafe(strings.TrimSpace(err.Error()))) //nolint:gosec // G706: logSafe strips control characters before the value reaches the log
+		// Quote, don't strip: strconv.Quote escapes newlines and control
+		// characters so the message cannot forge a second log line, and unlike
+		// logSafe below it is the stdlib form gosec's G706 taint analysis
+		// trusts at the sink.
+		log.Fatal(strconv.Quote(strings.TrimSpace(err.Error())))
 	}
 }
 
 // logSafe strips control characters so an operator-supplied or remote value
 // cannot forge or break a log line (gosec G706).
+//
+// gosec's G706 taint analysis does not model this helper, so a sink that gosec
+// flags must call a stdlib sanitizer (strconv.Quote) at the call site instead —
+// see must above.
 func logSafe(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {

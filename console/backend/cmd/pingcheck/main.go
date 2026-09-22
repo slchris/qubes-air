@@ -83,7 +83,7 @@ func main() {
 			MinVersion:   tls.VersionTLS13,
 			// The agent's certificate carries no SAN for this address, so verify
 			// the chain by hand rather than skipping verification outright.
-			InsecureSkipVerify: true, //nolint:gosec // chain checked in VerifyConnection
+			InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below checks the leaf against this CA with ServerAuth usage, requires pki.RoleOf == RoleAgent, and pins the CN to pki.AgentCommonName(*remote) //nolint:gosec // chain checked in VerifyConnection
 			// VerifyConnection, not VerifyPeerCertificate: the latter is skipped
 			// on a resumed session, so a check that lives there can be bypassed
 			// by a client that reconnects with a cached ticket. PeerCertificates
