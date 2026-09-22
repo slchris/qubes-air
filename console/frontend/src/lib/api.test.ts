@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { apiFetch, getApiBaseUrl, login, logout } from './api'
+import { apiFetch, getApiBaseUrl, listQubes, login, logout } from './api'
 import { auth } from './auth.svelte'
 
 // The API layer exchanges the long-lived token for a session cookie and then
@@ -81,5 +81,32 @@ describe('apiFetch', () => {
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe('/api/v1/zones')
     expect(init.credentials).toBe('include')
+  })
+})
+
+describe('refusals', () => {
+  // The console answers a refused request with the HTTP status text in `error`
+  // and the reason in `message` (handler.respondError). A spec bound is the case
+  // that makes it matter: "Bad Request" tells an operator nothing, while
+  // "spec.disk 200000 GB is above the maximum 16384 GB" tells them what to
+  // change. Reading `error` alone is why every refusal used to arrive as the
+  // former.
+  it('surfaces the API reason, not the HTTP status text', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(400, {
+        error: 'Bad Request',
+        message:
+          'invalid qube spec: spec.disk 200000 GB is above the maximum 16384 GB (qube_spec.max_disk_gb)',
+        code: 400,
+      })
+    )
+
+    await expect(listQubes()).rejects.toThrow('above the maximum 16384 GB')
+  })
+
+  it('falls back to the status text when the body carries no reason', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(500, { error: 'Internal Server Error' }))
+
+    await expect(listQubes()).rejects.toThrow('Internal Server Error')
   })
 })

@@ -15,8 +15,9 @@ import (
 )
 
 // setupQubeServiceWithExecutor builds a QubeService wired to the given executor,
-// backed by a real (temp) SQLite DB so status transitions are observable.
-func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor) (ZoneService, QubeService, func()) {
+// backed by a real (temp) SQLite DB so status transitions are observable. Extra
+// options (e.g. WithSpecBounds) are appended after the executor.
+func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor, extra ...QubeServiceOption) (ZoneService, QubeService, func()) {
 	t.Helper()
 
 	tmpFile, err := os.CreateTemp("", "qube-orch-test-*.db")
@@ -33,7 +34,8 @@ func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor) (Zon
 	qubeRepo := repository.NewQubeRepository(db)
 
 	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
-	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithExecutor(exec))
+	opts := append([]QubeServiceOption{WithExecutor(exec)}, extra...)
+	qubeSvc := NewQubeService(qubeRepo, zoneRepo, opts...)
 
 	cleanup := func() {
 		db.Close()

@@ -91,6 +91,20 @@ function buildQueryString(options?: ListOptions): string {
 }
 
 /**
+ * Picks the human-readable reason out of an error body.
+ *
+ * The console answers a refused request with `{"error":"Bad Request",
+ * "message":"<why>"}` (handler.respondError): `error` is only the HTTP status
+ * text and `message` is the reason — which bound a spec broke, which name was
+ * invalid, which field was missing. Reading `error` alone is why every refusal
+ * used to reach the operator as a bare "Bad Request" with nothing to act on, so
+ * `message` wins and the status text is only the fallback.
+ */
+function errorMessage(error: ApiError, response: Response): string {
+  return error.message || error.error || response.statusText;
+}
+
+/**
  * Handles API response and throws on error.
  */
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -100,7 +114,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
     throw new ApiException(
       response.status,
       error.code ?? 'UNKNOWN_ERROR',
-      error.error,
+      errorMessage(error, response),
       error.details
     );
   }
@@ -223,7 +237,7 @@ async function del(path: string): Promise<void> {
     throw new ApiException(
       response.status,
       error.code ?? 'UNKNOWN_ERROR',
-      error.error,
+      errorMessage(error, response),
       error.details
     );
   }

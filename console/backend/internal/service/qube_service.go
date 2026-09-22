@@ -180,6 +180,11 @@ type QubeServiceImpl struct {
 	// behavior — plaintext unless asked — so a console that never sets it is
 	// unchanged. A create can always override it explicitly either way.
 	encryptDataDefault bool
+	// specBounds are the limits every create/update request's sizes are checked
+	// against before anything is written or provisioned. Never left at the zero
+	// value: NewQubeService seeds it with DefaultSpecBounds and WithSpecBounds
+	// refuses a set that would not bound anything.
+	specBounds SpecBounds
 }
 
 // RenewalWatch reports an outstanding certificate-renewal problem for a qube.
@@ -302,10 +307,11 @@ func NewQubeService(
 	opts ...QubeServiceOption,
 ) QubeService {
 	s := &QubeServiceImpl{
-		qubeRepo:  qubeRepo,
-		zoneRepo:  zoneRepo,
-		executor:  orchestrator.NewNoopExecutor(),
-		transport: transport.NoopTransport{},
+		qubeRepo:   qubeRepo,
+		zoneRepo:   zoneRepo,
+		executor:   orchestrator.NewNoopExecutor(),
+		transport:  transport.NoopTransport{},
+		specBounds: DefaultSpecBounds(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -386,7 +392,7 @@ func (s *QubeServiceImpl) validateQubeCreateRequest(ctx context.Context, req *mo
 		return fmt.Errorf("%w: %q", ErrInvalidQubeName, req.Name)
 	}
 
-	if err := validateQubeSpec(req.Spec); err != nil {
+	if err := s.validateQubeSpec(req.Spec); err != nil {
 		return err
 	}
 
@@ -498,7 +504,7 @@ func (s *QubeServiceImpl) Update(ctx context.Context, id string, req *models.Qub
 		return nil, fmt.Errorf("%w: %q", ErrInvalidQubeName, strings.TrimSpace(*req.Name))
 	}
 	if req.Spec != nil {
-		if err := validateQubeSpec(*req.Spec); err != nil {
+		if err := s.validateQubeSpec(*req.Spec); err != nil {
 			return nil, err
 		}
 	}
@@ -513,16 +519,12 @@ func (s *QubeServiceImpl) Update(ctx context.Context, id string, req *models.Qub
 	return qube, nil
 }
 
-// validateQubeSpec rejects clearly invalid sizes. Shared by Create and Update so
-// the two cannot disagree about what a valid spec is.
-func validateQubeSpec(spec models.QubeSpec) error {
-	if spec.VCPU < 0 || spec.Memory < 0 || spec.Disk < 0 || spec.DataDiskGB < 0 {
-		return fmt.Errorf("%w: cpu/memory/disk sizes must not be negative", ErrInvalidQubeSpec)
-	}
-	if spec.GPU != nil && spec.GPU.Count < 0 {
-		return fmt.Errorf("%w: gpu count must not be negative", ErrInvalidQubeSpec)
-	}
-	return nil
+// validateQubeSpec rejects sizes outside the configured bounds. Shared by Create
+// and Update so the two cannot disagree about what a valid spec is — and called
+// before either writes a row or queues a provider action, so a rejected request
+// never reaches the adapter. The bounds themselves live in SpecBounds.
+func (s *QubeServiceImpl) validateQubeSpec(spec models.QubeSpec) error {
+	return s.specBounds.validateSpec(spec)
 }
 
 // applyQubeUpdates applies update request fields to qube.

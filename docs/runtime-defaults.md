@@ -8,6 +8,19 @@
 > 表中位置均相对仓库根；行号对应仓库当前提交，改代码后须在同一 commit 同步本文件。上次全量核对
 > 的基线与 Sprint 1 一致（`fae0aea`）；其后 `internal/config/config.go`、`cmd/server/main.go`、
 > 本次的 `internal/database/database.go` 与 `internal/orchestrator/runner.go` 行号发生位移，
+> 均已逐条重算。
+>
+> 2026-09-22 M2-12 追加：新增 qube 规格上下限（§1.6）。该改动在 `config.go` 与 `main.go` 里插入
+> 了代码，§1.1 中指向这两个文件的 `文件:行号` 已按本次工作树逐条重算（也修掉了 M1 之后遗留的
+> 偏移）；本轮没有改动的文件**未重新核对**行号。
+>
+> 2026-09-22 合并后追加：M2-9 与 M2-12 分别改动了 `internal/config/config.go` 与 `cmd/server/main.go`，
+> 两个分支合并后这两个文件的行号再次位移（§1.6 整体 +17）。§1.1 与 §1.6 中指向这两个文件的引用
+> 已按**合并后**的工作树逐条重算并逐条验证（`DefaultMaxBodyBytes`、`configureTrustedProxies`、
+> `healthProbeInterval`、`AgentExecAllow`、`LockFile`、`RateLimitPerSec/Burst`、`JobTimeoutSeconds`、
+> §1.6 全部字段/默认值/env 绑定/`Validate`）。（注：M2-12 合并前给出的 §1.1 行号并不准确，
+> 例如 UD-1e 的字段行在它自己的工作树上也对不上；本次一并纠正。）
+>
 > 均已逐条重算。M2-9 单实例锁再次改动 `internal/config/config.go` 与 `cmd/server/main.go`，
 > 这两个文件的引用行号已按本次改动后的工作树重算（其余文件本轮未改动，沿用上次结果）。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
@@ -19,21 +32,21 @@
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:535`（`RateLimitPerSec: 20`）、`:536`（`RateLimitBurst: 40`） |
-| UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:343`（`DefaultMaxBodyBytes`） |
+| UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:628`（`RateLimitPerSec: 20`）、`:629`（`RateLimitBurst: 40`） |
+| UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:436`（`DefaultMaxBodyBytes`） |
 | UD-1c | 浏览器会话 TTL | **12 小时** | `internal/middleware/session.go:18`（`DefaultSessionTTL`） |
-| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:979`（`configureTrustedProxies`）、`:991`（在 `setupRouter` 里调用） |
-| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:336`（字段）、`:582`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:594`（接线） |
+| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1005`（`configureTrustedProxies`）、`:1017`（在 `setupRouter` 里调用） |
+| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:620`（接线） |
 | UD-1f | `/health` 的编排 dispatcher 心跳：空闲轮询间隔 / 判死阈值 | **5s / 15s**（阈值 = 3 次丢拍）；dispatcher 正在执行 job 时预算再加该 job 的超时（UD-1e）。**无配置键**（编译期常量） | `internal/orchestrator/health.go:11`（`DispatcherPollInterval`）、`:22`（`DispatcherStaleAfter`） |
-| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1250`（`healthProbeInterval`） |
-| UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验 | `config/config.go:236`（`AgentExecAllow`）、`:241`（`AgentFileCopyRoots`）、`:751`/`:754`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go`；写入 `internal/service/cloudinit.go:299` |
-| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:45`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:124`（`bootLocked`：先取锁再 boot）、`:84`（main 的唯一调用点）、`:90`（失败即 `log.Fatalf`） |
+| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1276`（`healthProbeInterval`） |
+| UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验 | `config/config.go:237`（`AgentExecAllow`）、`:241`（`AgentFileCopyRoots`）、`:751`/`:754`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go`；写入 `internal/service/cloudinit.go:299` |
+| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:124`（`bootLocked`：先取锁再 boot）、`:84`（main 的唯一调用点）、`:90`（失败即 `log.Fatalf`） |
 
 ### 1.2 transport（Relay ↔ console / agent）
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-2 | keepalive 心跳间隔 | **20s** | `internal/transport/grpc/client.go:61`（`withDefaults`） |
+| UD-2 | keepalive 心跳间隔 | **20s** | `internal/transport/grpc/client.go:59-60`（`withDefaults`：`KeepAlive = 20 * time.Second`） |
 | UD-3 | 重连退避 | **min 500ms / max 30s**，指数翻倍 + 抖动 | `internal/transport/grpc/client.go:63-68`（下限/上限）、`:145-150`（`jitter(backoff)`、`backoff *= 2`、封顶 `ReconnectMax`） |
 
 ### 1.3 agent 侧（调用、探测、bootstrap、解锁、续期）
@@ -59,7 +72,7 @@
 | UD-12c | CA 允许的时钟回拨（NotBefore backdate） | **5 分钟** | `internal/service/certrenew.go:96`（`caClockSkewBackdate`） |
 | UD-12d | 续期重试退避 | **base 15 分钟 / max 6 小时** | `internal/service/certrenewsched.go:125`、`:134`（`certRenewalRetryBase`、`certRenewalRetryMax`） |
 | UD-12e | 续期时钟偏移余量 / 占窗口比例上限 | **24 小时 / 1/8** | `internal/service/certrenewsched.go:115`（`certRenewalClockSkewMargin`）、`:122`（`certRenewalMaxSkewFraction`） |
-| UD-14 | agent 允许服务默认值 | **仅 `qubesair.Ping`**（Exec/FileCopy/UnlockData 需显式 opt-in） | `internal/config/config.go:224-229`（注释与 `AgentAllowedServices`）；包内默认落点为 `packaging/agent-deb/qubes-air-agent.service:18`（`QUBESAIR_ALLOW=qubesair.Ping`），可由 `:20` 的 `EnvironmentFile=/etc/qubes-air/agent.env` 覆盖 |
+| UD-14 | agent 允许服务默认值 | **仅 `qubesair.Ping`**（Exec/FileCopy/UnlockData 需显式 opt-in） | `internal/config/config.go:225-230`（注释与 `AgentAllowedServices`）；包内默认落点为 `packaging/agent-deb/qubes-air-agent.service:18`（`QUBESAIR_ALLOW=qubesair.Ping`），可由 `:20` 的 `EnvironmentFile=/etc/qubes-air/agent.env` 覆盖 |
 
 ### 1.4 Proxmox provider
 
@@ -82,6 +95,32 @@
 > 请求体上限 1 MiB 见 `docs/mcp-design.md:32`（"API 的 BodyLimit 默认 1 MiB"）；
 > 会话 TTL 12 小时见 `docs/roadmap-to-production.md:21`（"session TTL 默认 12h"）。
 > 本节的价值是把**常量名与行号**钉住，便于从文档反查代码。
+
+### 1.6 qube 规格上下限（M2-12 / G-H10）
+
+校验点在 service，取值来自配置；越界在**入队与 provider 调用之前**拒绝（`Create` 与 `Update`
+共用同一个校验器）。两端都是**闭区间**：min 与 max 本身允许，min-1 / max+1 拒绝。**0 不是尺寸而是
+"未设置"**：create 时由 `applyDefaultSpec` 换成类型默认值（`internal/service/qube_service.go:424`），
+data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/provider/proxmox/adapter.go:55`），
+所以下限只作用于真正给了值的字段。
+
+| # | 默认值 | 取值 | 位置 |
+|---|---|---|---|
+| UD-15 | vCPU 上下限 | **1..32**（0 = 未设置） | `internal/config/config.go:363-364`（字段）、`:691-692`（默认值）；服务侧同值 `internal/service/specbounds.go:84-85`；依据：表单自身 `console/frontend/src/components/QubeList.svelte:471`（create）与 `:579`（edit）的 `min="1" max="32"` |
+| UD-16 | 内存上下限（MB） | **512..262144**（256 GiB） | `config.go:372-373`（字段）、`:693-694`（默认值）；服务侧 `specbounds.go:86-87`；下限依据：表单 `QubeList.svelte:476` 的 `min="512"` 与 holder VM 自身的 `memory=512`（`internal/provider/proxmox/adapter.go:306`）；**上限无仓库依据，是判断值**（注释已写明） |
+| UD-17 | 根盘上下限（GB） | **10..16384**（16 TiB） | `config.go:380-381`（字段）、`:695-696`（默认值）；服务侧 `specbounds.go:88-89`；下限依据：表单 `QubeList.svelte:483` 的 `min="10"`；**上限是判断值** |
+| UD-18 | 数据盘上下限（GB） | **1..16384**（16 TiB） | `config.go:387-388`（字段）、`:697-698`（默认值）；服务侧 `specbounds.go:90-91`；下限依据：表单 `QubeList.svelte:488` 的 `min="1"`；**上限是判断值**（这张盘 PVE 不能缩回） |
+| UD-19 | GPU 卡数上下限 | **1..8** | `config.go:393-394`（字段）、`:699-700`（默认值）；服务侧 `specbounds.go:92-93`；**无仓库依据**（当前没有任何 provider 读 `Spec.GPU`），纯判断值 |
+| UD-20 | 上述 10 个键的 env 绑定 | `QUBES_AIR_QUBE_SPEC_{MIN,MAX}_{VCPU,MEMORY_MB,DISK_GB,DATA_DISK_GB,GPU_COUNT}`；缺失或非法取值保留默认（不会解析成 0） | `config.go:971-980`（逐个绑定）、`:986`（`intFromEnv`：空值与解析失败都回退到当前值） |
+| UD-21 | 非法 bounds 的处置 | **启动即失败**：`min < 1` 或 `max < min` 拒绝启动，而不是关掉校验；服务侧另有兜底（非法集合被忽略、保留默认） | `config.go:420`（`QubeSpecConfig.Validate`）、`:1046`（`Config.Validate` 中调用）；兜底 `specbounds.go:209`（`WithSpecBounds`） |
+| UD-22 | 越界错误的形状 | `invalid qube spec: <字段> <值><单位> is above the maximum <上限><单位> (qube_spec.max_<键>)`；低于下限同理。前端显示 `message` 字段（此前只显示 `error` 里的 "Bad Request"） | `specbounds.go:146`（`validateSpec`）；HTTP 400 映射 `internal/handler/qube_handler.go:341-342`；前端 `console/frontend/src/lib/api.ts:103`（`errorMessage`） |
+
+> 依据强度分级（不要混用）：UD-15 的上限与 UD-16/17/18 的下限来自仓库里已有的表单约束或代码
+> 常量；**UD-16/17/18 的上限、以及 UD-19 整行没有仓库依据**，是按"单机自托管不应被自己绊倒"
+> 取的保守值，因此刻意做成可配置键（`AGENTS.md` 要求不得把判断值写成实测值）。
+> 相关测试：`internal/service/specbounds_test.go`（边界双向、配置生效、非法配置不关闭校验、
+> provider 未被调用）、`internal/config/config_test.go:620` 起（默认值/env/非法值）、
+> `cmd/server/specbounds_test.go:19`（配置默认值与服务兜底同值）。
 
 ## 2. SQLite 结构（D-6）
 
