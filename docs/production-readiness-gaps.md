@@ -10,7 +10,7 @@
 
 | 档 | 定义 | 当前 | 还差什么 | 粗估 |
 |---|---|---|---|---|
-| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧与部署侧都已闭环，整体仍未达标**：M1 的 15 项里 8 项完成，M1-1（白名单下发）与 M1-5（备份调度）的外部仓接线已随 `qubes-salt-config` `v0.1.0` 落地（2026-09-22，PR #1），§2.H 的 4 条 A-阻塞运行时缺陷全部修复；剩下的项**没有一项能在本机做完** | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② M1-5 的真机触发与"最新归档可恢复"核对；③ 首次 release 与用 release URL 置备（M1-10，需对外发布时机；并带出 G-G5：`qubes-air-backup` 目前没有产物）；④ M1-8 需 PVE 访问核对指纹与集群版本 | 不再是 Sprint 数，取决于真机窗口与发布决定 |
+| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧与部署侧都已闭环，整体仍未达标**：M1 的 15 项里 8 项完成，M1-1（白名单下发）与 M1-5（备份调度）的外部仓接线已随 `qubes-salt-config` `v0.1.0` 落地（2026-09-22，PR #1），§2.H 的 4 条 A-阻塞运行时缺陷全部修复；剩下的项**没有一项能在本机做完** | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② M1-5 的真机触发与"最新归档可恢复"核对；③ 首次 release 与用 release URL 置备（M1-10，需对外发布时机；并带出 G-G5：`qubes-air-backup` 目前没有产物）；④ M1-8 的 PVE 集群版本已带外核对（9.2.10、六节点同版本、quorate），SSH 主机键取不到于 API、仍需一条节点侧命令（`runbook-qa01.md` §2） | 不再是 Sprint 数，取决于真机窗口与发布决定 |
 | **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未开始** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
 
 一句话判断（M1 执行后更新）：**代码侧不再是距离，剩下的是"真机证据 + 发布 + 外部仓接线"**——
@@ -61,7 +61,7 @@ M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 �
 | M1-14 `/health` 真实语义 | [#13](https://github.com/slchris/qubes-air/pull/13) `4ba2165` | 真实读写探测 + 调度器心跳（执行 job 时预算 = 该 job 超时 + 15s）；未认证路由的写按 2s 窗口节流（UD-1g） |
 | M1-15 日志流不被 WriteTimeout 截断 | 随 M0 | 流自管每事件写截止时间（G-H6） |
 | M1-2/3/4/9 | — | **环境阻塞**：需要真机 dom0/Qubes + PVE |
-| M1-8 带外核对指纹 | — | 需要本机到 PVE 的访问 |
+| M1-8 带外核对 | — | **PVE 半边已核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**SSH 指纹半边仍缺**：API 取不到主机键（`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点 HTTP 501 "not implemented"），需一条节点侧命令，已写进 `runbook-qa01.md` §2 |
 | M1-10 首次 release | — | 需要对外发布的决定（打 `v*` tag），且"用 release URL 置备"需要真实 provider |
 
 本轮两个由**验证**而非实现方自述发现的缺陷：
@@ -123,7 +123,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 | G-B2 | Exec/FileCopy 无真机正值验收——而这是本项目对用户的核心承诺 | [QA-01 记录](reviews/2026-09-22-qa01-proxmox.md) 第 66-69 行 | **A-阻塞** | 同 G-B1；FileCopy push/pull 往返在真机留证 |
 | G-B3 | suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在） | 同上第 70 行 | **A-阻塞** | 写入文件 → suspend → resume → 读出同一内容，落记录 |
 | G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
-| G-B5 | 节点 SSH known_hosts 是 `ssh-keyscan` 的 TOFU 结果，未与带外指纹核对；PVE 集群版本同样未带外核对 | QA-01 记录第 19、73 行 | A-需要（安全） | 带外取得指纹并替换 TOFU 结果，记录核对方式 |
+| G-B5 | 节点 SSH known_hosts 是 `ssh-keyscan` 的 TOFU 结果，未与带外指纹核对；PVE 集群版本同样未带外核对。**PVE 版本半边已带外核对**（2026-09-22，经 PVE API）：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；同一次会话确认 console 默认 snippet datastore 在真实集群上允许 `snippets`（`internal/provider/proxmox/adapter.go`:77 的 `"local"`），置备前置成立。**指纹半边仍开**：主机键**不能**经 PVE API 取得——`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"，必须由执行者在任一节点上导出再逐条比对 | 原证据 QA-01 记录第 19、73 行；本次为 2026-09-22 的 PVE API 带外读数（本行不含任何真实主机名/节点名/地址，遵守 G-D6 的"新文档不再写真实地址"）；核对命令与做法 `docs/runbook-qa01.md` §2 | **A-需要**（等级不变：指纹未替换 TOFU 结果，TOFU 就还在） | 带外方式与命令已成文；剩下一步是在真机任一节点上跑那条命令，用输出替换 console `pve_known_hosts` 里的 TOFU 键（并记录到 `docs/reviews/` 的执行记录） |
 | G-B6 | 真机证据的 revision 绑定：QA-01 跑在 `fae0aea`。**Sprint 1 未改任何生产代码**（diff 只有测试/文档/脚本），故代码面证据仍成立；但合并后任何 `.go` 改动都会使其失效 | `git diff --name-only fae0aea 4f52953`（无 `.go` 生产文件、无 `.svelte`） | A-需要 | 每次合并进 `main` 后重跑一次真机生命周期冒烟，记录新 SHA |
 
 ### 2.C 恢复与运维（A 档阻塞）
@@ -228,7 +228,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 - [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**外部仓已完成**：`qubes-salt-config` `v0.1.0` 的 `salt/qubesair/backup.sls`+`backup.top`（`RequiresMountsFor` 离机目录、create→prune 两段 `ExecStart`、`Persistent=true` + rc.local 每次启动补跑一次，因为 timer 的补跑戳存在根卷上、随 AppVM 关机丢失；默认关闭，需操作者挂载介质/钉二进制摘要/自建口令文件）；**剩余**：真机 apply 一次并确认 timer 触发与"最新归档可恢复"，且需先解决 G-G5（`qubes-air-backup` 无发布产物）—— 依赖：无（G-C2）
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出四个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）；**注**：该限制已由 M2-10 解除，`docs/upgrade-rollback.md` §3.1/§3.2 已同步为"构建身份 + 摘要两条都看"
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
-- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
+- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— **PVE 半边已带外核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**指纹半边未核对，且不能经 API 取得**：`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"；只能在任一节点上跑 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done`，把输出与 console 的 `pve_known_hosts` 逐条比对（命令与做法已写进 `docs/runbook-qa01.md` §2），所以本项**仍不勾选** —— 依赖：无（G-B5）
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）
 - [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
