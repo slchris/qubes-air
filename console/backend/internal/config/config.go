@@ -27,6 +27,23 @@ type Config struct {
 	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
 	Transport    TransportConfig    `yaml:"transport"`
 	QubeSpec     QubeSpecConfig     `yaml:"qube_spec"`
+
+	// LockFile is the file the console takes its exclusive single-instance lock
+	// on at startup and holds for its whole lifetime (internal/lockfile). A
+	// second console that finds the lock held REFUSES TO START, because the
+	// startup path reconciles state that belongs to a live process: it would
+	// otherwise mark the running instance's in-flight jobs failed/unknown and
+	// overwrite its qube statuses with error.
+	//
+	// Default: empty, which means "<database.dsn>.lock" — derived from the
+	// database rather than configured separately, because the lock only protects
+	// anything if "same database" implies "same lock file". Two consoles pointed
+	// at one SQLite file then necessarily contend, and an operator who moves the
+	// database moves the lock with it. An in-memory database has no file another
+	// process could share, so there the derived path is empty and startup skips
+	// locking; setting this explicitly is the only way to lock in that case.
+	// Env: QUBES_AIR_LOCK_FILE.
+	LockFile string `yaml:"lock_file"`
 }
 
 // TransportConfig configures the gRPC bidirectional-stream cross-machine
@@ -755,6 +772,9 @@ func (c *Config) loadFromEnv() {
 	if dsn := os.Getenv("QUBES_AIR_DATABASE_DSN"); dsn != "" {
 		c.Database.DSN = dsn
 	}
+	if lockFile := os.Getenv("QUBES_AIR_LOCK_FILE"); lockFile != "" {
+		c.LockFile = lockFile
+	}
 
 	if origins := os.Getenv("QUBES_AIR_CORS_ORIGINS"); origins != "" {
 		c.CORS.AllowedOrigins = strings.Split(origins, ",")
@@ -1214,18 +1234,44 @@ func splitCSV(v string) []string {
 // put files then, and the log endpoint reports that plainly rather than writing
 // into the working directory of whoever started the process.
 func (c *Config) JobLogDir() string {
-	dsn := c.Database.DSN
-	if dsn == "" || strings.HasPrefix(dsn, ":memory:") || strings.Contains(dsn, "mode=memory") {
-		return ""
-	}
-	// Strip any sqlite query string ("file.db?_busy_timeout=...") before
-	// treating it as a path.
-	if i := strings.IndexByte(dsn, '?'); i >= 0 {
-		dsn = dsn[:i]
-	}
-	dsn = strings.TrimPrefix(dsn, "file:")
+	dsn := databaseFilePath(c.Database.DSN)
 	if dsn == "" {
 		return ""
 	}
 	return filepath.Join(filepath.Dir(dsn), "job-logs")
+}
+
+// LockFilePath is the file the console's exclusive single-instance lock is
+// taken on, and empty when there is nothing to exclude (see LockFile).
+//
+// The default is derived from the database path — "<database.dsn>.lock" — so
+// that two consoles sharing a database necessarily contend for one lock. A
+// fixed name next to the database would instead make two consoles with
+// DIFFERENT databases in one directory refuse to run beside each other.
+func (c *Config) LockFilePath() string {
+	if c.LockFile != "" {
+		return c.LockFile
+	}
+	dsn := databaseFilePath(c.Database.DSN)
+	if dsn == "" {
+		return ""
+	}
+	return dsn + ".lock"
+}
+
+// databaseFilePath returns the filesystem path behind the configured DSN, or
+// "" when there is none: an in-memory database, or no DSN at all.
+//
+// Stripping the query string and the "file:" scheme is what turns a usable DSN
+// into a path for the lock and for the job logs. The in-memory spellings are
+// checked before the stripping, because "mode=memory" only means memory while
+// it is still part of the DSN.
+func databaseFilePath(dsn string) string {
+	if dsn == "" || strings.HasPrefix(dsn, ":memory:") || strings.Contains(dsn, "mode=memory") {
+		return ""
+	}
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		dsn = dsn[:i]
+	}
+	return strings.TrimPrefix(dsn, "file:")
 }

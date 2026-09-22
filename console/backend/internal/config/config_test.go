@@ -718,3 +718,50 @@ func TestConfig_QubeSpecBoundsValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "qube_spec.max_vcpu")
 }
+
+// TestLockFilePathDerivesFromTheDatabase pins the default that makes the
+// single-instance lock meaningful: the lock file is the database file's own
+// path plus ".lock", so two consoles sharing a database necessarily contend for
+// one lock, while two consoles with different databases in one directory do not.
+func TestLockFilePathDerivesFromTheDatabase(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.Equal(t, "./qubes-air.db.lock", cfg.LockFilePath(),
+		"the default database must derive a lock beside it")
+
+	// Different databases in the same directory must NOT share a lock: a fixed
+	// name such as <dir>/qubes-air.lock would refuse a legitimate pairing.
+	cfg.Database.DSN = "/var/lib/qubes-air/one.db"
+	one := cfg.LockFilePath()
+	cfg.Database.DSN = "/var/lib/qubes-air/two.db"
+	two := cfg.LockFilePath()
+	assert.Equal(t, "/var/lib/qubes-air/one.db.lock", one)
+	assert.NotEqual(t, one, two, "different databases must not contend for one lock")
+
+	// A DSN carrying sqlite options, or the file: scheme, still names its file.
+	cfg.Database.DSN = "file:/var/lib/qubes-air/three.db?_busy_timeout=5000"
+	assert.Equal(t, "/var/lib/qubes-air/three.db.lock", cfg.LockFilePath())
+
+	// An explicit lock_file wins. It is also the only way to lock an in-memory
+	// database, which has no path to derive one from.
+	cfg.LockFile = "/run/qubes-air/console.lock"
+	assert.Equal(t, "/run/qubes-air/console.lock", cfg.LockFilePath())
+
+	// In-memory: no file another process could share, so nothing to exclude.
+	cfg.LockFile = ""
+	for _, dsn := range []string{"", ":memory:", "file:memdb1?mode=memory&cache=shared"} {
+		cfg.Database.DSN = dsn
+		assert.Empty(t, cfg.LockFilePath(), "dsn %q has no file to lock", dsn)
+	}
+}
+
+// TestConfigLoadsLockFileFromEnv covers the override an operator actually uses
+// to put the lock somewhere the unit's own user can write.
+func TestConfigLoadsLockFileFromEnv(t *testing.T) {
+	t.Setenv("QUBES_AIR_LOCK_FILE", "/run/qubes-air/console.lock")
+
+	cfg := DefaultConfig()
+	cfg.loadFromEnv()
+
+	assert.Equal(t, "/run/qubes-air/console.lock", cfg.LockFile)
+	assert.Equal(t, "/run/qubes-air/console.lock", cfg.LockFilePath())
+}
