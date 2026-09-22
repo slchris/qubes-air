@@ -39,6 +39,7 @@
 | [凭据与轮换](credential-vault.md) | vault、控制台密钥、Relay/agent 证书 |
 | [凭据销毁](credential-destruction.md) | Zone、VM 和整机事件处理 |
 | [灾难恢复](disaster-recovery.md) | 故障域、加密备份/恢复、schema 版本与 CA 重建 |
+| [运行期默认值与数据库结构](runtime-defaults.md) | 限流/超时/退避等默认值与 SQLite 表清单，逐条给 `文件:行号` |
 
 Qubes Salt 配置位于
 [qubes-salt-config](https://github.com/slchris/qubes-salt-config)，不在本仓库维护第二份。

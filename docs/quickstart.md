@@ -60,7 +60,8 @@ printf '%s\n' '["/usr/bin/id"]' |
   qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
-`Ping` 应返回 `pong`；`Exec` 应返回远端命令输出。执行与文件操作默认可能触发 dom0 的
+`Ping` 应返回单行 `pong <remote_name> <unix_ts>`（契约见 `remote/qubes-rpc/qubesair.Ping` 第 10 行）；
+`Exec` 应返回远端命令输出。执行与文件操作默认可能触发 dom0 的
 `ask`，这是安全策略，不是故障。
 
 逐层排错用[自检清单](remotevm-selfcheck.md)，完整操作见

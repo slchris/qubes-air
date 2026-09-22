@@ -91,6 +91,31 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 `qubes.GetAppmenus` 枚举 `.desktop` 应用，`qubes.StartApp+<app-id>` 在远端 Xpra display
 启动应用。传输对带 `+arg` 的服务保留参数；完整菜单/桌面体验仍在收尾。
 
+### UnlockData / RekeyData
+
+`qubesair.UnlockData` 在远端打开（首次则为格式化）LUKS 数据盘：stdin 是该 Qube 自己的数据
+密钥（DEK），stdout 是一行 `{"unlocked":bool,"detail":"..."}`，**始终 exit 0**，非零退出会被
+invoker 当作错误而吞掉 stdout。它只格式化真正空白的盘；已经带非 LUKS 文件系统的盘一律拒绝
+覆盖。
+
+`qubesair.RekeyData` 只被迁移路径调用：把旧 keyslot 换成 DEK，并报告旧槽是否已移除。二者都
+**不是**"派生密钥回退解锁"——缺 DEK 走的是迁移，且迁移后旧槽必须被移除，否则保持 pending 并在
+下次解锁重试移除。密钥语义与默认值见[架构](architecture.md)的远端服务小节与
+[运行期默认值与数据库结构](runtime-defaults.md)。
+
+### SSHProxy
+
+`qubesair.SSHProxy` 由 `relay/transport/qubesair.SSHProxy` 实现，落在 Relay 上而不是远端
+agent：dom0 policy 把调用改写后送到 Relay（`dom0-scripts/policy.d/30-qubes-air.policy` 第 68、71 行
+一条 `allow`、一条兜底 `deny`）。
+
+### policy 授权但本仓库无脚本的服务
+
+`dom0-scripts/policy.d/30-qubes-air.policy` 还授权了 `qubesair.Status`（第 48 行）、
+`qubesair.Deploy`（第 54 行）、`qubesair.VaultRead`（第 88 行）、
+`qubesair.GetCredential`（第 121 行）。它们的实现脚本**不在本仓库**，权威来源是外部
+`qubes-salt-config`；本节只登记"policy 里有"，不等于本仓库已实现或已验收。
+
 ## 证书验证
 
 Agent 和 Relay 证书都链到 console CA。某些连接按裸 IP 发起，证书没有稳定 IP SAN，因此

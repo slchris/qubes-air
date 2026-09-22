@@ -82,7 +82,21 @@ RemoteVM 不是一台本地 VM，而是一条包含 `relayvm`、`transport_rpc` 
 | `qubesair.ConnectTCP` | 在 mTLS 通道内流式转发 TCP | 只允许显式目标/端口 |
 | `qubes.GetAppmenus` | 枚举远端桌面应用 | 无私密参数 |
 | `qubes.StartApp` | 在 Xpra display 启动应用 | app id 严格校验 |
-| `qubesair.UnlockData` | 解锁/初始化 LUKS 数据盘 | 控制台读取 per-Qube 密钥并通过 mTLS 使用；仍有派生密钥回退路径 |
+| `qubesair.UnlockData` | 解锁/初始化 LUKS 数据盘 | 控制台读取该 Qube 自己的数据密钥（DEK）经 mTLS 下发；**没有解锁用的回退路径**——缺 DEK 即走一次性迁移，用 legacy master 派生密钥把盘 rekey 到该 DEK，派生密钥只是迁移凭据 |
+| `qubesair.RekeyData` | 迁移时把旧 keyslot 换成 DEK，并报告是否已移除旧槽 | 只由迁移路径调用；旧槽未移除时保持 pending，下次解锁重试移除 |
+
+> **UnlockData 的密钥语义（易误读，以代码为准）**：master secret 只读、只用于迁移、
+> **永不自动创建**；缺 master 时迁移报错并让磁盘保持关闭，而不是退回派生密钥解锁。
+> 见 `console/backend/internal/service/datakey.go`（`:19-24`、`:56-92`）与
+> `console/backend/internal/service/agentunlock.go`（`:144-155`、`:265-293`）。
+> 运维默认值与 LUKS/DEK 相关的取值见[运行期默认值与数据库结构](runtime-defaults.md)。
+
+> **dom0 policy 授权的服务多于上表**：`dom0-scripts/policy.d/30-qubes-air.policy` 另外授权
+> `qubesair.Status`（第 48 行）、`qubesair.Deploy`（第 54 行）、`qubesair.SSHProxy`（第 68、71 行）、
+> `qubesair.VaultRead`（第 88 行）、`qubesair.GetCredential`（第 121 行）。
+> 其中 `qubesair.SSHProxy` 由 `relay/transport/qubesair.SSHProxy` 实现；`qubesair.Status` 与
+> `qubesair.Deploy` 的脚本**不在本仓库**（权威来源是外部 `qubes-salt-config`），排查时不要
+> 假设本仓库里能找到它们。对应地，本仓库实现的 `qubesair.RekeyData` 只在迁移路径被调用。
 
 ## 存算分离与加密
 
