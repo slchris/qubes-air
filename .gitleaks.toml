@@ -17,11 +17,21 @@
 # 因此残余风险是"无"而不是"小"。任何新增排除都必须同样按值给出理由。
 #
 # 引入时间：2026-09-22，首次对积压 commit 跑 CI 时（见 docs/production-readiness-gaps.md §2.A）。
+#
+# 语法选择（踩过一次坑，别改回新式写法）：这里必须用**单数** `[allowlist]`。
+# 新式 `[[allowlists]]` 在 gitleaks 8.30.1（本机 CLI）上生效、在 8.24.3（CI 里
+# gitleaks-action 固定捆绑的版本）上被静默忽略——配置读进去了、日志也打了
+# "using gitleaks config from GITLEAKS_CONFIG env var"，但 4 条 fixture 照报，
+# 于是本地"0 漏"的结论是空的。改动本文件后必须用 CI 那个版本复验：
+#   GOBIN=/tmp/gl824 go install github.com/zricethezav/gitleaks/v8@v8.24.3
+#   GITLEAKS_CONFIG=.gitleaks.toml /tmp/gl824/gitleaks detect --source . --redact \
+#     --log-opts="origin/main..HEAD"
+# 单数写法在 8.24.3 与 8.30.1 上都实测有效（同一命令两个版本都报 no leaks found）。
 
 [extend]
 useDefault = true
 
-[[allowlists]]
+[allowlist]
 description = "placeholder fixtures flagged by generic-api-key; not credentials"
 regexes = [
   '''b2xkLWtleS1vbGQtbWFzdGVyLWRlcml2ZWQta2V5LW1hdGVyaWFs''',
