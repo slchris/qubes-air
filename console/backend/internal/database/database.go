@@ -270,6 +270,12 @@ func (d *DB) migrate() error {
 		{"agent_last_probed_at", "DATETIME"},
 		{"agent_last_healthy_at", "DATETIME"},
 		{"agent_last_error", "TEXT NOT NULL DEFAULT ''"},
+		// NULL for every existing row, which is correct rather than merely
+		// convenient: nobody observed those failures as one continuous run, so
+		// claiming a start time for them would invent an observation. The next
+		// failed probe starts the streak, and models.ClassifyAgentRecovery
+		// treats a missing streak as "not yet known" until it does.
+		{"agent_failing_since", "DATETIME"},
 	} {
 		if err := d.addColumnIfMissing("qubes", c.column, c.definition); err != nil {
 			return err

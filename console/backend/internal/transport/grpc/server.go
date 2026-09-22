@@ -339,101 +339,31 @@ func (s *Server) Stop() {
 // this process). Reverse (REMOTE_TO_LOCAL) frames are only relayed back to the
 // local relay; their authorization is the LOCAL dom0 policy C (ask), enforced
 // on the client side — this handler must not let them skip that.
-// Frame dispatch plus the tunnel lifecycle (authorize, reauthorize, teardown).
-// Worth revisiting if it grows again; splitting it today would separate the
-// teardown paths from the branches that trigger them.
 //
-//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately
+// This function is the tunnel lifecycle — authorize, handshake, read frames,
+// teardown — while each frame kind is handled by a named step on tunnelSession.
 func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) error {
 	ctx, cancelTunnel := context.WithCancel(stream.Context())
 	defer cancelTunnel()
 
-	// Re-authorize the peer certificate periodically for as long as the tunnel
-	// lives.
-	//
-	// Checking only at handshake would let a revoked agent keep an established
-	// connection indefinitely — and these tunnels are deliberately long-lived,
-	// so "indefinitely" means until someone notices. Revocation has to reach a
-	// connection that is already open, or it is not revocation.
-	if fp, ok := peerFingerprint(stream.Context()); ok {
-		p, _ := peer.FromContext(stream.Context())
-		info, valid := p.AuthInfo.(credentials.TLSInfo)
-		if !valid {
-			return errors.New("missing TLS peer identity")
-		}
-		go s.reauthorizeLoop(ctx, cancelTunnel, fp, info.State.VerifiedChains[0][0].NotAfter)
+	if err := s.startReauthorization(ctx, cancelTunnel, stream); err != nil {
+		return err
 	}
 
-	// Send is not concurrent-safe; serialize all sends through this mutex so
-	// per-request goroutines can reply independently.
-	var sendMu sync.Mutex
-	send := func(f *pb.Frame) error {
-		sendMu.Lock()
-		defer sendMu.Unlock()
-		return stream.Send(f)
-	}
+	sess := newTunnelSession(ctx, cancelTunnel, s, stream)
+	// Teardown order matters: stop the forward workers before closing the
+	// stream sockets they may still be writing through.
+	defer sess.closeStreams()
+	defer sess.shutdown()
 
 	// --- Handshake: first frame must be a Handshake with a matching version.
-	first, err := receiveFrame(ctx, stream)
+	ok, err := sess.handshake(stream)
 	if err != nil {
-		if err == io.EOF {
-			return nil
-		}
 		return err
 	}
-	hs := first.GetHandshake()
-	if hs == nil {
-		return fmt.Errorf("grpc server: expected Handshake as first frame, got %T", first.GetKind())
+	if !ok {
+		return nil
 	}
-	if !supportsProtocol(hs.GetProtocolVersion()) {
-		msg := protocolMismatchMessage(hs.GetProtocolVersion())
-		// Tell the peer WHY before closing. A bare stream error is
-		// indistinguishable from a network fault, which sends whoever is
-		// debugging it looking at firewalls instead of versions.
-		_ = send(&pb.Frame{Kind: &pb.Frame_Error{Error: &pb.CallError{
-			Code:    CodeProtocolMismatch,
-			Message: msg,
-		}}})
-		log.Printf("grpc server: rejecting relay %q (build %q): %s",
-			hs.GetRelayName(), hs.GetBuildVersion(), msg)
-		return fmt.Errorf("grpc server: %s", msg)
-	}
-	relayName := hs.GetRelayName()
-	remoteName := hs.GetRemoteName()
-	// Build version is observability only — logged so an operator can tell which
-	// agent build is actually running out there, without it gating anything.
-	log.Printf("grpc server: relay %q connected (protocol %s, build %s)",
-		relayName, hs.GetProtocolVersion(), orUnknown(hs.GetBuildVersion()))
-	// Acknowledge with our own Handshake frame.
-	if err := send(handshakeFrame(remoteName, relayName)); err != nil {
-		return err
-	}
-
-	// --- Per-request accumulation of forward request bodies.
-	// Guarded by pendMu because request frames for different request_ids may
-	// interleave on the stream and we accumulate their bodies here.
-	type pending struct {
-		header *pb.RequestHeader
-		body   []byte
-	}
-	var pendMu sync.Mutex
-	pend := make(map[string]*pending)
-
-	// Live TCP-proxy streams (GUI, etc.), by request_id. Separate from pend: a
-	// stream's request bytes go straight to its socket, not into a buffer.
-	var streamMu sync.Mutex
-	streamsByReq := make(map[string]*serverStream)
-	defer func() {
-		streamMu.Lock()
-		for _, ss := range streamsByReq {
-			_ = ss.conn.Close()
-		}
-		streamMu.Unlock()
-	}()
-
-	// Track in-flight worker goroutines so we can wait for them on return.
-	var wg sync.WaitGroup
-	defer func() { cancelTunnel(); wg.Wait() }()
 
 	for {
 		frame, err := receiveFrame(ctx, stream)
@@ -443,168 +373,345 @@ func (s *Server) Tunnel(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) err
 			}
 			return err
 		}
-
-		switch k := frame.GetKind().(type) {
-		case *pb.Frame_KeepAlive:
-			// Echo keepalive to keep the NAT mapping warm and prove liveness.
-			if err := send(keepAliveFrame(k.KeepAlive.GetUnixMs())); err != nil {
-				return err
-			}
-
-		case *pb.Frame_RequestHeader:
-			reqID := frame.GetRequestId()
-			hdr := k.RequestHeader
-			switch hdr.GetDirection() {
-			case pb.Direction_LOCAL_TO_REMOTE:
-				if strings.HasPrefix(hdr.GetQrexecService(), streamServicePrefix) {
-					// TCP-proxy stream (GUI). A stream-prefixed request with a port
-					// outside the allowed range is REFUSED here — never routed to
-					// qrexec — so the tunnel can only reach the whitelisted loopback
-					// GUI ports.
-					port, ok := streamLocalPort(hdr.GetQrexecService())
-					if !ok {
-						_ = send(errorFrame(reqID, codeInvalid, "stream port not allowed"))
-						break
-					}
-					ss, derr := s.startStream(ctx, reqID, port, send)
-					if derr != nil {
-						_ = send(errorFrame(reqID, codeUnavailable, "stream dial: "+derr.Error()))
-						break
-					}
-					streamMu.Lock()
-					streamsByReq[reqID] = ss
-					streamMu.Unlock()
-					break
-				}
-				// Forward call: begin accumulating its request body.
-				pendMu.Lock()
-				pend[reqID] = &pending{header: hdr}
-				pendMu.Unlock()
-			case pb.Direction_REMOTE_TO_LOCAL:
-				// Reverse call originated remotely (e.g. remote qube → local
-				// vault). The server does NOT authorize or execute it; it just
-				// relays the header back to the local relay, whose side routes
-				// it through LOCAL dom0 policy C (ask). Relay the frame as-is.
-				if err := send(frame); err != nil {
-					return err
-				}
-			default:
-				if err := send(errorFrame(reqID, codeInvalid, "unknown direction")); err != nil {
-					return err
-				}
-			}
-
-		case *pb.Frame_Data:
-			reqID := frame.GetRequestId()
-			// A live TCP-proxy stream: write the request bytes straight to its
-			// socket. On write error the loopback side is gone — report and drop.
-			streamMu.Lock()
-			ss, isStream := streamsByReq[reqID]
-			streamMu.Unlock()
-			if isStream {
-				if k.Data.GetStreamId() == streamRequest {
-					if _, werr := ss.conn.Write(k.Data.GetPayload()); werr != nil {
-						_ = send(errorFrame(reqID, codeUnavailable, "stream write: "+werr.Error()))
-						_ = ss.conn.Close()
-						streamMu.Lock()
-						delete(streamsByReq, reqID)
-						streamMu.Unlock()
-					}
-				}
-				break
-			}
-			pendMu.Lock()
-			p, ok := pend[reqID]
-			pendMu.Unlock()
-			if !ok {
-				// Not a forward request we're accumulating: relay through (e.g.
-				// reverse-call body flowing back to the local relay).
-				if err := send(frame); err != nil {
-					return err
-				}
-				break
-			}
-			if k.Data.GetStreamId() == streamRequest {
-				pendMu.Lock()
-				p.body = append(p.body, k.Data.GetPayload()...)
-				pendMu.Unlock()
-			}
-			// Other stream_ids on a forward request are ignored on the server.
-
-		case *pb.Frame_Eos:
-			reqID := frame.GetRequestId()
-			// Stream: the client is done sending. Half-close the socket's write
-			// side so the loopback server sees EOF, but keep reading its response.
-			streamMu.Lock()
-			ss, isStream := streamsByReq[reqID]
-			streamMu.Unlock()
-			if isStream {
-				if k.Eos.GetStreamId() == streamRequest {
-					if cw, ok := ss.conn.(interface{ CloseWrite() error }); ok {
-						_ = cw.CloseWrite()
-					}
-				}
-				break
-			}
-			if k.Eos.GetStreamId() != streamRequest {
-				// EOS for a non-request stream: relay through (reverse path).
-				pendMu.Lock()
-				_, isForward := pend[reqID]
-				pendMu.Unlock()
-				if !isForward {
-					if err := send(frame); err != nil {
-						return err
-					}
-				}
-				break
-			}
-			// Request body complete — dispatch the forward call.
-			pendMu.Lock()
-			p, ok := pend[reqID]
-			if ok {
-				delete(pend, reqID)
-			}
-			pendMu.Unlock()
-			if !ok {
-				break
-			}
-
-			wg.Add(1)
-			go func(reqID string, hdr *pb.RequestHeader, body []byte) {
-				defer wg.Done()
-				s.handleForward(ctx, reqID, hdr, body, send)
-			}(reqID, p.header, p.body)
-
-		case *pb.Frame_Error:
-			// A call-level error reported by the peer. Relay reverse-path errors
-			// back; forward-path errors just drop the pending accumulation.
-			reqID := frame.GetRequestId()
-			// If it names a live stream, tear that stream's socket down.
-			streamMu.Lock()
-			if ss, isStream := streamsByReq[reqID]; isStream {
-				_ = ss.conn.Close()
-				delete(streamsByReq, reqID)
-			}
-			streamMu.Unlock()
-			pendMu.Lock()
-			_, isForward := pend[reqID]
-			if isForward {
-				delete(pend, reqID)
-			}
-			pendMu.Unlock()
-			if !isForward {
-				if err := send(frame); err != nil {
-					return err
-				}
-			}
-
-		case *pb.Frame_Handshake:
-			// A second handshake is unexpected; ignore it.
-
-		default:
-			// Unknown/empty frame kind: ignore to stay tolerant.
+		if err := sess.dispatch(frame); err != nil {
+			return err
 		}
 	}
+}
+
+// startReauthorization launches the periodic peer-certificate re-check for a
+// live tunnel.
+//
+// Checking only at handshake would let a revoked agent keep an established
+// connection indefinitely — and these tunnels are deliberately long-lived, so
+// "indefinitely" means until someone notices. Revocation has to reach a
+// connection that is already open, or it is not revocation.
+//
+// A connection whose TLS identity cannot be read is refused here rather than
+// left running without a re-check.
+func (s *Server) startReauthorization(ctx context.Context, cancel context.CancelFunc, stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) error {
+	fp, ok := peerFingerprint(stream.Context())
+	if !ok {
+		return nil
+	}
+	p, _ := peer.FromContext(stream.Context())
+	info, valid := p.AuthInfo.(credentials.TLSInfo)
+	if !valid {
+		return errors.New("missing TLS peer identity")
+	}
+	go s.reauthorizeLoop(ctx, cancel, fp, info.State.VerifiedChains[0][0].NotAfter)
+	return nil
+}
+
+// pendingRequest is a forward call whose request body is still arriving. Frames
+// for different request_ids interleave on the stream, so their bodies are
+// accumulated per id.
+type pendingRequest struct {
+	header *pb.RequestHeader
+	body   []byte
+}
+
+// tunnelSession is the per-tunnel state the frame handlers share: the
+// serialized sender, the forward requests being accumulated, and the live
+// TCP-proxy streams. Separate from Server because it lives and dies with one
+// stream.
+type tunnelSession struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	server *Server
+	send   func(*pb.Frame) error
+
+	// pendMu guards pend.
+	pendMu sync.Mutex
+	pend   map[string]*pendingRequest
+
+	// streamMu guards streams: a stream's request bytes go straight to its
+	// socket, not into a buffer.
+	streamMu sync.Mutex
+	streams  map[string]*serverStream
+
+	// wg tracks the in-flight forward workers so shutdown can wait for them.
+	wg sync.WaitGroup
+}
+
+// newTunnelSession builds the per-tunnel state. Send is not concurrent-safe, so
+// every goroutine that replies goes through the serializer built here.
+func newTunnelSession(ctx context.Context, cancel context.CancelFunc, s *Server, stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) *tunnelSession {
+	var sendMu sync.Mutex
+	sess := &tunnelSession{
+		ctx:     ctx,
+		cancel:  cancel,
+		server:  s,
+		pend:    make(map[string]*pendingRequest),
+		streams: make(map[string]*serverStream),
+	}
+	sess.send = func(f *pb.Frame) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(f)
+	}
+	return sess
+}
+
+// shutdown cancels the tunnel context and waits for the in-flight forward
+// workers, so nothing keeps running after Tunnel returns.
+func (t *tunnelSession) shutdown() {
+	t.cancel()
+	t.wg.Wait()
+}
+
+// closeStreams closes every live TCP-proxy socket on the way out.
+func (t *tunnelSession) closeStreams() {
+	t.streamMu.Lock()
+	defer t.streamMu.Unlock()
+	for _, ss := range t.streams {
+		_ = ss.conn.Close()
+	}
+}
+
+// handshake consumes the first frame and requires it to be a Handshake with a
+// compatible protocol version, then acknowledges with our own.
+//
+// ok is false when the peer closed the stream before handshaking, which is a
+// clean end rather than an error.
+func (t *tunnelSession) handshake(stream grpc.BidiStreamingServer[pb.Frame, pb.Frame]) (bool, error) {
+	first, err := receiveFrame(t.ctx, stream)
+	if err != nil {
+		if err == io.EOF {
+			return false, nil
+		}
+		return false, err
+	}
+	hs := first.GetHandshake()
+	if hs == nil {
+		return false, fmt.Errorf("grpc server: expected Handshake as first frame, got %T", first.GetKind())
+	}
+	if !supportsProtocol(hs.GetProtocolVersion()) {
+		msg := protocolMismatchMessage(hs.GetProtocolVersion())
+		// Tell the peer WHY before closing. A bare stream error is
+		// indistinguishable from a network fault, which sends whoever is
+		// debugging it looking at firewalls instead of versions.
+		_ = t.send(&pb.Frame{Kind: &pb.Frame_Error{Error: &pb.CallError{
+			Code:    CodeProtocolMismatch,
+			Message: msg,
+		}}})
+		log.Printf("grpc server: rejecting relay %q (build %q): %s",
+			hs.GetRelayName(), hs.GetBuildVersion(), msg)
+		return false, fmt.Errorf("grpc server: %s", msg)
+	}
+	relayName := hs.GetRelayName()
+	remoteName := hs.GetRemoteName()
+	// Build version is observability only — logged so an operator can tell which
+	// agent build is actually running out there, without it gating anything.
+	log.Printf("grpc server: relay %q connected (protocol %s, build %s)",
+		relayName, hs.GetProtocolVersion(), orUnknown(hs.GetBuildVersion()))
+	// Acknowledge with our own Handshake frame.
+	if err := t.send(handshakeFrame(remoteName, relayName)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// dispatch handles one frame from the stream. A non-nil error ends the tunnel;
+// a frame that only spoils its own call is answered with a CallError (or
+// dropped) and returns nil.
+func (t *tunnelSession) dispatch(frame *pb.Frame) error {
+	switch k := frame.GetKind().(type) {
+	case *pb.Frame_KeepAlive:
+		return t.echoKeepAlive(k)
+	case *pb.Frame_RequestHeader:
+		return t.handleRequestHeader(frame, k)
+	case *pb.Frame_Data:
+		return t.handleData(frame, k)
+	case *pb.Frame_Eos:
+		return t.handleEos(frame, k)
+	case *pb.Frame_Error:
+		return t.handleCallError(frame)
+	case *pb.Frame_Handshake:
+		// A second handshake is unexpected; ignore it.
+	default:
+		// Unknown/empty frame kind: ignore to stay tolerant.
+	}
+	return nil
+}
+
+// echoKeepAlive answers a keepalive to keep the NAT mapping warm and prove
+// liveness.
+func (t *tunnelSession) echoKeepAlive(k *pb.Frame_KeepAlive) error {
+	return t.send(keepAliveFrame(k.KeepAlive.GetUnixMs()))
+}
+
+// handleRequestHeader opens a TCP-proxy stream for a stream-prefixed forward
+// request, starts accumulating a plain forward call's body, or relays a reverse
+// call's header back to the local relay untouched.
+func (t *tunnelSession) handleRequestHeader(frame *pb.Frame, k *pb.Frame_RequestHeader) error {
+	reqID := frame.GetRequestId()
+	switch k.RequestHeader.GetDirection() {
+	case pb.Direction_LOCAL_TO_REMOTE:
+		if strings.HasPrefix(k.RequestHeader.GetQrexecService(), streamServicePrefix) {
+			t.openStream(reqID, k.RequestHeader.GetQrexecService())
+			return nil
+		}
+		// Forward call: begin accumulating its request body.
+		t.pendMu.Lock()
+		t.pend[reqID] = &pendingRequest{header: k.RequestHeader}
+		t.pendMu.Unlock()
+	case pb.Direction_REMOTE_TO_LOCAL:
+		// Reverse call originated remotely (e.g. remote qube → local
+		// vault). The server does NOT authorize or execute it; it just
+		// relays the header back to the local relay, whose side routes
+		// it through LOCAL dom0 policy C (ask). Relay the frame as-is.
+		if err := t.send(frame); err != nil {
+			return err
+		}
+	default:
+		if err := t.send(errorFrame(reqID, codeInvalid, "unknown direction")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// openStream starts the loopback TCP proxy for a stream-prefixed request. A
+// failure here spoils only that request: the peer is told with a CallError and
+// the tunnel stays up.
+//
+// A stream-prefixed request with a port outside the allowed range is REFUSED
+// here — never routed to qrexec — so the tunnel can only reach the whitelisted
+// loopback GUI ports.
+func (t *tunnelSession) openStream(reqID, service string) {
+	port, ok := streamLocalPort(service)
+	if !ok {
+		_ = t.send(errorFrame(reqID, codeInvalid, "stream port not allowed"))
+		return
+	}
+	ss, derr := t.server.startStream(t.ctx, reqID, port, t.send)
+	if derr != nil {
+		_ = t.send(errorFrame(reqID, codeUnavailable, "stream dial: "+derr.Error()))
+		return
+	}
+	t.streamMu.Lock()
+	t.streams[reqID] = ss
+	t.streamMu.Unlock()
+}
+
+// handleData routes a data frame: request bytes for a live TCP-proxy stream go
+// straight to its socket, bytes for an accumulating forward call are appended to
+// its body, and anything else (a reverse call's body) is relayed through.
+func (t *tunnelSession) handleData(frame *pb.Frame, k *pb.Frame_Data) error {
+	reqID := frame.GetRequestId()
+	t.streamMu.Lock()
+	ss, isStream := t.streams[reqID]
+	t.streamMu.Unlock()
+	if isStream {
+		t.writeStreamRequest(ss, reqID, k.Data)
+		return nil
+	}
+	t.pendMu.Lock()
+	p, ok := t.pend[reqID]
+	t.pendMu.Unlock()
+	if !ok {
+		// Not a forward request we're accumulating: relay through (e.g.
+		// reverse-call body flowing back to the local relay).
+		return t.send(frame)
+	}
+	if k.Data.GetStreamId() == streamRequest {
+		t.pendMu.Lock()
+		p.body = append(p.body, k.Data.GetPayload()...)
+		t.pendMu.Unlock()
+	}
+	// Other stream_ids on a forward request are ignored on the server.
+	return nil
+}
+
+// writeStreamRequest writes request bytes to a proxied loopback socket. A write
+// error means the loopback side is gone: report it and drop the stream.
+func (t *tunnelSession) writeStreamRequest(ss *serverStream, reqID string, data *pb.DataChunk) {
+	if data.GetStreamId() != streamRequest {
+		return
+	}
+	if _, werr := ss.conn.Write(data.GetPayload()); werr != nil {
+		_ = t.send(errorFrame(reqID, codeUnavailable, "stream write: "+werr.Error()))
+		_ = ss.conn.Close()
+		t.streamMu.Lock()
+		delete(t.streams, reqID)
+		t.streamMu.Unlock()
+	}
+}
+
+// handleEos ends a stream's request half, relays a non-request EOS through, or
+// dispatches a forward call whose request body is now complete.
+func (t *tunnelSession) handleEos(frame *pb.Frame, k *pb.Frame_Eos) error {
+	reqID := frame.GetRequestId()
+	// Stream: the client is done sending. Half-close the socket's write
+	// side so the loopback server sees EOF, but keep reading its response.
+	t.streamMu.Lock()
+	ss, isStream := t.streams[reqID]
+	t.streamMu.Unlock()
+	if isStream {
+		if k.Eos.GetStreamId() == streamRequest {
+			if cw, ok := ss.conn.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+		}
+		return nil
+	}
+	if k.Eos.GetStreamId() != streamRequest {
+		// EOS for a non-request stream: relay through (reverse path).
+		t.pendMu.Lock()
+		_, isForward := t.pend[reqID]
+		t.pendMu.Unlock()
+		if !isForward {
+			return t.send(frame)
+		}
+		return nil
+	}
+	// Request body complete — dispatch the forward call.
+	t.pendMu.Lock()
+	p, ok := t.pend[reqID]
+	if ok {
+		delete(t.pend, reqID)
+	}
+	t.pendMu.Unlock()
+	if !ok {
+		return nil
+	}
+	t.dispatchForward(reqID, p)
+	return nil
+}
+
+// dispatchForward runs one completed forward call on its own worker. The worker
+// is tracked by the wait group so teardown waits for it.
+func (t *tunnelSession) dispatchForward(reqID string, p *pendingRequest) {
+	t.wg.Add(1)
+	go func(reqID string, hdr *pb.RequestHeader, body []byte) {
+		defer t.wg.Done()
+		t.server.handleForward(t.ctx, reqID, hdr, body, t.send)
+	}(reqID, p.header, p.body)
+}
+
+// handleCallError relays a call-level error reported by the peer back on the
+// reverse path and tears down any live stream it names. A forward-path error
+// only drops the pending accumulation.
+func (t *tunnelSession) handleCallError(frame *pb.Frame) error {
+	reqID := frame.GetRequestId()
+	// If it names a live stream, tear that stream's socket down.
+	t.streamMu.Lock()
+	if ss, isStream := t.streams[reqID]; isStream {
+		_ = ss.conn.Close()
+		delete(t.streams, reqID)
+	}
+	t.streamMu.Unlock()
+	t.pendMu.Lock()
+	_, isForward := t.pend[reqID]
+	if isForward {
+		delete(t.pend, reqID)
+	}
+	t.pendMu.Unlock()
+	if !isForward {
+		return t.send(frame)
+	}
+	return nil
 }
 
 // handleForward executes an already-remote-dom0-authorized forward call via the

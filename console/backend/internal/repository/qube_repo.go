@@ -31,7 +31,9 @@ type QubeRepository interface {
 	// ListByStatus returns every qube in one of the given statuses.
 	ListByStatus(ctx context.Context, statuses []models.QubeStatus) ([]*models.Qube, error)
 	// UpdateAgentHealth records the outcome of one agent probe, touching only
-	// the agent_* columns. It never reads or writes status.
+	// the agent_* columns. It never reads or writes status. It also maintains
+	// agent_failing_since, the start of the current run of failed probes, which
+	// is what makes models.ClassifyAgentRecovery answerable.
 	UpdateAgentHealth(
 		ctx context.Context, id string, health models.AgentHealth, probedAt time.Time, failure string,
 	) error
@@ -47,6 +49,7 @@ var ErrQubeNotFound = errors.New("qube not found")
 // agent_* timestamp ends up scanned into the wrong field.
 const qubeColumns = `id, name, type, zone_id, status, spec, ip_address,
 		agent_health, agent_last_probed_at, agent_last_healthy_at, agent_last_error,
+		agent_failing_since,
 		created_at, updated_at, purge_requested`
 
 // QubeListOptions contains filtering options for listing qubes.
@@ -143,9 +146,10 @@ func (r *qubeRepository) GetByID(ctx context.Context, id string) (*models.Qube, 
 func scanQube(row rowScanner) (*models.Qube, error) {
 	qube := &models.Qube{}
 	var (
-		specJSON  []byte
-		probedAt  sql.NullTime
-		healthyAt sql.NullTime
+		specJSON     []byte
+		probedAt     sql.NullTime
+		healthyAt    sql.NullTime
+		failingSince sql.NullTime
 	)
 
 	if err := row.Scan(
@@ -160,6 +164,7 @@ func scanQube(row rowScanner) (*models.Qube, error) {
 		&probedAt,
 		&healthyAt,
 		&qube.AgentLastError,
+		&failingSince,
 		&qube.CreatedAt,
 		&qube.UpdatedAt,
 		&qube.PurgeRequested,
@@ -180,6 +185,18 @@ func scanQube(row rowScanner) (*models.Qube, error) {
 		t := healthyAt.Time
 		qube.AgentLastHealthyAt = &t
 	}
+	if failingSince.Valid {
+		t := failingSince.Time
+		qube.AgentFailingSince = &t
+	}
+
+	// Derived here, in the one function every qube read goes through, rather
+	// than by each caller: a field that some endpoints filled in and others left
+	// empty would read as "no such concept" exactly where an operator was
+	// looking for it. It is a pure function of the row — see
+	// models.ClassifyAgentRecovery — so deriving it at read time cannot go stale
+	// the way a stored copy would.
+	qube.AgentRecovery = models.ClassifyAgentRecovery(qube)
 
 	return qube, nil
 }
@@ -405,6 +422,15 @@ func (r *qubeRepository) ListByStatus(ctx context.Context, statuses []models.Qub
 // "unreachable for the last 40 minutes" answerable. It is computed in SQL
 // rather than by reading the old value first, for the reason above.
 //
+// agent_failing_since is maintained by the same statement, in the same spirit:
+// it starts on the first probe recorded unreachable and is cleared by every
+// other verdict. COALESCE keeps the ORIGINAL timestamp for as long as the
+// failure lasts — "failing since" that crept forward on every sweep would
+// answer nothing, and would let a permanently dead agent look perpetually
+// fresh. Computed in SQL so two probes for the same qube (the settle worker and
+// the on-demand endpoint can overlap) cannot both believe they started the
+// streak.
+//
 // updated_at is deliberately left alone. Probes run continuously, and bumping
 // it on every one would destroy its meaning as "when this qube last actually
 // changed" — agent_last_probed_at already records probe time, and more
@@ -424,6 +450,10 @@ func (r *qubeRepository) UpdateAgentHealth(
 			agent_health = ?,
 			agent_last_probed_at = ?,
 			agent_last_healthy_at = CASE WHEN ? = ? THEN ? ELSE agent_last_healthy_at END,
+			agent_failing_since = CASE
+				WHEN ? = ? THEN COALESCE(agent_failing_since, ?)
+				ELSE NULL
+			END,
 			agent_last_error = ?
 		WHERE id = ?`
 
@@ -431,6 +461,7 @@ func (r *qubeRepository) UpdateAgentHealth(
 		string(health),
 		probedAt.UTC(),
 		string(health), string(models.AgentHealthHealthy), probedAt.UTC(),
+		string(health), string(models.AgentHealthUnreachable), probedAt.UTC(),
 		failure,
 		id,
 	)
