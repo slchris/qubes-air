@@ -737,13 +737,32 @@ func (c *Config) loadFromFile(path string) error {
 	return yaml.Unmarshal(data, c)
 }
 
-// loadFromEnv loads configuration from environment variables.
-// One independent lookup per configuration field. The complexity score counts
-// fields, not difficulty: there are no interacting branches here, and cutting
-// it into loadNetworkEnv/loadTLSEnv/... would only move the same flat list.
+// loadFromEnv loads configuration from environment variables. Environment
+// variables take precedence over file configuration.
 //
-//nolint:gocyclo,funlen // flat per-field sequence; both scores track field count
+// One named step per configuration section, so a field's lookup sits with the
+// fields it belongs to. The per-field branches have to be counted somewhere;
+// the step boundary is what keeps each function under the gocyclo/funlen
+// limits without a waiver.
 func (c *Config) loadFromEnv() {
+	c.loadServerEnv()
+	c.loadServerRequestLimitsEnv()
+	c.loadStorageEnv()
+	c.loadSecurityEnv()
+	c.loadOrchestratorEnv()
+	c.loadAgentPackageEnv()
+	c.loadOrchestratorTimingEnv()
+	c.loadAgentRenewalEnv()
+	c.loadTransportEnv()
+	c.loadTransportVaultEnv()
+	c.loadTransportTimingEnv()
+	c.loadQubeSpecBoundsFromEnv()
+}
+
+// loadServerEnv reads the HTTP listener surface: address, dev mode, the static
+// web root, the server certificate pair, production hardening and the browser
+// origins the console answers.
+func (c *Config) loadServerEnv() {
 	if host := os.Getenv("QUBES_AIR_HOST"); host != "" {
 		c.Server.Host = host
 	}
@@ -758,7 +777,6 @@ func (c *Config) loadFromEnv() {
 	if webRoot := os.Getenv("QUBES_AIR_WEB_ROOT"); webRoot != "" {
 		c.Server.WebRoot = webRoot
 	}
-
 	if enabled := os.Getenv("QUBES_AIR_TLS_ENABLED"); enabled != "" {
 		c.Server.TLS.Enabled = strings.ToLower(enabled) == "true"
 	}
@@ -768,34 +786,18 @@ func (c *Config) loadFromEnv() {
 	if keyFile := os.Getenv("QUBES_AIR_TLS_KEY"); keyFile != "" {
 		c.Server.TLS.KeyFile = keyFile
 	}
-
-	if dsn := os.Getenv("QUBES_AIR_DATABASE_DSN"); dsn != "" {
-		c.Database.DSN = dsn
-	}
-	if lockFile := os.Getenv("QUBES_AIR_LOCK_FILE"); lockFile != "" {
-		c.LockFile = lockFile
-	}
-
-	if origins := os.Getenv("QUBES_AIR_CORS_ORIGINS"); origins != "" {
-		c.CORS.AllowedOrigins = strings.Split(origins, ",")
-	}
-
-	if key := os.Getenv("QUBES_AIR_ENCRYPTION_KEY"); key != "" {
-		c.Security.EncryptionKey = key
-	}
-	if keys := os.Getenv("QUBES_AIR_ENCRYPTION_KEYS"); keys != "" {
-		c.Security.EncryptionKeys = keys
-	}
-	if token := os.Getenv("QUBES_AIR_API_TOKEN"); token != "" {
-		c.Auth.APIToken = token
-	}
-
-	if enabled := os.Getenv("QUBES_AIR_ORCHESTRATOR_ENABLED"); enabled != "" {
-		c.Orchestrator.Enabled = strings.ToLower(enabled) == "true"
-	}
 	if v := os.Getenv("QUBES_AIR_PRODUCTION"); v != "" {
 		c.Server.Production = strings.ToLower(v) == "true"
 	}
+	if origins := os.Getenv("QUBES_AIR_CORS_ORIGINS"); origins != "" {
+		c.CORS.AllowedOrigins = strings.Split(origins, ",")
+	}
+}
+
+// loadServerRequestLimitsEnv reads the request-size and rate ceilings. Each is
+// applied only when it parses to a positive number, so a typo keeps the default
+// instead of disabling the limit.
+func (c *Config) loadServerRequestLimitsEnv() {
 	if v := os.Getenv("QUBES_AIR_MAX_BODY_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			c.Server.MaxBodyBytes = n
@@ -810,6 +812,39 @@ func (c *Config) loadFromEnv() {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.Server.RateLimitBurst = n
 		}
+	}
+}
+
+// loadStorageEnv reads where the console keeps state: the database DSN and the
+// lock file that keeps two consoles off the same database.
+func (c *Config) loadStorageEnv() {
+	if dsn := os.Getenv("QUBES_AIR_DATABASE_DSN"); dsn != "" {
+		c.Database.DSN = dsn
+	}
+	if lockFile := os.Getenv("QUBES_AIR_LOCK_FILE"); lockFile != "" {
+		c.LockFile = lockFile
+	}
+}
+
+// loadSecurityEnv reads the secrets: the encryption keyring and the API token.
+func (c *Config) loadSecurityEnv() {
+	if key := os.Getenv("QUBES_AIR_ENCRYPTION_KEY"); key != "" {
+		c.Security.EncryptionKey = key
+	}
+	if keys := os.Getenv("QUBES_AIR_ENCRYPTION_KEYS"); keys != "" {
+		c.Security.EncryptionKeys = keys
+	}
+	if token := os.Getenv("QUBES_AIR_API_TOKEN"); token != "" {
+		c.Auth.APIToken = token
+	}
+}
+
+// loadOrchestratorEnv reads the orchestrator's own settings: the agent identity
+// it talks to, the Proxmox SSH material, and the mirrors and toggles a
+// provision uses.
+func (c *Config) loadOrchestratorEnv() {
+	if enabled := os.Getenv("QUBES_AIR_ORCHESTRATOR_ENABLED"); enabled != "" {
+		c.Orchestrator.Enabled = strings.ToLower(enabled) == "true"
 	}
 	if v := os.Getenv("QUBES_AIR_AGENT_SNIPPET_DATASTORE"); v != "" {
 		c.Orchestrator.AgentSnippetDatastore = v
@@ -844,6 +879,11 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_APT_SECURITY_MIRROR"); v != "" {
 		c.Orchestrator.AptSecurityMirror = v
 	}
+}
+
+// loadAgentPackageEnv reads the agent artifact a provision installs and the
+// allowlists the agent runs under.
+func (c *Config) loadAgentPackageEnv() {
 	if url := os.Getenv("QUBES_AIR_AGENT_PACKAGE_URL"); url != "" {
 		c.Orchestrator.AgentPackageURL = url
 	}
@@ -864,9 +904,15 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_FILECOPY_ROOTS"); v != "" {
 		c.Orchestrator.AgentFileCopyRoots = splitColon(v)
 	}
-	// Parsed with Atoi and applied only on success, matching the transport
-	// timings below. A typo therefore keeps the default rather than silently
-	// resolving to 0, which for the interval would disable probing outright.
+}
+
+// loadOrchestratorTimingEnv reads the probe cadence and the per-job budget.
+//
+// Parsed with Atoi and applied only on success, matching the transport timings
+// in loadTransportTimingEnv. A typo therefore keeps the default rather than
+// silently resolving to 0, which for the interval would disable probing
+// outright.
+func (c *Config) loadOrchestratorTimingEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_PROBE_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentProbeIntervalSeconds = n
@@ -882,6 +928,16 @@ func (c *Config) loadFromEnv() {
 			c.Orchestrator.AgentProbeSettleSeconds = n
 		}
 	}
+	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.JobTimeoutSeconds = n
+		}
+	}
+}
+
+// loadAgentRenewalEnv reads the certificate renewal and bootstrap cadence. Same
+// Atoi rule as loadOrchestratorTimingEnv: a typo keeps the default.
+func (c *Config) loadAgentRenewalEnv() {
 	if v := os.Getenv("QUBES_AIR_AGENT_CERT_RENEW_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.AgentCertRenewIntervalSeconds = n
@@ -897,12 +953,10 @@ func (c *Config) loadFromEnv() {
 			c.Orchestrator.AgentBootstrapIntervalSeconds = n
 		}
 	}
-	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Orchestrator.JobTimeoutSeconds = n
-		}
-	}
+}
 
+// loadTransportEnv reads the relay identity and the mTLS material paths.
+func (c *Config) loadTransportEnv() {
 	if enabled := os.Getenv("QUBES_AIR_TRANSPORT_ENABLED"); enabled != "" {
 		c.Transport.Enabled = strings.ToLower(enabled) == "true"
 	}
@@ -924,24 +978,14 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_TRANSPORT_KEY_FILE"); v != "" {
 		c.Transport.KeyFile = v
 	}
-	if v := os.Getenv("QUBES_AIR_TRANSPORT_KEEPALIVE_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Transport.KeepAliveSeconds = n
-		}
-	}
-	if v := os.Getenv("QUBES_AIR_TRANSPORT_RECONNECT_MIN_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Transport.ReconnectMinSeconds = n
-		}
-	}
-	if v := os.Getenv("QUBES_AIR_TRANSPORT_RECONNECT_MAX_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			c.Transport.ReconnectMaxSeconds = n
-		}
-	}
 	if v := os.Getenv("QUBES_AIR_TRANSPORT_REVERSE_LOCAL_TARGET"); v != "" {
 		c.Transport.ReverseLocalTarget = v
 	}
+}
+
+// loadTransportVaultEnv reads the vault-issued certificate names, which replace
+// the file paths above when transport.vault_certs is on.
+func (c *Config) loadTransportVaultEnv() {
 	if v := os.Getenv("QUBES_AIR_TRANSPORT_VAULT_CERTS"); v != "" {
 		c.Transport.VaultCerts = strings.ToLower(v) == "true"
 	}
@@ -957,15 +1001,31 @@ func (c *Config) loadFromEnv() {
 	if v := os.Getenv("QUBES_AIR_TRANSPORT_VAULT_CA_NAME"); v != "" {
 		c.Transport.VaultCAName = v
 	}
-
-	c.loadQubeSpecBoundsFromEnv()
 }
 
-// loadQubeSpecBoundsFromEnv reads the qube_spec bounds. One lookup per field,
-// each through intFromEnv, so a typo keeps the configured default rather than
-// resolving to 0 — which for a minimum would drop the lower bound and for a
-// maximum would refuse every request. It is a separate function rather than ten
-// more branches in loadFromEnv, which is already at its complexity limit.
+// loadTransportTimingEnv reads the keepalive interval and the reconnect bounds.
+func (c *Config) loadTransportTimingEnv() {
+	if v := os.Getenv("QUBES_AIR_TRANSPORT_KEEPALIVE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Transport.KeepAliveSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_TRANSPORT_RECONNECT_MIN_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Transport.ReconnectMinSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_TRANSPORT_RECONNECT_MAX_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Transport.ReconnectMaxSeconds = n
+		}
+	}
+}
+
+// loadQubeSpecBoundsFromEnv reads the qube_spec bounds, the last step of
+// loadFromEnv. One lookup per field, each through intFromEnv, so a typo keeps
+// the configured default rather than resolving to 0 — which for a minimum
+// would drop the lower bound and for a maximum would refuse every request.
 func (c *Config) loadQubeSpecBoundsFromEnv() {
 	q := &c.QubeSpec
 	q.MinVCPU = intFromEnv("QUBES_AIR_QUBE_SPEC_MIN_VCPU", q.MinVCPU)
@@ -981,8 +1041,8 @@ func (c *Config) loadQubeSpecBoundsFromEnv() {
 }
 
 // intFromEnv parses one integer environment variable, keeping fallback when it is
-// unset or unparseable. Same rule as the inline Atoi calls in loadFromEnv: a
-// typo leaves the previous value in place instead of silently becoming 0.
+// unset or unparseable. Same rule as the inline Atoi calls in the load*TimingEnv
+// steps: a typo leaves the previous value in place instead of silently becoming 0.
 func intFromEnv(name string, fallback int) int {
 	value := os.Getenv(name)
 	if value == "" {
@@ -996,9 +1056,10 @@ func intFromEnv(name string, fallback int) int {
 }
 
 // Validate checks if the configuration is valid.
-// Same shape as loadFromEnv: one check per field, no interaction between them.
 //
-//nolint:gocyclo // flat per-field sequence; the score tracks field count
+// One named step per area, in the order an operator meets it: how the console
+// listens, who may call it, what it may execute, then the secrets and the
+// outbound transport. Each step reports the first field that is wrong.
 func (c *Config) Validate() error {
 	if c.Server.Port < 1 || c.Server.Port > 65535 {
 		return fmt.Errorf("invalid port: %d", c.Server.Port)
@@ -1007,30 +1068,11 @@ func (c *Config) Validate() error {
 	if err := c.validateAuth(); err != nil {
 		return err
 	}
-	// Checked at startup so a typo fails here rather than as a refused call
-	// inside a guest during a provision. The renderer re-checks before writing
-	// agent.env; this is the earlier, louder gate.
-	if err := qrexec.ValidatePathAllowlist("agent_exec_allow", c.Orchestrator.AgentExecAllow, false); err != nil {
+	if err := validateQrexecAllowlists(c.Orchestrator.AgentExecAllow, c.Orchestrator.AgentFileCopyRoots); err != nil {
 		return err
 	}
-	if err := qrexec.ValidatePathAllowlist("agent_filecopy_roots", c.Orchestrator.AgentFileCopyRoots, true); err != nil {
+	if err := c.validateServerTLS(); err != nil {
 		return err
-	}
-
-	if c.Server.TLS.Enabled {
-		if c.Server.TLS.CertFile == "" {
-			return fmt.Errorf("TLS enabled but cert_file not specified")
-		}
-		if c.Server.TLS.KeyFile == "" {
-			return fmt.Errorf("TLS enabled but key_file not specified")
-		}
-
-		if _, err := os.Stat(c.Server.TLS.CertFile); os.IsNotExist(err) {
-			return fmt.Errorf("TLS cert file not found: %s", c.Server.TLS.CertFile)
-		}
-		if _, err := os.Stat(c.Server.TLS.KeyFile); os.IsNotExist(err) {
-			return fmt.Errorf("TLS key file not found: %s", c.Server.TLS.KeyFile)
-		}
 	}
 
 	// Fail fast on a misconfigured encryption key rather than silently
@@ -1047,20 +1089,8 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// Production must not run with the well-known development key or a wildcard
-	// CORS origin: both are silent downgrades on a networked control plane, and
-	// a warning in a journal is not a control.
-	if c.Server.Production {
-		if c.UsesDevEncryptionKey() {
-			return fmt.Errorf("server.production is true but the well-known development " +
-				"encryption key is in use; set encryption_key/encryption_keys")
-		}
-		for _, o := range c.CORS.AllowedOrigins {
-			if o == "*" {
-				return fmt.Errorf("server.production is true but cors.allowed_origins contains \"*\"; " +
-					"restrict it to the console's own origins")
-			}
-		}
+	if err := c.validateProductionHardening(); err != nil {
+		return err
 	}
 
 	// Real orchestration no longer requires a terraform working directory. The
@@ -1069,41 +1099,108 @@ func (c *Config) Validate() error {
 	// with no terraform installed; a zone with no registered adapter fails
 	// loudly at operation time.
 
-	// A package URL without a digest would have every new qube install, as root,
-	// whatever the unauthenticated artifact store happened to be serving.
-	// Refusing at startup is the loud place to catch it: the renderer's own
-	// fallback is a qube that comes up with no agent, which is only discovered
-	// when something tries to reach it.
+	if err := c.validateAgentArtifacts(); err != nil {
+		return err
+	}
+	if err := c.validateTransport(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateQrexecAllowlists checks both path allowlists at startup so a typo
+// fails here rather than as a refused call inside a guest during a provision.
+// The renderer re-checks before writing agent.env; this is the earlier, louder
+// gate.
+func validateQrexecAllowlists(execAllow, fileCopyRoots []string) error {
+	if err := qrexec.ValidatePathAllowlist("agent_exec_allow", execAllow, false); err != nil {
+		return err
+	}
+	return qrexec.ValidatePathAllowlist("agent_filecopy_roots", fileCopyRoots, true)
+}
+
+// validateServerTLS requires the certificate pair when TLS is on, and checks
+// that both files exist, so a missing file fails at startup instead of on the
+// first connection.
+func (c *Config) validateServerTLS() error {
+	if !c.Server.TLS.Enabled {
+		return nil
+	}
+	if c.Server.TLS.CertFile == "" {
+		return fmt.Errorf("TLS enabled but cert_file not specified")
+	}
+	if c.Server.TLS.KeyFile == "" {
+		return fmt.Errorf("TLS enabled but key_file not specified")
+	}
+	if _, err := os.Stat(c.Server.TLS.CertFile); os.IsNotExist(err) {
+		return fmt.Errorf("TLS cert file not found: %s", c.Server.TLS.CertFile)
+	}
+	if _, err := os.Stat(c.Server.TLS.KeyFile); os.IsNotExist(err) {
+		return fmt.Errorf("TLS key file not found: %s", c.Server.TLS.KeyFile)
+	}
+	return nil
+}
+
+// validateProductionHardening refuses the two silent downgrades a networked
+// control plane must not run with: the well-known development encryption key
+// and a wildcard CORS origin. A warning in a journal is not a control.
+func (c *Config) validateProductionHardening() error {
+	if !c.Server.Production {
+		return nil
+	}
+	if c.UsesDevEncryptionKey() {
+		return fmt.Errorf("server.production is true but the well-known development " +
+			"encryption key is in use; set encryption_key/encryption_keys")
+	}
+	for _, o := range c.CORS.AllowedOrigins {
+		if o == "*" {
+			return fmt.Errorf("server.production is true but cors.allowed_origins contains \"*\"; " +
+				"restrict it to the console's own origins")
+		}
+	}
+	return nil
+}
+
+// validateAgentArtifacts checks the two artifacts a provision downloads: the
+// revocation endpoint the agent polls and the agent package itself.
+//
+// A package URL without a digest would have every new qube install, as root,
+// whatever the unauthenticated artifact store happened to be serving. Refusing
+// at startup is the loud place to catch it: the renderer's own fallback is a
+// qube that comes up with no agent, which is only discovered when something
+// tries to reach it.
+func (c *Config) validateAgentArtifacts() error {
 	if c.Orchestrator.Enabled || c.Orchestrator.AgentRevocationURL != "" {
 		if err := pki.ValidateRevocationURL(c.Orchestrator.AgentRevocationURL); err != nil {
 			return err
 		}
 	}
-	if err := validateAgentPackage(c.Orchestrator.AgentPackageURL, c.Orchestrator.AgentPackageSHA256); err != nil {
-		return err
-	}
+	return validateAgentPackage(c.Orchestrator.AgentPackageURL, c.Orchestrator.AgentPackageSHA256)
+}
 
-	// If the gRPC transport is enabled, the remote endpoint and mTLS material
-	// are mandatory — otherwise the outbound tunnel would fail at runtime.
-	if c.Transport.Enabled {
-		if c.Transport.RemoteEndpoint == "" {
-			return fmt.Errorf("transport.enabled is true but transport.remote_endpoint is not set")
-		}
-		// mTLS material is required, from vault (names) or from files.
-		if c.Transport.VaultCerts {
-			if c.Transport.VaultCertName == "" || c.Transport.VaultKeyName == "" {
-				return fmt.Errorf("transport.vault_certs is true but transport.vault_cert_name/vault_key_name are not set")
-			}
-		} else if c.Transport.CertFile == "" || c.Transport.KeyFile == "" {
-			return fmt.Errorf("transport.enabled is true but transport.cert_file/key_file (mTLS) are not set (or set transport.vault_certs)")
-		}
-		if c.Transport.ReconnectMinSeconds > 0 && c.Transport.ReconnectMaxSeconds > 0 &&
-			c.Transport.ReconnectMinSeconds > c.Transport.ReconnectMaxSeconds {
-			return fmt.Errorf("transport.reconnect_min_seconds (%d) must not exceed reconnect_max_seconds (%d)",
-				c.Transport.ReconnectMinSeconds, c.Transport.ReconnectMaxSeconds)
-		}
+// validateTransport requires the remote endpoint and mTLS material when the
+// gRPC transport is on — otherwise the outbound tunnel would fail at runtime.
+func (c *Config) validateTransport() error {
+	if !c.Transport.Enabled {
+		return nil
 	}
-
+	if c.Transport.RemoteEndpoint == "" {
+		return fmt.Errorf("transport.enabled is true but transport.remote_endpoint is not set")
+	}
+	// mTLS material is required, from vault (names) or from files.
+	if c.Transport.VaultCerts {
+		if c.Transport.VaultCertName == "" || c.Transport.VaultKeyName == "" {
+			return fmt.Errorf("transport.vault_certs is true but transport.vault_cert_name/vault_key_name are not set")
+		}
+	} else if c.Transport.CertFile == "" || c.Transport.KeyFile == "" {
+		return fmt.Errorf("transport.enabled is true but transport.cert_file/key_file (mTLS) are not set (or set transport.vault_certs)")
+	}
+	if c.Transport.ReconnectMinSeconds > 0 && c.Transport.ReconnectMaxSeconds > 0 &&
+		c.Transport.ReconnectMinSeconds > c.Transport.ReconnectMaxSeconds {
+		return fmt.Errorf("transport.reconnect_min_seconds (%d) must not exceed reconnect_max_seconds (%d)",
+			c.Transport.ReconnectMinSeconds, c.Transport.ReconnectMaxSeconds)
+	}
 	return nil
 }
 
