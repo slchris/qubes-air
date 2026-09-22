@@ -91,7 +91,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-B1 | **console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键。从 console 打开 `qubesair.Exec` 后，agent 侧仍因 allowlist 为空而拒绝全部调用 | `internal/service/cloudinit.go:275-276`；`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）；全仓 grep 该两个变量只命中 remote 脚本、文档与测试 | **A-阻塞** | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 |
+| G-B1 | **console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键。从 console 打开 `qubesair.Exec` 后，agent 侧仍因 allowlist 为空而拒绝全部调用 | `internal/service/cloudinit.go:299`；`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）；全仓 grep 该两个变量只命中 remote 脚本、文档与测试 | **A-阻塞** | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 |
 | G-B2 | Exec/FileCopy 无真机正值验收——而这是本项目对用户的核心承诺 | [QA-01 记录](reviews/2026-09-22-qa01-proxmox.md) 第 66-69 行 | **A-阻塞** | 同 G-B1；FileCopy push/pull 往返在真机留证 |
 | G-B3 | suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在） | 同上第 70 行 | **A-阻塞** | 写入文件 → suspend → resume → 读出同一内容，落记录 |
 | G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
@@ -190,7 +190,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
 
-- [ ] **M1-1** console 侧新增 Exec/FileCopy 白名单下发（`QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS` 写入 cloud-init `agent.env`），含配置校验与失败路径测试 —— 依赖：M0（G-B1）
+- [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
 - [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）
 - [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
