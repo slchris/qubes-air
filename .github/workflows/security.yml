@@ -41,7 +41,11 @@ jobs:
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
           # No -no-fail: a finding must fail the job, not just be uploaded.
-          gosec -fmt sarif -out gosec-results.sarif ./...
+          # -exclude-generated: internal/transport/relaypb/*.pb.go is emitted by
+          # protoc-gen-go and not hand-maintained, so its unsafe.Pointer use
+          # (G103) is protoc's output rather than code anyone here edits. Same
+          # flag as `make gosec-ci`, so local and CI scan the same files.
+          gosec -fmt sarif -out gosec-results.sarif -exclude-generated ./...
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@v4

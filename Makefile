@@ -5,7 +5,7 @@
 .PHONY: help build clean dev test agent-deb publish-agent-deb release-agent \
 	pre-commit audit check-tools diff-check test-race lint-new gosec-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
-	frontend-audit-new frontend-audit lint-all gosec-all complexity-all shellcheck-all \
+	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
 	agent-deb-test
 
 # 默认目标
@@ -70,7 +70,7 @@ GOVULNCHECK ?= govulncheck
 pre-commit: check-tools diff-check test-race lint-new gosec-new complexity-new \
 	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
 
-audit: check-tools diff-check test-race lint-all gosec-all complexity-all \
+audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
 	vuln-check frontend-check frontend-audit shellcheck-all docs-check
 
 check-tools:
@@ -144,6 +144,14 @@ lint-all:
 
 gosec-all:
 	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gosec
+
+# CI 跑的独立 gosec(版本与 .github/workflows/security.yml 钉的完全一致, 只有输出格式不同)。
+# 它和上面内嵌在 golangci-lint 里的 gosec 是两个程序, 抑制语法也不一样: 独立版认 `#nosec`,
+# golangci 版认 `//nolint` —— 只跑内嵌版正是本地与 CI 对 gosec 结论分叉的原因, 所以固定版本跑两次。
+# -exclude-generated: internal/transport/relaypb/*.pb.go 由 protoc-gen-go 生成、不手工维护,
+# 其中的 unsafe (G103) 是 protoc 的输出, 两个入口都排除。
+gosec-ci:
+	cd console/backend && go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt text -exclude-generated ./...
 
 complexity-all:
 	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gocyclo,funlen
