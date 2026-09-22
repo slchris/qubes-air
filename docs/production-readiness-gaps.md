@@ -10,12 +10,12 @@
 
 | 档 | 定义 | 当前 | 还差什么 | 粗估 |
 |---|---|---|---|---|
-| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧已闭环，整体仍未达标**：M1 的 15 项里 8 项完成、M1-5 本仓部分完成，§2.H 的 4 条 A-阻塞运行时缺陷全部修复；剩下的 6 项没有一项能在本机做完 | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② 首次 release 与用 release URL 置备（M1-10，需对外发布时机）；③ 外部 `qubes-salt-config` 接线（备份 timer、Exec/FileCopy 白名单 env，见 M0-6 同类）；④ M1-8 需 PVE 访问核对指纹与集群版本 | 不再是 Sprint 数，取决于真机窗口与发布决定 |
+| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧与部署侧都已闭环，整体仍未达标**：M1 的 15 项里 8 项完成，M1-1（白名单下发）与 M1-5（备份调度）的外部仓接线已随 `qubes-salt-config` `v0.1.0` 落地（2026-09-22，PR #1），§2.H 的 4 条 A-阻塞运行时缺陷全部修复；剩下的项**没有一项能在本机做完** | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② M1-5 的真机触发与"最新归档可恢复"核对；③ 首次 release 与用 release URL 置备（M1-10，需对外发布时机；并带出 G-G5：`qubes-air-backup` 目前没有产物）；④ M1-8 需 PVE 访问核对指纹与集群版本 | 不再是 Sprint 数，取决于真机窗口与发布决定 |
 | **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未开始** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
 
 一句话判断（M1 执行后更新）：**代码侧不再是距离，剩下的是"真机证据 + 发布 + 外部仓接线"**——
 §2.H 那 3 处会在正常路径上直接打断生产的缺陷（job 超时短于真机 provision、purge 的不可逆步骤先于入队、健康检查实际不检查数据库）已全部修复并有变异红证据；
-核心功能（Exec/FileCopy）的下发通道此前**根本不存在**（控制台侧开开关对 guest 无效，见 G-B1），现已补齐——但它仍然一次都没有在真机上端到端跑通过，
+核心功能（Exec/FileCopy）的下发通道此前**根本不存在**（控制台侧开开关对 guest 无效，见 G-B1），现已补齐**两侧**：console 侧写 `agent.env`，部署侧由 `qubes-salt-config` `v0.1.0` 写 `console.env`——但它仍然一次都没有在真机上端到端跑通过，
 所以"能用"这句话现在缺的是证据，不是代码。逐项证据见 §0.3。
 
 三个里程碑（详见 §3）：
@@ -102,8 +102,9 @@ M0 的产出不是"CI 绿了"，而是**第一次把积压的 24 个 commit 交�
 4. **三项登记而非抹平的东西**：G-H11（bootstrap 无可 pin 身份，对 `AGENTS.md` §5 的显式豁免）、G-D7（snippet share 把一次性 token 落到 0644，
    转为 M1-7 的部署硬要求）、G-F10（两处 G402 校验缺负例测试）。
 
-M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 lifecycle 冒烟）与 **M0-6**（`qubes-salt-config` 的 QA-01 改动提交并打 tag）
-都需要 dom0/Qubes 入口，本机没有。
+M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/Qubes 入口，本机没有。
+**M0-6** 已于 2026-09-22 完成——`qubes-salt-config` 的 QA-01 改动提交为 `6f6d0dc`，与其上的接线改动 `9866baa` 一起经 PR #1 合并（`db1b68d`）并打 tag `v0.1.0`；
+但它带出的真机动作（apply 一次、确认 timer 触发）转入 M1-5 验收，本机同样做不了。
 
 ### 2.A 交付链（最先做，且是其余一切的前置）
 
@@ -118,7 +119,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-B1 | **console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键。从 console 打开 `qubesair.Exec` 后，agent 侧仍因 allowlist 为空而拒绝全部调用 | `internal/service/cloudinit.go:299`；`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）；全仓 grep 该两个变量只命中 remote 脚本、文档与测试 | **A-阻塞** | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 |
+| G-B1 | ~~**console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键，从 console 打开 `qubesair.Exec` 后 agent 侧仍因 allowlist 为空而拒绝全部调用~~ **两侧都已到位（2026-09-22）**：console 侧 [PR #15](https://github.com/slchris/qubes-air/pull/15) `735f8f1` 把两个键写进 cloud-init `agent.env`（空则整键省略）；部署侧 `qubes-salt-config` `v0.1.0`（`db1b68d`，PR #1）把 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS` 写进 `console.env`（**冒号**分隔，与 guest 侧 `split(":")` 一致；空值=guest 内禁用）。**剩下的是真机记录，不是代码** | 原缺口证据：`internal/service/cloudinit.go:299`、`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）。修复后的下发链（逐段核对）：`console.env` → 启动配置校验 `config.go:237`/`:243`（空值被 `if v := os.Getenv(...); v != ""` 守卫视为未设置，因此空值是"禁用"而不是"校验失败"）→ cloud-init `agent.env` → agent 侧二次校验 | A-需要（原 **A-阻塞** 已解除） | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 —— 这一半见 G-B2 |
 | G-B2 | Exec/FileCopy 无真机正值验收——而这是本项目对用户的核心承诺 | [QA-01 记录](reviews/2026-09-22-qa01-proxmox.md) 第 66-69 行 | **A-阻塞** | 同 G-B1；FileCopy push/pull 往返在真机留证 |
 | G-B3 | suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在） | 同上第 70 行 | **A-阻塞** | 写入文件 → suspend → resume → 读出同一内容，落记录 |
 | G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
@@ -130,7 +131,7 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
 | G-C1 | OPS-01 剩余：离机归档、真实 keyring、provider 资源对账、agent 信任校验、生产数据量 RTO 全部未做 | [ops01 预演](reviews/2026-09-21-ops01-restore.md) 第 52-58 行；[TODO](TODO.md) 第 46-49 行 | **A-阻塞** | 归档经网络/介质到第二台机器，用真实 keyring 恢复，实测 RTO 与人工步骤 |
-| G-C2 | 备份调度未在真机生效：保留策略已实现（`prune` 子命令）并写成运维步骤，但 unit/timer 文本按架构约定要加到外部 `qubes-salt-config`——本仓库不复制第二套部署入口，所以"有明确触发方式"目前只在文档层面成立 | 实现：`internal/backup/retention.go:74`（`Prune`）、`cmd/qubes-air-backup/main.go:136`（`runPrune`）、`:162`（`-out-dir` 生成归档名，供无 shell 的 `ExecStart` 使用）；单元与留存建议：`disaster-recovery.md`:53；仍无 timer/cron 接线（`grep -rn backup internal/scheduler/*.go cmd/server/main.go` 无命中） | **A-阻塞** | 验收条件不变：备份有明确触发方式与保留策略，且被文档化为运维步骤。剩余动作是把该 unit/timer 加进 `qubes-salt-config` 并在真机确认一次触发（与 M0-6 同类的外部仓动作） |
+| G-C2 | 备份调度**仍未在真机触发过**，但"没有触发方式"这半边已经解决：保留策略在本仓（`prune` 子命令），unit/timer 按架构约定在外部 `qubes-salt-config` 落地（`v0.1.0` `salt/qubesair/backup.sls` + `backup.top`）。该 state 默认**关闭**（`cfg.qubesair.backup.enabled: False`）：它要先有已挂载的离机介质、按摘要钉住的二进制、操作者自己创建的口令文件，三者缺一就会以失败结束 run，而不是渲染一个"什么都没备份"的绿色 timer | 实现：`internal/backup/retention.go:74`（`Prune`）、`cmd/qubes-air-backup/main.go:136`（`runPrune`）、`:162`（`-out-dir` 生成归档名，供无 shell 的 `ExecStart` 使用）；unit/timer：`qubes-salt-config` `salt/qubesair/backup.sls`（`RequiresMountsFor` 离机目录、`ExecStart` 两段 create→prune、`Persistent=true` + rc.local 每次启动补跑一次）；仍未在真机 `systemctl start` 过（本机无 Salt，只做了 Jinja 渲染与 lint） | A-需要（原 **A-阻塞** 已解除；真机触发是剩下的验收） | 验收条件不变：备份有明确触发方式与保留策略，且被文档化为运维步骤。剩余动作是在真机 apply 一次、确认 timer 与归档落盘，并核对最新归档可恢复（与 G-C1 合并做）。**注意它依赖 G-G5**：`qubes-air-backup` 目前没有任何发布产物，二进制得手工交叉编译并按摘要钉进 salt 树 |
 | G-C3 | 无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过 | `internal/database/database.go:232`（`SchemaVersion`）、`:290-305`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | **A-阻塞** | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
 | G-C4 | 产物分发仍依赖局域网 artifact store（`10.31.0.2`），离开该网段无法 bootstrap——这正是 [release.yml](../.github/workflows/release.yml) 存在的理由，但该 workflow 从未跑过 | `release.yml` 第 1-20 行自述；`docs/bootstrap-design.md`:66-72；G-A4 | A-需要（B-阻塞） | 用 release 制品（URL + SHA256）完成一次 provision，不依赖 LAN 地址 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 132 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
@@ -182,7 +183,8 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 | G-G1 | 无 `LICENSE`（PUB-01）；无 `SECURITY.md`、无 `CHANGELOG`、无漏洞报告入口 | `git ls-files` 匹配根级治理文件为空 | B-阻塞 | 决定开源则补许可证与安全报告入口 |
 | G-G2 | 无版本兼容矩阵文档：proto 已区分 `protocol_version`（线协议）与 `build_version`（可观测），但没有成文的 console↔agent 兼容策略 | `console/backend/proto/relay_transport.proto`:60-69 | B-阻塞 | 兼容矩阵 + 升级顺序成文（与 G-C3 合并做） |
 | G-G3 | 发布说明必须引用同版本构建、完整 `make audit` 与真机结果——流程未成文 | [TODO](TODO.md) 第 83-84 行 | B-阻塞 | 发布检查单 + 一次演练 |
-| G-G4 | Qubes 侧（外部仓库 `qubes-salt-config`）在 QA-01 期间的改动**未提交**：known_hosts 固定、`mgmt.remotevm.register` state、console listen/cors/revocation/allowed_services 配置 | QA-01 记录第 59-64、77 行 | **A-阻塞** | 该仓库改动提交并打版本；否则部署不可复现 |
+| G-G4 | ~~Qubes 侧（外部仓库 `qubes-salt-config`）在 QA-01 期间的改动**未提交**~~ **已提交并打 tag**（2026-09-22）：`6f6d0dc`（清掉 terraform 时代）+ `9866baa`（Exec/FileCopy 白名单 env + `qubesair.backup`），经 [PR #1](https://github.com/slchris/qubes-salt-config/pull/1) 以 `--merge` 合并为 `db1b68d`，打 tag `v0.1.0` | 原缺口证据是工作树里 10 个未提交文件，**本次直接核对**：`salt/config.jinja`、`salt/mgmt/remotevm/register.sls` + `files/qubesair.RegisterRemoteVM`、`salt/qubesair/{clone,configure,console,create,install}.sls`、`salt/qubesair/README.md`、`salt/qubesair/files/README.md`（+136/−687）。⚠️ 本条此前引用的"QA-01 记录第 59-64、77 行"是**错的**：那些行是无关的门禁表格行，已改回工作树直证 | B-需要（原 **A-阻塞** 已解除） | 已满足。可复现锚点：`git -C qubes-salt-config checkout v0.1.0`（= `db1b68d`） |
+| G-G5 | **`qubes-air-backup` 没有任何发布产物**：`release.yml` 只产出 `qubes-air-console`、console web tarball、agent deb 与 `SHA256SUMS`，Makefile 也没有构建它的 target。于是 M1-5 的 unit 里那个 `ExecStart` 指向一个**只能手工交叉编译**的二进制——而它正是灾难恢复时唯一能读出归档的程序 | `release.yml:11-14`（产物自述）、`:107`（只 build `./cmd/server`）、`:127-128`（SHA256SUMS 列表）；`grep -rn "cmd/qubes-air-backup" --include=*.yml --include=Makefile --include='Dockerfile*'` 无命中 | B-阻塞（对 M1-5 的真机验收是硬依赖） | `release.yml` 增补该产物并进 `SHA256SUMS`；`docs/upgrade-rollback.md` 的产物表同步。**依赖 M2-10 先合并**（同一文件，且需要同样的版本戳） |
 
 ### 2.H 运行时行为（一次独立补盲审计的发现，已逐条回读代码验证）
 
@@ -214,15 +216,15 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 - [x] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 已完成：`5f0fd88`（merge commit，保留 QA 记录的 revision），`main` 上 `make audit` rc=0（G-A2）
 - [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
 - [ ] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 依赖：M0-3（G-B6）
-- [ ] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 依赖：无（G-G4）
+- [x] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 2026-09-22 完成：`6f6d0dc`（清 terraform 时代）+ `9866baa`（白名单 env + 备份 state），PR [#1](https://github.com/slchris/qubes-salt-config/pull/1) `--merge` → `db1b68d`，tag `v0.1.0`；该仓 CI（yamllint / salt-lint / top-pairing）三项 pass —— 依赖：无（G-G4）
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
 
-- [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
+- [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败；**部署侧也已到位**（2026-09-22）：`qubes-salt-config` `v0.1.0` 把两个键写进 `console.env`（冒号分隔，空=未设置=guest 内禁用），此前该 state 从不写这两个键，于是控制台无论怎么配都会下发空白名单 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
 - [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— 依赖：M1-1（G-B2）
 - [ ] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 依赖：M1-2（G-B3）
 - [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）
-- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**剩余**：把 unit/timer 加进外部 `qubes-salt-config` 并在真机确认一次触发（与 M0-6 同类的外部仓动作）—— 依赖：无（G-C2）
+- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**外部仓已完成**：`qubes-salt-config` `v0.1.0` 的 `salt/qubesair/backup.sls`+`backup.top`（`RequiresMountsFor` 离机目录、create→prune 两段 `ExecStart`、`Persistent=true` + rc.local 每次启动补跑一次，因为 timer 的补跑戳存在根卷上、随 AppVM 关机丢失；默认关闭，需操作者挂载介质/钉二进制摘要/自建口令文件）；**剩余**：真机 apply 一次并确认 timer 触发与"最新归档可恢复"，且需先解决 G-G5（`qubes-air-backup` 无发布产物）—— 依赖：无（G-C2）
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出三个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— 依赖：无（G-B5）
@@ -286,6 +288,14 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
   建议先按 M1-11 复现再修，不要把"应该会超时"当成已证实的故障。
 - **G-B2/G-B3 的工作量**取决于 M1-1 的下发设计（配置放在 Zone 还是 Qube 层），尚未定；本文按"先在 Zone 层给默认值 + Qube 层可覆盖"估算为 M 级。
 - 本文的 Sprint 数估算（A 档 2 个、B 档再 3+）是**排序用的粗估**，不是承诺；实际取决于真机环境可用性与 M0 暴露的 CI 问题数量。
+- **外部仓（`qubes-salt-config`）的改动一次都没真正 apply 过**：本机没有 Salt（它只在 dom0 跑），所以
+  `qubesair.backup` 与两个白名单 env 键的结论只来自两处：①该仓自身 CI 的三项检查（yamllint / salt-lint / top-pairing，全 pass，
+  且在本地用变异证明 linter 确实在读文件）；②Jinja 渲染出的**实际文本**（两个 unit 内容、rc.local 的两种 `run_at_boot` 取值、
+  `console.env` 空白与冒号连接两种取值）。**未验证**：systemd 是否接受这些 unit 文本、`RequiresMountsFor` 在离机介质缺失时
+  是否真的让 unit 失败、`Persistent=true` 的补跑戳是否真的随 AppVM 根卷重置而失效——最后这条是 systemd 语义 + Qubes 根卷
+  行为的**推理**，而它正是"每次启动补跑一次"这个设计的依据，真机上应当反向验证：把 `run_at_boot` 置 False、关机跨过计划时间
+  再开机，确认没有补跑。另外 salt-lint 与 yamllint **都不解析 Jinja**：本会话其中一个真实错误（`#` 注释写在 `{% set cfg %}`
+  块里，会让模板直接加载失败）就是渲染查出来的，两个 linter 当时全绿。
 - **三处只会出现在本地全盘扫描里的 gitleaks 假阳性**（`--no-git` 扫描整个工作树时命中，PR 范围的 commit 扫描不会命中，
   所以不挡 CI）：`internal/keyring/keyring_test.go`:12、`internal/repository/credential_repository_test.go`:15 是占位 key 字面量；
   `internal/pki/ca_test.go`:72 命中的是 PEM 头字面量 `-----BEGIN EC PRIVATE KEY-----`，而那段测试恰恰在断言 CA 私钥**不得**
@@ -312,6 +322,9 @@ M0 **没能**闭合的两项是环境阻塞，不是判断：**M0-5**（真机 l
 
 **跑全量门禁前先清缓存**（`golangci-lint cache clean`）：本地缓存在多个 git worktree 之间共享，
 脏缓存里的陈旧绝对路径会让 generated-file 过滤器整体失效——既报幻影 finding，也吞真实 finding（§0.3 末尾）。
+**识别特征**：findings 全部落在 `internal/transport/relaypb/*.pb.go`（errcheck 指向 `relay_transport_grpc.pb.go` 的 stream 调用、
+goimports 指向两个 `.pb.go`、偶尔 gochecknoinits）——生成文件本不该被这三个 linter 检查，看到这个组合就是脏缓存，不是代码问题。
+本会话撞了两次；清缓存后同一命令 `0 issues`。
 增量门禁（`make pre-commit`）看不到既有函数的复杂度越界，里程碑合并以 CI 的全量 lint 为准。
 
 ```bash
@@ -353,4 +366,43 @@ sed -n '33,42p' "$(go env GOMODCACHE)/github.com/gin-gonic/gin@v1.9.1/gin.go"
 # §2.H：过时分支的真实 SHA 与 tree
 git rev-parse --short origin/main feat/mcp-server fix/security-audit
 git rev-parse 'origin/main^{tree}' 'feat/mcp-server^{tree}'   # 同值 → 内容相同、commit 不同
+```
+
+### 外部仓（`qubes-salt-config`）的结论怎么复现
+
+```bash
+cd ../qubes-salt-config   # 或任意 clone
+
+# M0-6：那条 tag 指向什么、含哪些提交
+git fetch --tags && git log --oneline -3 v0.1.0
+git tag -l                       # v0.1.0
+git show --stat v0.1.0 | head -20
+
+# G-G4 的原证据就是工作树里的 10 个文件（本条此前引用的 QA-01 行号是错的）
+git show --stat 6f6d0dc | tail -12
+
+# 白名单：state 真的把两个键写进 console.env（此前一次都没写过）
+grep -n "QUBES_AIR_EXEC_ALLOW\|QUBES_AIR_FILECOPY_ROOTS" salt/qubesair/console.sls
+
+# 备份 state 的四个关键决定各有一处可查
+grep -n "RequiresMountsFor\|replace: False\|Persistent=true\|run_at_boot" salt/qubesair/backup.sls
+grep -n "systemctl start qubes-air-backup" salt/qubesair/backup.sls   # timer + 每次启动补跑一次
+
+# 本机没有 Salt：能跑的门禁只有这三个，CI 也跑同样的三个
+uvx yamllint -c .yamllint salt/top.sls .yamllint .salt-lint .github/workflows/lint.yml
+find salt \( -name '*.sls' -o -name '*.top' \) -print0 | xargs -0 -n 40 uvx salt-lint
+python3 scripts/check_top_pairing.py
+
+# 两个 linter 都不解析 Jinja —— 唯一能证明模板还能展开的办法是渲染它
+# （`#` 注释写在 {% set cfg = ... %} 块里会以 "unexpected char '#'" 直接死掉，
+#   而 yamllint/salt-lint 对那样的文件全绿）
+uvx --with jinja2 python3 - <<'PY'
+import jinja2, pathlib
+m = jinja2.Environment().from_string(pathlib.Path('salt/config.jinja').read_text()).make_module({})
+print('keys:', len(m.cfg['qubesair']), '| backup.enabled:', m.cfg['qubesair']['backup']['enabled'])
+PY
+
+# G-G5：release.yml 不发 qubes-air-backup（回到本仓）
+cd - >/dev/null
+grep -rn "cmd/qubes-air-backup" --include='*.yml' --include=Makefile --include='Dockerfile*' . || echo "无命中 → 该二进制只能手工编译"
 ```
