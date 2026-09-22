@@ -194,7 +194,9 @@ func (s purgeFailingInfra) Save(context.Context, *provider.Infra) error {
 
 type purgeFailingQueue struct{}
 
-func (purgeFailingQueue) Submit(context.Context, string, string, orchestrator.Action) (*orchestrator.Job, error) {
+func (purgeFailingQueue) Submit(
+	context.Context, string, string, orchestrator.Action, ...orchestrator.Step,
+) (*orchestrator.Job, error) {
 	return nil, orchestrator.ErrQueueFull
 }
 

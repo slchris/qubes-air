@@ -68,6 +68,36 @@ type JobStore interface {
 	ListByQube(ctx context.Context, qubeID string, limit int) ([]*Job, error)
 }
 
+// Step is work the worker performs INSIDE a job: after the job row is durable
+// and before the action reaches the provider, in the same single-threaded slot
+// as that action.
+//
+// It exists for preparation that cannot be undone — lifting a data disk's
+// protection, revoking an identity, deleting a key. Such preparation must not
+// run ahead of the record that it happened, or a job the queue refuses (full
+// queue, shutdown, a failed insert) leaves its irreversible effects behind with
+// nothing pointing at them. Nor may it be separated from the action by a queue
+// slot, since another job could then run in between. Both hold here by
+// construction: Submit inserts the row before the queue send, and steps run on
+// the worker that runs the action.
+//
+// A step that fails stops the job: the provider action does not run and the job
+// is persisted as failed with the step's error. The runner therefore cannot know
+// what a step did before it failed — a step that can be partially executed must
+// say so itself, in the error it returns.
+//
+// Steps live only as long as the queue entry: they are closures, not part of
+// Job, and are not serialized. Queued jobs do not survive a restart either (see
+// ReconcileUnfinishedJobs), so nothing is lost that was ever replayable.
+type Step func(ctx context.Context) error
+
+// queuedJob is one queue slot: the recorded job plus the steps that must run
+// before its action.
+type queuedJob struct {
+	job   *Job
+	steps []Step
+}
+
 // Completion runs on the worker goroutine once a job terminates, so a qube's
 // stored status can follow the real outcome rather than the intent.
 //
@@ -98,7 +128,7 @@ type Runner struct {
 	// visibility into a running operation but never blocks one.
 	logs *JobLogStore
 
-	queue chan *Job
+	queue chan *queuedJob
 
 	// beatNs is when the dispatcher last reported for duty, in Unix
 	// nanoseconds; zero means it never has. See health.go for the staleness
@@ -170,7 +200,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		onDone:  cfg.OnDone,
 		timeout: cfg.Timeout,
 		logs:    cfg.Logs,
-		queue:   make(chan *Job, cfg.QueueSize),
+		queue:   make(chan *queuedJob, cfg.QueueSize),
 		base:    base,
 		cancel:  cancel,
 	}
@@ -192,7 +222,13 @@ func (r *Runner) Start() {
 // ctx bounds only the enqueue, not the work: the job runs under the Runner's
 // own lifetime context. That separation is the point — the caller's request
 // ends in milliseconds while an operation runs for minutes.
-func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Action) (*Job, error) {
+//
+// steps are the job's own preparation (see Step). They are handed over with the
+// job, never run here: an enqueue that fails — full queue, shutdown, an
+// unwritable store — must leave the caller free of irreversible effects.
+func (r *Runner) Submit(
+	ctx context.Context, qubeID, qubeName string, action Action, steps ...Step,
+) (*Job, error) {
 	// Check shutdown before recording anything, and serialize it with enqueue.
 	r.closeMu.RLock()
 	defer r.closeMu.RUnlock()
@@ -217,7 +253,7 @@ func (r *Runner) Submit(ctx context.Context, qubeID, qubeName string, action Act
 	}
 
 	select {
-	case r.queue <- job:
+	case r.queue <- &queuedJob{job: job, steps: steps}:
 		return job, nil
 	default:
 		// Fail fast rather than block the HTTP handler behind a full queue.
@@ -250,11 +286,11 @@ func (r *Runner) loop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case job, ok := <-r.queue:
+		case entry, ok := <-r.queue:
 			if !ok {
 				return
 			}
-			r.runJob(job)
+			r.runJob(entry)
 			r.beat(time.Now())
 		case <-ticker.C:
 			r.beat(time.Now())
@@ -265,14 +301,20 @@ func (r *Runner) loop() {
 // runJob executes one job and keeps the queue state /health reports in step with
 // it: while this runs the worker cannot poll, which is why the health budget
 // allows for a job in flight.
-func (r *Runner) runJob(job *Job) {
+func (r *Runner) runJob(entry *queuedJob) {
 	r.running.Add(1)
 	defer r.running.Add(-1)
-	r.run(job)
+	r.run(entry)
 }
 
 // run executes one job and records its outcome.
-func (r *Runner) run(job *Job) {
+//
+// The job's steps come first, and only then the action. This order is the whole
+// reason Step exists: the row is already durable (Insert in Submit, and the
+// state written just above), so anything a step destroys has a recorded job
+// pointing at it, and the action cannot run without it.
+func (r *Runner) run(entry *queuedJob) {
+	job := entry.job
 	started := time.Now().UTC()
 	job.State = JobRunning
 	job.StartedAt = &started
@@ -298,6 +340,11 @@ func (r *Runner) run(job *Job) {
 		}
 	}
 
+	if err := runSteps(ctx, entry.steps); err != nil {
+		r.finish(job, started, err)
+		return
+	}
+
 	var err error
 	switch job.Action {
 	case ActionProvision:
@@ -316,6 +363,22 @@ func (r *Runner) run(job *Job) {
 		err = ctx.Err()
 	}
 	r.finish(job, started, err)
+}
+
+// runSteps performs a job's steps in order and stops at the first failure.
+//
+// A nil step is skipped rather than called: Step is exported, and calling a nil
+// func would panic the single worker goroutine, taking every queued job with it.
+func runSteps(ctx context.Context, steps []Step) error {
+	for _, step := range steps {
+		if step == nil {
+			continue
+		}
+		if err := step(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // finish includes cleanup in the job outcome before persisting a terminal state.

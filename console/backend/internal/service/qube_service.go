@@ -190,8 +190,15 @@ type RenewalWatch interface {
 
 // JobSubmitter queues an infrastructure operation and returns the job that will
 // carry it out. Implemented by orchestrator.Runner.
+//
+// steps are the job's own preparation (orchestrator.Step): they run on the
+// worker after the job is recorded and before the operation reaches the
+// provider. None of them runs when this returns an error, which is what makes
+// them the only safe place for the irreversible half of a purge.
 type JobSubmitter interface {
-	Submit(ctx context.Context, qubeID, qubeName string, action orchestrator.Action) (*orchestrator.Job, error)
+	Submit(
+		ctx context.Context, qubeID, qubeName string, action orchestrator.Action, steps ...orchestrator.Step,
+	) (*orchestrator.Job, error)
 }
 
 // Operation is what a mutating qube endpoint returns: the qube as it stands now
@@ -358,7 +365,7 @@ func (s *QubeServiceImpl) Create(ctx context.Context, req *models.QubeCreateRequ
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{models.QubeStatusPending},
 		models.QubeStatusCreating, orchestrator.ActionProvision, models.QubeStatusError,
-		func(ctx context.Context) error { return s.prepareProvision(ctx, qube) })
+		claimPreparation{beforeQueue: func(ctx context.Context) error { return s.prepareProvision(ctx, qube) }})
 }
 
 // validateQubeCreateRequest validates qube creation request.
@@ -560,7 +567,7 @@ func (s *QubeServiceImpl) Delete(ctx context.Context, id string) error {
 			models.QubeStatusSuspended, models.QubeStatusPending,
 			models.QubeStatusError,
 		},
-		models.QubeStatusDeleting, orchestrator.ActionRelease, qube.Status, nil)
+		models.QubeStatusDeleting, orchestrator.ActionRelease, qube.Status, claimPreparation{})
 	return err
 }
 
@@ -593,27 +600,94 @@ func (s *QubeServiceImpl) Purge(ctx context.Context, id, confirmName string) err
 			models.QubeStatusStopped, models.QubeStatusError,
 		},
 		models.QubeStatusDeleting, orchestrator.ActionDestroy, qube.Status,
-		func(ctx context.Context) error {
-			// Lift the disk's protection first, then revoke the identity. Both
-			// are irreversible; the job log and status report which step failed.
-			if err := s.clearDataProtection(ctx, qube.ID); err != nil {
-				return err
-			}
-			if s.issuer != nil {
-				if err := s.issuer.RevokeFor(ctx, qube.ID, "purge"); err != nil {
-					return err
-				}
-			}
-			// Delete the current key. Historical key backups require their own
-			// retention policy; this does not erase every recoverable copy.
-			if s.dataKeys != nil {
-				if err := s.dataKeys.DeleteDataKey(ctx, qube.ID); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
+		claimPreparation{inJob: s.purgePreparation(qube)})
 	return err
+}
+
+// purgePreparation is the destroy job's first step: the irreversible work that
+// has to happen before the executor may touch the disk.
+//
+// It runs INSIDE the job (see claimPreparation.inJob) rather than ahead of the
+// enqueue. That ordering is the point. The disk's protection latch is lifted and
+// the per-qube key is deleted, and neither can be undone, so if the work were
+// done first and the queue then refused the job (full queue, shutdown
+// mid-request, an unwritable job store), the console would have crypto-shredded
+// a disk it has no job, no row and no record of, and the operator would have
+// nothing to trace. The job row exists before this runs, so the reverse failure
+// — preparation dies half-way — leaves a failed job carrying the account of it.
+//
+// The agent identity is NOT in that category, and the account has to stay honest
+// about it: `purge_withdraw_identity` (internal/database/lifecycle.go) revokes
+// the certificates and invalidates the unredeemed bootstrap tokens in the SAME
+// transaction that records the purge intent, which is what closes the
+// bootstrap/renewal race that started before the claim. So by the time this step
+// runs the identity is already withdrawn — even for a job that is never
+// accepted. RevokeFor is repeated here as defense in depth (and is idempotent:
+// RevokeByQube only matches rows WHERE revoked_at IS NULL, and the trigger
+// blocks any new issuance), but what the step list reports is the STATE of each
+// irreversible effect, not which actor caused it.
+//
+// Every step is idempotent, which is what makes a retry after a partial failure
+// safe rather than merely possible:
+//
+//   - lifting protection re-saves Protected=false (the executor only reads it);
+//   - RevokeByQube rewrites rows WHERE revoked_at IS NULL, so a second pass
+//     matches nothing and reports 0 — no "already revoked" error;
+//   - DeleteDataKey documents itself as idempotent, precisely so purge can be
+//     retried.
+//
+// A retry therefore re-runs the same steps; the already-done ones are no-ops and
+// the remaining one finishes the job. Nothing treats an already cleared
+// protection as still cleared-for-me: the step's effect is a fact in
+// `qube_infra` / `agent_certs` / the credential store, not an in-memory flag.
+func (s *QubeServiceImpl) purgePreparation(qube *models.Qube) orchestrator.Step {
+	steps := []struct {
+		done string
+		run  func(context.Context) error
+	}{
+		{"lifted the data disk's protection", func(ctx context.Context) error {
+			return s.clearDataProtection(ctx, qube.ID)
+		}},
+		{"revoked the agent identity", func(ctx context.Context) error {
+			if s.issuer == nil {
+				return nil
+			}
+			return s.issuer.RevokeFor(ctx, qube.ID, "purge")
+		}},
+		{"deleted the per-qube data key", func(ctx context.Context) error {
+			// Historical key backups require their own retention policy; this
+			// does not erase every recoverable copy.
+			if s.dataKeys == nil {
+				return nil
+			}
+			return s.dataKeys.DeleteDataKey(ctx, qube.ID)
+		}},
+	}
+
+	return func(ctx context.Context) error {
+		var done []string
+		for _, step := range steps {
+			if err := step.run(ctx); err != nil {
+				// The account of partial execution is part of the error, not a
+				// separate log line: this text is what lands in the job row the
+				// operator reads, and "purge failed" alone would not say whether
+				// the data is still recoverable.
+				return fmt.Errorf("purge %q: %s: %w (%s; the data disk was not destroyed)",
+					qube.Name, step.done, err, purgeProgressNote(done))
+			}
+			done = append(done, step.done)
+		}
+		return nil
+	}
+}
+
+// purgeProgressNote says what a purge preparation had already destroyed when it
+// failed. Empty is not the same statement as "some of it", so it is spelled out.
+func purgeProgressNote(done []string) string {
+	if len(done) == 0 {
+		return "nothing irreversible had been done yet"
+	}
+	return "already done and not undone: " + strings.Join(done, ", ")
 }
 
 // clearDataProtection clears the `protected` flag the executor's Destroy checks.
@@ -636,13 +710,71 @@ func (s *QubeServiceImpl) clearDataProtection(ctx context.Context, qubeID string
 	return nil
 }
 
-// Start starts (resumes) a qube.
+// claimPreparation is what a claim has to do besides queueing the work.
 //
-// Order matters: preconditions are checked first, then the orchestrator rebuilds
-// the compute instance (provider resume), and only if that SUCCEEDS is the DB
-// status flipped to running. If orchestration fails the DB status is left
-// untouched and an error is returned — we never report "running" for a qube the
-// infrastructure did not actually bring up.
+// Two hooks instead of two more parameters because both have the same shape
+// (func(context.Context) error): swapped positionally, the call would still
+// compile while meaning the opposite — one runs before the job exists, the other
+// only after it does.
+type claimPreparation struct {
+	// beforeQueue runs after the claim and before anything is enqueued. It is
+	// for preparation that stays recoverable if the enqueue then fails: minting
+	// an agent identity, say, is simply redone by the next attempt, so running
+	// it early costs at most a wasted certificate.
+	//
+	// It must NOT hold work that cannot be undone; anything enqueued afterwards
+	// can still be refused.
+	beforeQueue func(context.Context) error
+
+	// inJob runs on the orchestration worker, after the job is durably recorded
+	// and before the action reaches the provider — the job's own first step. It
+	// is where irreversible work belongs: a refused enqueue means it never ran.
+	inJob orchestrator.Step
+}
+
+// claimInline runs an action with no queue in the picture and settles the qube's
+// status here. It keeps the console usable (and tests synchronous) without an
+// orchestration queue.
+//
+// It also carries the job's preparation: with no job to hold a step, the step
+// runs here, immediately before the action it prepares, so there is no window in
+// between for a queue to refuse the work the step has already made irreversible.
+func (s *QubeServiceImpl) claimInline(
+	ctx context.Context,
+	qube *models.Qube,
+	action orchestrator.Action,
+	prep claimPreparation,
+	revertTo models.QubeStatus,
+) (*Operation, error) {
+	if prep.inJob != nil {
+		if err := prep.inJob(ctx); err != nil {
+			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, revertTo))
+		}
+	}
+	if err := s.runInline(ctx, qube, action); err != nil {
+		return nil, errors.Join(fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err),
+			s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
+	}
+
+	// Mirror the async completion hook: a destroyed compute VM's IP is stale,
+	// and a resume draws a fresh DHCP lease, so clear it and let the address
+	// reader re-learn the real one. Without this a resumed qube is dialed at a
+	// dead address forever. See makeCompletionHook in cmd/server.
+	if ComputeDestroyingAction(action) {
+		if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
+		return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
+	}
+	updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &Operation{Qube: updated}, nil
+}
+
 // claimAndEnqueue moves the qube into a transient status and queues the work.
 //
 // The claim comes first and is atomic: it both validates that the operation
@@ -656,7 +788,7 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	to models.QubeStatus,
 	action orchestrator.Action,
 	revertTo models.QubeStatus,
-	prepare func(context.Context) error,
+	prep claimPreparation,
 ) (*Operation, error) {
 	var claimErr error
 	if action == orchestrator.ActionDestroy {
@@ -679,44 +811,32 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 	// A failure here releases the claim, for the same reason a failed enqueue
 	// does: nothing is running, so leaving the qube pinned in a transient status
 	// would make it permanently "busy".
-	if prepare != nil {
-		if err := prepare(ctx); err != nil {
+	if prep.beforeQueue != nil {
+		if err := prep.beforeQueue(ctx); err != nil {
 			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, revertTo))
 		}
 	}
 
-	// No submitter configured: run inline and settle the status here. This keeps
-	// the console usable (and tests synchronous) without an orchestration queue.
+	// No submitter configured: no queue can refuse the work, so it runs here.
 	if s.submitter == nil {
-		if err := s.runInline(ctx, qube, action); err != nil {
-			return nil, errors.Join(fmt.Errorf("%w: %s %q: %v", ErrOrchestration, action, qube.Name, err),
-				s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
-		}
-
-		// Mirror the async completion hook: a destroyed compute VM's IP is stale,
-		// and a resume draws a fresh DHCP lease, so clear it and let the address
-		// reader re-learn the real one. Without this a resumed qube is dialed at a
-		// dead address forever. See makeCompletionHook in cmd/server.
-		if ComputeDestroyingAction(action) {
-			if err := s.qubeRepo.UpdateIPAddress(ctx, qube.ID, ""); err != nil {
-				return nil, err
-			}
-		}
-		if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
-			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
-		}
-		updated, err := s.qubeRepo.GetByID(ctx, qube.ID)
-		if err != nil {
-			return nil, err
-		}
-		return &Operation{Qube: updated}, nil
+		return s.claimInline(ctx, qube, action, prep, revertTo)
 	}
 
-	job, err := s.submitter.Submit(ctx, qube.ID, qube.Name, action)
+	// A nil step is left out rather than passed as a nil element: most actions
+	// have no preparation, and every reader of the queue would otherwise have to
+	// skip an empty entry.
+	var steps []orchestrator.Step
+	if prep.inJob != nil {
+		steps = append(steps, prep.inJob)
+	}
+
+	job, err := s.submitter.Submit(ctx, qube.ID, qube.Name, action, steps...)
 	if err != nil {
 		// Nothing is running, so release the claim rather than leaving the qube
 		// pinned in a transient status forever.
-		return nil, errors.Join(fmt.Errorf("%w: enqueue %s %q: %v", ErrOrchestration, action, qube.Name, err),
+		return nil, errors.Join(
+			fmt.Errorf("%w: enqueue %s %q: %v%s", ErrOrchestration, action, qube.Name, err,
+				enqueueFailureNote(action, prep.inJob)),
 			s.releaseFailedClaim(ctx, qube.ID, revertTo))
 	}
 
@@ -725,6 +845,31 @@ func (s *QubeServiceImpl) claimAndEnqueue(
 		return nil, err
 	}
 	return &Operation{Qube: updated, JobID: job.ID}, nil
+}
+
+// enqueueFailureNote tells the operator, in the error they read, what a refused
+// enqueue did NOT do. It is only appended when the preparation was the job's own
+// step, and that is what makes the claim true: the step runs on the worker, so a
+// Submit that failed to accept the job never reached it.
+//
+// It also states the one thing that IS already irreversible, because leaving it
+// out would be a lie of omission: the purge claim itself has committed the qube
+// (purge_requested, which refuses every later resume) and its transaction
+// withdrew the qube's authorization. That part is by design — see
+// purge_withdraw_identity in internal/database/lifecycle.go — and it is the
+// reason the recovery is "retry the purge", not "resume the qube".
+//
+// The alternative (prepare first, report afterwards) is the arrangement M1-12
+// removed, and it could only ever describe damage that had already happened.
+func enqueueFailureNote(action orchestrator.Action, inJob orchestrator.Step) string {
+	if action != orchestrator.ActionDestroy || inJob == nil {
+		return ""
+	}
+	return "; nothing was destroyed yet: the destroy job was never accepted, so the data disk's " +
+		"protection was not lifted and the per-qube data key was not deleted. The purge claim itself " +
+		"IS already recorded — its transaction withdrew this qube's authorization " +
+		"(purge_withdraw_identity) and purge_requested refuses every later resume — so this qube is " +
+		"committed to purge: retry the purge to finish it, or a human must clear purge_requested to abort"
 }
 
 // runInline performs the action synchronously (no queue configured).
@@ -813,7 +958,12 @@ func (s *QubeServiceImpl) Start(ctx context.Context, id string) (*Operation, err
 			models.QubeStatusReleased, models.QubeStatusError,
 		},
 		models.QubeStatusResuming, orchestrator.ActionResume, qube.Status,
-		func(ctx context.Context) error { return s.prepareResume(ctx, qube, prior) })
+		// beforeQueue, not inJob: a reissue is recoverable (the next attempt mints
+		// another certificate), while its LATE placement is what matters — see the
+		// claim-serialization note in claimAndEnqueue. Moving it into the job would
+		// also strand a failed resume on "error", a status that does not prove the
+		// compute instance is gone, which is exactly when reissue is skipped.
+		claimPreparation{beforeQueue: func(ctx context.Context) error { return s.prepareResume(ctx, qube, prior) }})
 }
 
 // reissueIdentityForResume hands a resuming qube a brand new agent identity.
@@ -911,7 +1061,7 @@ func (s *QubeServiceImpl) Stop(ctx context.Context, id string) (*Operation, erro
 	}
 	return s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{models.QubeStatusRunning, models.QubeStatusError},
-		models.QubeStatusSuspending, orchestrator.ActionSuspend, qube.Status, nil)
+		models.QubeStatusSuspending, orchestrator.ActionSuspend, qube.Status, claimPreparation{})
 }
 
 // verifyZoneConnected checks if the zone is connected.
