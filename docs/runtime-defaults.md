@@ -23,6 +23,13 @@
 >
 > 均已逐条重算。M2-9 单实例锁再次改动 `internal/config/config.go` 与 `cmd/server/main.go`，
 > 这两个文件的引用行号已按本次改动后的工作树重算（其余文件本轮未改动，沿用上次结果）。
+>
+> 2026-09-22 M2-11 追加：新增 agent 失败连续段的判定预算与派生读数、并登记周期探测间隔（§1.3 的 UD-9d、UD-9e、UD-9f），
+> 并把 `agent_failing_since` 登进 `qubes` 的关键列（§2.1 第 2 行）。该改动在
+> `internal/database/database.go` 的加列迁移块里插入了 6 行（新 273-278 行），**该文件中原第 272 行之后的引用
+> 整体 +6**；§2 与 §2.1 中 20 处引用（含区间）已按本次工作树逐条重算并用 `sed -n` 逐条核对；
+> `docs/disaster-recovery.md` 里指向同一文件的 1 处（`:541`→`:547`）同步重算。
+> `internal/models/qube.go`、`internal/repository/qube_repo.go` 本轮首次登记行号（本文件此前未引用过它们）。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)。
 
@@ -63,6 +70,9 @@
 | UD-9 | agent 探测超时 | **10s** | `internal/service/agentprobe.go:71`（`DefaultAgentProbeTimeout`） |
 | UD-9b | agent 默认监听端口 | **8443** | `internal/service/agentprobe.go:75`（`defaultAgentPort`） |
 | UD-9c | 新置备 qube 的 agent 就绪结算预算 / 重试间隔 | **5 分钟 / 15s** | `internal/service/agenthealth.go:27`、`:29`（`DefaultAgentSettleBudget`、`DefaultAgentSettleRetry`） |
+| UD-9d | agent 失败连续段的判定预算（`agent_recovery=manual` 的阈值） | **300s**（= 单元 `StartLimitIntervalSec`，不可配置） | `internal/models/qube.go:127`（`AgentStartLimitBudget`）；导出依据 `packaging/agent-deb/qubes-air-agent.service:10-11`（`StartLimitIntervalSec=300`、`StartLimitBurst=5`）与 `:33`（`RestartSec=5`）；一致性测试 `internal/models/agentrecovery_test.go`（读单元文件断言预算覆盖窗口与 `(burst−1)×RestartSec`） |
+| UD-9e | 失败连续段起点 `agent_failing_since` 的写入/清空，与 `agent_recovery` 的派生 | 写：`unreachable` 时 `COALESCE` 保留首次时间，其它判定一律清空；派生：`最后一次探测时刻 − 失败起点 ≥ UD-9d` 为 `manual`，否则 `pending`，非失败判定为 `none`（**不看墙钟**） | 写 `internal/repository/qube_repo.go:453-456`；读/派生 `:199`（`scanQube`，列表与详情共用同一条路径）与 `internal/models/qube.go:137-153`；加列迁移 `internal/database/database.go:278`；API 字段 `internal/models/qube.go:66`（`agent_failing_since`）、`:72`（`agent_recovery`） |
+| UD-9f | 周期探测间隔（多久重新判定一次 agent 健康） | **60s** | `internal/config/config.go`:252（`agent_probe_interval_seconds`）、`:665`（默认 60）；兜底常量 `internal/service/agenthealth.go:19`（`DefaultAgentProbeInterval`） |
 | UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:48`（`DefaultDataUnlockTimeout`） |
 | UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:33`（`unlockCertLifetime`） |
 | UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:66`（`DefaultBootstrapTimeout`） |
@@ -130,25 +140,25 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | 项 | 事实 | 位置 |
 |---|---|---|
 | 当前 schema 版本 | `SchemaVersion = 2` | `console/backend/internal/database/database.go:232` |
-| 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:290-308`（`applySchemaVersion`）、`:311-317`（`UserVersion`） |
-| 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:319-330`（说明）、`:332`（实现） |
+| 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:296-314`（`applySchemaVersion`）、`:317-323`（`UserVersion`） |
+| 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:325-336`（说明）、`:338`（实现） |
 | 备份/恢复侧的版本校验 | `ErrSchemaTooNew`；"新控制台备份恢复到旧控制台"会被拒绝 | `docs/disaster-recovery.md:80`、`:84-89` |
-| 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:415-422`（注释与建表） |
-| 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:456-463` |
+| 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:421-428`（注释与建表） |
+| 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:462-469` |
 
 ### 2.1 表与索引清单（10 张表 / 7 个索引）
 
 | # | 表 | 建表位置 | 主键 | 关键列（节选） |
 |---|---|---|---|---|
-| 1 | `zones` | `database.go:373` | `id` | name, type, status（默认 `disconnected`）, config(JSON), created_at, updated_at |
-| 2 | `qubes` | `database.go:392` | `id` | zone_id, status（默认 `stopped`）, ip_address, agent_health（默认 `unknown`）, agent_last_probed_at, agent_last_healthy_at, agent_last_error |
-| 3 | `qube_infra` | `database.go:422` | `qube_id` | provider, node, storage_vmid, compute_vmid, data_volume, identity_vol, observed_state, **protected（默认 1）**, observed_at, created_at, updated_at |
-| 4 | `infrastructure` | `database.go:438` | `id` | name, type, status, region, config(JSON), resource_count |
-| 5 | `jobs` | `database.go:463` | `id` | qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at |
-| 6 | `agent_certs` | `database.go:491` | `fingerprint`（SHA-256 DER） | qube_id, subject_cn, issued_at, expires_at, **revoked_at**, revoked_reason, last_seen_at |
-| 7 | `bootstrap_tokens` | `database.go:522` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用） |
-| 8 | `credentials` | `database.go:534` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
-| 9 | `settings` | `database.go:547` | `key` | value, updated_at |
+| 1 | `zones` | `database.go:379` | `id` | name, type, status（默认 `disconnected`）, config(JSON), created_at, updated_at |
+| 2 | `qubes` | `database.go:398` | `id` | zone_id, status（默认 `stopped`）, ip_address, agent_health（默认 `unknown`）, agent_last_probed_at, agent_last_healthy_at, agent_last_error, **agent_failing_since（加列迁移，默认 NULL）** |
+| 3 | `qube_infra` | `database.go:428` | `qube_id` | provider, node, storage_vmid, compute_vmid, data_volume, identity_vol, observed_state, **protected（默认 1）**, observed_at, created_at, updated_at |
+| 4 | `infrastructure` | `database.go:444` | `id` | name, type, status, region, config(JSON), resource_count |
+| 5 | `jobs` | `database.go:469` | `id` | qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at |
+| 6 | `agent_certs` | `database.go:497` | `fingerprint`（SHA-256 DER） | qube_id, subject_cn, issued_at, expires_at, **revoked_at**, revoked_reason, last_seen_at |
+| 7 | `bootstrap_tokens` | `database.go:528` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用） |
+| 8 | `credentials` | `database.go:540` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
+| 9 | `settings` | `database.go:553` | `key` | value, updated_at |
 | 10 | `_health_probe` | `database.go:208` | `id`（`CHECK (id = 1)`，恒定单行） | marker（每次探测新随机值）, checked_at |
 
 > 表清单按 `database.go` 里 `migrate()` 的建表顺序列出；`_health_probe` 不在该清单内，由
@@ -163,13 +173,13 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | 索引 | 表 | 位置 |
 |---|---|---|
-| `idx_jobs_qube_id` | `jobs` | `database.go:475` |
-| `idx_jobs_enqueued_at` | `jobs` | `database.go:476` |
-| `idx_jobs_state` | `jobs` | `database.go:477` |
-| `idx_agent_certs_qube_id` | `agent_certs` | `database.go:502` |
-| `idx_agent_certs_revoked` | `agent_certs` | `database.go:503` |
-| `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:531` |
-| `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:532` |
+| `idx_jobs_qube_id` | `jobs` | `database.go:481` |
+| `idx_jobs_enqueued_at` | `jobs` | `database.go:482` |
+| `idx_jobs_state` | `jobs` | `database.go:483` |
+| `idx_agent_certs_qube_id` | `agent_certs` | `database.go:508` |
+| `idx_agent_certs_revoked` | `agent_certs` | `database.go:509` |
+| `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:537` |
+| `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:538` |
 
 ## 3. CI 工具链版本（D-4 的落点）
 

@@ -51,6 +51,16 @@
   // green, but the console cannot reach its agent. Nothing else surfaces it.
   const unreachable = $derived(running.filter(q => q.agent_health === 'unreachable'));
 
+  // Of those, the ones whose agent unit has stopped restarting itself within this
+  // boot: "unreachable" may still resolve, these need `systemctl reset-failed`.
+  // The count is what tells an operator to stop waiting and open the runbook.
+  //
+  // Gated by `running` above, and that is the point: a parked qube keeps the
+  // agent reading it had before it was parked, and nothing probes it any more
+  // (backend: computeRunning in internal/service/qube_predicates.go). Counting
+  // those would put a manual-recovery alarm on a qube that is not even up.
+  const needsManualRecovery = $derived(unreachable.filter(q => q.agent_recovery === 'manual'));
+
   const connectedZones = $derived(zonesState.zones.filter(z => z.status === 'connected'));
   const failedJobs = $derived(recentJobs.filter(j => j.state === 'failed'));
 
@@ -83,6 +93,14 @@
       <strong>{unreachable.length}</strong>
       {unreachable.length === 1 ? 'qube is' : 'qubes are'} running but their agent is unreachable
       <span class="names">{unreachable.map(q => q.name).join(', ')}</span>
+      {#if needsManualRecovery.length > 0}
+        <!-- Kept as one line inside the existing alert rather than a second
+             alarm: it is the same problem, with the "waiting is over" half of
+             the answer attached. -->
+        <span class="recovery">
+          {needsManualRecovery.length} of them past the agent unit's restart budget — manual recovery
+        </span>
+      {/if}
     </button>
   {/if}
 
@@ -201,6 +219,9 @@
     font: var(--body); line-height: 1.45;
   }
   .alert .names { display: block; font: var(--callout); opacity: 0.85; margin-top: 0.15rem; }
+  .alert .recovery {
+    display: block; font: var(--callout); font-weight: 600; margin-top: 0.15rem;
+  }
   /* Fixed foregrounds: these keep their background in both schemes. */
   .alert.warn { border: 1px solid #d97706; background: #fef3c7; color: #7c2d12; }
   .alert.bad { border: 1px solid var(--systemRed); background: #fef2f2; color: #991b1b; }
