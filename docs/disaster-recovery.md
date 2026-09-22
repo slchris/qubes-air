@@ -126,6 +126,7 @@ ls -lt /secure/offhost/*.qab | head              # 归档数量与 mtime
   specifier 里**没有**日期/时间项（`%Y` 是"unit 文件所在目录"，见 systemd.unit(5) 的 Specifiers 表），
   所以时间戳名字由 `create` 自己生成：`qubesair-<UTC 时间戳>.qab`。同一秒内跑第二次会因 `O_EXCL`
   明确失败，而不是覆盖刚写好的归档。
+- **新旧按 mtime 判定，搬回归档要用 `cp -p`**：`prune` 以修改时间排序（同秒并列时按文件名定序，见 `internal/backup/retention.go:160-166`）。从离机介质把归档搬回该目录时，`cp` 不带 `-p` 会让副本的 mtime 变成"现在"，于是它们被当成最新的一批，下次 timer 反而会把真正最新的备份挤出保留窗口——用 `cp -p`（或 `rsync -t`）保留原始时间戳，搬回后先 `ls -lt` 核对顺序再交给 timer。
 - 一个 unit 里的多个 `ExecStart=` 按书写顺序执行：`create` 失败时 `prune` 不会运行，
   因此不会出现"没备份成功却把旧归档删了"。
 - 口令只经 `EnvironmentFile` 进进程环境：不进 argv（`ps` 可见），也不写在 unit 文件里。
