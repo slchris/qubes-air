@@ -12,6 +12,8 @@
 | [2026-09-20 P0 安全加固](2026-09-20-p0-security.md) | 三项 P0 实现、自动化回归及完整门禁 | 2026-09-21 分组提交；没有新增真机验收 |
 | [2026-09-20 工作区检查](2026-09-20-workspace.md) | 文档整理、前端验证、容器 Go 测试与门禁 blocker | 当日未提交工作区快照，完整 pre-commit 未通过 |
 | [已有真机验收汇总](validation-history.md) | 从原有文档整理的 Proxmox/RemoteVM 现场记录 | 非新验收；缺少统一源码版本和完整原始日志 |
+| [2026-09-25 OPS-01 环境只读预检](2026-09-25-ops01-environment-preflight.md) | 只读检查 Console、离机备份路径和 Qubes 配置 | 无真实离机归档/keyring，不能执行真实恢复 |
+| [2026-09-25 QA-01 Proxmox 部分回归](2026-09-25-qa01-proxmox-smoke.md) | 专用 Qube 的 provision/suspend/resume/release 与资源身份核对 | 未 purge；文件内容持久性、Exec/FileCopy、源码版本绑定未完成 |
 
 2026-09-21 把记录对应的未提交工作区按独立意图分组提交到本地 `main`（未 push）；记录正文
 保留当时的结论，提交事实以补充说明为准。

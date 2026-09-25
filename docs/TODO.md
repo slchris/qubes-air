@@ -43,10 +43,11 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   验收边界：自动化覆盖迁移成功、部分失败、标记重试与拒绝路径；按盘真机核验密钥来源
   仍归 QA-01，未迁移盘不能宣称 crypto-shred。证据见
   [数据密钥迁移记录](reviews/2026-09-21-data-keys.md)。
-- [ ] **OPS-01：离机恢复及 CA 演练。** 2026-09-21 已完成单机隔离路径预演：备份/恢复/
-  重启 Console/凭据解密/吊销状态/错误口令/覆盖保护/过新 schema 均通过，见
-  [预演记录](reviews/2026-09-21-ops01-restore.md)。剩余：真实离机归档、真实 keyring、
-  provider 资源对账与 agent 信任校验，以及生产数据量下的 RTO 记录。验收条件不变。
+- [ ] **OPS-01：离机恢复及 CA 演练。** 2026-09-21 已完成单机隔离路径预演，见
+  [预演记录](reviews/2026-09-21-ops01-restore.md)。2026-09-25 只读环境预检发现目标 Console
+  没有挂载的离机目录、真实归档或 `backup.env`，因此还不能做真实离机恢复；`secrets.env`
+  存在但未读取，也没有证明 keyring 与归档匹配。详情见[环境预检记录](reviews/2026-09-25-ops01-environment-preflight.md)。
+  剩余：真实离机归档、匹配的 keyring、provider 资源对账与 agent 信任校验，以及生产数据量下的 RTO 记录。
 - [x] **NET-01：静态 IP 池已撤销。** 按产品决定移除 Proxmox Zone 的 `ip_pool`/`gateway`
   配置和静态分配逻辑；新建 compute 使用 DHCP，恢复时保留已有网络配置。剩余真机网络验证纳入 QA-01。
 - [ ] **QA-01：完整 Proxmox 回归记录。** 2026-09-22 已在 homelab 真机完成生命周期回归并
@@ -54,6 +55,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   →purge 全通过，RemoteVM 注册/注销与吊销状态已验证，发现并修复 `remotevm` 本地命名缺陷
   （`1dbc87f`）。剩余：Exec/FileCopy 正值（需 console 下发允许列表）、suspend/resume 数据
   持久性、旧盘迁移与 known_hosts 带外核对。验收条件不变。
+  2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
+  未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
+  详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。
 
 ## P2：产品与扩展
 

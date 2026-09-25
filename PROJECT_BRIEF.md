@@ -148,7 +148,7 @@ qubes-air/
 |---|---|---|
 | QA-01 剩余真机项（Exec/FileCopy 正值、suspend/resume 数据持久性、旧盘迁移、known_hosts 带外核对） | `docs/TODO.md`:56-57 | 需真实 Qubes/Proxmox 环境与 console 下发允许列表 |
 | OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md`:46-49 | 需第二台机器与真实 keyring |
-| NET-01 静态 IP 池现场验收 | `docs/TODO.md`:50-52 | 需保留的测试网段 |
+| NET-01 静态 IP 池 | `docs/TODO.md`:51-52 | 已撤销；当前 Proxmox 只支持 DHCP 分配 |
 | GUI-01 无缝桌面闭环 | `docs/TODO.md`:61-62 | 需 Xpra + 真机 GUI |
 | UI-01 设置接入（session timeout / 2FA / 邮件 / webhook） | `docs/TODO.md`:73-74 | 产品功能，非本轮质量主题 |
 | OBS-01 真实监控、告警与账单 | `docs/TODO.md`:75-76 | 依赖外部数据源 |
@@ -210,12 +210,13 @@ qubes-air/
 |---|---|---|
 | P0 安全边界收紧（SEC-01/02/03） | 已完成 | `docs/TODO.md`:11-20 |
 | P1 可靠性与提交前收尾（ENG-01/REL-01/REL-02/DATA-01） | 已完成（真机剩余归 QA-01） | `docs/TODO.md`:24-45 |
-| OPS-01 / NET-01 | 未完成（需真实离机与网段） | `docs/TODO.md`:46-52 |
+| OPS-01 | 未完成（缺真实离机归档与匹配 keyring） | `docs/TODO.md`:46-50 |
+| NET-01 | 已撤销静态 IP 池，不再作为待验收能力 | `docs/TODO.md`:51-52 |
 | QA-01 Proxmox 真机回归 | 真机主路径已过，剩余 4 项 | `docs/TODO.md`:53-57；`docs/reviews/2026-09-22-qa01-proxmox.md` |
 | **Sprint 1：质量体检 + 未门禁测试补齐** | **planning** | 本 Brief §7 |
 | P2 产品与扩展（GUI/UI/OBS/MCP/CLOUD/PUB） | 未开始 | `docs/TODO.md`:59-84 |
 
-推荐推进顺序（沿用 `docs/TODO.md`:86-90）：本 Sprint 质量收口 → OPS-01/NET-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
+推荐推进顺序（沿用 `docs/TODO.md`:86-90）：本 Sprint 质量收口 → OPS-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
 
 ## 12. 关键约束与红线
 
