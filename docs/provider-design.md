@@ -72,8 +72,8 @@ PVE 节点管理地址由集群信息解析，provider 步骤写入 job log。Pr
 可达性等待，超时返回失败；bootstrap 与健康扫描覆盖 creating/resuming，避免等待首证书时
 相互阻塞。
 
-zone 配置 `ip_pool` 和 `gateway` 时可下发静态地址，并在节点侧探测占用；未配置时用 DHCP。
-静态池必须与 DHCP 地址分配范围分离，尚需现场验收；占用探测不能代替网段规划。
+新建 compute VM 使用 DHCP；恢复已有 compute VM 时保留其当前 `ipconfig0`，避免覆盖
+provider 已有网络配置。静态 IP 池不是当前支持能力，原有配置与分配实现已移除。
 
 ## 信任边界与已知限制
 
@@ -97,7 +97,7 @@ zone 配置 `ip_pool` 和 `gateway` 时可下发静态地址，并在节点侧�
 2. purge 后分别核验 compute、storage holder、数据盘、证书与 RemoteVM；
 3. 缺失资源、错误凭据、错误服务器身份、非法名称、超时与取消的失败路径；
 4. 创建资源与保存身份之间崩溃、重复请求和重启对账；
-5. 保留网段上的静态 IP 分配与冲突处理。
+5. 目标网络上的 DHCP lease、VM 地址发现与 agent 可达性。
 
 发布前完成 `make pre-commit`；里程碑及大范围安全改动还需 `make audit`。
 未通过的测试或未执行的真机步骤需明确记录，见[路线图](roadmap-to-production.md)。

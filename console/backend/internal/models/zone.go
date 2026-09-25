@@ -66,19 +66,6 @@ type ProxmoxZoneConfig struct {
 	DatastoreID string `json:"datastore_id,omitempty"`
 	// NetworkBridge is the bridge new VMs attach to, e.g. "vmbr0".
 	NetworkBridge string `json:"network_bridge,omitempty"`
-	// IPPool is an optional CIDR whose usable addresses the adapter assigns
-	// statically instead of taking a DHCP lease, e.g. "10.31.0.64/27".
-	//
-	// DHCP is the default and stays the default: it is right for a network whose
-	// DHCP server hands out unique leases. It is wrong when the pool overlaps a
-	// range something else hands out — the console then records an address the
-	// VM did not win, and the agent is unreachable while every status still says
-	// "running". A static pool removes the DHCP server from the trust path.
-	//
-	// Empty means DHCP. Setting it requires Gateway.
-	IPPool string `json:"ip_pool,omitempty"`
-	// Gateway is the default gateway used with IPPool, e.g. "10.31.0.254".
-	Gateway string `json:"gateway,omitempty"`
 	// TemplateVMID is the cloud-init template VM to clone. Its boot disk must
 	// be on scsi0 and it must have a cloud-init drive and qemu-guest-agent, or
 	// the adapter cannot report the instance's address.

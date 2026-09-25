@@ -326,7 +326,7 @@ blast_radius:
 | 项 | 为什么排除 |
 |---|---|
 | **OPS-01** 离机恢复 / CA 演练的**真实离机归档**与**真实 keyring** | 需第二台物理机与真实 keyring；`docs/TODO.md`:46-49 明确"'剩余'不含单机预演" |
-| **NET-01** 静态 IP 池**现场验收** | 需明确保留且不与 DHCP 重叠的测试网段；`docs/TODO.md`:50-52 |
+| **NET-01** 静态 IP 池**现场验收**（后续已撤销） | 2026-09-26 产品决定移除静态 IP 池，当前以 DHCP 为准；见 `docs/TODO.md` |
 | **QA-01** 剩余真机项：(a) Exec/FileCopy **正值**（需 console 下发允许列表）、(b) suspend/resume **真机数据持久性**、(c) **旧盘迁移**、(d) **known_hosts 带外核对** | 全部需真实 Proxmox + Qubes 环境；`docs/TODO.md`:53-57 |
 | **GUI-01** 无缝桌面闭环 | 需 Xpra + 真机 GUI；`docs/TODO.md`:61-62 |
 | **CLOUD-01 / CLOUD-02** GCP/AWS 原生适配器 | 未通过同等验收前不得宣称可用（`AGENTS.md`:10）；`docs/TODO.md`:77-78 |

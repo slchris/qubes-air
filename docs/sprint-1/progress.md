@@ -197,6 +197,8 @@ blast_radius:
 
 ## 真机项状态（**未完成，不得声称完成**）
 
-OPS-01 真实离机归档/keyring · NET-01 静态 IP 池现场验收 · QA-01 剩余 4 项（Exec/FileCopy 正值、
+OPS-01 真实离机归档/keyring · QA-01 剩余 4 项（Exec/FileCopy 正值、
 suspend/resume 真机数据持久性、旧盘迁移、known_hosts 带外核对） · GUI-01 无缝桌面闭环 ·
 CLOUD-01/02 —— 全部排除在本 Sprint 之外，详见 `plan.md` §5.1。
+
+更新（2026-09-26）：NET-01 静态 IP 池已按产品决定撤销，不再作为真机验收项；当前 Proxmox 新建 VM 使用 DHCP。

@@ -47,9 +47,8 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   重启 Console/凭据解密/吊销状态/错误口令/覆盖保护/过新 schema 均通过，见
   [预演记录](reviews/2026-09-21-ops01-restore.md)。剩余：真实离机归档、真实 keyring、
   provider 资源对账与 agent 信任校验，以及生产数据量下的 RTO 记录。验收条件不变。
-- [ ] **NET-01：静态 IP 池现场验收。** 代码已有 ip_pool/gateway 与占用探测。
-  验收：在明确保留且不与 DHCP 重叠的测试网段完成分配、冲突、池耗尽、重试、resume 与清理；
-  不把探测成功当作全局地址分配锁。
+- [x] **NET-01：静态 IP 池已撤销。** 按产品决定移除 Proxmox Zone 的 `ip_pool`/`gateway`
+  配置和静态分配逻辑；新建 compute 使用 DHCP，恢复时保留已有网络配置。剩余真机网络验证纳入 QA-01。
 - [ ] **QA-01：完整 Proxmox 回归记录。** 2026-09-22 已在 homelab 真机完成生命周期回归并
   写入[记录](reviews/2026-09-22-qa01-proxmox.md)：provision→healthy→suspend→resume→release
   →purge 全通过，RemoteVM 注册/注销与吊销状态已验证，发现并修复 `remotevm` 本地命名缺陷

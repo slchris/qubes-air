@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -401,15 +400,11 @@ func (a *Adapter) configureCompute(ctx context.Context, pc *models.ProxmoxZoneCo
 	if cicustom != "" {
 		form.Set("cicustom", "user="+cicustom)
 		form.Set("ciuser", "qubes")
-		ipcfg := existingIP
-		if ipcfg == "" {
-			var err error
-			ipcfg, err = a.computeIPConfig(ctx, pc, node, q.ID)
-			if err != nil {
-				return err
-			}
+		if existingIP != "" {
+			form.Set("ipconfig0", existingIP)
+		} else {
+			form.Set("ipconfig0", "ip=dhcp")
 		}
-		form.Set("ipconfig0", ipcfg)
 	}
 	if len(pc.SSHPublicKeys) > 0 {
 		form.Set("sshkeys", strings.Join(pc.SSHPublicKeys, "\n"))
@@ -426,74 +421,6 @@ func (a *Adapter) configureCompute(ctx context.Context, pc *models.ProxmoxZoneCo
 		}
 	}
 	return nil
-}
-
-// computeIPConfig returns the ipconfig0 value for a new compute instance: a
-// static address from the zone's pool, or DHCP when no pool is configured.
-//
-// DHCP stays the default because it is right on a network whose DHCP server
-// hands out unique leases. A static pool is for the network where it does not:
-// there the console would record an address the VM never won (or that another
-// host already holds) and the agent would be unreachable with every status
-// still reading "running".
-func (a *Adapter) computeIPConfig(ctx context.Context, pc *models.ProxmoxZoneConfig, node, qID string) (string, error) {
-	pool := strings.TrimSpace(pc.IPPool)
-	if pool == "" {
-		return "ip=dhcp", nil
-	}
-	if strings.TrimSpace(pc.Gateway) == "" {
-		return "", fmt.Errorf("proxmox: zone has ip_pool %q but no gateway", pool)
-	}
-	prefix, err := netip.ParsePrefix(pool)
-	if err != nil {
-		return "", fmt.Errorf("proxmox: bad ip_pool %q: %w", pool, err)
-	}
-
-	var probeErr error
-	isFree := func(addr netip.Addr) bool {
-		free, err := a.addressFree(ctx, node, addr)
-		if err != nil {
-			if probeErr == nil {
-				probeErr = err
-			}
-			// Treat an unprobeable address as taken: handing out an address we
-			// could not check is the collision this pool exists to prevent.
-			return false
-		}
-		return free
-	}
-	addr, err := allocateIP(pool, qID, isFree)
-	if err != nil {
-		if probeErr != nil {
-			return "", fmt.Errorf("%w (address probe failed: %v)", err, probeErr)
-		}
-		return "", err
-	}
-	a.logf(ctx, "assigning static address %s (pool %s, gateway %s)", addr, pool, pc.Gateway)
-	return ipconfig0(addr, prefix.Bits(), pc.Gateway), nil
-}
-
-// addressFree reports whether addr is unused on the node's bridge.
-//
-// The check runs from the node, not the console: the console may reach the VM
-// subnet by a different path than the VMs use, and the ARP answer is only
-// meaningful where the bridge is. ping triggers the ARP and the neighbor entry
-// is what is read, so a host that blocks ICMP but answers ARP still counts as
-// in use.
-func (a *Adapter) addressFree(ctx context.Context, node string, addr netip.Addr) (bool, error) {
-	if a.opts.SSH == nil || a.opts.SSH.PrivateKey == "" {
-		return false, errors.New("proxmox: ip_pool requires an SSH key to probe addresses")
-	}
-	// addr was parsed by netip, so interpolating it here cannot inject a shell
-	// command.
-	ip := addr.String()
-	cmd := "ip neigh flush " + ip + " 2>/dev/null; ping -c1 -W1 " + ip + " >/dev/null 2>&1; " +
-		"ip neigh show " + ip + " | grep -q lladdr && echo USED || echo FREE"
-	out, err := runSSH(ctx, a.nodeAddress(ctx, node), *a.opts.SSH, cmd)
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) == "FREE", nil
 }
 
 // nodeAddress resolves a PVE node's management IP for SSH.

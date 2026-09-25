@@ -124,6 +124,7 @@ func TestEnsureCompute_ClonesConfiguresStarts(t *testing.T) {
 	cfg := rec.body("POST", "/api2/json/nodes/infra-node1/qemu/106/config")
 	assert.Contains(t, cfg, "scsi1=ceph-pve%3Avm-105-disk-0")
 	assert.Contains(t, cfg, "cicustom=user%3Dcephfs-snippets%3Asnippets%2Fx.yaml")
+	assert.Contains(t, cfg, "ipconfig0=ip%3Ddhcp")
 	assert.Contains(t, cfg, "ciuser=qubes")
 	assert.Contains(t, cfg, "cores=2")
 	assert.Contains(t, cfg, "memory=2048")
