@@ -127,6 +127,9 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
    ```
    口令从环境变量读（命令行会被同机 `ps` 看到），输出 `O_EXCL` + `0600`。
    细节与恢复步骤见[灾难恢复](disaster-recovery.md)。
+   从凭据 API 保留命名空间之前的版本升级时（G-D8），在备份之后、换二进制之前，按
+   [安全控制](security-controls.md)“升级前核查”以控制台服务用户跑那两段只读 SQL（先确认 unit 已加载），第一段
+   除已判定为运维行的 `NON-ASCII` 行外 `flags` 全部为空、第二段没有输出再继续。新版本遇到不是控制台写的同名行会拒绝签发和解锁（见 §5）。
 2. **控制台**：改 `console_binary_*` 与 `console_web_*` 两组 pin → `state.apply qubesair.console`。
    两个制品必须同批改，理由见 §2.3。**跨过 schema 3（bootstrap 对端 pin）的这次升级**，
    `agent_package_url/sha256/version` 必须在同一次（或更早的）`state.apply` 里指向带 token 派生
@@ -247,6 +250,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 升级后控制台起不来，报错含 `agent_allowed_services` / `agent_exec_allow` / `agent_filecopy_roots` 与 `is not a valid qrexec service name`、`is listed twice` 或 `contains a control character` | pillar 里的授权值过不了新的启动校验（§2.4） | 按报错修正对应 pillar 值后重新 `state.apply`；出厂默认值不会触发 |
 | 升级后浏览器很快要求重新输入 token | session 默认从 12 小时降为 30 分钟（§2.5） | 在设置页把 Session Timeout 调到需要的值（最多 1440 分钟） |
 | 启动日志有 `WARNING: settings: stored session timeout` | 旧版本存下的越界值；session 已回退 30 分钟 | 在设置页保存一个 5–1440 的值 |
+| provision、解锁、证书签发或续期失败，journal 里有 `SECURITY: pki: console credential is ambiguous` | `credentials` 表里有控制台没写过、却对得上它某个密钥名称的行（多出一行同名行、大小写或字符变体、类型不是 `pki`）。控制台从这一版起拒绝使用这类名称，而不是取最新的一行 | 错误里列出了涉及行的 ID。停止控制台，先备份，再按[安全控制](security-controls.md)“Console API 凭据”的核查步骤判断哪一行不是控制台写的，离线删除它。不要为了让服务跑起来而删掉真正的那一行：删 DEK 会让该盘不可恢复，删一半 CA 会让签发停止 |
 
 ## 6. 尚未闭合
 

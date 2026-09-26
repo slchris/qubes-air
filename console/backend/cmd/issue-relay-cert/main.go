@@ -85,8 +85,7 @@ func run() error {
 	must(err)
 	creds := repository.NewCredentialRepository(db, kr)
 
-	ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
-		secretNamed(ctx, creds, "qubes-air-ca-key"))
+	ca, err := loadCA(ctx, creds)
 	must(err)
 
 	signed, err := issueRelayCert(ca, caller, string(csrPEM), *lifetime)
@@ -116,19 +115,10 @@ func issueRelayCert(ca *pki.CA, caller, csrPEM string, lifetime time.Duration) (
 	return ca.SignAgentCSR(csrPEM, pki.RelayCommonName(caller), lifetime)
 }
 
-func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
-	list, err := r.List(ctx)
-	must(err)
-	for _, c := range list {
-		if c.Name == name {
-			s, err := r.GetSecret(ctx, c.ID)
-			must(err)
-			return s
-		}
-	}
-	log.Fatalf("credential %q not found", name)
-	return ""
-}
+// loadCA is the tool's only way to the CA: the console's own fail-closed read
+// (repository.LoadConsoleCA). Rows under the CA's names that the console did
+// not write stop the tool instead of handing it a look-alike to sign with.
+var loadCA = repository.LoadConsoleCA
 
 func must(err error) {
 	if err != nil {

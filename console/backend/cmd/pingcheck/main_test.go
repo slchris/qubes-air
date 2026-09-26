@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestCA(t *testing.T) *pki.CA {
@@ -119,5 +124,61 @@ func TestReportVerifiedAgent_FailsClosedWithoutVerifier(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("an unverified peer was reported as the agent: %q", out.String())
+	}
+}
+
+// caStore is an in-memory credential store for loadCA.
+type caStore struct{ rows []models.Credential }
+
+func (s *caStore) List(context.Context) ([]models.Credential, error) { return s.rows, nil }
+
+func (s *caStore) GetSecret(_ context.Context, id string) (string, error) {
+	for _, r := range s.rows {
+		if r.ID == id {
+			return r.Description, nil // the fixture keeps the secret here
+		}
+	}
+	return "", errors.New("no such row")
+}
+
+func (s *caStore) put(t *testing.T, id, name, typ string, ca *pki.CA, key bool) {
+	t.Helper()
+	certPEM, keyPEM, err := ca.MarshalCA()
+	require.NoError(t, err)
+	secret := certPEM
+	if key {
+		secret = keyPEM
+	}
+	s.rows = append(s.rows, models.Credential{ID: id, Name: name, Type: typ, Description: secret})
+}
+
+// TestLoadCAFailsClosedOnPlantedRows — the tool reads the CA the way the
+// console does: with the genuine pair it gets the genuine CA, and a planted
+// look-alike next to it (a duplicate key, a long-s certificate name) makes
+// the load fail instead of handing the tool the newest or first match.
+func TestLoadCAFailsClosedOnPlantedRows(t *testing.T) {
+	genuine, err := pki.NewCA("genuine", time.Hour)
+	require.NoError(t, err)
+	attacker, err := pki.NewCA("attacker", time.Hour)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	store := &caStore{}
+	store.put(t, "cert", models.ConsoleCACertName, models.ConsoleRowType, genuine, false)
+	store.put(t, "key", models.ConsoleCAKeyName, models.ConsoleRowType, genuine, true)
+	ca, err := loadCA(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, genuine.Cert.Raw, ca.Cert.Raw)
+
+	for label, planted := range map[string]models.Credential{
+		"duplicate key":    {ID: "planted", Name: models.ConsoleCAKeyName, Type: models.ConsoleRowType},
+		"long-s cert name": {ID: "planted", Name: "qube\u017f-air-ca-cert", Type: models.ConsoleRowType},
+	} {
+		plantedStore := &caStore{rows: append([]models.Credential(nil), store.rows...)}
+		key := planted.Name == models.ConsoleCAKeyName
+		plantedStore.put(t, planted.ID, planted.Name, planted.Type, attacker, key)
+		ca, err := loadCA(ctx, plantedStore)
+		assert.ErrorIs(t, err, models.ErrConsoleRowConflict, label)
+		assert.Nil(t, ca, label)
 	}
 }

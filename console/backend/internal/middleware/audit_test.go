@@ -169,6 +169,31 @@ func TestAuditRecordsMarkedRefusalAsDenied(t *testing.T) {
 	}
 }
 
+// TestAuditRecordsHandlerMarkedRefusalAsDenied — a handler that refuses for an
+// authorization reason but must answer 404 (the credentials API hiding the
+// console's own rows) marks the request, and only the audit outcome changes.
+func TestAuditRecordsHandlerMarkedRefusalAsDenied(t *testing.T) {
+	var buf bytes.Buffer
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(Audit(audit.NewRecorder(&buf)))
+	r.DELETE("/credentials/:id", func(c *gin.Context) {
+		MarkDenied(c)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Credential not found"})
+	})
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/credentials/ca-key", nil))
+
+	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "Credential not found") {
+		t.Fatalf("MarkDenied must not change the response, got %d %q", w.Code, w.Body.String())
+	}
+	lines := auditLines(t, &buf)
+	if len(lines) != 1 || lines[0]["outcome"] != audit.OutcomeDenied || lines[0]["status"] != float64(http.StatusNotFound) {
+		t.Errorf("want one line with status 404 and outcome denied, got %q", buf.String())
+	}
+}
+
 // auditLines decodes every JSON line the recorder wrote.
 func auditLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	t.Helper()

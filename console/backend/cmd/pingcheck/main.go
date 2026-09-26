@@ -51,10 +51,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	certPEM := secretNamed(ctx, creds, "qubes-air-ca-cert")
-	keyPEM := secretNamed(ctx, creds, "qubes-air-ca-key")
-
-	ca, err := pki.ParseCA(certPEM, keyPEM)
+	ca, err := loadCA(ctx, creds)
 	must(err)
 	fmt.Printf("  CA          : %s\n", ca.Cert.Subject.CommonName)
 
@@ -123,19 +120,10 @@ func reportVerifiedAgent(cfg *tls.Config, w io.Writer) {
 	}
 }
 
-func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
-	list, err := r.List(ctx)
-	must(err)
-	for _, c := range list {
-		if c.Name == name {
-			s, err := r.GetSecret(ctx, c.ID)
-			must(err)
-			return s
-		}
-	}
-	log.Fatalf("  ✗ 凭证库里没有 %q", name)
-	return ""
-}
+// loadCA is the tool's only way to the CA: the console's own fail-closed read
+// (repository.LoadConsoleCA). Rows under the CA's names that the console did
+// not write stop the tool instead of handing it a look-alike to sign with.
+var loadCA = repository.LoadConsoleCA
 
 func must(err error) {
 	if err != nil {

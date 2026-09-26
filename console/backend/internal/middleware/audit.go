@@ -28,6 +28,14 @@ func markDenied(c *gin.Context) {
 	c.Set(deniedContextKey, true)
 }
 
+// MarkDenied lets a handler record the same thing: it refused the request for
+// an authorization reason but answers with a status that must not say so,
+// such as a 404 that hides whether the object exists. Only the audit outcome
+// changes; the response is whatever the handler writes.
+func MarkDenied(c *gin.Context) {
+	markDenied(c)
+}
+
 // authDisabledContextKey marks a request ScopedAuth let through because no
 // credential is configured. Audit needs it to tell such a request, which acted
 // with fleet-wide authority, from one that merely presented no credential.

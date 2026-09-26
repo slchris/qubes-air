@@ -335,7 +335,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// Zone creation asks the same registry the executor dispatches through, so
 	// a type with no adapter is refused when the zone is created instead of at
 	// its first provision job.
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, providerRegistry)
+	// A zone's credential_id is checked against the operator's view of the
+	// store, so a zone can reference neither a missing row nor a console one.
+	credentialSvc := service.NewCredentialService(credentialRepo)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, providerRegistry, service.WithCredentialRefs(credentialSvc))
 	exec := buildExecutor(cfg.Orchestrator, providerRegistry,
 		service.NewNativeQubeZoneResolver(qubeRepo, zoneRepo), qubeInfraRepo)
 
@@ -383,8 +386,6 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// Infrastructure repository and service
 	infraRepo := repository.NewInfraRepository(db)
 	infraSvc := service.NewInfraService(infraRepo)
-
-	credentialSvc := service.NewCredentialService(credentialRepo)
 
 	settingsSvc, sessionStore := newSettingsAndSessions(context.Background(), db)
 	return &Dependencies{
