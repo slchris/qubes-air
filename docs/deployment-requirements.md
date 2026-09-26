@@ -1,6 +1,6 @@
 # 生产部署安全要求
 
-更新：2026-09-22。本文是"单操作者自用生产"（A 档）的**部署硬要求与核对清单**：它规定部署方
+更新：2026-09-26。本文是"单操作者自用生产"（A 档）的**部署硬要求与核对清单**：它规定部署方
 必须显式满足什么，各控制自身的实现细节见 [P0 安全控制](security-controls.md)，本文不重复。
 
 写这份清单的原因是：下面每一条**默认都不满足**，而且代码不会替你拒绝启动——例外是第 2 条
@@ -21,7 +21,7 @@
 | 5 | **32 字节加密密钥 / 版本化 keyring 的保管** | 数据库备份**只含密文**，恢复时缺 keyring 等于备份不可用；丢失 `qubes-air-luks-master` 会让尚未迁移的旧加密盘无法解锁 | 按[凭据与轮换](credential-vault.md)核对：密钥不在仓库、不与备份同介质存放，且恢复演练时真的能用它解开一份备份 |
 | 6 | **审计留存由部署方自己接住** | 审计是 JSON lines 写到 **stderr**，没有内置文件落地、轮转与留存期；console 重启或日志被截断即丢失 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期，且每行含 subject/source/method/route/object/status/outcome/zone scope |
 | 7 | **把"重启即全员登出"写进运维预期** | session 存在内存 map 里，console 重启后所有浏览器登录失效；依赖 session 的自动化会在重启后集体失败 | 重启 console，确认旧 session 请求得到 401；自动化改用 Bearer token（第 4 条） |
-| 8 | **snippet 共享目录只导出给 PVE 节点** | 该目录是 `0755`、文件是 `0644`，其中含**一次性 bootstrap token** 与公开 CA（无私钥）。机密性完全落在"谁能挂载这个 share"上，文件权限不提供保护 | 检查导出配置（NFS/SMB/PVE storage）的允许客户端列表只含 PVE 节点；确认它没有被挂进通用共享 |
+| 8 | **snippet 共享目录只导出给 PVE 节点**（仅适用于共享存储投递，即配置了 `agent_snippet_datastore`） | 该目录是 `0755`、文件是 `0644`，其中含**一次性 bootstrap token** 与公开 CA（无私钥）。机密性完全落在"谁能挂载这个 share"上，文件权限不提供保护 | 检查导出配置（NFS/SMB/PVE storage）的允许客户端列表只含 PVE 节点；确认它没有被挂进通用共享 |
 | 9 | **bootstrap 只能发生在可信网段内** | 首次 bootstrap 时 console 拨号**不认证对端**（无可 pin 的 CA/角色，`InsecureSkipVerify`），一次性 token 是唯一认证；同网段第三方若能读到 token 就能冒充 agent | 确认 bootstrap 期 console 与目标节点处在可信二层/网段；token 用后即失效，但仍按 secret 处理（见第 8 条） |
 | 10 | **反代要么不挂，要么接受它的两个后果** | console 不信任任何代理头（`SetTrustedProxies(nil)`），`ClientIP` 是直连对端：挂反代后**所有请求共用一个限流桶**，审计来源只剩反代地址 | 从两个不同客户端各打一次接口，看审计里的 `source` 是否相同；相同即说明反代在中间，需要在反代侧限流与留痕 |
 | 11 | **反代必须关闭响应缓冲** | job 日志是 SSE：5 分钟上限、每事件 30 秒写窗口，console 已发 `X-Accel-Buffering: no`；反代若缓冲响应，流式会退化成"跑完一次性返回" | 起一个长 job，观察日志是否逐行到达；nginx 需 `proxy_buffering off` |
@@ -33,7 +33,8 @@
 这些是当前实现里**已经知道、但本轮不修**的暴露面。写在这里是为了让部署决定建立在事实上，
 而不是只留在代码注释或抑制理由里：
 
-- **一次性 bootstrap token 落在 `0644` 文件**（要求 8）：文件权限不提供保护，安全性等于共享目录的导出策略。
+- **一次性 bootstrap token 落在 `0644` 文件**（要求 8）：只剩共享存储投递路径如此。文件权限不提供保护，安全性等于共享目录的导出策略；能否收紧取决于 share 类型与导出设置，需要部署方决定。默认的 SSH 上传路径现在把 snippet 写成 `0600`，前提是节点上的 `/var/lib/vz/snippets` 只有 SSH 登录名可写、没有默认 ACL：否则另一个账号可以抢先在临时文件路径上放置 FIFO，默认 ACL 也会让 `umask` 失效（两项的真机复核都见[验收清单](acceptance-real-machine.md)步骤 9）。改动前上传的旧文件仍是 `0644`，要到该 qube 下次 resume 或重新 provision 才会被替换。可以在节点上用 `find /var/lib/vz/snippets -maxdepth 1 -name 'qubes-air-*' -perm -o=r` 列出这些文件，再手工 `chmod 600`。
+- **token 也在 VM 的 cloud-init 盘里**：PVE 把 user-data 生成进 compute VM 的 cloud-init 盘，guest 正是从这里读到 token。能读取这个卷的人，以及有权通过 PVE API 读取该 VM cloud-init 数据的账号，都能看到它。文件权限管不到这份副本，暴露窗口只由单次兑换和默认 1 小时 TTL 限定。
 - **bootstrap 不认证对端**（要求 9）：没有可 pin 的身份，一次性 token 是唯一认证。
 - **审计无轮转与留存**（要求 6）：`internal/audit` 只有一个 `io.Writer` 记录器。
 - **session 存内存**（要求 7）：重启即失效；这是运维预期，不一定要改。

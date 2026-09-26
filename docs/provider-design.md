@@ -66,7 +66,8 @@ Qube 恢复到 error，保留资源身份及不可逆 purge 意图；核对后�
 
 身份内容由 `service/cloudinit.go` 渲染，包含 CA、单次 token 与 artifact digest，agent 私钥在
 远端 guest 内生成。适配器优先使用已提供的共享存储身份卷；否则通过 SSH 上传 snippet，缺少
-身份或所需 SSH 配置时返回错误。详见 [Bootstrap](bootstrap-design.md)。
+身份或所需 SSH 配置时返回错误。SSH 上传用固定远端命令写成仅属主可读的 `0600`；共享存储上的文件
+仍是 `0644`，见[部署安全要求](deployment-requirements.md)第 8 条。详见 [Bootstrap](bootstrap-design.md)。
 
 PVE 节点管理地址由集群信息解析，provider 步骤写入 job log。Provision/Resume 接入 agent
 可达性等待，超时返回失败；bootstrap 与健康扫描覆盖 creating/resuming，避免等待首证书时

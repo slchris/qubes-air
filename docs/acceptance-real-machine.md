@@ -298,6 +298,10 @@ curl——脚本里的 `api()` 带 `-f`，会把预期的 4xx 变成非零退出
   # PVE 节点
   qm list | grep -E 'qa-accept-1'
   qm config <compute-vmid> | grep -E '^(name|tags|scsi1|description)'
+  # SSH 上传路径（未配置 agent_snippet_datastore）：snippet 只有属主可读（G-D7）
+  stat -c '%a %U:%G %n' /var/lib/vz/snippets/qubes-air-qa-accept-1.yaml
+  # 上传命令的前提：目录只有 SSH 登录名可写，且没有 ACL
+  ls -ld /var/lib/vz/snippets
 
   # dom0
   qvm-ls --class RemoteVM
@@ -311,7 +315,20 @@ curl——脚本里的 `api()` 带 `-f`，会把预期的 4xx 变成非零退出
   `tags` 含 `qubes-air;storage;<type>`，`description` 里带 ownership 标记。
   dom0 里 RemoteVM 存在，`transport_rpc` 为 `qubesair.GrpcProxy`，`remote_name` 是裸 Qube 名
   （地址壳为 `remote-qa-accept-1`）。
-- **失败含义**：compute 在但 `agent_health` 不 healthy = 走步骤 8 的失败分支。RemoteVM 不在 =
+  `stat` 打印 `600 root:root /var/lib/vz/snippets/qubes-air-qa-accept-1.yaml`；属主是控制台配置的
+  SSH 登录名，默认 `root`。它与步骤 8 的 `agent_health=healthy` 一起证明两件事：snippet 不再是
+  全局可读，而且节点上的 qemu-server 仍能读取它来生成 cloud-init 盘。
+  `ls -ld` 显示目录属主是同一个 SSH 登录名，组和其他人都没有 `w` 位，权限位后面也没有 `+`。
+- **失败含义**：`stat` 显示的不是 `600`（例如 `644`、`640`）时，先看 `ls -ld` 的权限位后面有没有
+  `+`。有 `+` = 目录带 ACL；其中的默认 ACL 会取代上传命令的 `umask 077`，新文件的权限由 ACL
+  决定。这是环境问题，把 `ls -ld` 原文记入 G-D7，由部署方决定是否去掉该 ACL。没有 `+` = 节点收到的
+  snippet 不是经固定命令写入的：先核对步骤 3 的二进制是否为本版，再按安全回归报告（G-D7）。
+  `ls -ld` 显示组或其他人有 `w` 位，或者属主不是 SSH 登录名 = 另一个账号可以在临时文件路径上
+  预先放置 FIFO 或直接替换 snippet，"只有属主可读"不再成立：**停止**，把原文记入 G-D7。
+  如果步骤 8 已经因为 compute 启动失败而停下，且错误指向 cloud-init 或 snippet 读取 = qemu-server
+  读不了 `0600` 文件，"读者是 root"的推断不成立：**停止**，把 job log 与该 VM 启动任务在 PVE 上的
+  日志原文附进记录。
+  compute 在但 `agent_health` 不 healthy = 走步骤 8 的失败分支。RemoteVM 不在 =
   `mgmt.remotevm.register` 未应用或注册被拒（注册是 quiet 失败，QA-01 记录里它到 release 才显形）。
   `transport_rpc` 不是 `qubesair.GrpcProxy` = dom0 policy/state 与本次部署不一致。
 
@@ -447,6 +464,8 @@ curl——脚本里的 `api()` 带 `-f`，会把预期的 4xx 变成非零退出
   # PVE 节点：compute 回来了，且挂的是同一块数据盘
   qm list | grep -E 'qa-accept-1'
   qm config <new-compute-vmid> | grep -E '^scsi1'
+  # resume 用新 token 覆盖了同名 snippet，权限仍须是 600（步骤 9）
+  stat -c '%a %n' /var/lib/vz/snippets/qubes-air-qa-accept-1.yaml
 
   # 远端 VM（经 qrexec）
   printf '%s\n' '["/usr/bin/sha256sum","/data/qa-accept.txt"]' \
@@ -1000,3 +1019,7 @@ curl——脚本里的 `api()` 带 `-f`，会把预期的 4xx 变成非零退出
     （`internal/handler/qube_handler.go` 的 `Delete`/`Purge`，代码核实），本页因此用
     `GET /api/v1/jobs?qube_id=…` 轮询。runbook 只写"核验状态变成 purged"，没写这一步怎么取 job——
     这是本页自己补的一处，若你们有更顺的既有做法，替换即可。
+12. **`0600` snippet 能否被 qemu-server 读取**：依据是"PVE 以 root 在 VM 启动时生成 cloud-init 盘"，
+    这是对 PVE 架构的推断，本仓库没有真机证据。步骤 9 的 `stat` 加上步骤 8 的 healthy 就是判定方式。
+    `/var/lib/vz/snippets` 属于 root、组和其他人不可写、没有 ACL，同样是推断；上传命令的安全性以此
+    为前提，判定方式是步骤 9 的 `ls -ld`。
