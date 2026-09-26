@@ -39,6 +39,13 @@
   // Measured on performance.now(), which is monotonic: a wall-clock step (NTP,
   // suspend/resume, a manual change) must not stretch or skip the wait.
   const RECONNECT_MIN_MS = 2000;
+  // This many streams in a row that closed that quickly without delivering a
+  // single event means the stream path is not working (a proxy that answers
+  // 200 and hangs up, say), so the feed falls back to the offset poller —
+  // which also learns from the job record whether the job is still running.
+  // A quiet stream that stays open is not counted: a queued job can print
+  // nothing for the whole server cap.
+  const MAX_QUIET_SHORT_STREAMS = 3;
 
   // One feed per job id, restarted only when the id itself changes.
   //
@@ -102,33 +109,48 @@
   // a dropped qrexec forward) control falls through to polling from that same
   // offset, so nothing is missed or repeated.
   async function feed(id: string, signal: AbortSignal): Promise<void> {
-    const onChunk = (chunk: JobLogChunk): void => apply(chunk, signal);
-    while (running) {
-      const opened = performance.now();
-      streaming = true;
-      try {
-        await streamJobLog(id, offset, onChunk, signal);
-      } catch {
-        if (signal.aborted) return;
-        streaming = false;
-        await poll(id, signal);
-        return;
-      }
-      if (signal.aborted) return;
-      streaming = false;
-      if (running) await wait(RECONNECT_MIN_MS - (performance.now() - opened), signal);
-      if (signal.aborted) return;
-    }
+    const fallBack = await streamWhileRunning(id, signal);
+    if (signal.aborted) return;
 
     // A job that was ALREADY finished when this panel opened never entered the
     // stream loop, so its log has not been fetched. Do one plain read — the log
     // still exists on the server long after the job ended, and without this a
     // succeeded job shows an empty panel even though its full output is there.
-    if (!text) {
+    if (fallBack || !text) {
       await poll(id, signal);
       return;
     }
     await finish(id, signal);
+  }
+
+  // Streams while the job runs. Returns true when the stream path failed and
+  // the caller should poll instead, false when the job is no longer running
+  // (or the feed was torn down).
+  async function streamWhileRunning(id: string, signal: AbortSignal): Promise<boolean> {
+    let quietShort = 0;
+    while (running) {
+      const opened = performance.now();
+      let events = 0;
+      const onChunk = (chunk: JobLogChunk): void => {
+        events++;
+        apply(chunk, signal);
+      };
+      streaming = true;
+      try {
+        await streamJobLog(id, offset, onChunk, signal);
+      } catch {
+        if (!signal.aborted) streaming = false;
+        return true;
+      }
+      if (signal.aborted) return false;
+      streaming = false;
+      const elapsed = performance.now() - opened;
+      quietShort = events === 0 && elapsed < RECONNECT_MIN_MS ? quietShort + 1 : 0;
+      if (quietShort >= MAX_QUIET_SHORT_STREAMS) return true;
+      if (running) await wait(RECONNECT_MIN_MS - elapsed, signal);
+      if (signal.aborted) return false;
+    }
+    return false;
   }
 
   async function poll(id: string, signal: AbortSignal): Promise<void> {

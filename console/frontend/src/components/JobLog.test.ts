@@ -532,6 +532,68 @@ describe('JobLog pacing and teardown', () => {
     expect(server.streams).toHaveLength(2)
   })
 
+  // Ends the newest stream at once, without an event, then waits out the
+  // minimum reconnect interval.
+  async function quickEmptyStream(): Promise<void> {
+    server.streams[server.streams.length - 1].end()
+    await flush()
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+  }
+
+  it('falls back to the offset poller after three quick, empty streams', async () => {
+    server.pollReply = () => json(200, { offset: 5, data: 'done\n', running: false, state: 'succeeded' })
+    const { container } = mount('j1', true)
+    await flush()
+
+    await quickEmptyStream()
+    await quickEmptyStream()
+    expect(server.streams).toHaveLength(3)
+    expect(server.polls).toHaveLength(0)
+
+    // The third in a row: stop streaming and ask the poller, which reads the
+    // job record and learns the job already finished.
+    server.streams[2].end()
+    await flush()
+    expect(server.polls).toEqual([{ jobId: 'j1', offset: 0 }])
+    expect(logText(container)).toBe('done\n')
+    expect(screen.getByText('Job log')).toBeInTheDocument()
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    await flush()
+    expect(server.streams).toHaveLength(3)
+    expect(server.polls).toHaveLength(1)
+  })
+
+  it('does not count a quick stream that delivered output', async () => {
+    mount('j1', true)
+    await flush()
+
+    await quickEmptyStream()
+    await quickEmptyStream()
+    server.streams[2].send({ offset: 3, data: 'hi\n', running: true })
+    await quickEmptyStream()
+    await quickEmptyStream()
+    await quickEmptyStream()
+
+    // Two empty streams, one with output, two empty: never three in a row.
+    expect(server.streams).toHaveLength(6)
+    expect(server.streams[5].offset).toBe(3)
+    expect(server.polls).toHaveLength(0)
+  })
+
+  it('does not count quiet streams that stayed open until the cap', async () => {
+    mount('j1', true)
+    await flush()
+
+    // A queued job can print nothing for a whole server cap, repeatedly.
+    for (let i = 0; i < 4; i++) await endAtCap(server.streams[i])
+
+    expect(server.streams).toHaveLength(5)
+    expect(server.streams[4].signal.aborted).toBe(false)
+    expect(server.polls).toHaveLength(0)
+  })
+
   it('reconnects at once after a stream that ran for its full cap', async () => {
     mount('j1', true)
     await flush()
