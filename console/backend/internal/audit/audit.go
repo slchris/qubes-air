@@ -30,10 +30,11 @@ type Entry struct {
 	// taken from the client.
 	RequestID string
 	// Authenticated reports whether a credential was resolved for the request.
-	// When false the entry is rendered as AnonymousSubject with no zone scope,
-	// whatever Subject and ZoneScope hold: an unauthenticated request must not
-	// read as fleet-wide, and forgetting to set this fails towards "anonymous"
-	// rather than towards a claimed identity.
+	// When false the entry is rendered as AnonymousSubject with no zone scope
+	// (or "unrestricted" when AuthDisabled), whatever Subject and ZoneScope
+	// hold: an unauthenticated request must not read as a credential's scope,
+	// and forgetting to set this fails towards "anonymous" rather than towards
+	// a claimed identity.
 	Authenticated bool
 	Subject       string
 	Source        string
@@ -47,6 +48,11 @@ type Entry struct {
 	// means fleet-wide; it is recorded so a denial can be attributed both to a
 	// subject and to the scope it was acting under.
 	ZoneScope []string
+	// AuthDisabled reports that the console runs with authentication turned
+	// off, so a request without a credential still acted with fleet-wide
+	// authority. It only changes how an unauthenticated entry's zone scope
+	// reads ("unrestricted" rather than "none"); it grants nothing.
+	AuthDisabled bool
 }
 
 // AnonymousSubject is the subject recorded for a request no credential was
@@ -60,6 +66,11 @@ const AnonymousSubject = "anonymous"
 // "fleet" on purpose: a request that presented no valid credential acted under
 // no scope at all.
 const noZoneScope = "none"
+
+// unrestrictedZoneScope is the zone_scope of an unauthenticated entry while
+// authentication is disabled. Such a request is not refused by anything and
+// can reach every zone, so recording "none" would understate what it could do.
+const unrestrictedZoneScope = "unrestricted"
 
 // MaxObjectBytes caps the object field. The object is a path parameter and the
 // audit middleware runs before authentication, so it is the one field an
@@ -92,6 +103,9 @@ func (r *Recorder) Record(e Entry) {
 	subject, scope := e.Subject, zoneScope(e.ZoneScope)
 	if !e.Authenticated {
 		subject, scope = AnonymousSubject, noZoneScope
+		if e.AuthDisabled {
+			scope = unrestrictedZoneScope
+		}
 	}
 	object, truncated := boundObject(e.Object)
 	r.logger.LogAttrs(context.Background(), slog.LevelInfo, "audit",

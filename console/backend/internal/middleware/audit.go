@@ -28,6 +28,18 @@ func markDenied(c *gin.Context) {
 	c.Set(deniedContextKey, true)
 }
 
+// authDisabledContextKey marks a request ScopedAuth let through because no
+// credential is configured. Audit needs it to tell such a request, which acted
+// with fleet-wide authority, from one that merely presented no credential.
+const authDisabledContextKey = "middleware.auth.disabled"
+
+// markAuthDisabled records that authentication is turned off for this request.
+// Only ScopedAuth's pass-through calls it; it is read for the audit line only
+// and grants nothing.
+func markAuthDisabled(c *gin.Context) {
+	c.Set(authDisabledContextKey, true)
+}
+
 // Audit records every MUTATING API request as a structured entry, including the
 // ones the rest of the chain refuses.
 //
@@ -47,7 +59,8 @@ func markDenied(c *gin.Context) {
 // Subject comes from the resolved credential (Bearer token or session); Source
 // is the client address. A request with no resolved credential (a failed or
 // missing Bearer, an unknown session, a login attempt) is recorded as
-// unauthenticated, which the recorder renders as the anonymous subject.
+// unauthenticated, which the recorder renders as the anonymous subject; while
+// authentication is disabled its zone scope reads "unrestricted".
 //
 // Object is the one field the caller chooses freely, and Audit runs before
 // authentication, so the recorder caps it (audit.MaxObjectBytes) to keep one
@@ -104,5 +117,6 @@ func auditEntry(c *gin.Context, requestID string, started time.Time) audit.Entry
 		Outcome:       outcome,
 		LatencyMS:     time.Since(started).Milliseconds(),
 		ZoneScope:     zones,
+		AuthDisabled:  c.GetBool(authDisabledContextKey),
 	}
 }

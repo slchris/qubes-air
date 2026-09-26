@@ -120,6 +120,7 @@ func ScopedAuth(apiToken string, scoped []Token, sessions *SessionStore) gin.Han
 
 	return func(c *gin.Context) {
 		if authDisabled {
+			markAuthDisabled(c)
 			c.Next()
 			return
 		}

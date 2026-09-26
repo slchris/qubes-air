@@ -377,6 +377,29 @@ func TestAPIAuditRecordsSuccessOnce(t *testing.T) {
 	assertNoCredentialMaterial(t, buf, "client-chosen-id")
 }
 
+// TestAPIAuditRecordsAuthDisabledAsUnrestricted covers a console with no
+// credential configured: nothing refuses the request and it can reach every
+// zone, so its line must say "unrestricted" rather than the "none" a request
+// refused by authentication gets.
+func TestAPIAuditRecordsAuthDisabledAsUnrestricted(t *testing.T) {
+	r, buf, _ := auditedAPI(t, func(cfg *config.Config) {
+		cfg.Auth.APIToken = ""
+		cfg.Auth.Tokens = nil
+	})
+
+	w := apiRequest(r, http.MethodPost, "/api/v1/qubes/q-b/start", "", nil)
+
+	require.Equal(t, http.StatusAccepted, w.Code)
+	assertAuditFields(t, onlyAuditLine(t, buf), w, map[string]any{
+		"outcome":       audit.OutcomeSuccess,
+		"authenticated": false,
+		"subject":       audit.AnonymousSubject,
+		"zone_scope":    "unrestricted",
+		"route":         startRoute,
+		"object":        "q-b",
+	})
+}
+
 // TestAPIAuditSkipsReadsEvenWhenDenied pins the documented boundary: reads,
 // allowed or refused, are not audit events (the access log still has them).
 func TestAPIAuditSkipsReadsEvenWhenDenied(t *testing.T) {

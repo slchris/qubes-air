@@ -77,8 +77,8 @@ auth:
   列表是 fleet 端点，zone token 一律 403（不做半真半假的过滤视图）。
 - `GET /zones` 与 `GET /qubes` 在查询层按白名单过滤，只返回可见对象。
 - 所属关系无法解析（数据库故障、body 不可解析或超限）时失败关闭，不回退为放行。
-- 审计记录 `subject` 与 `zone_scope`（`fleet` 或 ID 列表）；被拒绝的变更请求同样入库，
-  见下文“Console API 审计”。
+- 审计记录 `subject` 与 `zone_scope`（`fleet`、ID 列表，未认证为 `none`，鉴权关闭为 `unrestricted`）；
+  被拒绝的变更请求同样入库，见下文“Console API 审计”。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
 扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。
@@ -98,9 +98,10 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
 - 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、
   `object`、`object_truncated`、`status`、`outcome`、`latency_ms`。
-- 没有解析出凭据的请求（认证失败、登录请求，以及鉴权关闭时的全部请求）记为 `authenticated: false`、
-  `subject: anonymous`、`zone_scope: none`，不会被写成 fleet 范围。判断是否认证以 `authenticated`
-  为准，名为 `anonymous` 的 token 不会与之混淆。
+- 没有解析出凭据的请求（认证失败、登录请求）记为 `authenticated: false`、`subject: anonymous`、
+  `zone_scope: none`，不会被写成 fleet 范围。鉴权关闭（没有配置任何 token）时请求同样记为
+  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`。判断是否
+  认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
 - `object` 取路径参数 `:id`（没有时取 `:app`），最多保留前 128 字节，按 UTF-8 字符边界截断；
   截断时 `object_truncated: true`。
 - `request_id` 由服务端生成（128 位随机），同一个值通过响应头 `X-Request-Id` 返回给调用方；

@@ -127,6 +127,40 @@ func TestRecorderRendersUnauthenticatedEntry(t *testing.T) {
 	}
 }
 
+// TestRecorderRendersAuthDisabledEntry pins the zone scope of a request made
+// while authentication is disabled: it reached everything, so it must not
+// read "none", and the flag must not change how an authenticated entry reads.
+func TestRecorderRendersAuthDisabledEntry(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry Entry
+		want  map[string]any
+	}{
+		{
+			name:  "unauthenticated",
+			entry: Entry{AuthDisabled: true, Subject: "operator@zone", ZoneScope: []string{"zone-a"}},
+			want:  map[string]any{"authenticated": false, "subject": AnonymousSubject, "zone_scope": "unrestricted"},
+		},
+		{
+			name:  "authenticated",
+			entry: Entry{AuthDisabled: true, Authenticated: true, Subject: "operator@zone", ZoneScope: []string{"zone-a"}},
+			want:  map[string]any{"authenticated": true, "subject": "operator@zone", "zone_scope": "zone-a"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			NewRecorder(&buf).Record(tc.entry)
+			got := decodeLine(t, &buf)
+			for key, want := range tc.want {
+				if got[key] != want {
+					t.Errorf("audit field %q = %v, want %v", key, got[key], want)
+				}
+			}
+		})
+	}
+}
+
 // TestBoundObjectCutsOnCharacterBoundary covers the object cap at and around
 // MaxObjectBytes, including a multi-byte character straddling the cap, which
 // must be dropped whole rather than split into invalid UTF-8.
