@@ -130,8 +130,65 @@ func (a *Adapter) nextID(ctx context.Context) (int, error) {
 
 // vmStatus is the subset of a VM's status this adapter reads.
 type vmStatus struct {
-	Status string `json:"status"`
-	VMID   int    `json:"vmid"`
+	Status    string   `json:"status"`
+	VMID      int      `json:"vmid"`
+	CPU       *float64 `json:"cpu"`
+	Mem       *int64   `json:"mem"`
+	MaxMem    *int64   `json:"maxmem"`
+	DiskRead  *int64   `json:"diskread"`
+	DiskWrite *int64   `json:"diskwrite"`
+	NetIn     *int64   `json:"netin"`
+	NetOut    *int64   `json:"netout"`
+}
+
+// RuntimeMetrics reads live QEMU counters. PVE's status endpoint provides
+// cumulative I/O counters from the current VM process lifetime, so these are
+// intentionally exposed as counters, not inferred rates.
+func (a *Adapter) RuntimeMetrics(ctx context.Context, q *models.Qube, in provider.Infra) (provider.RuntimeMetrics, error) {
+	if q == nil || q.ID == "" {
+		return provider.RuntimeMetrics{}, errors.New("proxmox: qube identity is required for metrics")
+	}
+	if in.ComputeVMID <= 0 || in.Node == "" {
+		return provider.RuntimeMetrics{}, errors.New("proxmox: running compute identity is required for metrics")
+	}
+	if _, err := a.ownedConfig(ctx, q, in.Node, in.ComputeVMID, "compute"); err != nil {
+		return provider.RuntimeMetrics{}, fmt.Errorf("proxmox: verify Qube %q metrics ownership: %w", q.Name, err)
+	}
+	var status vmStatus
+	path := fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/current", url.PathEscape(in.Node), in.ComputeVMID)
+	if err := a.client.get(ctx, path, &status); err != nil {
+		return provider.RuntimeMetrics{}, fmt.Errorf("proxmox: read Qube %q runtime metrics: %w", q.Name, err)
+	}
+	if err := validateRuntimeMetrics(q.Name, status); err != nil {
+		return provider.RuntimeMetrics{}, err
+	}
+	return provider.RuntimeMetrics{
+		CapturedAt: time.Now().UTC(), Source: "proxmox-qemu-status-current",
+		CPUFraction: status.CPU, MemoryUsedBytes: status.Mem, MemoryMaxBytes: status.MaxMem,
+		DiskReadBytes: status.DiskRead, DiskWriteBytes: status.DiskWrite,
+		NetworkInBytes: status.NetIn, NetworkOutBytes: status.NetOut,
+	}, nil
+}
+
+func validateRuntimeMetrics(qubeName string, status vmStatus) error {
+	if status.Status != vmStatusRunning {
+		return fmt.Errorf("proxmox: Qube %q is %q, not running", qubeName, status.Status)
+	}
+	if status.CPU == nil || status.Mem == nil || status.MaxMem == nil {
+		return fmt.Errorf("proxmox: Qube %q status omitted required CPU or memory metrics", qubeName)
+	}
+	// cpu may exceed 1 (inferred, not verified on a cluster: QEMU threads beyond
+	// the vCPUs count toward it); it is passed through as measured. JSON cannot
+	// carry NaN or Inf, so a negative value is the only impossible one.
+	if *status.CPU < 0 || *status.Mem < 0 || *status.MaxMem <= 0 {
+		return fmt.Errorf("proxmox: Qube %q returned invalid CPU or memory metrics", qubeName)
+	}
+	for _, counter := range []*int64{status.DiskRead, status.DiskWrite, status.NetIn, status.NetOut} {
+		if counter != nil && *counter < 0 {
+			return fmt.Errorf("proxmox: Qube %q returned a negative I/O counter", qubeName)
+		}
+	}
+	return nil
 }
 
 // vmExists reports whether a VM id is present on a node.
@@ -649,4 +706,12 @@ func (a *Adapter) agentIP(ctx context.Context, node string, vmid int) string {
 		}
 	}
 	return ""
+}
+
+// CloseIdleConnections drops this adapter's idle keep-alive connections. A
+// caller that builds an adapter for one bounded piece of work, such as a
+// metrics sweep, calls it when done so the connections do not wait for the
+// transport's idle timeout.
+func (a *Adapter) CloseIdleConnections() {
+	a.client.http.CloseIdleConnections()
 }

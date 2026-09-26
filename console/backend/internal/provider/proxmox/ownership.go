@@ -27,7 +27,7 @@ func (a *Adapter) ownedConfig(ctx context.Context, q *models.Qube, node string, 
 		return nil, fmt.Errorf("proxmox: VM %d ownership mismatch; refusing %s operation", vmid, role)
 	}
 	if lock, _ := cfg["lock"].(string); lock != "" {
-		return nil, fmt.Errorf("proxmox: VM %d remains locked; retry after the provider task settles", vmid)
+		return nil, fmt.Errorf("proxmox: VM %d remains locked (%w); retry after the provider task settles", vmid, provider.ErrInstanceBusy)
 	}
 	return cfg, nil
 }

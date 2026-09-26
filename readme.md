@@ -25,7 +25,7 @@ agent。
 | GCP / AWS / Azure | 未完成 | 未注册适配器，不能用于置备；API 拒绝创建这类 zone，UI 标为不可选 |
 | 控制台安全 | 已实现基础控制 | 短期 session、读写 scope、请求边界与结构化审计；命名 token 可按 zone 限制可见和可操作的对象，不是完整多租户，UI 未做可见性降级 |
 | 备份 / 恢复 | 已实现工具 | 加密归档和 schema 检查；离机恢复演练尚未完成 |
-| 监控 / 账单 | 占位 | 页面和 API 存在，尚未接真实指标与云账单 |
+| 监控 / 账单 | 部分实现 | Console 主机指标（仅 Linux）与 Proxmox 运行中 Qube 的实时 CPU/内存/I/O 已接真实数据，缺失值带原因、不显示为零；Qube 读数未在真机 PVE 上核对；告警与云账单尚未接入 |
 
 Qubes 侧的 Salt states 以
 [qubes-salt-config](https://github.com/slchris/qubes-salt-config) 为唯一来源。
@@ -134,8 +134,8 @@ npm run build
 
 - 收尾无缝桌面：菜单同步、单击启动、断线恢复与多窗口验收。
 - 实现并验收 GCP/AWS 原生适配器及其网络可达性。
-- 把监控、告警和账单页接到真实数据源。
-- 补齐恢复/销毁演练、崩溃恢复回归和多租户边界；按 zone 的对象级授权已实现，UI 可见性降级未做。
+- 把告警和账单页接到真实数据源；其他 provider 的 Qube 运行指标随适配器补齐。
+- 补齐恢复/销毁演练、崩溃恢复回归和多租户边界；按 zone 的对象级授权与 UI 可见性降级已实现。
 - 在当前 `main` 的构建上重跑真机生命周期并绑定 revision（M0-5），补齐 Exec/FileCopy、数据持久性与离机恢复的真机验收（M1-2/3/4）。
 
 具体优先级与验收条件见 [TODO](docs/TODO.md)。

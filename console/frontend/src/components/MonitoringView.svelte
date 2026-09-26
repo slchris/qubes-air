@@ -2,6 +2,7 @@
   Qubes Air Console - Monitoring View Component
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { apiFetch, getZoneCapacity, listZones } from '../lib/api';
   import type { Zone, ZoneCapacity } from '../lib/types';
   import { SCHEDULER_HEADROOM } from '../lib/types';
@@ -12,11 +13,14 @@
   }
 
   interface SystemMetrics {
-    cpuUsage: number;
-    memoryUsage: number;
-    diskUsage: number;
-    networkIn: number;
-    networkOut: number;
+    cpuUsage: number | null;
+    memoryUsage: number | null;
+    diskUsage: number | null;
+    networkIn: number | null;
+    networkOut: number | null;
+    source?: string;
+    capturedAt?: string;
+    reason?: string;
   }
 
   interface Alert {
@@ -24,18 +28,61 @@
     severity: 'critical' | 'warning' | 'info';
     message: string;
     source: string;
-    timestamp: string;
+    timestamp?: string;
     acknowledged: boolean;
+  }
+
+  // A value the provider did not report is absent (or null); either way it is
+  // shown as missing, never as 0.
+  interface RuntimeValues {
+    captured_at: string;
+    source: string;
+    cpu_fraction?: number | null;
+    memory_used_bytes?: number | null;
+    memory_max_bytes?: number | null;
+    disk_read_bytes?: number | null;
+    disk_write_bytes?: number | null;
+    network_in_bytes?: number | null;
+    network_out_bytes?: number | null;
+  }
+
+  interface QubeRuntimeMetric {
+    qube_id: string;
+    qube_name: string;
+    zone_id: string;
+    state: string;
+    reason?: string;
+    metrics?: RuntimeValues;
   }
 
   let metrics = $state<SystemMetrics | null>(null);
   let alerts = $state<Alert[]>([]);
+  // The backend says when alerting is not wired yet; an empty list must then
+  // not be shown as "all systems operational".
+  let alertsNotImplemented = $state(false);
   let loading = $state(true);
+  // error replaces the view only while nothing has loaded yet. A failed poll
+  // after that keeps the last good values on screen and reports itself in
+  // refreshError, next to the capture time it leaves in place.
   let error = $state<string | null>(null);
-  // The backend flags these numbers as placeholder and says what they actually
-  // describe. Dropping that was how "Disk Usage 0%" got shown as a measurement.
-  let placeholder = $state(false);
+  let refreshError = $state<string | null>(null);
+  let overviewLoaded = false;
+  // Keep partial host observations explicit; missing values are not zero.
   let note = $state<string | null>(null);
+  let runtimeMetrics = $state<QubeRuntimeMetric[]>([]);
+  let loadingRuntimeMetrics = $state(false);
+  let runtimeMetricsError = $state<string | null>(null);
+  let runtimeMetricsRequest = 0;
+  let runtimeMetricsLoaded = false;
+  let monitoringRequest = 0;
+  // The time staleness is judged against. The 15s timer keeps it moving while
+  // nothing loads; every successful load also sets it, so fresh data is never
+  // compared with an old clock.
+  let runtimeClock = $state(Date.now());
+  const runtimeMetricsStaleAfterMs = 120_000;
+  // A poll with no answer by then is aborted and treated as a failed refresh,
+  // so a hung request cannot leave the last values on screen unflagged.
+  const pollTimeoutMs = 20_000;
 
   // A percentage to two places. The raw value is a float like 34.7182931, which
   // is what the operator meant by "小数点后太多了". Clamped so a bad number
@@ -44,10 +91,9 @@
     return (Math.max(0, Math.min(100, v ?? 0))).toFixed(2);
   }
 
-  // Real fleet data. /monitoring describes the console's own Go runtime; the
-  // numbers that say anything about the infrastructure come per-zone from
-  // /zones/:id/capacity, which was already implemented and only ever consumed
-  // inside the create-qube modal.
+  // Cluster capacity comes per zone from /zones/:id/capacity. It is the
+  // provider's view of each node; /monitoring describes only the host the
+  // Console runs on, and /monitoring/qubes each qube's own VM.
   interface ZoneCap { zone: Zone; cap: ZoneCapacity | null; error: string | null }
   let zoneCaps = $state<ZoneCap[]>([]);
   let loadingCaps = $state(false);
@@ -90,29 +136,108 @@
     return n.mem_total_bytes ? (n.mem_used_bytes / n.mem_total_bytes) * 100 : 0;
   }
 
-  async function loadMonitoring() {
-    loading = true;
-    error = null;
+  interface OverviewResponse {
+    metrics?: SystemMetrics | null;
+    alerts?: Alert[];
+    alerts_status?: string;
+    note?: string;
+  }
+
+  // pollJSON fetches one polled endpoint with a deadline covering the body.
+  async function pollJSON<T>(path: string, failure: string): Promise<T> {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), pollTimeoutMs);
     try {
-      const response = await apiFetch(`/monitoring`);
-      if (!response.ok) throw new Error('Failed to load monitoring data');
-      const data = await response.json();
-      metrics = data.metrics || null;
-      alerts = data.alerts || [];
-      placeholder = data.placeholder === true;
-      note = data.note || null;
+      const response = await apiFetch(path, { signal: controller.signal });
+      if (!response.ok) throw new Error(failure);
+      return (await response.json()) as T;
     } catch (e) {
-      error = e instanceof Error ? e.message : 'Unknown error';
-      metrics = null;
-      alerts = [];
+      if (controller.signal.aborted) throw new Error(`${failure}: no answer within ${pollTimeoutMs / 1000}s`);
+      throw e;
     } finally {
-      loading = false;
+      window.clearTimeout(timer);
     }
   }
 
-  $effect(() => {
-    loadMonitoring();
-    loadCapacity();
+  async function loadMonitoring() {
+    const requestID = ++monitoringRequest;
+    if (!overviewLoaded) loading = true;
+    error = null;
+    try {
+      const data = await pollJSON<OverviewResponse>('/monitoring', 'Failed to load monitoring data');
+      if (requestID === monitoringRequest) {
+        runtimeClock = Date.now();
+        metrics = data.metrics || null;
+        alerts = data.alerts || [];
+        alertsNotImplemented = data.alerts_status === 'not_implemented';
+        note = data.note || null;
+        refreshError = null;
+        overviewLoaded = true;
+      }
+    } catch (e) {
+      if (requestID === monitoringRequest) {
+        const message = e instanceof Error ? e.message : 'Unknown error';
+        if (overviewLoaded) {
+          refreshError = message;
+        } else {
+          error = message;
+          metrics = null;
+          alerts = [];
+        }
+      }
+    } finally {
+      if (requestID === monitoringRequest) loading = false;
+    }
+  }
+
+  async function loadRuntimeMetrics() {
+    const requestID = ++runtimeMetricsRequest;
+    if (!runtimeMetricsLoaded) loadingRuntimeMetrics = true;
+    try {
+      const data = await pollJSON<{ items?: QubeRuntimeMetric[] }>('/monitoring/qubes', 'Provider runtime metrics are unavailable');
+      if (requestID === runtimeMetricsRequest) {
+        runtimeClock = Date.now();
+        runtimeMetrics = data.items ?? [];
+        runtimeMetricsError = null;
+      }
+    } catch (e) {
+      // The last good reading stays; its captured_at ages into "stale" if the
+      // failures continue, so it is never passed off as current.
+      if (requestID === runtimeMetricsRequest) {
+        runtimeMetricsError = e instanceof Error ? e.message : 'Provider runtime metrics are unavailable';
+      }
+    } finally {
+      if (requestID === runtimeMetricsRequest) {
+        runtimeMetricsLoaded = true;
+        loadingRuntimeMetrics = false;
+      }
+    }
+  }
+
+  // One staleness rule for every measurement on this page: older than two
+  // minutes, more than 30s in the future, or without a readable time.
+  function isStale(capturedAt?: string): boolean {
+    const capturedMillis = capturedAt ? Date.parse(capturedAt) : NaN;
+    const age = runtimeClock - capturedMillis;
+    return !Number.isFinite(capturedMillis) || age > runtimeMetricsStaleAfterMs || age < -30_000;
+  }
+
+  function refreshAll() {
+    void Promise.all([loadMonitoring(), loadCapacity(), loadRuntimeMetrics()]);
+  }
+
+  onMount(() => {
+    void loadMonitoring();
+    void loadCapacity();
+    void loadRuntimeMetrics();
+    const clockTimer = window.setInterval(() => { runtimeClock = Date.now(); }, 15_000);
+    const refreshTimer = window.setInterval(() => { void loadRuntimeMetrics(); }, 60_000);
+    const overviewTimer = window.setInterval(() => { void loadMonitoring(); }, 60_000);
+    return () => {
+      window.clearInterval(clockTimer);
+      window.clearInterval(refreshTimer);
+      window.clearInterval(overviewTimer);
+    };
   });
 
   function getSeverityClass(severity: string): string {
@@ -127,15 +252,32 @@
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
-  function formatTime(dateStr: string): string {
-    return new Date(dateStr).toLocaleString();
+  function runtimeMetricReason(reason?: string): string {
+    switch (reason) {
+      case 'qube_not_running': return 'Not running; runtime metrics are not available.';
+      case 'zone_unavailable': return 'Zone record is unavailable.';
+      case 'infrastructure_unavailable': return 'Infrastructure record is unavailable.';
+      case 'infrastructure_missing': return 'Provider compute identity is missing.';
+      case 'provider_unavailable': return 'Provider adapter or credentials are unavailable.';
+      case 'provider_metrics_unsupported': return 'This provider does not report per-Qube runtime metrics.';
+      case 'provider_metrics_unavailable': return 'Provider could not return a current measurement.';
+      case 'provider_metrics_timeout': return 'Provider did not answer in time; try again later.';
+      case 'provider_busy': return 'A provider task (for example a backup) holds this VM; try again later.';
+      default: return 'Runtime metrics are unavailable.';
+    }
+  }
+
+  function formatTime(dateStr?: string): string {
+    if (!dateStr) return 'Observation time unavailable';
+    const date = new Date(dateStr);
+    return Number.isNaN(date.getTime()) ? 'Observation time unavailable' : date.toLocaleString();
   }
 </script>
 
 <div class="monitoring-view">
   <div class="header">
     <h2>Monitoring</h2>
-    <button class="btn-secondary" onclick={loadMonitoring}>↻ Refresh</button>
+    <button class="btn-secondary" onclick={refreshAll}>↻ Refresh</button>
   </div>
 
   {#if loading}
@@ -147,9 +289,7 @@
     </div>
   {:else}
 
-    <!-- Real numbers first. Everything below this section describes the console
-         process, not the fleet, and leading with it was how "Disk 0%" came to
-         be read as a measurement. -->
+    <!-- Provider and host measurements are labeled by their source. -->
     <section class="capacity">
       <h3>Cluster capacity</h3>
       {#if loadingCaps}
@@ -204,52 +344,103 @@
       {/if}
     </section>
 
-    {#if placeholder}
-      <div class="placeholder-banner">
-        <strong>Placeholder metrics.</strong>
-        {note || 'These describe the console process, not the managed qubes or zones.'}
-        Per-node cluster capacity is real — see the Zones view.
-      </div>
-    {/if}
+    <section class="section">
+      <h3>Qube runtime metrics</h3>
+      {#if runtimeMetricsError}
+        <p class="error inline-error" role="alert">
+          {runtimeMetricsError}{#if runtimeMetrics.length > 0}; showing the last successful reading{/if}
+        </p>
+      {/if}
+      {#if loadingRuntimeMetrics}
+        <p class="muted">Reading live provider metrics…</p>
+      {:else if runtimeMetrics.length === 0}
+        {#if !runtimeMetricsError}<p class="muted">No qubes are recorded.</p>{/if}
+      {:else}
+        <div class="runtime-list">
+          {#each runtimeMetrics as item (item.qube_id)}
+            <article class="runtime-item">
+              <div class="runtime-title"><strong>{item.qube_name}</strong><span>{item.state}</span></div>
+              {#if item.metrics}
+                {#if isStale(item.metrics.captured_at)}
+                  <p class="runtime-stale">Stale measurement — refresh the provider connection before relying on it.</p>
+                {/if}
+                <div class="runtime-values">
+                  <!-- pct clamps to 0..100 for display only: a provider reading
+                       above 1 (PVE, unverified) shows as 100.00%. -->
+                  <span>CPU {item.metrics.cpu_fraction == null ? '—' : `${pct(item.metrics.cpu_fraction * 100)}%`}</span>
+                  <span>Memory {item.metrics.memory_used_bytes == null || item.metrics.memory_max_bytes == null
+                    ? '—'
+                    : `${formatBytes(item.metrics.memory_used_bytes)} / ${formatBytes(item.metrics.memory_max_bytes)}`}</span>
+                  <span>Disk I/O since start {item.metrics.disk_read_bytes == null || item.metrics.disk_write_bytes == null
+                    ? '—'
+                    : `↓ ${formatBytes(item.metrics.disk_read_bytes)} · ↑ ${formatBytes(item.metrics.disk_write_bytes)}`}</span>
+                  <span>Network since start {item.metrics.network_in_bytes == null || item.metrics.network_out_bytes == null
+                    ? '—'
+                    : `↓ ${formatBytes(item.metrics.network_in_bytes)} · ↑ ${formatBytes(item.metrics.network_out_bytes)}`}</span>
+                </div>
+                <small>{item.metrics.source} · {formatTime(item.metrics.captured_at)}</small>
+              {:else}
+                <p class="muted">{runtimeMetricReason(item.reason)}</p>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+    </section>
 
-    <h3 class="ph-head">Console process</h3>
+    <h3 class="ph-head">Console host</h3>
+    {#if refreshError}
+      <p class="error inline-error" role="alert">
+        Refresh failed: {refreshError}; showing the last values{#if metrics?.capturedAt} (captured {formatTime(metrics.capturedAt)}){/if}.
+      </p>
+    {/if}
+    {#if metrics && isStale(metrics.capturedAt)}
+      <p class="runtime-stale">Stale host measurement — these values are not current; do not rely on them.</p>
+    {/if}
+    {#if note}<p class="muted">{note}{#if metrics?.source} · {metrics.source}{/if}{#if metrics?.capturedAt} · {formatTime(metrics.capturedAt)}{/if}</p>{/if}
+    {#if metrics?.reason}<p class="muted">Unavailable: {metrics.reason}</p>{/if}
     <div class="metrics-grid">
       <div class="metric-card">
         <span class="metric-label">CPU Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {pct(metrics?.cpuUsage)}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.cpuUsage ?? undefined)}%"></div>
         </div>
-        <span class="metric-value">{pct(metrics?.cpuUsage)}%</span>
+        <span class="metric-value">{metrics?.cpuUsage == null ? '—' : `${pct(metrics.cpuUsage)}%`}</span>
       </div>
 
       <div class="metric-card">
         <span class="metric-label">Memory Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {pct(metrics?.memoryUsage)}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.memoryUsage ?? undefined)}%"></div>
         </div>
-        <span class="metric-value">{pct(metrics?.memoryUsage)}%</span>
+        <span class="metric-value">{metrics?.memoryUsage == null ? '—' : `${pct(metrics.memoryUsage)}%`}</span>
       </div>
 
       <div class="metric-card">
         <span class="metric-label">Disk Usage</span>
         <div class="metric-bar">
-          <div class="metric-fill" style="width: {pct(metrics?.diskUsage)}%"></div>
+          <div class="metric-fill" style="width: {pct(metrics?.diskUsage ?? undefined)}%"></div>
         </div>
-        <span class="metric-value">{pct(metrics?.diskUsage)}%</span>
+        <span class="metric-value">{metrics?.diskUsage == null ? '—' : `${pct(metrics.diskUsage)}%`}</span>
       </div>
 
       <div class="metric-card">
-        <span class="metric-label">Network I/O</span>
+        <span class="metric-label">Network interface I/O</span>
         <div class="network-stats">
-          <span>↓ {formatBytes(metrics?.networkIn ?? 0)}/s</span>
-          <span>↑ {formatBytes(metrics?.networkOut ?? 0)}/s</span>
+          <span>↓ {metrics?.networkIn == null ? '—' : `${formatBytes(metrics.networkIn)}/s`}</span>
+          <span>↑ {metrics?.networkOut == null ? '—' : `${formatBytes(metrics.networkOut)}/s`}</span>
         </div>
       </div>
     </div>
 
     <div class="section">
       <h3>Active Alerts</h3>
-      {#if alerts.length === 0}
+      {#if alertsNotImplemented}
+        <p class="muted not-implemented">
+          Alerting is not implemented yet. Zone and agent health are shown in their own views;
+          an empty list here does not mean the fleet is healthy.
+        </p>
+      {:else if alerts.length === 0}
         <div class="empty-alerts">
           <span class="check-icon">✓</span>
           <p>No active alerts. All systems operational.</p>
@@ -300,17 +491,23 @@
   .nodes td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--systemQuinary); }
   .nodes tr.offline td { color: var(--systemTertiary); }
 
+  .runtime-list { display: grid; gap: 8px; }
+  .runtime-item {
+    border: 1px solid var(--systemQuaternary); border-radius: var(--global-border-radius-small);
+    background: var(--pageBG); padding: 12px 16px;
+  }
+  .runtime-title { display: flex; justify-content: space-between; margin-bottom: 8px; }
+  .runtime-title span, .runtime-item small { color: var(--systemSecondary); }
+  .runtime-values { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-bottom: 6px; }
+  .runtime-stale { color: var(--systemRed); font: var(--callout-emphasized); margin: 0 0 8px; }
+  .not-implemented { margin-bottom: 1rem; }
+  .error.inline-error { padding: 0; text-align: left; margin: 0 0 8px; font: var(--callout); }
+
   .bar {
     display: inline-block; width: 90px; height: 6px; vertical-align: middle;
     background: var(--systemQuinary); border-radius: 3px; overflow: hidden; margin-right: 6px;
   }
   .bar .fill { display: block; height: 100%; background: var(--keyColor); }
-
-  .placeholder-banner {
-    margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: var(--global-border-radius-xsmall);
-    border: 1px solid var(--systemOrange); background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG)); color: var(--systemRed);
-    font: var(--body); line-height: 1.5;
-  }
 
   .monitoring-view {
     max-width: 1200px;

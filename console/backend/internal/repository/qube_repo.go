@@ -245,7 +245,7 @@ func buildQubeListQuery(opts QubeListOptions) (string, []interface{}) {
 		query += " AND zone_id IN (" + strings.Join(placeholders, ",") + ")"
 	}
 
-	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	query += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?" // id breaks created_at ties so pages cannot overlap
 	args = append(args, opts.Limit, opts.Offset)
 
 	return query, args

@@ -101,3 +101,12 @@ func TestEndpointAndRedirectRejection(t *testing.T) {
 	require.Error(t, err)
 	require.Zero(t, destinationCalls)
 }
+
+func TestClientDropsIdleConnections(t *testing.T) {
+	client, err := NewClient("https://pve.example.test:8006", "", time.Second)
+	require.NoError(t, err)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.Equal(t, IdleConnTimeout, transport.IdleConnTimeout, "a discarded client must not hold idle connections forever")
+	require.Positive(t, transport.IdleConnTimeout)
+}

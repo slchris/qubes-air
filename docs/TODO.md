@@ -79,8 +79,8 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   保存即生效，已签发 session 只缩短不延长；旧库里的越界值在启动时告警并回退 30 分钟
   （端到端测试 `console/backend/cmd/server/session_timeout_test.go`）。剩余：2FA、邮件、webhook；
   邮件与 2FA 在 UI 上禁用，服务端也拒绝开启。
-- [ ] **OBS-01：真实监控、告警与账单。** 接入真实数据源、刷新/失败状态和费用语义；验收
-  数据来源可追溯、过期/缺失不伪装为正常值，然后移除对应 placeholder。
+- [ ] **OBS-01：真实监控、告警与账单。** 指标已接：Linux Console 主机指标与 Proxmox 运行中 Qube 的实时读数，均标来源与采样时间，缺失带原因不显示为零；UI 每分钟重取（单次 20 秒无应答按失败），Qube 读数与主机指标的采样时间超 2 分钟、超前 30 秒或缺失时各自标 stale。
+  仍缺：Proxmox 读数未在真机 PVE 上核对；告警（`alerts_status=not_implemented`，确认接口返回 501）、费用数据源、其他 provider 的 Qube 指标与历史指标。
 - [ ] **CLOUD-01：GCP 原生适配器。** 实现资源与可信网络路径，完成独立生命周期及销毁验收。
 - [ ] **CLOUD-02：AWS 原生适配器。** 同样独立验收；不因 GCP 或 Proxmox 通过而视作可用。
 - [ ] **MCP-01：桌面帧与输入。** 工具仍显式失败；`internal/xpra` 单次截图客户端尚无调用方。

@@ -23,7 +23,7 @@ Console API 目标限制为 loopback，客户端拒绝重定向，避免凭据�
 
 | 类别 | 当前能力 | 启用条件 |
 |---|---|---|
-| 只读 | Qube、Zone、job、日志、监控概览、凭据元数据 | 默认注册；指标是否真实以 API placeholder 为准 |
+| 只读 | Qube、Zone、job、日志、监控概览、凭据元数据 | 默认注册；监控指标描述 Console 所在主机而不是托管 Qube，告警尚未实现（`alerts_status=not_implemented`） |
 | 控制 | 创建、启动/停止、suspend/resume、purge 等 API 操作 | MCP control scope，并持有 API 允许控制的 token |
 | 桌面应用 | desktop_apps_list、desktop_app_launch | 显式 enable-computer-use；启动还需 control 权限 |
 | 桌面帧/输入 | desktop_frame_get、desktop_input_send | 尚未实现，调用明确失败 |

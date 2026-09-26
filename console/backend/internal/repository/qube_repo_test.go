@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/models"
@@ -220,4 +221,32 @@ func TestQubeRepository_UpdateStatus(t *testing.T) {
 	retrieved, err := repo.GetByID(ctx, qube.ID)
 	assert.NoError(t, err)
 	assert.Equal(t, models.QubeStatusRunning, retrieved.Status)
+}
+
+// Qubes created in the same instant must still page deterministically: with
+// created_at alone the order among them is unspecified, so consecutive pages
+// could repeat one qube and skip another.
+func TestQubeRepository_ListPagesQubesWithEqualCreationTimesOnce(t *testing.T) {
+	db, cleanup := setupQubeTestDB(t)
+	defer cleanup()
+	repo := NewQubeRepository(db)
+	ctx := context.Background()
+	zone := createTestZone(t, NewZoneRepository(db))
+
+	created := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	for _, id := range []string{"qube-b", "qube-d", "qube-a", "qube-c"} {
+		require.NoError(t, repo.Create(ctx, &models.Qube{
+			ID: id, Name: id, Type: models.QubeTypeApp, ZoneID: zone.ID, Status: models.QubeStatusStopped,
+			CreatedAt: created, UpdatedAt: created,
+		}))
+	}
+
+	var paged []string
+	for offset := 0; offset < 4; offset++ {
+		page, err := repo.List(ctx, QubeListOptions{Limit: 1, Offset: offset})
+		require.NoError(t, err)
+		require.Len(t, page, 1)
+		paged = append(paged, page[0].ID)
+	}
+	assert.Equal(t, []string{"qube-d", "qube-c", "qube-b", "qube-a"}, paged, "equal created_at falls back to id, newest-first")
 }

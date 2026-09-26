@@ -46,6 +46,19 @@ func (ownershipFixture) ZoneOfJob(context.Context, string) (string, bool, error)
 // answer; everything under test is the middleware order setupRouter uses.
 func auditedAPI(t *testing.T, tune func(*config.Config)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
 	t.Helper()
+	return auditedAPIWith(t, tune, func(v1 *gin.RouterGroup) {
+		v1.POST("/session", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
+		v1.GET("/qubes", func(c *gin.Context) { c.Status(http.StatusOK) })
+		v1.POST("/qubes", func(c *gin.Context) { c.Status(http.StatusCreated) })
+		v1.POST("/qubes/:id/start", func(c *gin.Context) { c.Status(http.StatusAccepted) })
+		v1.POST("/zones", func(c *gin.Context) { c.Status(http.StatusCreated) })
+	})
+}
+
+// auditedAPIWith is auditedAPI with the caller's own routes mounted behind
+// the production chain.
+func auditedAPIWith(t *testing.T, tune func(*config.Config), mount func(*gin.RouterGroup)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 
 	cfg := config.DefaultConfig()
@@ -64,12 +77,7 @@ func auditedAPI(t *testing.T, tune func(*config.Config)) (*gin.Engine, *bytes.Bu
 	require.NoError(t, configureTrustedProxies(r))
 	v1 := r.Group("/api/v1")
 	v1.Use(apiMiddleware(cfg, sessions, ownershipFixture{}, audit.NewRecorder(&buf))...)
-
-	v1.POST("/session", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
-	v1.GET("/qubes", func(c *gin.Context) { c.Status(http.StatusOK) })
-	v1.POST("/qubes", func(c *gin.Context) { c.Status(http.StatusCreated) })
-	v1.POST("/qubes/:id/start", func(c *gin.Context) { c.Status(http.StatusAccepted) })
-	v1.POST("/zones", func(c *gin.Context) { c.Status(http.StatusCreated) })
+	mount(v1)
 	return r, &buf, sessions
 }
 
