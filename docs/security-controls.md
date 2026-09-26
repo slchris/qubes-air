@@ -130,6 +130,8 @@ DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 
 - 旧 keyslot 未能移除时报告 `old_key_removed:false`，Console 写入迁移标记，之后每次解锁
   都重试删除；在删除成功前该盘仍可被 master 打开。
 - 服务与 UnlockData 一样必须在 `QUBESAIR_ALLOW` 中显式启用，并新增 Python 3 解析依赖。
+- 请求按原始字节计数，连同末尾换行最多 8192 字节，超出报 `oversize`，含 NUL 报 `malformed`；
+  不会先去掉换行或 NUL 再计数，因而超量请求不会被截短后照常使用。
 - 两个服务都拒绝 `+argument`（RekeyData 报 `bad_argument`），特权半段还要求外层经
   `systemd-run --setenv` 传入的标记（`QUBESAIR_REKEY_INNER` / `QUBESAIR_UNLOCK_INNER`），
   调用方无法设置它。此前 `qubesair.RekeyData+__rekey` 会跳过外层全部校验，持有有效密钥的

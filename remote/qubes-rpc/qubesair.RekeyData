@@ -8,8 +8,9 @@
 # qube at all. The keys never leave RAM and are never written to disk.
 #
 # Contract:
-#   stdin  : one JSON object {"old":"<base64>","new":"<base64>"}. Both keys arrive
-#            over the agent's verified mTLS channel.
+#   stdin  : one JSON object {"old":"<base64>","new":"<base64>"}, at most 8192 bytes
+#            in total (trailing whitespace included; a NUL byte is refused). Both
+#            keys arrive over the agent's verified mTLS channel.
 #   stdout : one JSON line {"rekeyed":bool,"old_key_removed":bool,"reason":"...","detail":"..."}.
 #            reason is machine-readable ("already", "change_failed", "remove_failed",
 #            "no_key", "not_luks", "no_disk", "malformed", ...). ALWAYS exit 0 so
@@ -35,6 +36,10 @@
 # Requires python3, which the agent package already declares for Exec/FileCopy.
 # =====================================================================================
 set +e
+# Byte semantics for read -n and ${#payload} below, whatever locale the caller has.
+export LC_ALL=C
+# TMOUT is read's default timeout; a timeout must not end the request early.
+unset TMOUT
 
 # Re-exec target for the privileged half. Derived from $0 so the absolute
 # installed path (/etc/qubes-rpc/qubesair.RekeyData) and the test copy behave
@@ -139,9 +144,23 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 0
 fi
 
-payload="$(head -c $((MAX_REQUEST_BYTES + 1)) 2>/dev/null)"
+# Read at most MAX_REQUEST_BYTES + 1 raw bytes. Unlike a command substitution, read
+# keeps trailing newlines, so they count against the cap. Status 0 means the byte
+# limit or a NUL (which no JSON request contains and a shell variable could not
+# carry), 1 means end of input; anything else (a timeout, a read error) may have
+# left a partial request and is refused.
+IFS= read -r -d '' -n $((MAX_REQUEST_BYTES + 1)) payload
+read_status=$?
+if [ "$read_status" -gt 1 ]; then
+    emit false false malformed "could not read the request"
+    exit 0
+fi
 if [ "${#payload}" -gt "$MAX_REQUEST_BYTES" ]; then
     emit false false oversize "request exceeds ${MAX_REQUEST_BYTES} bytes"
+    exit 0
+fi
+if [ "$read_status" -eq 0 ]; then
+    emit false false malformed 'request must be a JSON object with old and new base64 string fields'
     exit 0
 fi
 
