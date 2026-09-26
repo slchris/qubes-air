@@ -19,7 +19,7 @@
 | 3 | **session cookie 的 `Secure` 属性**（与要求 1 是同一件事的两面） | `secure` 直接绑在 `server.tls.enabled` 上，**没有**单独的开关：TLS 终结在反代时 console 看到的是明文请求，cookie 就不会带 `Secure`，浏览器可能明文回传登录态 | 登录后看响应头是否 `Set-Cookie: ...; Secure`。反代终结 TLS 的场景满足不了这条，所以要求 1 才要求 TLS 由 console 自己终结、或只监听 loopback |
 | 4 | **独立 API token 并按用途分权** | 与浏览器登录共用一个全权 token，任何脚本泄露都等于全权泄露 | 用 scoped token 调 `/api/v1/*`：越权的对象应得 403 而不是 200，且审计里能看到被拒的 scope |
 | 5 | **32 字节加密密钥 / 版本化 keyring 的保管** | 数据库备份**只含密文**，恢复时缺 keyring 等于备份不可用；丢失 `qubes-air-luks-master` 会让尚未迁移的旧加密盘无法解锁 | 按[凭据与轮换](credential-vault.md)核对：密钥不在仓库、不与备份同介质存放，且恢复演练时真的能用它解开一份备份 |
-| 6 | **完整、长期、防篡改的审计留存由部署方接住** | 审计是 JSON lines 写到 **stderr**，这是唯一逐条完整的记录。console 另在库里（`audit_events`）保留 90 天，但那是有上限的副本：未认证且未成功的请求被抽样、超出只剩汇总计数，每类行数有硬上限，且库与 console 同机、可被改写（[安全控制](security-controls.md)“持久化审计”）。不接住 stderr，就没有超过 90 天、逐条完整或防篡改的审计 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期（最好转发到异地），且每行含 request_id/authenticated/auth_disabled/subject/source/method/route/object/object_truncated/status/outcome/zone scope；被拒绝的变更请求（401/403 等）同样有记录。库内副本：`sqlite3 <db> "SELECT COUNT(*), MIN(datetime(occurred_at/1e9,'unixepoch')) FROM audit_events"`，`/health` 的 `audit_trail` 应为 `ok` |
+| 6 | **完整、长期、防篡改的审计留存由部署方接住** | 审计是 JSON lines 写到 **stderr**，这是唯一逐条完整的记录。console 另在库里（`audit_events`）保留 90 天，但那是有上限的副本：限流拒绝（429）与未认证且未成功的请求被抽样、超出只剩汇总计数，每类行数有硬上限，且库与 console 同机、可被改写（[安全控制](security-controls.md)“持久化审计”）。不接住 stderr，就没有超过 90 天、逐条完整或防篡改的审计 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期（最好转发到异地），且每行含 request_id/authenticated/auth_disabled/subject/source/method/route/object/object_truncated/status/outcome/zone scope；被拒绝的变更请求（401/403 等）同样有记录。库内副本：`sqlite3 <db> "SELECT COUNT(*), MIN(datetime(occurred_at/1e9,'unixepoch')) FROM audit_events"`，`/health` 的 `audit_trail` 应为 `ok` |
 | 7 | **把"重启即全员登出"写进运维预期** | session 存在内存 map 里，console 重启后所有浏览器登录失效；依赖 session 的自动化会在重启后集体失败 | 重启 console，确认旧 session 请求得到 401；自动化改用 Bearer token（第 4 条） |
 | 8 | **snippet 共享目录只导出给 PVE 节点**（仅适用于共享存储投递，即配置了 `agent_snippet_datastore`） | 该目录是 `0755`、文件是 `0644`，其中含**一次性 bootstrap token** 与公开 CA（无私钥）。机密性完全落在"谁能挂载这个 share"上，文件权限不提供保护 | 检查导出配置（NFS/SMB/PVE storage）的允许客户端列表只含 PVE 节点；确认它没有被挂进通用共享 |
 | 9 | **一次性 bootstrap token 按 secret 保管** | 首次 bootstrap 时 console 按 token 派生的公钥 pin 认证 agent 的占位监听（G-H11），没有 token 的同网段第三方冒充不了 agent；但**读到 token 的人**能派生同一把占位密钥、也能兑换 token，所以 token 的机密性仍是这一步的全部前提 | token 的每一份副本（snippet、cloud-init 盘）都按第 8 条与下方“已知暴露面”收口；token 用后即失效、默认 1 小时过期 |
@@ -36,7 +36,7 @@
 - **一次性 bootstrap token 落在 `0644` 文件**（要求 8）：只剩共享存储投递路径如此。文件权限不提供保护，安全性等于共享目录的导出策略；能否收紧取决于 share 类型与导出设置，需要部署方决定。默认的 SSH 上传路径现在把 snippet 写成 `0600`，前提是节点上的 `/var/lib/vz/snippets` 只有 SSH 登录名可写、没有默认 ACL：否则另一个账号可以抢先在临时文件路径上放置 FIFO，默认 ACL 也会让 `umask` 失效（两项的真机复核都见[验收清单](acceptance-real-machine.md)步骤 9）。改动前上传的旧文件仍是 `0644`，要到该 qube 下次 resume 或重新 provision 才会被替换。可以在节点上用 `find /var/lib/vz/snippets -maxdepth 1 -name 'qubes-air-*' -perm -o=r` 列出这些文件，再手工 `chmod 600`。
 - **token 也在 VM 的 cloud-init 盘里**：PVE 把 user-data 生成进 compute VM 的 cloud-init 盘，guest 正是从这里读到 token。能读取这个卷的人，以及有权通过 PVE API 读取该 VM cloud-init 数据的账号，都能看到它。文件权限管不到这份副本，暴露窗口只由单次兑换和默认 1 小时 TTL 限定。
 - **bootstrap 的对端认证完全建立在 token 上**（要求 9）：console 用 token 派生的公钥 pin 认证 agent，读到 token 即可冒充；这一步不再依赖网段可信，但依赖 token 不外泄。
-- **库内审计是有界副本**（要求 6）：`audit_events` 保留 90 天、每类有行数上限，未认证且未成功的请求被抽样；逐条完整与防篡改的留存仍只有 stderr 日志。
+- **库内审计是有界副本**（要求 6）：`audit_events` 保留 90 天、每类有行数上限，429 与未认证且未成功的请求被抽样；逐条完整与防篡改的留存仍只有 stderr 日志。
 - **session 存内存**（要求 7）：重启即失效；这是运维预期，不一定要改。
 - **明文 HTTP 是默认值**（要求 1）：TLS 是可选配置，默认关闭。
 

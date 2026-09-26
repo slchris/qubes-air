@@ -169,9 +169,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-24 | 审计行留存期与清理 | **90 天**：严格早于 `now − 90 天` 的行被删，恰好等于的保留；**每小时**清理一次（启动时先清一次），每批 **1000** 行各自一个短事务，每次最多 **30 秒**，停机时取消 | `internal/service/audit_retention.go:13`（`DefaultAuditRetention`）、`:16`（`DefaultAuditPruneInterval`）、`:19`（`DefaultAuditPruneTimeout`）；分批 `internal/repository/audit_repository.go:31`（`auditPruneBatch`）、`:195`（`PruneBefore`） |
-| UD-24b | 每类行数硬上限 | `full`（已认证或成功的请求）**200,000** 行，`sampled`（未认证且未成功）**20,000** 行；插入使某类超限时在同一事务里删该类最旧的行，删到上限的 **99%**；两类互不驱逐。**上限是判断值**；行宽实测：典型约 265 字节（含索引），最大约 683 字节 | `internal/repository/audit_repository.go:24`、`:25`（常量）、`:117`（`append`）、`:134`（删到 99%）、`:147`（`trimAuditClass`） |
-| UD-24c | `sampled` 类的落库预算 | 全局令牌桶：突发 **20** 条，之后每 **10 秒** 1 条；超出只计数，有计数时每 **60 秒**写一条汇总行（`outcome: suppressed`） | `internal/audit/persist.go:28`、`:29`（`DefaultSampledBurst`/`DefaultSampledEvery`）、`:32`（`DefaultFlushInterval`）；分类 `internal/audit/audit.go:133`（`Event.Class`） |
+| UD-24 | 审计行留存期与清理 | **90 天**：严格早于 `now − 90 天` 的行被删，恰好等于的保留；**每小时**清理一次（启动时先清一次），每批 **1000** 行各自一个短事务，每次最多 **30 秒**，停机时取消 | `internal/service/audit_retention.go:13`（`DefaultAuditRetention`）、`:16`（`DefaultAuditPruneInterval`）、`:19`（`DefaultAuditPruneTimeout`）；分批 `internal/repository/audit_repository.go:31`（`auditPruneBatch`）、`:198`（`PruneBefore`） |
+| UD-24b | 每类行数硬上限 | `full`（已认证或成功的请求，429 除外）**200,000** 行，`sampled`（所有 429，以及未认证且未成功的请求）**20,000** 行；插入使某类超限时在同一事务里删该类最旧的行，删到上限的 **99%**；两类互不驱逐。**上限是判断值**；行宽实测：典型约 265 字节（含索引），最大约 683 字节 | `internal/repository/audit_repository.go:24`、`:25`（常量）、`:120`（`append`）、`:137`（删到 99%）、`:150`（`trimAuditClass`） |
+| UD-24c | `sampled` 类的落库预算 | 全局令牌桶：突发 **20** 条，之后每 **10 秒** 1 条；超出只计数，有计数时每 **60 秒**写一条汇总行（`outcome: suppressed`） | `internal/audit/persist.go:28`、`:29`（`DefaultSampledBurst`/`DefaultSampledEvery`）、`:32`（`DefaultFlushInterval`）；分类 `internal/audit/audit.go:141`（`Event.Class`） |
 | UD-24d | 落库队列、写超时与停机 | 队列 **1024**（满则丢弃并计数，不等待）；单次写 **5 秒**超时；停机排空最多 **5 秒**（另加在途写入的超时），剩余计为丢失；失败日志第一次立即写，之后每 **60 秒**最多一行 | `internal/audit/persist.go:19`（`DefaultQueueSize`）、`:21`（`DefaultWriteTimeout`）、`:24`（`DefaultStopGrace`）、`:36`（`DefaultFailureLogEvery`）、`:222`（`Submit`，不阻塞） |
 | UD-24e | `/health` 的 `audit_trail` | `ok` / `degraded`（最近一次写失败或有事件被丢，此后没有成功写入）/ `disabled`（未接线，只在测试里出现）；**只作信息**，不改变 `status` 与状态码 | `cmd/server/audittrail.go:55`（取值）、`:61`（`health`）；`cmd/server/main.go:1289`（`healthBody` 字段）、`:1311`（`healthHandler` 入参） |
 

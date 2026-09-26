@@ -121,16 +121,27 @@ const (
 
 // Class reports how the persisted trail admits e.
 //
-// Only an event that proved no credential AND did not succeed is sampled.
-// Those are the events a caller holding nothing can produce without limit:
-// Audit runs before authentication and rate limiting, so a refused POST is
-// recorded before any limiter sees it, and a throttled one is recorded too.
+// Two kinds of event are sampled, because a caller can produce them faster
+// than anything bounds on its own:
+//
+//   - a throttled request (429), authenticated or not. Rate limiting runs
+//     after authentication, so every refusal of an authenticated flood is an
+//     authenticated event; left in the full class, one token of any scope
+//     could push every other subject's records out of the table in
+//     milliseconds. Nothing happened on a 429, and its log line keeps it.
+//   - a request that proved no credential and did not succeed. Audit runs
+//     before authentication and rate limiting, so a caller holding nothing
+//     can make these without limit.
+//
 // Everything else is stored in full: an authenticated event names the
-// credential that caused it, and an unauthenticated success is either a login
-// that presented a valid token or a request made while authentication is
-// disabled, which acted with full authority and is exactly what the trail is
-// for.
+// credential that caused it and is paced by that credential's rate limit, and
+// an unauthenticated success is either a login that presented a valid token
+// or a request made while authentication is disabled, which acted with full
+// authority and is exactly what the trail is for.
 func (e Event) Class() Class {
+	if e.Status == http.StatusTooManyRequests {
+		return ClassSampled
+	}
 	if e.Authenticated || e.Outcome == OutcomeSuccess {
 		return ClassFull
 	}

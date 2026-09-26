@@ -53,11 +53,14 @@ func (c AuditCaps) of(class audit.Class) int {
 //
 // Each persist class has its own hard row cap, enforced in the same
 // transaction as the insert that would exceed it by evicting that class's
-// oldest rows. The classes never evict each other: an unauthenticated flood
-// can at most churn the sampled class (which audit.Persister's budget also
-// rate-limits), and can never push out an authenticated or successful event.
-// A credential holder can churn the full class, but only at the API rate limit
-// and with every row naming the credential.
+// oldest rows. The classes never evict each other: an unauthenticated flood,
+// or a credential flooding past its rate limit (every 429 is sampled, see
+// audit.Event.Class), can at most churn the sampled class, which
+// audit.Persister's budget also rate-limits, and can never push out a
+// full-class event. What a credential holder can still add to the full class
+// is what the API rate limit lets through (UD-1: 20 requests a second and a
+// burst of 40 per subject), each row naming the credential; at that pace one
+// token cycles the 200,000-row class in under three hours.
 //
 // Row counts are kept in memory so an insert does not count the table. They
 // are loaded on first use and again after a prune, and an eviction recounts

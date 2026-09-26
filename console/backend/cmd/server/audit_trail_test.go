@@ -301,6 +301,60 @@ func TestAPIAuditFloodIsBoundedInTheTable(t *testing.T) {
 	}
 }
 
+// A credential flooding past its rate limit cannot push another subject's
+// records out: rate limiting runs after authentication, so every 429 is an
+// authenticated event, and those are budgeted like anonymous failures rather
+// than stored in full. Only the requests the limiter let through (the burst)
+// reach the full class, whatever the token's scope.
+func TestAPIAuditTokenFloodCannotEvictAnotherSubjectsRows(t *testing.T) {
+	fixed := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	const burst = 5
+	cases := []struct {
+		name, token, path, subject string
+		passed                     int
+	}{
+		{name: "read-only token", token: auditorTokenValue, path: "/api/v1/qubes/q-a/start", subject: "auditor", passed: http.StatusForbidden},
+		{name: "zone-scoped token", token: zoneTokenValue, path: "/api/v1/qubes/q-a/start", subject: "zone-a-control", passed: http.StatusAccepted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, db, persister, _ := persistingAPI(t, func(cfg *config.Config) {
+				cfg.Server.RateLimitPerSec = 0.001
+				cfg.Server.RateLimitBurst = burst
+			}, repository.AuditCaps{Full: 4 * burst, Sampled: 25},
+				audit.PersisterConfig{Now: func() time.Time { return fixed }, Logf: (&syncLog{}).Logf})
+
+			adminIDs := make([]string, 0, burst)
+			for range burst {
+				w := apiRequest(r, http.MethodPost, "/api/v1/qubes/q-a/start", "", bearer(adminTokenValue))
+				require.Equal(t, http.StatusAccepted, w.Code)
+				adminIDs = append(adminIDs, w.Result().Header.Get(middleware.RequestIDHeader))
+			}
+			throttled := 0
+			for range 1000 {
+				w := apiRequest(r, http.MethodPost, tc.path, "", bearer(tc.token))
+				switch w.Code {
+				case tc.passed:
+				case http.StatusTooManyRequests:
+					throttled++
+				default:
+					t.Fatalf("unexpected status %d", w.Code)
+				}
+			}
+			persister.Stop()
+
+			require.Equal(t, 1000-burst, throttled, "the limiter must have refused all but the burst")
+			for _, id := range adminIDs {
+				assert.Equal(t, 1, countAuditRows(t, db, "request_id = ?", id), "a flood evicted another subject's row")
+			}
+			assert.Equal(t, burst, countAuditRows(t, db, "persist_class = 'full' AND subject = ?", tc.subject),
+				"only what the limiter let through belongs in the full class")
+			assert.Zero(t, countAuditRows(t, db, "persist_class = 'full' AND status = 429"), "a 429 must never be a full-class row")
+			assert.LessOrEqual(t, countAuditRows(t, db, "persist_class = 'sampled'"), 25)
+		})
+	}
+}
+
 func countAuditRows(t *testing.T, db *database.DB, where string, args ...any) int {
 	t.Helper()
 	var n int

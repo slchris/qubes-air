@@ -196,8 +196,10 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 - **留存**：90 天，严格早于 `now − 90 天` 的行被删（恰好等于的保留）；每小时清理一次，每批 1000 行、
   每次最多 30 秒，停机时取消。
 - **两类行，各有硬上限**（`persist_class`）：
-  - `full`：已认证的请求，以及成功的请求（登录成功、鉴权关闭时成功的请求）。每条都存，上限 200,000 行。
-  - `sampled`：没有解析出凭据**且**没有成功的请求（401、未认证时的 413/429/400/5xx）。先过全局令牌桶
+  - `full`：已认证的请求，以及成功的请求（登录成功、鉴权关闭时成功的请求），**限流拒绝（429）除外**。
+    每条都存，上限 200,000 行。
+  - `sampled`：所有 429（不论是否认证），以及没有解析出凭据**且**没有成功的请求（401、未认证时的
+    413/400/5xx）。先过全局令牌桶
     （突发 20 条，之后每 10 秒 1 条），超出的只计数，有计数时每分钟写一条汇总行（`outcome: suppressed`、
     `suppressed` 为条数、`suppressed_since` 与 `occurred_at` 为首末时间，请求字段为空）。上限 20,000 行。
   - 插入使某类超过上限时，在同一事务里删掉**该类**最旧的行，删到上限的 99%。两类互不驱逐，表的总行数
@@ -211,11 +213,17 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   令牌桶，再受独立的行数上限；匿名洪水最多轮换 `sampled` 类自己的行，驱逐不了任何 `full` 类的行
   （`TestAPIAuditFloodIsBoundedInTheTable` 走真实中间件链，`TestAuditRepositoryAnonymousFloodCannotEvictFullRows`
   逐行核对上限）。
+- 为什么 429 一律进 `sampled`：限流在认证之后运行，所以一个凭据超过限流后的每一次拒绝都是**已认证**事件。
+  若按"已认证即 `full`"处理，任何 scope 的 token（包括只读 token）都能在几毫秒内用 429 把其他主体的记录
+  全部挤出 `full` 类。429 表示什么都没发生，日志行照写，所以它和匿名失败一样走预算与 `sampled` 上限
+  （`TestAPIAuditTokenFloodCannotEvictAnotherSubjectsRows` 走真实中间件链，对只读 token 与 zone token
+  各刷 1000 次，断言另一主体的行一条不少、`full` 类里没有 429）。
 - 代价一：洪水期间，同一时段里其他匿名失败事件（例如真实操作者输错 token）在库里也只剩汇总计数。令牌桶
   是全局的，不按来源地址分：按来源分挡不住能轮换 IPv6 地址的调用方。逐条完整的记录只在 JSON 日志里，
   所以 stderr 日志仍须由部署方接住（[生产部署安全要求](deployment-requirements.md)第 6 条）。
-- 代价二：持有凭据的调用方可以在 API 限流（UD-1，20 req/s）下轮换 `full` 类，满速约 3 小时就能把最旧的
-  行挤出 200,000 行的窗口。每一行都带着它的 `subject`，这种行为本身就留在审计里；更早的记录仍靠日志。
+- 代价二：持有凭据的调用方能写进 `full` 类的只有限流放行的那部分（UD-1：按 subject 计 20 req/s，突发 40）。
+  一个 token 满速约 3 小时就能把最旧的行挤出 200,000 行的窗口，多个 token 按个数加快。每一行都带着它的
+  `subject`，这种行为本身就留在审计里；更早的记录仍靠日志。
 - 鉴权关闭时没有请求是"已认证"的：成功的请求进 `full`，失败的进 `sampled`。
 - 空间（实测）：典型行含索引约 265 字节，最大约 683 字节（128 个非法字节记成 384 字节的 U+FFFD，加最长
   的 IPv6 来源）；`full` 类约 53 MB，最坏 137 MB；`sampled` 类不超过 14 MB。SQLite 删除后不缩小文件，

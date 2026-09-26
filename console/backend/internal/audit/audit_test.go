@@ -347,9 +347,10 @@ func TestRecorderWithoutSinkOnlyLogs(t *testing.T) {
 	}
 }
 
-// TestEventClassSamplesOnlyUnprovenFailures pins which events a caller holding
-// no credential can make the store sample, and which are always stored.
-func TestEventClassSamplesOnlyUnprovenFailures(t *testing.T) {
+// TestEventClassSamplesThrottlesAndUnprovenFailures pins which events the
+// store samples (every 429, and unauthenticated failures) and which it always
+// keeps.
+func TestEventClassSamplesThrottlesAndUnprovenFailures(t *testing.T) {
 	cases := []struct {
 		name string
 		ev   Event
@@ -357,11 +358,14 @@ func TestEventClassSamplesOnlyUnprovenFailures(t *testing.T) {
 	}{
 		{"authenticated success", Event{Authenticated: true, Outcome: OutcomeSuccess}, ClassFull},
 		{"authenticated denial", Event{Authenticated: true, Outcome: OutcomeDenied}, ClassFull},
-		{"authenticated throttle", Event{Authenticated: true, Outcome: OutcomeClientError}, ClassFull},
+		{"authenticated client error", Event{Authenticated: true, Status: 400, Outcome: OutcomeClientError}, ClassFull},
+		{"authenticated throttle", Event{Authenticated: true, Status: 429, Outcome: OutcomeClientError}, ClassSampled},
+		{"session throttle", Event{Authenticated: true, Status: 429, Outcome: OutcomeClientError, ZoneScope: "zone-a"}, ClassSampled},
 		{"login with a valid token", Event{Outcome: OutcomeSuccess}, ClassFull},
 		{"auth disabled success", Event{AuthDisabled: true, Outcome: OutcomeSuccess}, ClassFull},
 		{"anonymous denial", Event{Outcome: OutcomeDenied}, ClassSampled},
-		{"anonymous throttle or oversized body", Event{Outcome: OutcomeClientError}, ClassSampled},
+		{"anonymous throttle", Event{Status: 429, Outcome: OutcomeClientError}, ClassSampled},
+		{"anonymous oversized body", Event{Status: 413, Outcome: OutcomeClientError}, ClassSampled},
 		{"anonymous server error", Event{Outcome: OutcomeError}, ClassSampled},
 		{"auth disabled failure", Event{AuthDisabled: true, Outcome: OutcomeClientError}, ClassSampled},
 	}
