@@ -5,7 +5,7 @@
 .PHONY: help build build-backup clean dev test agent-deb publish-agent-deb release-agent \
 	pre-commit audit check-tools diff-check test-race coverage-gate smoke-entrypoints \
 	lint-new lint-whole-module gosec-new gosec-ci-new \
-	complexity-new vuln-check frontend-check shellcheck-new docs-check \
+	complexity-new vuln-check frontend-check frontend-e2e shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
 	yaml-lint agent-deb-test
 
@@ -233,6 +233,14 @@ frontend-check:
 	}
 	cd console/frontend && npm run build
 	cd console/frontend && npm run test
+
+# 浏览器端到端测试：Playwright 驱动生产构建 (vite preview)，API 全部由 e2e/ 里的 page.route
+# 模拟，不连真实 console、集群或 qube，所以它证明的是 UI 调 API 的方式，不是真机可用。
+# 需要下载 Chromium，因此不进 pre-commit/audit；CI 的 Build workflow 有同名 job。
+frontend-e2e:
+	cd console/frontend && npm ci
+	cd console/frontend && npm run test:e2e:install
+	cd console/frontend && npm run test:e2e
 
 # 依赖文件发生变化时，提交前必须检查 high/critical 漏洞；完整 audit 每次都检查。
 frontend-audit-new:

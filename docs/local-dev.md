@@ -86,5 +86,16 @@ make audit
 Go lint 门禁（`lint-*`、`gosec-new`/`gosec-all`、`complexity-*`）在非 `linux/amd64` 主机上会
 再以 `GOOS=linux GOARCH=amd64` 跑一遍，与 CI 的 Go Lint 平台一致，不需要额外工具。
 
+前端浏览器 E2E 单独运行，不在 `pre-commit`/`audit` 里，因为首次会下载 Chromium：
+
+```bash
+make frontend-e2e
+```
+
+它用 Playwright 驱动生产构建（`vite preview`，端口 4173），`/api/v1` 与 `/health` 全部由
+`console/frontend/e2e/` 里的 `page.route` 模拟：覆盖登录门、创建、状态轮询、应用启动、挂起、
+purge 的取消与确认，但**不**连真实 console、集群或 qube，不能代替真机验收。CI 的 Build
+workflow 有同名 job（`frontend-e2e`），失败时上传 trace。
+
 容器测试必须挂载整个仓库并以 `console/backend` 为工作目录，测试会读取 `remote/` 和
 `packaging/`。Exec/FileCopy 测试需要 Python 3；开发镜像已包含该依赖。
