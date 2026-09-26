@@ -15,8 +15,14 @@
 
   interface Props {
     onViewChange?: (view: string) => void;
+    /**
+     * The session may address only some zones. The job history is a fleet-wide
+     * listing the server refuses such a session, so the dashboard neither asks
+     * for it nor shows its tile.
+     */
+    zoneScoped?: boolean;
   }
-  let { onViewChange }: Props = $props();
+  let { onViewChange, zoneScoped = false }: Props = $props();
 
   let qs = $state({ qubes: [] as Qube[], loading: false, error: null as string | null, jobs: {} as Record<string, string> });
   let zonesState = $state({ zones: [] as Zone[], loading: false, error: null as string | null });
@@ -31,6 +37,7 @@
 
   onMount(async () => {
     await Promise.all([qubeStore.load(), zoneStore.load()]);
+    if (zoneScoped) return;
     try {
       const r = await listJobs(undefined, 8);
       recentJobs = r.jobs ?? [];
@@ -112,7 +119,7 @@
     </button>
   {/if}
 
-  {#if failedJobs.length > 0}
+  {#if !zoneScoped && failedJobs.length > 0}
     <button class="alert bad" onclick={() => go('jobs')}>
       <strong>{failedJobs.length}</strong> recent
       {failedJobs.length === 1 ? 'job' : 'jobs'} failed
@@ -135,13 +142,15 @@
       <span class="sub">{connectedZones.length} connected</span>
     </button>
 
-    <button class="tile" onclick={() => go('jobs')}>
-      <span class="n">{recentJobs.length}</span>
-      <span class="l">Recent jobs</span>
-      <span class="sub">
-        {#if jobsError}unavailable{:else if failedJobs.length}{failedJobs.length} failed{:else}all clear{/if}
-      </span>
-    </button>
+    {#if !zoneScoped}
+      <button class="tile" onclick={() => go('jobs')}>
+        <span class="n">{recentJobs.length}</span>
+        <span class="l">Recent jobs</span>
+        <span class="sub">
+          {#if jobsError}unavailable{:else if failedJobs.length}{failedJobs.length} failed{:else}all clear{/if}
+        </span>
+      </button>
+    {/if}
   </div>
 
   <section>
@@ -170,29 +179,33 @@
     {/if}
   </section>
 
-  <section>
-    <div class="sec-head">
-      <h3>Recent activity</h3>
-      <button class="link" onclick={() => go('jobs')}>View all</button>
-    </div>
-    {#if jobsError}
-      <p class="empty">Job history unavailable ({jobsError}).</p>
-    {:else if recentJobs.length === 0}
-      <p class="empty">Nothing has run yet.</p>
-    {:else}
-      <ul class="rows">
-        {#each recentJobs.slice(0, 6) as j (j.id)}
-          <li>
-            <span class="dot job-{j.state}"></span>
-            <span class="name">{j.qube_name}</span>
-            <span class="meta">{j.action}</span>
-            <span class="meta">{j.state}</span>
-            <span class="meta">{ago(j.finished_at ?? j.started_at ?? j.enqueued_at)}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
+  <!-- The job history is fleet-wide; a zone-scoped session is refused it, and
+       an empty list here would read as "nothing has run". -->
+  {#if !zoneScoped}
+    <section>
+      <div class="sec-head">
+        <h3>Recent activity</h3>
+        <button class="link" onclick={() => go('jobs')}>View all</button>
+      </div>
+      {#if jobsError}
+        <p class="empty">Job history unavailable ({jobsError}).</p>
+      {:else if recentJobs.length === 0}
+        <p class="empty">Nothing has run yet.</p>
+      {:else}
+        <ul class="rows">
+          {#each recentJobs.slice(0, 6) as j (j.id)}
+            <li>
+              <span class="dot job-{j.state}"></span>
+              <span class="name">{j.qube_name}</span>
+              <span class="meta">{j.action}</span>
+              <span class="meta">{j.state}</span>
+              <span class="meta">{ago(j.finished_at ?? j.started_at ?? j.enqueued_at)}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  {/if}
 </div>
 
 <style>

@@ -71,7 +71,7 @@ Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的�
 | AD-3 | provider 生命周期拆成 `suspend`（销毁计算）+ `resume`（从模板重建并挂回同一数据盘） | `docs/architecture.md` §存算分离 | 数据盘是持久边界，计算是短生命周期 |
 | AD-4 | agent 身份强制 CA 签名撤销状态；刷新失败拒绝授权 | `docs/security-controls.md`；`internal/agent/*` | 撤销状态源可达性是**新增部署要求** |
 | AD-5 | 数据盘用独立随机 DEK；legacy master 只读、只用于迁移、**永不自动创建** | `internal/service/datakey.go`:19-24,72-81 | 缺 master 时迁移失败并报错，不得静默派生 |
-| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:167-170；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
+| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:173-176；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
 | AD-7 | 请求取消后的失败状态写入有独立 5 秒期限 | `docs/reliability-design.md`:14-15 | 取消不是"不落状态"的理由 |
 | AD-8 | Console 不进入数据面：只发布端点与签证书 | `docs/architecture.md` §数据面 | console 不进 RemoteVM 调用链路 |
 | AD-9 | Qubes 侧部署的唯一权威来源是外部仓库 `qubes-salt-config` | `AGENTS.md`:12 | 本仓库不复制平行部署入口 |
@@ -155,7 +155,7 @@ qubes-air/
 | QA-01 剩余真机项（Exec/FileCopy 正值、suspend/resume 数据持久性、旧盘迁移、known_hosts 带外核对） | `docs/TODO.md` QA-01 | 需真实 Qubes/Proxmox 环境；console 下发允许列表已由 M1-1 实现，但部署侧默认列表为空 |
 | OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md` OPS-01 | 需第二台机器与真实 keyring |
 | GUI-01 无缝桌面闭环 | `docs/TODO.md` GUI-01 | 需 Xpra + 真机 GUI |
-| UI-01 设置接入（session timeout / 2FA / 邮件 / webhook） | `docs/TODO.md` UI-01 | 产品功能，非本轮质量主题 |
+| UI-01 设置接入（2FA / 邮件 / webhook；session timeout 已接入） | `docs/TODO.md` UI-01 | 产品功能，非本轮质量主题 |
 | OBS-01 真实监控、告警与账单 | `docs/TODO.md` OBS-01 | 依赖外部数据源 |
 | CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md` CLOUD-01、CLOUD-02 | 未通过同等验收前不得宣称可用 |
 | QA-02 剩余：真实首次 bootstrap、应用启动 E2E、取消场景 | `docs/TODO.md` QA-02 | 部分可本机做，Sprint 1 已取"取消场景"进 T2 |

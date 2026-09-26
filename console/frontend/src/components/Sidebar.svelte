@@ -2,13 +2,23 @@
   Qubes Air Console - Sidebar Component
 -->
 <script lang="ts">
+  import { FLEET_ONLY_VIEWS } from '../lib/auth.svelte';
+
   interface Props {
     currentView: string;
     onViewChange: (view: string) => void;
     isOpen?: boolean;
+    /** The session may address only some zones: fleet-only views are greyed out. */
+    zoneScoped?: boolean;
   }
 
-  let { currentView, onViewChange, isOpen = false }: Props = $props();
+  let { currentView, onViewChange, isOpen = false, zoneScoped = false }: Props = $props();
+
+  // Greyed out rather than hidden, so a zone-scoped operator can see that the
+  // view exists and why it is out of reach. The server refuses it either way.
+  function unavailable(id: string): boolean {
+    return zoneScoped && FLEET_ONLY_VIEWS.has(id);
+  }
   
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '◎' },
@@ -28,6 +38,9 @@
       <button
         class="nav-item"
         class:active={currentView === item.id}
+        disabled={unavailable(item.id)}
+        title={unavailable(item.id) ? 'Unavailable for this zone-scoped credential' : undefined}
+        aria-label={unavailable(item.id) ? `${item.label}, unavailable for this zone-scoped credential` : item.label}
         onclick={() => onViewChange(item.id)}
       >
         <span class="icon">{item.icon}</span>
@@ -97,6 +110,18 @@
     color: var(--systemSecondary);
   }
   .nav-item.active .icon { color: var(--keyColor); }
+
+  /* Out of reach for this credential: greyed, not hidden (see unavailable()). */
+  .nav-item:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .nav-item:disabled:hover {
+      background: none;
+      color: var(--systemSecondary);
+    }
+  }
 
   @media (max-width: 768px) {
     .sidebar {

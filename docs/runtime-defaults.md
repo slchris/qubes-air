@@ -40,6 +40,9 @@
 > `cmd/server/main.go`，后者在 `initDependencies` 里把 zone service 挪到 provider registry 之后，使其后的行整体 +4。
 > §1.1 中 UD-1d/UD-1e/UD-1g/UD-23 指向该文件的引用已按合并后的工作树逐条重算并用 `sed -n` 核对；
 > 其余文件沿用上次结果。
+> 2026-09-26 会话时长接入设置页（UD-1c 改写）：`cmd/server/main.go` 在 `initDependencies` 之后新增
+> `newSettingsAndSessions`/`newConfiguredSessionStore`，其后的行整体 +24。§1.1 中 UD-1d/UD-1e/UD-1g/UD-23
+> 指向该文件的引用已逐条重算并用 `sed -n` 核对；其余文件沿用上次结果。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -52,14 +55,14 @@
 |---|---|---|---|
 | UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:628`（`RateLimitPerSec: 20`）、`:629`（`RateLimitBurst: 40`） |
 | UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:436`（`DefaultMaxBodyBytes`） |
-| UD-1c | 浏览器会话 TTL | **12 小时** | `internal/middleware/session.go:18`（`DefaultSessionTTL`） |
-| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1012`（`configureTrustedProxies`）、`:1024`（在 `setupRouter` 里调用） |
-| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:627`（接线） |
+| UD-1c | 浏览器会话 TTL | **30 分钟**；设置页 Session Timeout 可改为 **5–1440 分钟**，保存即生效：新 session 用新值，已签发的（包括保存者自己的）只缩短、不延长。库里存有越界值（旧版本不校验）时启动打 `WARNING` 并回退 30 分钟，不拒绝启动 | `internal/middleware/session.go:21`（`DefaultSessionTTL`）、`:62`（`SetTTL`）；`internal/service/settings_service.go:17`/`:18`/`:22`（`Min`/`Max`/`DefaultSessionTimeoutMinutes`）；`cmd/server/main.go:432`（`newConfiguredSessionStore`）；`internal/handler/settings_handler.go:83`（保存后 `SetTTL`） |
+| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1036`（`configureTrustedProxies`）、`:1048`（在 `setupRouter` 里调用） |
+| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:651`（接线） |
 | UD-1f | `/health` 的编排 dispatcher 心跳：空闲轮询间隔 / 判死阈值 | **5s / 15s**（阈值 = 3 次丢拍）；dispatcher 正在执行 job 时预算再加该 job 的超时（UD-1e）。**无配置键**（编译期常量） | `internal/orchestrator/health.go:11`（`DispatcherPollInterval`）、`:22`（`DispatcherStaleAfter`） |
-| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1325`（`healthProbeInterval`） |
+| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1349`（`healthProbeInterval`） |
 | UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验；重复项与任何控制字符都被拒。路径表不空而 `agent_allowed_services` 未含对应服务（`qubesair.Exec` / `qubesair.FileCopy`）时**只告警不拒绝**（启动日志 `WARNING: agent grants:`，渲染日志 `cloud-init for …`），因为 agent 会整体拒绝该服务、这组路径不授予任何能力 | `config/config.go:237`（`AgentExecAllow`）、`:242`（`AgentFileCopyRoots`）、`:901`/`:904`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go:48`（`ValidateAgentGrants`，启动时 `config.go:1071`、渲染时 `internal/service/cloudinit.go:177`）；写入 `internal/service/cloudinit.go:308` |
 | UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:127`（`bootLocked`：先取锁再 boot）、`:87`（main 的唯一调用点）、`:93`（失败即 `log.Fatalf`） |
-| UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1034`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1276`（`healthHandler` 入参）、`:1253`/`:1254`（`healthBody` 的 `build_time`/`tree` 键）、`:1373`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
+| UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1058`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1300`（`healthHandler` 入参）、`:1277`/`:1278`（`healthBody` 的 `build_time`/`tree` 键）、`:1397`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
 
 ### 1.2 transport（Relay ↔ console / agent）
 
@@ -115,7 +118,7 @@
 
 > 已知有文档描述该取值但未给常量名或行号的：
 > 请求体上限 1 MiB 见 `docs/mcp-design.md:32`（"API 的 BodyLimit 默认 1 MiB"）；
-> 会话 TTL 12 小时见 `docs/roadmap-to-production.md`〈当前代码已落地〉表的"请求与认证"行（"session TTL 默认 12h"）。
+> 会话 TTL 30 分钟见 `docs/roadmap-to-production.md`〈当前代码已落地〉表的"请求与认证"行（"session TTL 默认 30 分钟"）。
 > 本节的价值是把**常量名与行号**钉住，便于从文档反查代码。
 
 ### 1.6 qube 规格上下限（M2-12 / G-H10）
@@ -135,7 +138,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | UD-19 | GPU 卡数上下限 | **1..8** | `config.go:393-394`（字段）、`:699-700`（默认值）；服务侧 `specbounds.go:92-93`；**无仓库依据**（当前没有任何 provider 读 `Spec.GPU`），纯判断值 |
 | UD-20 | 上述 10 个键的 env 绑定 | `QUBES_AIR_QUBE_SPEC_{MIN,MAX}_{VCPU,MEMORY_MB,DISK_GB,DATA_DISK_GB,GPU_COUNT}`；缺失或非法取值保留默认（不会解析成 0） | `config.go:971-980`（逐个绑定）、`:986`（`intFromEnv`：空值与解析失败都回退到当前值） |
 | UD-21 | 非法 bounds 的处置 | **启动即失败**：`min < 1` 或 `max < min` 拒绝启动，而不是关掉校验；服务侧另有兜底（非法集合被忽略、保留默认） | `config.go:420`（`QubeSpecConfig.Validate`）、`:1046`（`Config.Validate` 中调用）；兜底 `specbounds.go:209`（`WithSpecBounds`） |
-| UD-22 | 越界错误的形状 | `invalid qube spec: <字段> <值><单位> is above the maximum <上限><单位> (qube_spec.max_<键>)`；低于下限同理。前端显示 `message` 字段（此前只显示 `error` 里的 "Bad Request"） | `specbounds.go:146`（`validateSpec`）；HTTP 400 映射 `internal/handler/qube_handler.go:341-342`；前端 `console/frontend/src/lib/api.ts:103`（`errorMessage`） |
+| UD-22 | 越界错误的形状 | `invalid qube spec: <字段> <值><单位> is above the maximum <上限><单位> (qube_spec.max_<键>)`；低于下限同理。前端显示 `message` 字段（此前只显示 `error` 里的 "Bad Request"） | `specbounds.go:146`（`validateSpec`）；HTTP 400 映射 `internal/handler/qube_handler.go:341-342`；前端 `console/frontend/src/lib/api.ts:104`（`errorMessage`） |
 
 > 依据强度分级（不要混用）：UD-15 的上限与 UD-16/17/18 的下限来自仓库里已有的表单约束或代码
 > 常量；**UD-16/17/18 的上限、以及 UD-19 整行没有仓库依据**，是按"单机自托管不应被自己绊倒"

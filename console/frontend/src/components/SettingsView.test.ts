@@ -68,3 +68,94 @@ describe('SettingsView session controls', () => {
     expect(await screen.findByText(/signed out/i)).toBeInTheDocument()
   })
 })
+
+// The security section is wired now: the timeout governs browser sessions and
+// the server refuses what it does not implement, so the page must neither offer
+// those switches nor hide the server's reason when a save is refused.
+describe('SettingsView security settings', () => {
+  function stubSettings(settings: unknown, putResponse?: { ok: boolean; status: number; body: unknown }) {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT' && putResponse) {
+        return { ok: putResponse.ok, status: putResponse.status, json: async () => putResponse.body }
+      }
+      return { ok: true, status: 200, json: async () => ({ settings }) }
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('keeps email and two-factor switches off and disabled even if the server says otherwise', async () => {
+    stubSettings({ notifications: { email: true }, security: { sessionTimeout: 30, twoFactorEnabled: true } })
+    render(SettingsView)
+
+    const email = await screen.findByLabelText(/email notifications \(not available\)/i)
+    const twoFactor = screen.getByLabelText(/two-factor authentication \(not available\)/i)
+    expect(email).toBeDisabled()
+    expect(email).not.toBeChecked()
+    expect(twoFactor).toBeDisabled()
+    expect(twoFactor).not.toBeChecked()
+  })
+
+  it('describes the timeout as live and bounds the input to 5-1440 minutes', async () => {
+    stubSettings({ security: { sessionTimeout: 45 } })
+    render(SettingsView)
+
+    const timeout = await screen.findByLabelText(/session timeout/i)
+    expect(timeout).toHaveValue(45)
+    expect(timeout).toHaveAttribute('min', '5')
+    expect(timeout).toHaveAttribute('max', '1440')
+    expect(timeout).toBeRequired()
+    expect(screen.getByText(/ends every session already older than it, this one included/i)).toBeInTheDocument()
+    expect(screen.queryByText(/session lifetime is set by the server's session store/i)).not.toBeInTheDocument()
+  })
+
+  it('saves the session timeout with the unimplemented switches off', async () => {
+    const fetchMock = stubSettings({ security: { sessionTimeout: 30 } }, { ok: true, status: 200, body: {} })
+    render(SettingsView)
+
+    const timeout = await screen.findByLabelText(/session timeout/i)
+    await userEvent.clear(timeout)
+    await userEvent.type(timeout, '45')
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }))
+
+    expect(await screen.findByText(/settings saved successfully/i)).toBeInTheDocument()
+    const put = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(put).toBeDefined()
+    const body = JSON.parse(put?.[1]?.body as string)
+    expect(body.security).toEqual({ sessionTimeout: 45, twoFactorEnabled: false })
+    expect(body.notifications.email).toBe(false)
+  })
+
+  it('shows the reason the server gave for refusing a save', async () => {
+    stubSettings({ security: { sessionTimeout: 30 } }, {
+      ok: false,
+      status: 400,
+      body: { error: 'Bad Request', message: 'invalid session timeout: 1441 minutes is outside 5-1440', code: 400 },
+    })
+    render(SettingsView)
+
+    await userEvent.click(await screen.findByRole('button', { name: /save settings/i }))
+
+    expect(await screen.findByText(/1441 minutes is outside 5-1440/i)).toBeInTheDocument()
+    expect(screen.queryByText(/settings saved successfully/i)).not.toBeInTheDocument()
+  })
+})
+
+// Server settings are a fleet endpoint the server refuses a zone-scoped
+// session. The view must not ask for them, and must keep the sign-out control.
+describe('SettingsView for a zone-scoped session', () => {
+  it('keeps the session controls and explains why server settings are absent', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    logout.mockResolvedValue(undefined)
+    render(SettingsView, { props: { zoneScoped: true, zones: ['zone-a'] } })
+
+    expect(await screen.findByText(/limited to/i)).toHaveTextContent(/zone zone-a/)
+    expect(screen.queryByRole('button', { name: /save settings/i })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/session timeout/i)).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: /sign out/i }))
+    expect(logout).toHaveBeenCalledTimes(1)
+  })
+})

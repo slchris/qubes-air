@@ -2,7 +2,20 @@
   Qubes Air Console - Settings View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch, login, logout } from '../lib/api';
+  import { getApiBaseUrl, apiFetch, login, logout, responseError } from '../lib/api';
+
+  interface Props {
+    /**
+     * The session may address only some zones. Server settings are a fleet
+     * endpoint the server refuses such a session, so the view keeps only the
+     * session controls (signing out must stay reachable).
+     */
+    zoneScoped?: boolean;
+    /** The zones the session is limited to, for the explanation. */
+    zones?: string[];
+  }
+
+  let { zoneScoped = false, zones = [] }: Props = $props();
 
   interface Settings {
     general: {
@@ -28,7 +41,7 @@
       theme: 'system',
     },
     notifications: {
-      email: true,
+      email: false,
       webhook: false,
       webhookUrl: '',
     },
@@ -55,11 +68,12 @@
         settings.general.timezone = data.settings.general?.timezone || 'UTC';
         settings.general.language = data.settings.general?.language || 'en';
         settings.general.theme = data.settings.general?.theme || 'system';
-        settings.notifications.email = data.settings.notifications?.email ?? true;
+        // Email delivery is not implemented; the server refuses to store it on.
+        settings.notifications.email = false;
         settings.notifications.webhook = data.settings.notifications?.webhook ?? false;
         settings.notifications.webhookUrl = data.settings.notifications?.webhookUrl || '';
         settings.security.sessionTimeout = data.settings.security?.sessionTimeout || 30;
-        settings.security.twoFactorEnabled = data.settings.security?.twoFactorEnabled ?? false;
+        settings.security.twoFactorEnabled = false;
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error';
@@ -107,7 +121,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });
-      if (!response.ok) throw new Error('Failed to save settings');
+      // The server names what it refused (for example a timeout outside
+      // 5-1440 minutes); a generic "failed" would leave nothing to fix.
+      if (!response.ok) throw await responseError(response);
       success = 'Settings saved successfully';
       setTimeout(() => success = null, 3000);
     } catch (e) {
@@ -118,6 +134,10 @@
   }
 
   $effect(() => {
+    if (zoneScoped) {
+      loading = false;
+      return;
+    }
     loadSettings();
   });
 
@@ -175,87 +195,102 @@
       </div>
     </section>
 
-    <form onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
+    {#if zoneScoped}
       <section class="section">
-        <h3>General</h3>
-        
-        <div class="field">
-          <label for="timezone">Timezone</label>
-          <select id="timezone" bind:value={settings.general.timezone}>
-            {#each timezones as tz}
-              <option value={tz}>{tz}</option>
-            {/each}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="language">Language</label>
-          <select id="language" bind:value={settings.general.language}>
-            {#each languages as lang}
-              <option value={lang.value}>{lang.label}</option>
-            {/each}
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="theme">Theme</label>
-          <select id="theme" bind:value={settings.general.theme}>
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </div>
-      </section>
-
-      <section class="section">
-        <h3>Notifications</h3>
-        <p class="not-wired">
-          Not implemented: these preferences are stored but no email or webhook
-          is sent.
+        <h3>Server settings</h3>
+        <p class="hint section-note">
+          Server settings apply to the whole fleet. This session is limited to
+          {zones.length === 1 ? 'zone' : 'zones'} <code>{zones.join(', ')}</code>;
+          start a session with a fleet-wide token to view or change them.
         </p>
+      </section>
+    {:else}
+      <form onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
+        <section class="section">
+          <h3>General</h3>
         
-        <div class="field checkbox">
-          <input type="checkbox" id="email-notify" bind:checked={settings.notifications.email} />
-          <label for="email-notify">Email Notifications</label>
-        </div>
-
-        <div class="field checkbox">
-          <input type="checkbox" id="webhook-notify" bind:checked={settings.notifications.webhook} />
-          <label for="webhook-notify">Webhook Notifications</label>
-        </div>
-
-        {#if settings.notifications.webhook}
           <div class="field">
-            <label for="webhook-url">Webhook URL</label>
-            <input type="url" id="webhook-url" bind:value={settings.notifications.webhookUrl} placeholder="https://..." />
+            <label for="timezone">Timezone</label>
+            <select id="timezone" bind:value={settings.general.timezone}>
+              {#each timezones as tz}
+                <option value={tz}>{tz}</option>
+              {/each}
+            </select>
           </div>
-        {/if}
-      </section>
 
-      <section class="section">
-        <h3>Security</h3>
-        <p class="not-wired">
-          Not implemented: session lifetime is set by the server's session store,
-          not this value, and two-factor authentication is not available.
-        </p>
+          <div class="field">
+            <label for="language">Language</label>
+            <select id="language" bind:value={settings.general.language}>
+              {#each languages as lang}
+                <option value={lang.value}>{lang.label}</option>
+              {/each}
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="theme">Theme</label>
+            <select id="theme" bind:value={settings.general.theme}>
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="section">
+          <h3>Notifications</h3>
+          <p class="not-wired">
+            Not implemented: no email or webhook is sent. Email cannot be turned
+            on; the webhook preference is stored but not used.
+          </p>
         
-        <div class="field">
-          <label for="session-timeout">Session Timeout (minutes)</label>
-          <input type="number" id="session-timeout" bind:value={settings.security.sessionTimeout} min="5" max="1440" />
-        </div>
+          <div class="field checkbox">
+            <input type="checkbox" id="email-notify" bind:checked={settings.notifications.email} disabled />
+            <label for="email-notify">Email Notifications (not available)</label>
+          </div>
 
-        <div class="field checkbox">
-          <input type="checkbox" id="two-factor" bind:checked={settings.security.twoFactorEnabled} />
-          <label for="two-factor">Two-Factor Authentication</label>
-        </div>
-      </section>
+          <div class="field checkbox">
+            <input type="checkbox" id="webhook-notify" bind:checked={settings.notifications.webhook} />
+            <label for="webhook-notify">Webhook Notifications</label>
+          </div>
 
-      <div class="actions">
-        <button type="submit" class="btn-primary" disabled={saving}>
-          {saving ? 'Saving...' : 'Save Settings'}
-        </button>
-      </div>
-    </form>
+          {#if settings.notifications.webhook}
+            <div class="field">
+              <label for="webhook-url">Webhook URL</label>
+              <input type="url" id="webhook-url" bind:value={settings.notifications.webhookUrl} placeholder="https://..." />
+            </div>
+          {/if}
+        </section>
+
+        <section class="section">
+          <h3>Security</h3>
+          <p class="hint section-note">
+            Session timeout sets how long a browser session lasts, 5 to 1440
+            minutes. Saving a shorter value also ends every session already older
+            than it, this one included; a longer value applies to new sessions only.
+          </p>
+          <p class="not-wired">
+            Not implemented: two-factor authentication is not available.
+          </p>
+
+          <div class="field">
+            <label for="session-timeout">Session Timeout (minutes)</label>
+            <input type="number" id="session-timeout" bind:value={settings.security.sessionTimeout} min="5" max="1440" step="1" required />
+          </div>
+
+          <div class="field checkbox">
+            <input type="checkbox" id="two-factor" bind:checked={settings.security.twoFactorEnabled} disabled />
+            <label for="two-factor">Two-Factor Authentication (not available)</label>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button type="submit" class="btn-primary" disabled={saving}>
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </form>
+    {/if}
   {/if}
 </div>
 
@@ -409,6 +444,9 @@
     font: var(--subhead);
     color: var(--text-muted, var(--systemSecondary));
     line-height: 1.5;
+  }
+  .hint.section-note {
+    margin: 0 0 0.75rem;
   }
   .not-wired {
     margin: 0 0 0.75rem;

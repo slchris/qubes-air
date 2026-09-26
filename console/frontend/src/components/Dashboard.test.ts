@@ -90,3 +90,39 @@ describe('Dashboard agent recovery alert', () => {
     expect(screen.queryByText(/restart budget/i)).not.toBeInTheDocument()
   })
 })
+
+// The job history is a fleet-wide listing the server refuses a zone-scoped
+// session. The dashboard must not ask for it, and must not show an empty job
+// summary that reads as "nothing has run".
+describe('Dashboard zone scope', () => {
+  it('neither requests nor shows job history for a zone-scoped session', async () => {
+    listQubes.mockResolvedValue({ qubes: [qubeFixture()], total: 1 } as never)
+    await qubeStore.load()
+    vi.mocked(api.listJobs).mockClear()
+    vi.mocked(api.listZones).mockClear()
+
+    render(Dashboard, { props: { zoneScoped: true } })
+
+    expect(await screen.findByText('qube-one')).toBeInTheDocument()
+    // Let onMount finish: it loads the stores first and would ask for jobs next.
+    await vi.waitFor(() => expect(api.listZones).toHaveBeenCalled())
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The qube store still seeds log links from the job listing (and swallows
+    // the 403); the dashboard's own summary request is what must not happen.
+    expect(api.listJobs).not.toHaveBeenCalledWith(undefined, 8)
+    expect(screen.queryByText(/recent jobs/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/recent activity/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the job summary to a fleet-wide session', async () => {
+    listQubes.mockResolvedValue({ qubes: [qubeFixture()], total: 1 } as never)
+    await qubeStore.load()
+    vi.mocked(api.listJobs).mockClear()
+
+    render(Dashboard, { props: { zoneScoped: false } })
+
+    expect(await screen.findByText(/recent jobs/i)).toBeInTheDocument()
+    expect(screen.getByText(/recent activity/i)).toBeInTheDocument()
+    await vi.waitFor(() => expect(api.listJobs).toHaveBeenCalledWith(undefined, 8))
+  })
+})
