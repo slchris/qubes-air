@@ -197,13 +197,18 @@ func requestZoneID(c *gin.Context) (string, bool) {
 }
 
 func forbiddenZone(c *gin.Context) {
+	markDenied(c)
 	c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 		"error": "Forbidden",
 		"code":  http.StatusForbidden,
 	})
 }
 
+// notFoundObject answers a zone refusal with 404 so a restricted caller cannot
+// tell a foreign object from a missing one; the audit trail still records it
+// as denied.
 func notFoundObject(c *gin.Context) {
+	markDenied(c)
 	c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 		"error": "Not Found",
 		"code":  http.StatusNotFound,
