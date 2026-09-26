@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/svelte'
+import { render, screen, waitFor } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { tick } from 'svelte'
 
@@ -19,6 +19,8 @@ vi.mock('../lib/api', async (importOriginal) => {
     createQube: vi.fn(),
     updateQube: vi.fn(),
     getZoneCapacity: vi.fn(),
+    getQubeAppMenus: vi.fn(),
+    launchQubeApp: vi.fn(),
   }
 })
 
@@ -117,6 +119,24 @@ describe('QubeList purge confirmation', () => {
   it('offers no purge button for a running qube', async () => {
     await renderWithQube(qubeFixture({ status: 'running' }))
     expect(screen.queryByRole('button', { name: /^purge$/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('QubeList desktop apps', () => {
+  it('opens the remote app menu for a running qube', async () => {
+    const qube = qubeFixture({ status: 'running' })
+    vi.mocked(api.getQubeAppMenus).mockResolvedValue('firefox.desktop:Name=Firefox')
+    await renderWithQube(qube)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Apps' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Applications' })).toBeInTheDocument()
+    expect(await screen.findByText('Firefox')).toBeInTheDocument()
+    expect(api.getQubeAppMenus).toHaveBeenCalledWith(qube.id, expect.any(AbortSignal))
+    await userEvent.click(screen.getByRole('button', { name: 'Close applications' }))
+    expect(screen.queryByRole('dialog', { name: 'Applications' })).not.toBeInTheDocument()
+    // Focus goes back to the control that opened the dialog, not to <body>.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Apps' })).toHaveFocus())
   })
 })
 

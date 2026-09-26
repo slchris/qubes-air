@@ -6,11 +6,13 @@
   container (QubeList) owns loading and which dialog is open.
 -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import { qubeStore } from '../lib/stores';
   import { ApiException } from '../lib/api';
   import { isTransientStatus, hasCompute } from '../lib/types';
   import type { AgentHealth, Qube, Zone } from '../lib/types';
   import JobLog from './JobLog.svelte';
+  import AppMenuDialog from './AppMenuDialog.svelte';
 
   let {
     qubes,
@@ -23,6 +25,37 @@
     zones: Zone[];
     onedit: (qube: Qube) => void;
   } = $props();
+
+  // The qube whose application menu is open. Only id and name are kept: the
+  // dialog must keep talking to the qube it was opened for even if the row
+  // object is replaced by a status poll.
+  let appQube = $state<{ id: string; name: string } | null>(null);
+  // The Apps button that opened the dialog, so closing it hands focus back.
+  let appOpener: HTMLElement | null = null;
+
+  // Apps needs a running compute instance, since the menu and the launch both
+  // go through the agent inside it, and is not offered while a purge is
+  // pending. Agent health is deliberately NOT a gate: it is a periodic probe,
+  // and "unknown" whenever probing is off, so gating on it would hide the
+  // button on consoles that do not probe. An unreachable agent makes the menu
+  // request fail, and the dialog shows the console's reason.
+  function canOpenApps(qube: Qube): boolean {
+    return qube.status === 'running' && !qube.purge_requested;
+  }
+
+  function openApps(qube: Qube, event: MouseEvent): void {
+    appOpener = event.currentTarget as HTMLElement;
+    appQube = { id: qube.id, name: qube.name };
+  }
+
+  async function closeApps(): Promise<void> {
+    appQube = null;
+    await tick();
+    // A status poll may have removed the button meanwhile (the qube stopped);
+    // only a button still in the document can take focus.
+    if (appOpener?.isConnected) appOpener.focus();
+    appOpener = null;
+  }
 
   // The agent-health label. "running + agent unhealthy" is the case worth
   // spelling out — a green status dot for a qube whose agent cannot be reached
@@ -203,6 +236,10 @@
         <span class="c-ip mono">{qube.ip_address || '—'}</span>
 
         <span class="c-act">
+          {#if canOpenApps(qube)}
+            <button class="btn" onclick={(event) => openApps(qube, event)}
+                    title="List and start this qube's desktop applications">Apps</button>
+          {/if}
           {#if isTransientStatus(qube.status)}
             <!-- An operation is in flight. The backend refuses a second one,
                  so this is disabled rather than offering a click that comes
@@ -243,6 +280,10 @@
     </div>
   {/each}
 </div>
+
+{#if appQube}
+  <AppMenuDialog qubeId={appQube.id} qubeName={appQube.name} onclose={() => void closeApps()} />
+{/if}
 
 <style>
   /* --- list layout ---------------------------------------------------------

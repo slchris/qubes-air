@@ -129,6 +129,43 @@ describe('QubeTable agent health', () => {
   })
 })
 
+describe('QubeTable desktop apps', () => {
+  // The menu and the launch both go through the agent, so there is nothing to
+  // ask while compute is down, starting up, or being purged.
+  it.each(['suspended', 'released', 'stopped', 'creating', 'resuming', 'error'] as const)(
+    'offers no app menu for a %s qube',
+    (status) => {
+      renderTable(qubeFixture({ status }))
+
+      expect(screen.getByText('qube-one')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Apps' })).not.toBeInTheDocument()
+    },
+  )
+
+  it('offers no app menu for a running qube with a purge pending', () => {
+    renderTable(qubeFixture({ status: 'running', purge_requested: true }))
+
+    expect(screen.queryByRole('button', { name: 'Apps' })).not.toBeInTheDocument()
+  })
+
+  it('offers the app menu for a running qube', () => {
+    renderTable(qubeFixture({ status: 'running' }))
+
+    expect(screen.getByRole('button', { name: 'Apps' })).toBeEnabled()
+  })
+
+  // Agent health is a periodic probe and "unknown" whenever probing is off, so
+  // it is not a gate: the menu request itself reports an unreachable agent.
+  it.each(['unknown', 'unreachable', 'starting'] as const)(
+    'offers the app menu for a running qube whose agent reads %s',
+    (health) => {
+      renderTable(qubeFixture({ status: 'running', agent_health: health }))
+
+      expect(screen.getByRole('button', { name: 'Apps' })).toBeEnabled()
+    },
+  )
+})
+
 describe('QubeTable row', () => {
   it('names the zone and node the qube is placed on', () => {
     renderTable(

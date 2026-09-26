@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { apiFetch, getApiBaseUrl, listQubes, login, logout } from './api'
+import { apiFetch, getApiBaseUrl, getQubeAppMenus, launchQubeApp, listQubes, login, logout } from './api'
 import { auth } from './auth.svelte'
 
 // The API layer exchanges the long-lived token for a session cookie and then
@@ -108,5 +108,61 @@ describe('refusals', () => {
     fetchMock.mockResolvedValue(jsonResponse(500, { error: 'Internal Server Error' }))
 
     await expect(listQubes()).rejects.toThrow('Internal Server Error')
+  })
+})
+
+describe('desktop app API', () => {
+  it('reads the raw menu text with session credentials and supports cancellation', async () => {
+    fetchMock.mockResolvedValue(new Response('firefox.desktop:Name=Firefox', { status: 200 }))
+    const controller = new AbortController()
+
+    await expect(getQubeAppMenus('qube/one', controller.signal)).resolves.toBe('firefox.desktop:Name=Firefox')
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/qubes/qube%2Fone/appmenus')
+    expect(init.credentials).toBe('include')
+    expect(init.signal).toBe(controller.signal)
+  })
+
+  it('posts one encoded app id with no body and returns the remote reply', async () => {
+    fetchMock.mockResolvedValue(new Response("qubes.StartApp: launched 'firefox.desktop' on :100", { status: 200 }))
+
+    await expect(launchQubeApp('q1', 'firefox.desktop')).resolves.toMatch(/launched/)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/qubes/q1/apps/firefox.desktop/launch')
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('include')
+    expect(init.body).toBeUndefined()
+  })
+
+  it('encodes the app id so it cannot add path segments', async () => {
+    fetchMock.mockResolvedValue(new Response('', { status: 200 }))
+
+    await launchQubeApp('q1', 'a/b?c#d')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/qubes/q1/apps/a%2Fb%3Fc%23d/launch')
+  })
+
+  it('surfaces the refusal reason, not the status text', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(400, {
+      error: 'Bad Request',
+      message: 'invalid app id: app id must match [A-Za-z0-9._+-] and be at most 128 characters',
+    }))
+
+    await expect(launchQubeApp('q1', 'x')).rejects.toThrow(/app id must match/)
+  })
+
+  it('falls back to the status text for a transport failure without a reason', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(502, { error: 'Bad Gateway' }))
+
+    await expect(getQubeAppMenus('q1')).rejects.toMatchObject({ status: 502, message: 'Bad Gateway' })
+  })
+
+  it('raises the auth gate when the session has expired', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(401, { error: 'Unauthorized' }))
+
+    await expect(getQubeAppMenus('q1')).rejects.toThrow()
+    expect(auth.required).toBe(true)
   })
 })

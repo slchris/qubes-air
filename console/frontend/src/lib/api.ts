@@ -358,6 +358,52 @@ export async function stopQube(id: string): Promise<Operation> {
 }
 
 // ============================================================================
+// Desktop apps
+// ============================================================================
+
+/**
+ * Reads a remote qube's desktop menu: the raw qubes.GetAppmenus text the
+ * console forwards verbatim. Parse it with appmenus.ts parseAppMenus; it comes
+ * from inside the qube and is not trusted.
+ */
+export async function getQubeAppMenus(id: string, signal?: AbortSignal): Promise<string> {
+  return handleTextResponse(await apiFetch(`/qubes/${encodeURIComponent(id)}/appmenus`, { signal }));
+}
+
+/**
+ * Asks a remote qube to start one desktop app (qubes.StartApp+<appId>).
+ *
+ * The backend refuses an id outside [A-Za-z0-9._+-]{1,128} with 400 before it
+ * reaches the transport; callers should still only pass ids that passed
+ * appmenus.ts isLaunchableAppId. Resolves with the remote service's reply,
+ * which says whether the app actually started (see readLaunchReply).
+ */
+export async function launchQubeApp(id: string, appId: string, signal?: AbortSignal): Promise<string> {
+  return handleTextResponse(await apiFetch(
+    `/qubes/${encodeURIComponent(id)}/apps/${encodeURIComponent(appId)}/launch`,
+    { method: 'POST', signal },
+  ));
+}
+
+/**
+ * Returns a text body, or throws the same ApiException the JSON helpers do —
+ * including the `message` reason, so a refusal reads as its cause (UD-22).
+ * apiFetch has already raised the auth gate on a 401.
+ */
+async function handleTextResponse(response: Response): Promise<string> {
+  if (!response.ok) {
+    const error = await parseErrorResponse(response);
+    throw new ApiException(
+      response.status,
+      error.code ?? 'UNKNOWN_ERROR',
+      errorMessage(error, response),
+      error.details
+    );
+  }
+  return response.text();
+}
+
+// ============================================================================
 // System API
 // ============================================================================
 
