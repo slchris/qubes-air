@@ -18,7 +18,15 @@ import (
 	"github.com/slchris/qubes-air/console/internal/models"
 )
 
+// ErrCredentialNotFound is returned when no row has the requested ID.
+var ErrCredentialNotFound = errors.New("credential not found")
+
 // CredentialRepository handles credential database operations.
+//
+// It is the raw store: it serves every row, including the console's own
+// secrets (see models.IsConsoleCredential), because the CA, data-key and purge
+// paths need exactly those rows. Operator-facing callers go through
+// service.CredentialService, which is what keeps console rows out of the API.
 //
 // Encryption uses AES-256-GCM. Each row records the key_version that encrypted
 // its ciphertext; the repository holds a keyring of one or more versioned keys
@@ -161,7 +169,7 @@ func (r *CredentialRepository) GetSecret(ctx context.Context, id string) (string
 	err := r.db.DB().QueryRowContext(ctx, query, id).Scan(&encryptedData, &keyVersion)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", errors.New("credential not found")
+			return "", ErrCredentialNotFound
 		}
 		return "", err
 	}
@@ -213,7 +221,7 @@ func (r *CredentialRepository) Update(ctx context.Context, id string, req models
 		return nil, err
 	}
 	if existing == nil {
-		return nil, errors.New("credential not found")
+		return nil, ErrCredentialNotFound
 	}
 
 	now := time.Now()
@@ -262,7 +270,7 @@ func (r *CredentialRepository) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if rowsAffected == 0 {
-		return errors.New("credential not found")
+		return ErrCredentialNotFound
 	}
 
 	return nil

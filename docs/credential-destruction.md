@@ -13,6 +13,10 @@
 与该盘无关。在迁移完成前，该盘仍可被 master 打开，删除当前库内 DEK 不构成 crypto-shred；
 `qubes-air-luks-master` 只读、只用于迁移，可在确认没有未迁移盘后删除，且不会自动重建。
 
+这些都是控制台自有的行，凭据 API 不列出、不读取、不修改也不删除它们（见[安全控制](security-controls.md)
+“Console API 凭据”）。DEK 只通过 purge 删除；删除 master 只能在控制台停止时离线操作数据库，
+目前没有专用工具。
+
 数据库归档可能含有 DEK 或 master 的历史副本。删除当前库内记录不会清除这些副本，也不等于
 安全擦除了 SQLite/WAL 或存储快照中的历史内容。不可恢复性必须同时考虑所有密钥副本与备份。
 `dom0-scripts/decommission-zone.sh --shred-luks-key` 也不能作为现行单 Qube 销毁的独立凭据。

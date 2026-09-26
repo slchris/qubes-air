@@ -207,7 +207,10 @@ CA 私钥在 `credentials` 表中，随数据库备份一起被保存（再被�
 现有证书仍可在有效期内验证。若必须更换 CA，需要协调替换 Console、Relay 和 agent 的
 信任材料，不能仅重建数据库中的私钥记录：
 
-1. 生成新的 CA（控制台首次需要签发时会创建；必要时删除 `qubes-air-ca-key` 凭据触发重建）；
+1. 生成新的 CA。库里没有 CA 时，控制台在首次需要签发时创建；要替换已有 CA，必须在控制台停止时
+   离线从库中同时删除 `qubes-air-ca-cert` 与 `qubes-air-ca-key` 两行。只删一行会被当作“CA 半缺失”
+   而拒绝签发；凭据 API 看不到也改不了这两行，目前也没有专用工具（见[安全控制](security-controls.md)
+   “Console API 凭据”）；
 2. 对所有 agent 重新走 bootstrap（新的一次性 token）以获取新 CA 签发的证书；
 3. 清理 `agent_certs` 中旧 CA 的注册行（新 CA 不会再验证它们）。
 

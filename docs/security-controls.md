@@ -96,7 +96,8 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   token 错误）返回 401；只读 scope 发起变更请求返回 403；zone 判定拒绝返回 403 或 404。
   zone 判定对调用方回 404 以免泄露对象是否存在，审计里仍记为 `denied`。zone token 创建 Qube 时
   请求体读不出、无法解析或超过上限，按失败关闭返回 403，同样记为 `denied`；所属关系查询出错
-  返回 500，记为 `error`。
+  返回 500，记为 `error`。凭据 API 对控制台自有行的 404 和对保留命名空间的 403 同样记为
+  `denied`，见下文“Console API 凭据”。
 - 限流拒绝（429）记为 `client_error`，不记为 `denied`：节流不是授权判定，把它混进 `denied`
   会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
 - 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、
@@ -127,6 +128,58 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   约束；做持久化审计（M2-2）之前需要重新评估写入量。
 
 审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
+
+## Console API 凭据：控制台自有行不经 API
+
+`credentials` 表存两类行。一类是运维方的 provider 凭据，zone 通过 `credential_id` 引用它们，
+凭据 API 就是为管理它们而设。另一类是控制台自己的密钥：agent CA 证书与私钥
+（`qubes-air-ca-cert`、`qubes-air-ca-key`）、只供旧盘迁移读取的 `qubes-air-luks-master`、
+每个 Qube 的 DEK（`qubes-air-luks-key-<id>`）和迁移标记（`qubes-air-luks-legacy-slot-<id>`）。
+两类行共用 keyring 和轮换工具，但后者不是运维对象：拿到 CA 私钥就能签发任意 agent 身份，
+删掉一把 DEK 就是绕开 purge 流程的 crypto-shred。修复前凭据 API 不做区分：列表连同 ID 返回这些行，
+`PUT`/`DELETE` 能改名或删除它们，`POST` 还能用控制台的名称建行，让控制台加载调用方给的 CA
+或 DEK（见 G-D8）。
+
+判定规则只定义在一处，即 `internal/models/credential_internal.go` 的 `IsConsoleCredential`：
+类型为 `pki`，或名称以 `qubes-air-` 开头的行属于控制台。控制台写入的每一行两个条件都满足。
+类型条件兜住将来某个没放进命名空间的新行；名称条件兜住会顶替控制台密钥的运维行，因为控制台
+只按名称（`strings.EqualFold`）查找自己的密钥。名称按 Unicode 简单大小写折叠逐个字符比较，
+并忽略首尾空白，所以 `QUBES-AIR-CA-KEY`、用 `ſ`（U+017F，折叠为 `s`）拼出的名称同样在保留
+范围内。
+
+- `GET /credentials` 只列出运维行，`total` 也只计这些行。
+- `GET`、`PUT`、`DELETE /credentials/:id` 指向控制台行时，返回与不存在的 ID 相同的状态码和
+  响应体（404，`{"error":"Credential not found"}`），行不做任何改动。审计把这类变更请求记为
+  `denied`，而普通的不存在 ID 记为 `client_error`：运维方能看到这次尝试，调用方分不出两者。
+- `POST /credentials` 的名称或类型落在保留范围内，或者 `PUT` 要把运维行改名进保留范围，返回
+  403，不写入任何内容，审计记为 `denied`。改名检查在查找 ID 之前，所以答复与 ID 指向什么无关。
+- 对不存在的 ID 做 `PUT`、`DELETE` 现在返回 404（此前是带内部错误文本的 500）。存储故障返回
+  通用的 500（`{"error":"Internal Server Error"}`），细节只写服务端日志。
+- `credentials` 仍是 fleet 端点：zone token 访问任何凭据路由（包括控制台行的 ID）一律 403；
+  只读 token 的变更请求返回 403。两者的变更请求都记为 `denied`。
+- 控制台自己的路径不经过这个视图，行为不变：CA 的加载与首次创建、DEK 的生成与读取、迁移
+  标记、purge 的 crypto-shred（`DataKeyManager.DeleteDataKey`）都直接使用 repository；zone
+  按 `credential_id` 读取 secret 也一样。
+
+测试覆盖：`internal/models/credential_internal_test.go` 覆盖大小写折叠、空白和类型的正反例；
+`internal/service/credential_service_test.go` 在真实加密库上覆盖列表过滤、控制台行 ID 的读/改/删
+被拒且行不变、保留名称的创建与改名被拒、运维行正常增删改、拒绝之后 CA 与 DEK 与迁移标记仍可
+加载且 purge 仍能删除 DEK，以及存储故障不被当成“不存在”。其中
+`TestCredentialServiceCannotShadowConsoleSecrets` 是本改动要堵的攻击：去掉创建检查后，经 API
+存入的 `Qubes-Air-CA-Cert`/`Qubes-Air-CA-Key` 会成为重启后控制台加载的 CA，预先存入的
+`qubes-air-luks-key-<id>` 会被当作该 Qube 的 DEK，测试随即失败；`internal/handler/credential_handler_test.go`
+在 HTTP 层逐字节比较控制台行与不存在 ID 的 404，并覆盖 403 与通用 500；
+`cmd/server/credentials_api_test.go` 经生产中间件链检查审计 outcome 以及 zone、只读 token 的拒绝。
+
+边界：
+
+- 本改动之前经 API 建的、名称在保留范围内或类型为 `pki` 的运维行，现在从 API 中消失。它们仍在
+  库里，被 zone 引用时仍可使用。如果其中某行与控制台密钥同名（大小写折叠后），控制台按名称
+  查找时可能先找到它而不是真正的密钥，因为此前的 API 允许创建这种行。升级前需要只读核查，见
+  [缺口清单](production-readiness-gaps.md) G-D8。
+- 更换 CA，以及在确认没有未迁移盘后删除 `qubes-air-luks-master`，都不再有 API 路径，只能在控制台
+  停止时离线操作数据库；目前没有专用工具。
+- zone 的 `credential_id` 不校验是否指向控制台行。调用方要先知道该行的 UUID，而 API 已不再给出。
 
 ## Exec：JSON 参数列表
 
@@ -179,7 +232,8 @@ DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 
 
 升级要求：加密 Qube 的 agent 在下次解锁前必须允许 `qubesair.RekeyData`，否则迁移失败、
 数据保持加密并在下次 resume 重试。迁移完成后 `qubes-air-luks-master` 只是只读的迁移材料，
-可核验无未迁移盘后删除；master 丢失会使未迁移盘无法解锁，也不会自动重建。
+可核验无未迁移盘后删除（凭据 API 看不到这一行，删除只能离线操作数据库，见上文“Console API
+凭据”）；master 丢失会使未迁移盘无法解锁，也不会自动重建。
 
 ## Proxmox 管理连接
 
