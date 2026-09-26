@@ -89,7 +89,9 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 ### Appmenus / StartApp
 
 `qubes.GetAppmenus` 枚举 `.desktop` 应用，`qubes.StartApp+<app-id>` 在远端 Xpra display
-启动应用。传输对带 `+arg` 的服务保留参数；完整菜单/桌面体验仍在收尾。
+启动应用。传输对带 `+arg` 的服务保留参数；Relay 的 `GrpcProxy` 按 agent 的同一规则
+（字符集 `[A-Za-z0-9._+-]`、不含 `..`、服务名连参数最多 128 字节）先行拒绝非法参数（exit 126），
+不为它调用 `relay-call`。完整菜单/桌面体验仍在收尾。
 
 ### UnlockData / RekeyData
 

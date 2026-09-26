@@ -459,6 +459,38 @@ t_grpcproxy_illegal_service() {
     done
 }
 
+# The argument after the service name gets the agent's own rule
+# (validServiceName in internal/agent/invoker.go): same charset, no "..", and at
+# most 128 bytes for service+argument. dom0's qrexec already restricts argument
+# characters, so this is the relay's defence in depth, like the target check.
+t_grpcproxy_illegal_service_argument() {
+    local arg
+    for arg in 'remote-a+qubes.StartApp+a b' 'remote-a+qubes.StartApp+a;id' \
+        'remote-a+qubes.StartApp+../../etc/passwd' 'remote-a+qubes.StartApp+..' \
+        'remote-a+qubes.StartApp+a/b' 'remote-a+qubes.StartApp+$(id)' 'remote-a+qubes.StartApp+`id`' \
+        $'remote-a+qubes.StartApp+a\nb' "remote-a+qubes.StartApp+$(long_string a 114)"; do
+        case_begin "GrpcProxy: illegal service argument in '${arg:0:60}' is refused" || continue
+        grpc_setup
+        grpc_run "$arg"
+        expect_rc 126
+        expect_stderr_has '非法服务参数'
+        expect_no_calls
+        case_end
+    done
+}
+
+t_grpcproxy_argument_length_boundary() {
+    local arg
+    arg="qubes.StartApp+$(long_string a 113)"
+    case_begin "GrpcProxy: a 128-byte service+argument is forwarded" || return 0
+    grpc_setup
+    grpc_run "remote-a+$arg"
+    expect_rc 0
+    expect_calls "qubesdb-read [/remote-endpoint/remote-a]
+$(grpc_relay_call 180s "$arg")"
+    case_end
+}
+
 t_grpcproxy_long_target() {
     case_begin "GrpcProxy: a very long target has no endpoint and never dials" || return 0
     grpc_setup
