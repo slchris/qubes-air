@@ -154,7 +154,7 @@ type AgentProbeResult struct {
 	// "pong <remote-name> <ts>", which also names the remote that answered. It is NOT the identity control —
 	// an attacker holding a valid certificate would simply return the expected
 	// string. Identity is established cryptographically by the common-name check
-	// in verifyAgentChain; this payload is a configuration cross-check.
+	// in pki.VerifyAgentChain; this payload is a configuration cross-check.
 	Pong string `json:"pong,omitempty"`
 	// Reason explains a non-ok status in terms an operator can act on. Empty on
 	// success.
@@ -506,7 +506,7 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		// So the chain is verified by hand below, against this CA and this CA
 		// only. An unsigned or wrongly-signed certificate is still rejected;
 		// what is skipped is the name, which the callback replaces with a CN pin.
-		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs verifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs pki.VerifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, 0, len(rawCerts))
 			for _, der := range rawCerts {
@@ -516,7 +516,7 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 				}
 				certs = append(certs, c)
 			}
-			return verifyAgentChain(pool, certs, wantCN)
+			return pki.VerifyAgentChain(pool, certs, wantCN)
 		},
 		// VerifyConnection as well, and not for symmetry: Go does NOT call
 		// VerifyPeerCertificate on a RESUMED session, so a config that grew a
@@ -525,56 +525,9 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		// runs on every handshake, resumed or not, so the chain is verified even
 		// if that happens.
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			return verifyAgentChain(pool, cs.PeerCertificates, wantCN)
+			return pki.VerifyAgentChain(pool, cs.PeerCertificates, wantCN)
 		},
 	}, nil
-}
-
-// verifyAgentChain is the whole of the console's trust decision about an agent:
-// the certificate must chain to this CA. Name and extended key usage are not
-// checked — see probeTLSConfig for why neither can be — so this must reject
-// everything else, and is the only thing standing between the console and any
-// peer that answers on the qube's address.
-func verifyAgentChain(pool *x509.CertPool, certs []*x509.Certificate, wantCN string) error {
-	if len(certs) == 0 {
-		return errors.New("agent presented no certificate")
-	}
-	inters := x509.NewCertPool()
-	for _, c := range certs[1:] {
-		inters.AddCert(c)
-	}
-	if _, err := certs[0].Verify(x509.VerifyOptions{
-		Roots:         pool,
-		Intermediates: inters,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}); err != nil {
-		return fmt.Errorf("agent certificate is not a CA-signed server identity: %w", err)
-	}
-
-	// The role says what the holder is FOR. An agent certificate must be the
-	// agent's server identity; a Relay/Console client certificate that happens
-	// to answer on this address is refused rather than accepted as an agent.
-	if role, err := pki.RoleOf(certs[0]); err != nil {
-		return fmt.Errorf("agent certificate carries no usable role: %w", err)
-	} else if role != pki.RoleAgent {
-		return fmt.Errorf("peer role %q is not an agent", role)
-	}
-
-	// Chain-to-CA answers "is this OUR fleet"; it does NOT answer "is this the
-	// qube we dialed". Every qube holds a CA-signed certificate, so without
-	// this check any one of them authenticates as any other.
-	//
-	// That gap is reachable, not theoretical: qubes share an L2 bridge, so a
-	// compromised qube can ARP-spoof another's address (or claim it after a DHCP
-	// lease churns), answer with its OWN valid certificate, and the console
-	// records the victim as healthy. An attacker-triggerable false green is the
-	// exact failure this prober exists to eliminate.
-	if got := certs[0].Subject.CommonName; got != wantCN {
-		return fmt.Errorf(
-			"agent certificate identifies %q but this address should be serving %q; "+
-				"a valid fleet certificate presented by the wrong qube", got, wantCN)
-	}
-	return nil
 }
 
 // agentPortFrom extracts the port the agent listens on from a listen address.

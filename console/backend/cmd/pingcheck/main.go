@@ -13,6 +13,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
@@ -73,49 +74,18 @@ func main() {
 		log.Fatal("  ✗ CA 无法解析")
 	}
 
+	// The same verification the console's health probe runs on an agent
+	// (pki.VerifyAgentChain): chain to this CA with ServerAuth usage and a valid
+	// date, role agent, and the CN pinned to the remote named by -remote.
+	tlsCfg, err := pki.AgentDialTLSConfig(pair, pool, *remote)
+	must(err)
+	reportVerifiedAgent(tlsCfg, os.Stdout)
+
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: *addr,
 		RelayName:      "pingcheck",
 		RemoteName:     *remote,
-		TLS: &tls.Config{
-			Certificates: []tls.Certificate{pair},
-			RootCAs:      pool,
-			MinVersion:   tls.VersionTLS13,
-			// The agent's certificate carries no SAN for this address, so verify
-			// the chain by hand rather than skipping verification outright.
-			InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below checks the leaf against this CA with ServerAuth usage, requires pki.RoleOf == RoleAgent, and pins the CN to pki.AgentCommonName(*remote) //nolint:gosec // chain checked in VerifyConnection
-			// VerifyConnection, not VerifyPeerCertificate: the latter is skipped
-			// on a resumed session, so a check that lives there can be bypassed
-			// by a client that reconnects with a cached ticket. PeerCertificates
-			// rather than VerifiedChains because InsecureSkipVerify leaves the
-			// chain unverified by the stack — verifying it is this callback's job.
-			VerifyConnection: func(cs tls.ConnectionState) error {
-				if len(cs.PeerCertificates) == 0 {
-					return errors.New("agent presented no certificate")
-				}
-				leaf := cs.PeerCertificates[0]
-				inters := x509.NewCertPool()
-				for _, c := range cs.PeerCertificates[1:] {
-					inters.AddCert(c)
-				}
-				if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, Intermediates: inters,
-					KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
-					return err
-				}
-				if role, err := pki.RoleOf(leaf); err != nil {
-					return err
-				} else if role != pki.RoleAgent {
-					return fmt.Errorf("peer role %q is not an agent", role)
-				}
-				want := pki.AgentCommonName(*remote)
-				if leaf.Subject.CommonName != want {
-					return fmt.Errorf("agent certificate identifies %q but %s should be serving %q",
-						leaf.Subject.CommonName, *remote, want)
-				}
-				fmt.Printf("  agent 证书  : CN=%s (role=agent, 由本 CA 签发 ✓)\n", leaf.Subject.CommonName)
-				return nil
-			},
-		},
+		TLS:            tlsCfg,
 	}, nil)
 
 	go func() { _ = cli.Start(ctx) }()
@@ -133,6 +103,24 @@ func main() {
 		log.Fatalf("  ✗ Ping 失败: %v", err)
 	}
 	fmt.Printf("  ✓ qubesair.Ping -> %q\n", string(out))
+}
+
+// reportVerifiedAgent makes cfg print the agent's CN to w each time its
+// existing VerifyConnection accepts the peer, and only then: a refused peer is
+// never named on the operator's screen as if it were the agent. A config with
+// no VerifyConnection to wrap refuses every peer instead of printing it.
+func reportVerifiedAgent(cfg *tls.Config, w io.Writer) {
+	verifyAgent := cfg.VerifyConnection
+	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if verifyAgent == nil {
+			return errors.New("no agent verification configured; refusing the peer")
+		}
+		if err := verifyAgent(cs); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(w, "  agent 证书  : CN=%s (role=agent, 由本 CA 签发 ✓)\n", cs.PeerCertificates[0].Subject.CommonName)
+		return nil
+	}
 }
 
 func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {

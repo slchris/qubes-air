@@ -276,13 +276,15 @@ func resolveAgent(ctx context.Context, repo repository.QubeRepository, target, p
 }
 
 // dialAndCall dials the agent over mTLS with the given client certificate and
-// invokes one service. It mirrors the console health probe's TLS setup: the
-// agent's certificate carries no SAN for a bare IP, so the chain is verified by
-// hand in VerifyConnection rather than by the stack. The certificate may have
-// been minted from the CA (console-as-relay) or loaded from disk (separate
-// relay) — dialing does not care which.
+// invokes one service, verifying the agent exactly as the console health probe
+// does (see newClient). The certificate may have been minted from the CA
+// (console-as-relay) or loaded from disk (separate relay) — dialing does not
+// care which.
 func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) (transport.Result, error) {
-	cli := newClient(pair, pool, endpoint, remoteName)
+	cli, err := newClient(pair, pool, endpoint, remoteName)
+	if err != nil {
+		return transport.Result{}, err
+	}
 	go func() { _ = cli.Start(ctx) }()
 
 	// The tunnel comes up asynchronously, so retry ONLY while it is not yet
@@ -292,7 +294,6 @@ func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool,
 	// retried. This also stops a mid-call deadline from being masked by a
 	// trailing "tunnel not connected".
 	var res transport.Result
-	var err error
 	for {
 		res, err = cli.CallResult(ctx, remoteName, service, in)
 		if err == nil {
@@ -309,51 +310,22 @@ func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool,
 	}
 }
 
-// newClient builds the transport client with the console health-probe TLS setup:
-// the agent's certificate has no SAN for a bare IP, so the chain is verified by
-// hand in VerifyConnection.
-func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName string) *transportgrpc.Client {
+// newClient builds the transport client for one agent. Its TLS config comes from
+// pki.AgentDialTLSConfig, the same verification the console's health probe runs
+// (pki.VerifyAgentChain): the agent's certificate has no SAN for a bare IP, so
+// the chain, ServerAuth usage, validity, agent role and the CN pinned to
+// remoteName are all checked by hand in VerifyConnection instead.
+func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName string) (*transportgrpc.Client, error) {
+	tlsCfg, err := pki.AgentDialTLSConfig(pair, pool, remoteName)
+	if err != nil {
+		return nil, err
+	}
 	return transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: endpoint,
 		RelayName:      "console-relay",
 		RemoteName:     remoteName,
-		TLS: &tls.Config{
-			Certificates:       []tls.Certificate{pair},
-			RootCAs:            pool,
-			MinVersion:         tls.VersionTLS13,
-			InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below checks the leaf against this CA with ServerAuth usage, requires pki.RoleOf == RoleAgent, and pins the CN to AgentCommonName(remoteName) //nolint:gosec // chain checked in VerifyConnection
-			VerifyConnection: func(cs tls.ConnectionState) error {
-				if len(cs.PeerCertificates) == 0 {
-					return errors.New("agent presented no certificate")
-				}
-				leaf := cs.PeerCertificates[0]
-				inters := x509.NewCertPool()
-				for _, c := range cs.PeerCertificates[1:] {
-					inters.AddCert(c)
-				}
-				if _, err := leaf.Verify(x509.VerifyOptions{
-					Roots:         pool,
-					Intermediates: inters,
-					KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-				}); err != nil {
-					return err
-				}
-				// Role and name, not just "chained to our CA": every qube holds
-				// a CA-signed certificate, so without these any one of them
-				// authenticates as any other on the shared L2 bridge.
-				if role, err := pki.RoleOf(leaf); err != nil {
-					return err
-				} else if role != pki.RoleAgent {
-					return fmt.Errorf("peer role %q is not an agent", role)
-				}
-				if want := pki.AgentCommonName(remoteName); leaf.Subject.CommonName != want {
-					return fmt.Errorf("agent certificate identifies %q but this endpoint should be serving %q",
-						leaf.Subject.CommonName, want)
-				}
-				return nil
-			},
-		},
-	}, nil)
+		TLS:            tlsCfg,
+	}, nil), nil
 }
 
 // dialAndStream proxies a raw bidirectional stream: os.Stdin → the remote's
@@ -361,7 +333,10 @@ func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName s
 // qubesair.StreamTCP+<port>). This is how GUI rides mTLS with no port exposed on
 // the remote's LAN. Waits for the tunnel, then streams until either side closes.
 func dialAndStream(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string) error {
-	cli := newClient(pair, pool, endpoint, remoteName)
+	cli, err := newClient(pair, pool, endpoint, remoteName)
+	if err != nil {
+		return err
+	}
 	go func() { _ = cli.Start(ctx) }()
 	for {
 		// CallStream returns ErrNotConnected without touching stdin until the
