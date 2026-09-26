@@ -313,34 +313,23 @@ test('operator logs in, provisions a qube, starts an app, suspends it, and purge
   await expect(page.getByRole('button', { name: 'Provisioning…' })).toBeDisabled();
   await expect(page.locator('.agent.starting')).toHaveText('starting');
 
-  // The live job log. JobLog on this base aborts its own stream right after
-  // mounting, so it never shows a running job's output; fix/joblog-live-stream
-  // repairs that. Both states are accepted, nothing else is, and the full
-  // stream contract is checked whenever the output does arrive.
+  // The live job log: the running job's output streams into the row while the
+  // job is still running. A panel stuck on "Waiting for … output" fails here
+  // (G-H6: JobLog used to abort its own stream right after mounting).
   const logPanel = page.locator('.qrow-log');
-  const liveLog = await logPanel.getByText('provision: started')
-    .waitFor({ timeout: 5_000 }).then(() => true, () => false);
-  if (!liveLog) {
-    await expect(logPanel.getByText(/^Waiting for (terraform|job) output…$/)).toBeVisible();
-    test.info().annotations.push({
-      type: 'known-issue',
-      description: 'JobLog aborted its live stream on mount; the live-log contract checks were skipped',
-    });
-  }
+  await expect(logPanel.getByText('provision: started')).toBeVisible({ timeout: 5_000 });
 
   // The job ends and the store polls the qube out of its transient status.
   finishJob(backend, 'job-create');
   backend.qube!.status = 'running';
   backend.qube!.agent_health = 'healthy';
   await expect(statusCell(page)).toHaveText('running', { timeout: 10_000 });
-  if (liveLog) {
-    // The stream reconnects from its offset, gets the rest of the output and
-    // the terminal running:false event, and then stays closed.
-    await expect(logPanel.getByText(/provision: started\s+provision: complete/)).toBeVisible({ timeout: 10_000 });
-    const opens = backend.streamOpens['job-create'];
-    await page.waitForTimeout(3_000);
-    expect(backend.streamOpens['job-create']).toBe(opens);
-  }
+  // The stream reconnects from its offset, gets the rest of the output and
+  // the terminal running:false event, and then stays closed.
+  await expect(logPanel.getByText(/provision: started\s+provision: complete/)).toBeVisible({ timeout: 10_000 });
+  const opens = backend.streamOpens['job-create'];
+  await page.waitForTimeout(3_000);
+  expect(backend.streamOpens['job-create']).toBe(opens);
 
   // Start a desktop app from the menu the qube reports.
   await page.getByRole('button', { name: 'Apps' }).click();
