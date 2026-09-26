@@ -55,9 +55,9 @@ func auditedAPI(t *testing.T, tune func(*config.Config)) (*gin.Engine, *bytes.Bu
 	})
 }
 
-// auditedAPIWith is auditedAPI with the routes behind the chain supplied by
-// the caller, so a test can put a real handler there.
-func auditedAPIWith(t *testing.T, tune func(*config.Config), register func(*gin.RouterGroup)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
+// auditedAPIWith is auditedAPI with the caller's own routes mounted behind
+// the production chain.
+func auditedAPIWith(t *testing.T, tune func(*config.Config), mount func(*gin.RouterGroup)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -77,7 +77,7 @@ func auditedAPIWith(t *testing.T, tune func(*config.Config), register func(*gin.
 	require.NoError(t, configureTrustedProxies(r))
 	v1 := r.Group("/api/v1")
 	v1.Use(apiMiddleware(cfg, sessions, ownershipFixture{}, audit.NewRecorder(&buf))...)
-	register(v1)
+	mount(v1)
 	return r, &buf, sessions
 }
 
