@@ -73,6 +73,15 @@ auth:
 - 白名单内对象的 `zones/:id`、`qubes/:id`（含 start/stop/release/purge）以及 job 详情/日志
   放行；其他 Zone 的对象与不存在的对象都返回 404，不泄露 ID 是否存在。
 - 创建 Qube 时请求体的 `zone_id` 必须在白名单内，否则 403；创建 Zone 是 fleet 操作。
+- zone token 可以 `PUT /zones/:id` 改名称和放置默认值（node、datastore、模板、bridge），但不能改
+  决定凭据发往何处的字段：`config.endpoint`、`config.proxmox.credential_id`、
+  `config.proxmox.ca_pem`、`config.gcp.credential_id`、`config.gcp.identity_bucket`、
+  `config.gcp.service_account_email`。改动任一项返回 403，审计记为 `denied`。否则一个 zone 的
+  操作员就能把控制台管理的 provider 凭据引到自己的服务器上（G-D9）。这项检查在凭据引用校验
+  之前，所以不能拿它探测别的凭据 ID 是否存在。
+- 创建或更新 Zone 时，`credential_id`（Proxmox 与 GCP）必须指向一条运维凭据。不存在的 ID 和
+  控制台自有行（见下文“Console API 凭据”）返回同一个 422
+  （`credential_id does not name a stored credential`），控制台行在审计里记为 `denied`。
 - `credentials`、`infrastructure`、`settings`、`monitoring`、`billing`、`status` 和 job 汇总
   列表是 fleet 端点，zone token 一律 403（不做半真半假的过滤视图）。
 - `GET /zones` 与 `GET /qubes` 在查询层按白名单过滤，只返回可见对象。
@@ -81,7 +90,9 @@ auth:
   被拒绝的变更请求同样入库，见下文“Console API 审计”。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
-扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。
+扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。Zone 更新是先读后整体
+替换，没有事务：zone token 的更新与 fleet 对同一 zone 的并发修改相撞时，可能把连接字段写回它读到
+的旧值。那仍是 fleet 设过的值，不会是 zone token 自己选的。
 
 ## Console API 审计
 

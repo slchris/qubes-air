@@ -129,7 +129,13 @@ func (h *ZoneHandler) Update(c *gin.Context) {
 		return
 	}
 
-	zone, err := h.zoneSvc.Update(c.Request.Context(), id, &req)
+	// A zone-scoped caller may rename its zone and change placement defaults,
+	// but not where the zone's credential is sent (ErrZoneConnectionLocked).
+	update := h.zoneSvc.Update
+	if _, restricted := middleware.ZoneScopeFromContext(c); restricted {
+		update = h.zoneSvc.UpdateKeepingConnection
+	}
+	zone, err := update(c.Request.Context(), id, &req)
 	if err != nil {
 		handleZoneError(c, err)
 		return
@@ -211,6 +217,15 @@ func handleZoneError(c *gin.Context, err error) {
 		// Distinct from 400: the type is spelled correctly and known to the
 		// model, but no adapter serves it, so the zone could never provision.
 		respondError(c, http.StatusUnprocessableEntity, err)
+	case errors.Is(err, service.ErrZoneConnectionLocked):
+		respondError(c, http.StatusForbidden, err)
+	case errors.Is(err, service.ErrZoneCredentialNotFound):
+		// One body for a missing credential and a console row; only the audit
+		// outcome tells them apart.
+		if errors.Is(err, service.ErrConsoleCredential) {
+			middleware.MarkDenied(c)
+		}
+		respondError(c, http.StatusUnprocessableEntity, service.ErrZoneCredentialNotFound)
 	default:
 		respondError(c, http.StatusInternalServerError, err)
 	}

@@ -31,6 +31,10 @@ type credentialStore struct {
 	repo       *repository.CredentialRepository
 	caKeyID    string
 	operatorID string
+	// zones and qubes share the store's database, for tests that wire the
+	// zone service over it.
+	zones repository.ZoneRepository
+	qubes repository.QubeRepository
 }
 
 func newCredentialStore(t *testing.T) credentialStore {
@@ -49,7 +53,11 @@ func newCredentialStore(t *testing.T) credentialStore {
 	})
 	kr, err := keyring.NewSingle([]byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	store := credentialStore{repo: repository.NewCredentialRepository(db, kr)}
+	store := credentialStore{
+		repo:  repository.NewCredentialRepository(db, kr),
+		zones: repository.NewZoneRepository(db),
+		qubes: repository.NewQubeRepository(db),
+	}
 
 	_, err = service.NewCertIssuer(store.repo, repository.NewAgentCertRepository(db), "", "", service.AgentPackage{}).CA(ctx)
 	require.NoError(t, err)
