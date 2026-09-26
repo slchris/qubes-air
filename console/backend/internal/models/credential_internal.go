@@ -3,6 +3,7 @@ package models
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -80,10 +81,16 @@ var (
 	ErrConsoleRowConflict = errors.New("console credential is ambiguous")
 )
 
-// maxConflictRowsNamed bounds how many conflicting rows an error names, so a
-// table stuffed with look-alike rows cannot turn one lookup into a huge log
-// line.
-const maxConflictRowsNamed = 8
+// maxConflictRowsNamed and maxQuotedField bound a conflict error. The rows,
+// names and types it quotes were written by whoever planted them, and the
+// error reaches the log, 500 bodies and lookups an unauthenticated caller can
+// trigger (GET /pki/revocations). So at most maxConflictRowsNamed rows are
+// named, and each ID, name and type is cut to maxQuotedField bytes: one
+// refusal stays under 8 KiB however many or however long the planted rows are.
+const (
+	maxConflictRowsNamed = 8
+	maxQuotedField       = 64
+)
 
 // MatchesConsoleName reports whether a stored row name answers to the console
 // name want. It is the one comparison every console lookup and deletion uses:
@@ -126,8 +133,9 @@ func SelectConsoleRow(rows []Credential, name string) (Credential, error) {
 		ErrConsoleRowConflict, len(matches), name, describeRows(matches), name, ConsoleRowType)
 }
 
-// describeRows names rows by ID, name and type — never by secret. Names and
-// types are quoted, so a control character in one cannot forge a log line.
+// describeRows names rows by ID, name and type — never by secret. Every field
+// is quoted, so a control character in one cannot forge a log line, and cut
+// by quoteCapped, so a long one cannot inflate it.
 func describeRows(rows []Credential) string {
 	parts := make([]string, 0, min(len(rows), maxConflictRowsNamed)+1)
 	for i, row := range rows {
@@ -135,7 +143,21 @@ func describeRows(rows []Credential) string {
 			parts = append(parts, fmt.Sprintf("and %d more", len(rows)-i))
 			break
 		}
-		parts = append(parts, fmt.Sprintf("id=%s name=%q type=%q", row.ID, row.Name, row.Type))
+		parts = append(parts, "id="+quoteCapped(row.ID)+" name="+quoteCapped(row.Name)+" type="+quoteCapped(row.Type))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// quoteCapped quotes s. Beyond maxQuotedField bytes only the first ones are
+// quoted, cut on a UTF-8 boundary, and the number of bytes left out follows
+// the closing quote, so the cut cannot be mistaken for the name.
+func quoteCapped(s string) string {
+	if len(s) <= maxQuotedField {
+		return strconv.Quote(s)
+	}
+	cut := maxQuotedField
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s…(+%d bytes)", strconv.Quote(s[:cut]), len(s)-cut)
 }

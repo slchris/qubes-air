@@ -2,9 +2,11 @@ package models
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -150,4 +152,45 @@ func TestSelectConsoleRowBoundsTheError(t *testing.T) {
 	assert.Contains(t, err.Error(), "and 92 more")
 	assert.NotContains(t, err.Error(), "id-050", "only the first rows are named")
 	assert.NotContains(t, err.Error(), "\n", "names are quoted, so no raw newline reaches a log line")
+}
+
+// TestSelectConsoleRowBoundsLongFields — planted names and types are chosen by
+// whoever planted them. A megabyte-long look-alike must not become a
+// megabyte-long error: each quoted field is cut, the cut is marked with the
+// bytes left out, and the row ID stays visible.
+func TestSelectConsoleRowBoundsLongFields(t *testing.T) {
+	const name = "qubes-air-ca-key"
+	pad := strings.Repeat(" ", 1<<20)
+	rows := make([]Credential, 0, 22)
+	rows = append(rows,
+		Credential{ID: "id-padded", Name: pad + name, Type: ConsoleRowType},
+		Credential{ID: "id-long-type", Name: name, Type: strings.Repeat("\x00", 1<<20)},
+	)
+	for i := range 20 {
+		rows = append(rows, Credential{ID: fmt.Sprintf("id-%02d", i), Name: name + pad, Type: pad})
+	}
+
+	_, err := SelectConsoleRow(rows, name)
+	require.ErrorIs(t, err, ErrConsoleRowConflict)
+	msg := err.Error()
+	assert.LessOrEqual(t, len(msg), 8<<10, "a conflict error must stay under 8 KiB")
+	assert.Contains(t, msg, "id-padded")
+	assert.Contains(t, msg, "id-long-type")
+	assert.Contains(t, msg, fmt.Sprintf("…(+%d bytes)", len(pad)+len(name)-maxQuotedField))
+	assert.Contains(t, msg, "and 14 more")
+	assert.True(t, utf8.ValidString(msg))
+	assert.NotContains(t, msg, "\x00", "control characters stay escaped")
+}
+
+func TestQuoteCapped(t *testing.T) {
+	assert.Equal(t, `"qubes-air-ca-key"`, quoteCapped("qubes-air-ca-key"))
+	exact := strings.Repeat("a", maxQuotedField)
+	assert.Equal(t, strconv.Quote(exact), quoteCapped(exact), "a field of exactly the cap is not cut")
+
+	// "€" is three bytes, so the cut must step back to a rune boundary.
+	euros := strings.Repeat("€", 100)
+	got := quoteCapped(euros)
+	assert.True(t, utf8.ValidString(got))
+	assert.True(t, strings.HasPrefix(got, `"`+strings.Repeat("€", maxQuotedField/3)+`"…(+`), got)
+	assert.True(t, strings.HasSuffix(got, fmt.Sprintf("(+%d bytes)", len(euros)-maxQuotedField/3*3)), got)
 }

@@ -349,6 +349,7 @@ func TestRevocationDocumentRefusesPlantedCARows(t *testing.T) {
 		"duplicate key":      {plantedRow{caKeyCredentialName, models.ConsoleRowType}, keyPEM},
 	} {
 		t.Run(label, func(t *testing.T) {
+			logged := captureLog(t)
 			repo, certs := newLookupStore(t)
 			issuer := NewCertIssuer(repo, certs, "", "", AgentPackage{})
 			_, err := issuer.CA(ctx)
@@ -358,9 +359,15 @@ func TestRevocationDocumentRefusesPlantedCARows(t *testing.T) {
 			require.NotEmpty(t, doc)
 
 			plant(t, repo, row.planted, row.secret)
-			doc, err = NewCertIssuer(repo, certs, "", "", AgentPackage{}).RevocationDocument(ctx)
-			assert.ErrorIs(t, err, models.ErrConsoleRowConflict)
-			assert.Nil(t, doc)
+			// The document is public (GET /pki/revocations, 5 rps per
+			// client): every read refuses, but the standing conflict is
+			// logged once.
+			for range 5 {
+				doc, err = NewCertIssuer(repo, certs, "", "", AgentPackage{}).RevocationDocument(ctx)
+				assert.ErrorIs(t, err, models.ErrConsoleRowConflict)
+				assert.Nil(t, doc)
+			}
+			assert.Equal(t, 1, strings.Count(logged.String(), "SECURITY: pki:"))
 		})
 	}
 }

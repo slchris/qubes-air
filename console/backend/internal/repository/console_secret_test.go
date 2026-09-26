@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,4 +122,48 @@ func TestConsoleSecretSeparatesStorageFailures(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, models.ErrConsoleRowNotFound)
 	assert.NotErrorIs(t, err, models.ErrConsoleRowConflict)
+}
+
+// TestConsoleSecretLogsAStandingConflictOnce — the lookup runs on every public
+// revocation read, so a standing conflict is logged once, not once per call.
+// A changed conflict (another row planted) is logged again, and a store with
+// a megabyte-long look-alike still logs a bounded line.
+func TestConsoleSecretLogsAStandingConflictOnce(t *testing.T) {
+	var logged bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	t.Cleanup(func() {
+		log.SetOutput(prev)
+		log.SetFlags(flags)
+	})
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	kr, err := keyring.NewSingle([]byte(oldKey))
+	require.NoError(t, err)
+	repo := NewCredentialRepository(db, kr)
+	ctx := context.Background()
+	// A name no other test uses: the once-per-name memory is process-wide.
+	name := "qubes-air-luks-key-" + t.Name()
+	create := func(n string) {
+		_, err := repo.Create(ctx, models.CredentialCreateRequest{Name: n, Type: models.ConsoleRowType, SecretValue: "k"})
+		require.NoError(t, err)
+	}
+	create(name)
+	create(strings.Repeat(" ", 1<<20) + name)
+
+	lines := func() int { return strings.Count(logged.String(), "SECURITY: pki:") }
+	for range 5 {
+		_, err := ConsoleSecret(ctx, repo, name)
+		require.ErrorIs(t, err, models.ErrConsoleRowConflict)
+	}
+	assert.Equal(t, 1, lines(), "a standing conflict is logged once")
+	assert.Less(t, logged.Len(), 8<<10, "the logged line is bounded")
+
+	create(strings.ToUpper(name))
+	for range 3 {
+		_, err := ConsoleSecret(ctx, repo, name)
+		require.ErrorIs(t, err, models.ErrConsoleRowConflict)
+	}
+	assert.Equal(t, 2, lines(), "a changed conflict is logged again, once")
 }

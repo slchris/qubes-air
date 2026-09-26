@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
@@ -25,7 +26,7 @@ type ConsoleSecretStore interface {
 //   - models.ErrConsoleRowNotFound when no row answers to the name;
 //   - a models.ErrConsoleRowConflict error when rows the console did not write
 //     answer to it (see models.SelectConsoleRow). No secret is read, and the
-//     conflict is logged with the rows' IDs.
+//     conflict is logged with the rows' IDs, once per name while it stands.
 func ConsoleSecret(ctx context.Context, store ConsoleSecretStore, name string) (string, error) {
 	list, err := store.List(ctx)
 	if err != nil {
@@ -34,11 +35,27 @@ func ConsoleSecret(ctx context.Context, store ConsoleSecretStore, name string) (
 	row, err := models.SelectConsoleRow(list, name)
 	if err != nil {
 		if errors.Is(err, models.ErrConsoleRowConflict) {
-			log.Printf("SECURITY: pki: %v", err)
+			reportConflict(name, err)
 		}
 		return "", err
 	}
 	return store.GetSecret(ctx, row.ID)
+}
+
+// reportedConflicts holds, per console name, the conflict last logged for it.
+var reportedConflicts sync.Map
+
+// reportConflict logs a conflict once per name for as long as it stands. The
+// lookups behind it run on every public revocation read and every lifecycle
+// retry, so logging each call would let anyone who can reach
+// GET /pki/revocations fill the journal with the same line. A changed
+// conflict under the same name — a row added or removed — is logged again.
+func reportConflict(name string, err error) {
+	msg := err.Error()
+	if prev, seen := reportedConflicts.Swap(name, msg); seen && prev == msg {
+		return
+	}
+	log.Printf("SECURITY: pki: %s", msg)
 }
 
 // LoadConsoleCA reads the console's agent CA through ConsoleSecret. It never
