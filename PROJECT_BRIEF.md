@@ -71,7 +71,7 @@ Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的�
 | AD-3 | provider 生命周期拆成 `suspend`（销毁计算）+ `resume`（从模板重建并挂回同一数据盘） | `docs/architecture.md` §存算分离 | 数据盘是持久边界，计算是短生命周期 |
 | AD-4 | agent 身份强制 CA 签名撤销状态；刷新失败拒绝授权 | `docs/security-controls.md`；`internal/agent/*` | 撤销状态源可达性是**新增部署要求** |
 | AD-5 | 数据盘用独立随机 DEK；legacy master 只读、只用于迁移、**永不自动创建** | `internal/service/datakey.go`:19-24,72-81 | 缺 master 时迁移失败并报错，不得静默派生 |
-| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:210-213；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
+| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:469-472；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
 | AD-7 | 请求取消后的失败状态写入有独立 5 秒期限 | `docs/reliability-design.md`:14-15 | 取消不是"不落状态"的理由 |
 | AD-8 | Console 不进入数据面：只发布端点与签证书 | `docs/architecture.md` §数据面 | console 不进 RemoteVM 调用链路 |
 | AD-9 | Qubes 侧部署的唯一权威来源是外部仓库 `qubes-salt-config` | `AGENTS.md`:12 | 本仓库不复制平行部署入口 |
