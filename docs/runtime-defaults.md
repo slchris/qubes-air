@@ -87,7 +87,7 @@
 | UD-9f | 周期探测间隔（多久重新判定一次 agent 健康） | **60s** | `internal/config/config.go`:252（`agent_probe_interval_seconds`）、`:665`（默认 60）；兜底常量 `internal/service/agenthealth.go:19`（`DefaultAgentProbeInterval`） |
 | UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:49`（`DefaultDataUnlockTimeout`） |
 | UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:34`（`unlockCertLifetime`） |
-| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:70`（`DefaultBootstrapTimeout`） |
+| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:71`（`DefaultBootstrapTimeout`） |
 | UD-11b | bootstrap 重试退避 | **base 15s / max 10 分钟** | `internal/service/bootstrapsched.go:49`、`:50`（`bootstrapRetryBase`、`bootstrapRetryMax`） |
 | UD-12 | 证书续期单次超时 | **30s** | `internal/service/certrenew.go:50`（`DefaultCertRenewalTimeout`） |
 | UD-12b | 续期用 relay 证书寿命 | **1 小时** | `internal/service/certrenew.go:91`（`renewRelayCertLifetime`） |

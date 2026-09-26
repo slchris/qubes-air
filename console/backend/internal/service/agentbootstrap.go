@@ -35,6 +35,7 @@ package service
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -270,8 +271,12 @@ func (b *AgentBootstrapper) exchange(
 	out, err := sess.call(ctx, qube.Name, beginBootstrapService, nil)
 	if err != nil {
 		// An agent that already holds an identity says so rather than handing
-		// over a token. That is the expected answer on any sweep after the
-		// first, so it must not be reported as a fault.
+		// over a token, and that must not be reported as a fault. With peer
+		// pinning this answer has become rare: an agent holding an identity
+		// serves its CA-issued certificate instead of the placeholder, so it
+		// normally fails the pinned handshake before Begin and is diagnosed by
+		// logFirstPeerRefusal ("already holds a CA identity"). What still lands
+		// here is an identity installed after this session's handshake.
 		//
 		// Matched by string because the transport carries a message, not a
 		// wrapped error — but against the agent's own sentinel rather than a
@@ -414,21 +419,40 @@ func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (str
 // logFirstPeerRefusal makes a refused listener visible. The tunnel client
 // retries the handshake until the attempt times out and then reports only
 // "tunnel not connected", which reads as a VM that is down; the reason the
-// console refused the peer — a pin mismatch means an agent package older than
-// pinning, another qube's user-data, or an impostor — is what the operator
+// console refused the peer, and what that usually means, is what the operator
 // needs. Logged once per attempt, not once per retry.
-func logFirstPeerRefusal(cfg *tls.Config, addr, qubeName string) {
+func logFirstPeerRefusal(cfg *tls.Config, addr, qubeName string, caCert *x509.Certificate) {
 	verify := cfg.VerifyConnection
 	var once sync.Once
 	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
 		err := verify(cs)
 		if err != nil {
 			once.Do(func() {
-				log.Printf("bootstrap: refusing the listener at %s as qube %q's pending agent: %v", addr, qubeName, err)
+				log.Printf("bootstrap: refusing the listener at %s as qube %q's pending agent: %v; %s",
+					addr, qubeName, err, peerRefusalCause(caCert, cs.PeerCertificates, qubeName))
 			})
 		}
 		return err
 	}
+}
+
+// peerRefusalCause names the likely reason a listener failed the pinned
+// handshake. One cause is decidable from the certificate itself: a listener
+// presenting this qube's CA-issued identity is an agent that bootstrapped
+// before, while this console has no certificate registered for it.
+func peerRefusalCause(caCert *x509.Certificate, certs []*x509.Certificate, qubeName string) string {
+	if caCert != nil {
+		roots := x509.NewCertPool()
+		roots.AddCert(caCert)
+		if pki.VerifyAgentChain(roots, certs, AgentCommonName(qubeName)) == nil {
+			return "the guest already holds a CA identity for this qube, but this console has no certificate " +
+				"registered for it (a lost registry row or a restored database); it will not bootstrap again — " +
+				"re-provision it, or restore the registry row"
+		}
+	}
+	return "likely causes: an agent package older than peer pinning, user-data from a superseded token " +
+		"(the qube was re-provisioned after this guest booted, which minted a newer token), " +
+		"another qube's user-data, or an impostor at this address"
 }
 
 // dial opens a tunnel to an agent that has no certificate yet.
@@ -461,7 +485,7 @@ func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr, p
 	if err != nil {
 		return nil, fmt.Errorf("cannot pin the bootstrap peer at %s: %w", addr, err)
 	}
-	logFirstPeerRefusal(tlsCfg, addr, qubeName)
+	logFirstPeerRefusal(tlsCfg, addr, qubeName, ca.Cert)
 
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: addr,

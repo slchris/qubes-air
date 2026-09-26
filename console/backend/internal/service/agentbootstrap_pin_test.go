@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -169,7 +171,58 @@ func TestBootstrapNeverTalksToAPlaceholderMintedFromAnotherToken(t *testing.T) {
 	assert.Empty(t, issuer.redeemed(), "no token may reach the issuer from an unpinned peer")
 	out := logs.String()
 	assert.Contains(t, out, "does not match the pin", "the operator must be told why the listener was refused")
+	assert.Contains(t, out, "user-data from a superseded token")
+	assert.NotContains(t, out, "already holds a CA identity")
 	assert.Equal(t, 1, strings.Count(out, "refusing the listener"), "one line per attempt, not one per handshake retry")
+}
+
+// A guest that already bootstrapped serves its CA-issued agent certificate,
+// which cannot pass the placeholder pin. The console must still not talk to it,
+// and the log must name that specific, decidable cause: the registry lost the
+// certificate the guest holds.
+func TestBootstrapDiagnosesAGuestThatAlreadyHoldsAnIdentity(t *testing.T) {
+	ca := newCA(t)
+	const qubeName = "remote-dev"
+	inv := &fakeInvoker{resp: []byte("pong")}
+	addr, _ := startAgent(t, ca, ca, AgentCommonName(qubeName), inv)
+	_, port := hostPort(t, addr)
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint("token-minted-for-remote-dev", qubeName)
+	require.NoError(t, err)
+
+	issuer := &signingIssuer{ca: ca, qubeName: qubeName}
+	b := NewAgentBootstrapper(fixedCA{ca}, issuer, "0.0.0.0:"+port, time.Second).
+		WithBootstrapPeerPinProvider(staticPin{pin: pin})
+	logs := captureConcurrentLog(t)
+	res := b.Bootstrap(context.Background(), &models.Qube{ID: "qube-1", Name: qubeName, IPAddress: "127.0.0.1"})
+
+	assert.Equal(t, BootstrapUnreachable, res.Status, res.Reason)
+	assert.Empty(t, issuer.redeemed())
+	assert.Contains(t, logs.String(), "the guest already holds a CA identity for this qube")
+}
+
+// The CA-identity diagnosis needs a certificate from THIS console's CA for
+// THIS qube; anything else falls back to the list of likely causes.
+func TestPeerRefusalCause(t *testing.T) {
+	ca := newCA(t)
+	other := newCA(t)
+	leafFor := func(issuer *pki.CA, cn string) []*x509.Certificate {
+		bundle, err := issuer.IssueAgentCert(cn, time.Hour)
+		require.NoError(t, err)
+		pair, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM))
+		require.NoError(t, err)
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		require.NoError(t, err)
+		return []*x509.Certificate{leaf}
+	}
+	const already = "already holds a CA identity"
+	assert.Contains(t, peerRefusalCause(ca.Cert, leafFor(ca, "agent-remote-dev"), "remote-dev"), already)
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(ca, "agent-remote-other"), "remote-dev"), already,
+		"another qube's identity is not this qube having bootstrapped")
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(other, "agent-remote-dev"), "remote-dev"), already,
+		"an identity from another CA proves nothing about this console's fleet")
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(ca, "console-probe"), "remote-dev"), already)
+	assert.NotContains(t, peerRefusalCause(nil, nil, "remote-dev"), already)
+	assert.Contains(t, peerRefusalCause(nil, nil, "remote-dev"), "superseded token")
 }
 
 // captureConcurrentLog redirects the standard logger for the rest of the test

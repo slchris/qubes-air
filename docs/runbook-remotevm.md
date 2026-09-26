@@ -44,9 +44,14 @@ Console 日志应能区分：
 - 地址尚未可达；
 - agent 未监听；
 - TLS/证书错误；
-- 占位证书与 pin 不符（guest 里是早于 pin 的旧 agent 包，或拿到的是别的 qube 的 user-data）：
-  bootstrap 报 `unreachable`，console 日志每次尝试有一行 `bootstrap: refusing the listener at …`，
-  原因含 `does not match the pin`；
+- 占位证书与 pin 不符：bootstrap 报 `unreachable`，console 日志每次尝试有一行
+  `bootstrap: refusing the listener at … does not match the pin …`，行尾给出原因：
+  - `the guest already holds a CA identity for this qube`：对端出示的是本 CA 为这台 qube 签发的
+    agent 证书——它早已 bootstrap，但控制台登记里没有这张证书（登记行丢失、或数据库从旧备份恢复）。
+    它不会再走 bootstrap；重新 provision，或恢复登记行；
+  - 否则列出常见原因：guest 里是早于 pin 的旧 agent 包；guest 用的是**已被取代的 token** 的
+    user-data（这台 qube 在 guest 启动后又被重新 provision，`IssueFor` 签发了更新的 token，pin
+    跟着换了，而 guest 还在用旧的）；拿到了别的 qube 的 user-data；或该地址上是冒充者；
 - token 过期、已消费或早于 pin（升级前签发）：bootstrap 报 `not_configured`，原因提示重新 provision；
 - 查 pin 失败（数据库错误）或库中 pin 损坏：bootstrap 报 `console_failed`（`could not load the bootstrap
   peer pin` / `stored bootstrap peer pin is damaged`），先查控制台与数据库，不要去动 VM；
