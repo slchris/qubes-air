@@ -90,6 +90,51 @@ jobs:
           path: console/frontend/dist
           retention-days: 7
 
+  # 浏览器端到端测试 (Playwright, 与 `make frontend-e2e` 相同入口)。API 由
+  # console/frontend/e2e 里的 page.route 模拟: 证明 UI 调 API 的方式, 不证明真机可用。
+  frontend-e2e:
+    name: Frontend E2E (mocked API)
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Installs npm packages and a browser; the token only needs to read the repo.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: console/frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: console/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The Chromium build is the one the @playwright/test version pinned in
+      # package-lock.json expects; --with-deps adds its system libraries.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # GitHub sets CI=true, which makes playwright.config.ts refuse test.only.
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: console/frontend/test-results
+          retention-days: 7
+
   # Agent Debian 包安装/升级冒烟 (Docker, 与 scripts/test-agent-deb.sh 相同入口)
   agent-package:
     name: Agent package install smoke

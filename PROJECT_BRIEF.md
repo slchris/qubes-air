@@ -55,7 +55,7 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 | 存储 | SQLite（cgo） | `go.mod` `mattn/go-sqlite3 v1.14.22` |
 | RPC | gRPC / protobuf | `console/backend/proto/relay_transport.proto` |
 | 前端 | Svelte 5 + TS 5.9 + Vite 7 | `console/frontend/package.json` devDependencies |
-| 前端测试 | Vitest 5 + Testing Library + jsdom | `package.json`；配置 `vitest.config.ts` |
+| 前端测试 | Vitest 5 + Testing Library + jsdom；浏览器 E2E 用 Playwright（模拟 API） | `package.json`；配置 `vitest.config.ts`、`playwright.config.ts` |
 | 门禁工具 | golangci-lint 2.x / gosec / gocyclo / funlen / govulncheck / shellcheck | `Makefile`:65-98；根 `.golangci.yml` |
 | CI 运行时 | Go 1.26、Node 22（全部 workflow，与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
 
@@ -117,6 +117,7 @@ qubes-air/
 | 依赖漏洞 | `make vuln-check` | `Makefile`:97-98 |
 | 前端 | `make frontend-check`（`npm ci` + `check` + `build` + `test`） | `Makefile`:103-114 |
 | 前端依赖漏洞 | `make frontend-audit-new` / `-audit` | `Makefile`:117-126 |
+| 前端浏览器 E2E（不在 pre-commit） | `make frontend-e2e`（`npm ci` + 装 Chromium + `test:e2e`） | `Makefile` 的 `frontend-e2e` 目标 |
 | Shell | `make shellcheck-new` / `-all` | `Makefile`:129-136,151-153 |
 | 文档 + CI 门禁完整性 | `make docs-check` | `Makefile`:138-140 |
 | agent 包安装冒烟 | `make agent-deb-test`（Docker + 网络） | `Makefile`:195-196 |
@@ -184,7 +185,7 @@ qubes-air/
 | R-TECH-1 | `internal/transport/grpc/server.go` 的 `(*Server).Tunnel`：**262 行**、gocyclo **44**，靠 `//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately` 保留 | `gocyclo -top`；`.go:346-347` | 已解除：M2-4（PR #24）拆成按帧类型命名的步骤，豁免已删（G-F2） |
 | R-TECH-2 | `internal/config/config.go` 的 `(*Config).loadFromEnv`：**199 行**、gocyclo **71**（全仓最高）；`(*Config).Validate` gocyclo **28** | `gocyclo -top`；`.go:588-589,792` | 已解除：M2-4（PR #24）按配置段拆分，豁免已删（G-F2） |
 | R-TECH-3 | 1200 行级文件 4 个（基线 `fae0aea`）：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047；2026-09-26 合入 batch-1 后依次为 1360、1192、1460、1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
-| R-TECH-4 | `console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例（基线 `fae0aea`；2026-09-26 为 1003 行、14 个用例，见 gaps G-F4） | `wc -l`；`QubeList.test.ts` | 大组件 + 薄测试 = 改动高风险 |
+| R-TECH-4 | ~~`console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例（基线 `fae0aea`；拆分前的 2026-09-26 为 1003 行、14 个用例）~~ 已拆分为容器 + `QubeTable.svelte` + `QubeFormDialog.svelte`，见 [gaps G-F4](docs/production-readiness-gaps.md) | `wc -l`；`QubeList.test.ts`、`QubeTable.test.ts`、`QubeFormDialog.test.ts` | 已解除 |
 | R-TECH-5 | 存量 `nolint` 原 **24 处**；2026-09-26 合入 batch-1 后实测 **16 处**，其中 `gocyclo` 豁免 3 处、`gosec` 9 处（G-F10 的修复净减 1 处 `gosec`） | `git grep -n nolint -- '*.go'` | 豁免均已注明理由，但仍缺"何时可移除"的退出条件（G-F3） |
 | R-TECH-6 | 源码内真·待办仅 **4 处**（`handler/billing_handler.go`:50,56；`handler/monitoring_handler.go`:53,55）+ 1 处脚本内 `remote/qubes-rpc/qubesair.UnlockData`:26 hardening TODO（已关闭：agent 只对 `console-unlock` 身份运行 UnlockData/RekeyData，TODO 注释已改为现状说明） | `grep -rnE 'TODO\|FIXME\|XXX'` 去噪后 | 待办本身不重，但 4 处都在"假装有数据"的占位路径上，UI 必须继续标记未接入 |
 

@@ -193,8 +193,11 @@ export interface Qube {
 // exists to prevent.
 //   healthy      — last probe succeeded
 //   unreachable  — last probe failed (see agent_last_error)
+//   starting     — a freshly booted qube inside its post-boot grace period has
+//                  not answered YET; expected for the first minutes, never the
+//                  resting state (models.AgentHealthStarting)
 //   unknown      — not probed yet, or probing disabled
-export type AgentHealth = 'healthy' | 'unreachable' | 'unknown';
+export type AgentHealth = 'healthy' | 'unreachable' | 'starting' | 'unknown';
 
 // Whether an agent that is not answering can still come back without a human.
 //

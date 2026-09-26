@@ -123,6 +123,9 @@ temp/
 # -----------------------------------------------
 coverage/
 .nyc_output/
+# Playwright output (traces, screenshots, HTML report) from `npm run test:e2e`
+/console/frontend/test-results/
+/console/frontend/playwright-report/
 htmlcov/
 .coverage
 .coverage.*
