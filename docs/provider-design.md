@@ -38,7 +38,7 @@ flowchart TB
 |---|---|
 | `console/backend/cmd/server/main.go` | 构造执行器，按 zone 解析凭据并注册 Proxmox；把同一 registry 交给 zone 服务 |
 | `console/backend/internal/service/zone_service.go` | 创建 zone 时拒绝没有已注册适配器的类型 |
-| `console/backend/internal/provider/provider.go` | Adapter、Infra、Observed 与 registry 契约 |
+| `console/backend/internal/provider/provider.go` | Adapter、Infra、Observed、可选的 RuntimeMetricsReader 与 registry 契约 |
 | `console/backend/internal/provider/proxmox/` | PVE REST 客户端、生命周期、snippet 上传与 IP 分配 |
 | `console/backend/internal/orchestrator/native.go` | 编排适配器步骤，保存资源身份，等待 agent 可达 |
 | `console/backend/internal/repository/qube_infra_repo.go` | 资源身份持久化 |
@@ -57,6 +57,7 @@ flowchart TB
 | Purge | 确认名称、原子记录 purge 意图并撤销身份，入队 Destroy；解除保护、删除当前 key 是该 job 的第一步（入队被拒时不执行） |
 | Destroy | 拒绝仍受保护的记录；StopCompute → 保存变化 → DestroyStorage/snippet → 逐资源核验 → 删除 infra 记录 |
 | Status / Address | Describe，读取实际状态或地址 |
+| Runtime metrics | 可选能力 `RuntimeMetricsReader`，只读、不改动资源。Proxmox 先核验 compute VM 的所有权标记（VM 被 provider 任务锁定时返回 `provider.ErrInstanceBusy`），再读 `status/current`；VM 不在 running、缺少 CPU/内存字段或出现负值时返回错误，不给出零值或部分读数。`cpu` 大于 1 按读数原样返回（推断是 QEMU 在 vCPU 之外的线程也计入，未在真机核对），只在显示时截断。磁盘与网络是 QEMU 进程启动以来的累计字节数，不是速率。为一次读取构造的适配器用完后调用 `CloseIdleConnections` 释放空闲连接 |
 
 正常完成路径会更新 Qube 终态并处理 RemoteVM/端点。多步骤失败可能留下部分结果，必须检查
 job log 和 provider；不能把数据库中的 `purged` 标签作为唯一销毁证据。

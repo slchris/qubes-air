@@ -14,6 +14,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -85,6 +86,34 @@ type Observed struct {
 	StorageVMID int
 	ComputeVMID int
 	DataVolume  string
+}
+
+// RuntimeMetrics contains one provider observation for a running compute VM.
+// Byte counters are cumulative since the provider process started, not rates.
+// Nil values mean that the provider omitted the field; callers must not render
+// them as zero measurements.
+type RuntimeMetrics struct {
+	CapturedAt      time.Time `json:"captured_at"`
+	Source          string    `json:"source"`
+	CPUFraction     *float64  `json:"cpu_fraction,omitempty"`
+	MemoryUsedBytes *int64    `json:"memory_used_bytes,omitempty"`
+	MemoryMaxBytes  *int64    `json:"memory_max_bytes,omitempty"`
+	DiskReadBytes   *int64    `json:"disk_read_bytes,omitempty"`
+	DiskWriteBytes  *int64    `json:"disk_write_bytes,omitempty"`
+	NetworkInBytes  *int64    `json:"network_in_bytes,omitempty"`
+	NetworkOutBytes *int64    `json:"network_out_bytes,omitempty"`
+}
+
+// ErrInstanceBusy reports that the provider is running another task on the
+// instance (a backup, a migration) and refuses to act on it until that ends.
+// It is an expected, transient state rather than a fault.
+var ErrInstanceBusy = errors.New("instance is busy with a provider task")
+
+// RuntimeMetricsReader is an optional provider capability. Providers without
+// live per-instance telemetry leave it unimplemented; callers expose that
+// state instead of fabricating measurements.
+type RuntimeMetricsReader interface {
+	RuntimeMetrics(ctx context.Context, q *models.Qube, in Infra) (RuntimeMetrics, error)
 }
 
 // Adapter drives one cloud provider directly.

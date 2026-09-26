@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,6 +95,190 @@ func TestEnsureStorage_CreatesHolderAndDisk(t *testing.T) {
 	create := rec.body("POST", "/api2/json/nodes/infra-node1/qemu")
 	assert.Contains(t, create, "scsi0=ceph-pve%3A20%2Cdiscard%3Don%2Ciothread%3D1")
 	assert.Contains(t, create, "net0=virtio%2Cbridge%3Dvmbr0")
+}
+
+func TestRuntimeMetricsReadsLiveQEMUStatus(t *testing.T) {
+	ad, rec := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/infra-node1/qemu/106/config" {
+			writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api2/json/nodes/infra-node1/qemu/106/status/current" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		writeData(w, map[string]any{
+			"status": vmStatusRunning, "cpu": 0.25, "mem": int64(512), "maxmem": int64(2048),
+			"diskread": int64(10), "diskwrite": int64(20), "netin": int64(30), "netout": int64(40),
+		})
+	}, Options{})
+
+	got, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+	require.NoError(t, err)
+	assert.Equal(t, "proxmox-qemu-status-current", got.Source)
+	assert.False(t, got.CapturedAt.IsZero())
+	assert.Equal(t, 0.25, *got.CPUFraction)
+	assert.Equal(t, int64(512), *got.MemoryUsedBytes)
+	assert.Equal(t, int64(2048), *got.MemoryMaxBytes)
+	assert.Equal(t, int64(10), *got.DiskReadBytes)
+	assert.Equal(t, int64(20), *got.DiskWriteBytes)
+	assert.Equal(t, int64(30), *got.NetworkInBytes)
+	assert.Equal(t, int64(40), *got.NetworkOutBytes)
+	assert.True(t, rec.has(http.MethodGet, "/api2/json/nodes/infra-node1/qemu/106/status/current"))
+	assert.True(t, rec.has(http.MethodGet, "/api2/json/nodes/infra-node1/qemu/106/config"))
+}
+
+func TestRuntimeMetricsRejectsUnavailableOrInvalidValues(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+	}{
+		{name: "stopped", data: map[string]any{"status": vmStatusStopped}},
+		{name: "missing metrics", data: map[string]any{"status": vmStatusRunning}},
+		{name: "negative cpu", data: map[string]any{"status": vmStatusRunning, "cpu": -0.1, "mem": int64(1), "maxmem": int64(2)}},
+		{name: "negative memory", data: map[string]any{"status": vmStatusRunning, "cpu": 0.1, "mem": int64(-1), "maxmem": int64(2)}},
+		{name: "invalid memory maximum", data: map[string]any{"status": vmStatusRunning, "cpu": 0.1, "mem": int64(1), "maxmem": int64(0)}},
+		{name: "negative counter", data: map[string]any{"status": vmStatusRunning, "cpu": 0.1, "mem": int64(1), "maxmem": int64(2), "netin": int64(-1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/config") {
+					writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
+					return
+				}
+				writeData(w, tt.data)
+			}, Options{})
+			_, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+			require.Error(t, err)
+		})
+	}
+}
+
+// A cpu reading above 1 is not refused: PVE may count QEMU threads beyond the
+// vCPUs (inferred, not verified on a cluster), and discarding the whole reading
+// would hide the memory and I/O counters of exactly the busiest VM.
+func TestRuntimeMetricsPassesCPUAboveOneThroughWithTheOtherCounters(t *testing.T) {
+	ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/config") {
+			writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
+			return
+		}
+		writeData(w, map[string]any{"status": vmStatusRunning, "cpu": 1.04, "mem": int64(3), "maxmem": int64(4), "netin": int64(9)})
+	}, Options{})
+
+	got, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+	require.NoError(t, err)
+	require.NotNil(t, got.CPUFraction)
+	assert.InDelta(t, 1.04, *got.CPUFraction, 1e-9)
+	assert.Equal(t, int64(3), *got.MemoryUsedBytes)
+	assert.Equal(t, int64(9), *got.NetworkInBytes)
+}
+
+func TestRuntimeMetricsRefusesDifferentVMOwner(t *testing.T) {
+	ad, rec := newTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeData(w, map[string]string{"description": "another-qube"})
+	}, Options{})
+	_, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+	require.ErrorContains(t, err, "ownership mismatch")
+	require.False(t, rec.has(http.MethodGet, "/api2/json/nodes/infra-node1/qemu/106/status/current"))
+}
+
+// A metrics read names one VM on one node, so an incomplete identity must be
+// refused before anything is sent to the cluster: guessing a node or VMID would
+// read, and report, a VM this qube does not own.
+func TestRuntimeMetricsRefusesIncompleteIdentityWithoutCallingTheCluster(t *testing.T) {
+	tests := []struct {
+		name string
+		qube *models.Qube
+		in   provider.Infra
+	}{
+		{name: "nil qube", qube: nil, in: provider.Infra{Node: "infra-node1", ComputeVMID: 106}},
+		{name: "qube without id", qube: &models.Qube{Name: "remote-1"}, in: provider.Infra{Node: "infra-node1", ComputeVMID: 106}},
+		{name: "no compute vm", qube: testQube(), in: provider.Infra{Node: "infra-node1"}},
+		{name: "negative compute vm", qube: testQube(), in: provider.Infra{Node: "infra-node1", ComputeVMID: -1}},
+		{name: "no node", qube: testQube(), in: provider.Infra{ComputeVMID: 106}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			ad, _ := newTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				http.Error(w, "unexpected request", http.StatusTeapot)
+			}, Options{})
+			_, err := ad.RuntimeMetrics(context.Background(), tt.qube, tt.in)
+			require.Error(t, err)
+			assert.Zero(t, calls.Load(), "an incomplete identity must not reach the cluster")
+		})
+	}
+}
+
+// A cluster that refuses the status read, or a VM locked by a running provider
+// task, yields an error rather than a partial or zero measurement.
+func TestRuntimeMetricsReportsProviderFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		want    string
+		busy    bool
+	}{
+		{
+			name: "status read fails",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/config") {
+					writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
+					return
+				}
+				http.Error(w, "cluster busy", http.StatusInternalServerError)
+			},
+			want: "read Qube",
+		},
+		{
+			name: "vm locked",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute"), "lock": "backup"})
+			},
+			want: "locked",
+			busy: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ad, _ := newTestAdapter(t, tt.handler, Options{})
+			got, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+			require.ErrorContains(t, err, tt.want)
+			assert.Equal(t, tt.busy, errors.Is(err, provider.ErrInstanceBusy), "only a provider task lock reads as busy")
+			assert.Nil(t, got.CPUFraction)
+			assert.Nil(t, got.MemoryUsedBytes)
+		})
+	}
+}
+
+// A metrics sweep builds its adapter, reads, and drops it. The connection it
+// used must not outlive the sweep as an idle keep-alive (two goroutines per
+// connection on the client side, until the provider hangs up).
+func TestCloseIdleConnectionsReleasesTheSweepConnections(t *testing.T) {
+	ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/config") {
+			writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
+			return
+		}
+		writeData(w, map[string]any{"status": vmStatusRunning, "cpu": 0.1, "mem": int64(1), "maxmem": int64(2)})
+	}, Options{})
+	baseline := runtime.NumGoroutine()
+
+	_, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+	require.NoError(t, err)
+	require.Greater(t, runtime.NumGoroutine(), baseline, "the keep-alive connection is pooled after the read")
+
+	ad.CloseIdleConnections()
+	// Polled inline: require.Eventually runs its condition on goroutines of its
+	// own, which would be counted.
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.LessOrEqual(t, runtime.NumGoroutine(), baseline, "no connection goroutine may outlive CloseIdleConnections")
 }
 
 func TestEnsureCompute_ClonesConfiguresStarts(t *testing.T) {

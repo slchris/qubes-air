@@ -40,6 +40,9 @@
 > `cmd/server/main.go`，后者在 `initDependencies` 里把 zone service 挪到 provider registry 之后，使其后的行整体 +4。
 > §1.1 中 UD-1d/UD-1e/UD-1g/UD-23 指向该文件的引用已按合并后的工作树逐条重算并用 `sed -n` 核对；
 > 其余文件沿用上次结果。
+> 2026-09-26 F1 追加：Proxmox 适配器在 `vmStatus` 之后加入 `RuntimeMetrics`，`internal/provider/proxmox/adapter.go`
+> 第 131 行之后的引用整体 +57；§1.6 UD-16 的 holder `memory=512` 已按本次工作树重算为 `:362`（原引用 `:306`
+> 指向的是下一行 `ostype`，一并纠正）。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -104,6 +107,7 @@
 | UD-8 | REST 超时 | **30s** | `internal/provider/proxmox/client.go:77` |
 | UD-8b | 任务轮询间隔 | **2s**（调度器构造 provider 时另传 15s REST 超时：`internal/scheduler/proxmox.go:58`） | `internal/provider/proxmox/client.go:281`、`internal/provider/proxmox/adapter.go:80` |
 | UD-8c | 默认 cloud-init snippet datastore | `local` | `internal/provider/proxmox/adapter.go:77` |
+| UD-8d | provider HTTP 客户端的空闲连接超时 | **30s**（Proxmox 适配器与调度器共用；此前为 0，即空闲 keep-alive 连接一直保留到 provider 断开） | `internal/providerhttp/client.go:20`（`IdleConnTimeout`） |
 
 ### 1.5 MCP 接入
 
@@ -129,7 +133,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
 | UD-15 | vCPU 上下限 | **1..32**（0 = 未设置） | `internal/config/config.go:363-364`（字段）、`:691-692`（默认值）；服务侧同值 `internal/service/specbounds.go:84-85`；依据：表单自身 `console/frontend/src/components/QubeList.svelte:471`（create）与 `:579`（edit）的 `min="1" max="32"` |
-| UD-16 | 内存上下限（MB） | **512..262144**（256 GiB） | `config.go:372-373`（字段）、`:693-694`（默认值）；服务侧 `specbounds.go:86-87`；下限依据：表单 `QubeList.svelte:476` 的 `min="512"` 与 holder VM 自身的 `memory=512`（`internal/provider/proxmox/adapter.go:306`）；**上限无仓库依据，是判断值**（注释已写明） |
+| UD-16 | 内存上下限（MB） | **512..262144**（256 GiB） | `config.go:372-373`（字段）、`:693-694`（默认值）；服务侧 `specbounds.go:86-87`；下限依据：表单 `QubeList.svelte:476` 的 `min="512"` 与 holder VM 自身的 `memory=512`（`internal/provider/proxmox/adapter.go:362`）；**上限无仓库依据，是判断值**（注释已写明） |
 | UD-17 | 根盘上下限（GB） | **10..16384**（16 TiB） | `config.go:380-381`（字段）、`:695-696`（默认值）；服务侧 `specbounds.go:88-89`；下限依据：表单 `QubeList.svelte:483` 的 `min="10"`；**上限是判断值** |
 | UD-18 | 数据盘上下限（GB） | **1..16384**（16 TiB） | `config.go:387-388`（字段）、`:697-698`（默认值）；服务侧 `specbounds.go:90-91`；下限依据：表单 `QubeList.svelte:488` 的 `min="1"`；**上限是判断值**（这张盘 PVE 不能缩回） |
 | UD-19 | GPU 卡数上下限 | **1..8** | `config.go:393-394`（字段）、`:699-700`（默认值）；服务侧 `specbounds.go:92-93`；**无仓库依据**（当前没有任何 provider 读 `Spec.GPU`），纯判断值 |

@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// IdleConnTimeout closes a pooled provider connection that has been idle this
+// long. Callers build a client per operation or per metrics sweep, so without
+// it every discarded client would keep its keep-alive connections, and their
+// goroutines, until the provider hung up.
+const IdleConnTimeout = 30 * time.Second
+
 // NewClient validates the endpoint before any credentials can be sent. A
 // private CA replaces the system roots for this client; endpoint hostname and
 // server certificate purpose/validity checks remain mandatory.
@@ -30,8 +36,11 @@ func NewClient(endpoint, caPEM string, timeout time.Duration) (*http.Client, err
 		}
 	}
 	return &http.Client{
-		Timeout:   timeout,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}},
+		Timeout: timeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+			IdleConnTimeout: IdleConnTimeout,
+		},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return fmt.Errorf("provider redirects are not permitted")
 		},
