@@ -280,6 +280,10 @@ export interface ApiError {
 // same binary, names included. "unknown" in any of them means the binary was
 // built without the version stamps (-X .../internal/buildinfo.*), not that the
 // version is empty — see docs/upgrade-rollback.md §3.1.
+//
+// `audit_trail` is whether the persisted audit trail is keeping up. It is
+// informational: "degraded" never makes `status` unhealthy, because the audit
+// log lines are written either way.
 export interface HealthResponse {
   status: string;
   database: string;
@@ -292,6 +296,7 @@ export interface HealthResponse {
   revision: string;
   build_time: string;
   tree: 'clean' | 'dirty' | 'unknown';
+  audit_trail: 'ok' | 'degraded' | 'disabled';
 }
 
 // Status response

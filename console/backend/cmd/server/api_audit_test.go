@@ -46,18 +46,24 @@ func (ownershipFixture) ZoneOfJob(context.Context, string) (string, bool, error)
 // answer; everything under test is the middleware order setupRouter uses.
 func auditedAPI(t *testing.T, tune func(*config.Config)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
 	t.Helper()
-	return auditedAPIWith(t, tune, func(v1 *gin.RouterGroup) {
-		v1.POST("/session", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
-		v1.GET("/qubes", func(c *gin.Context) { c.Status(http.StatusOK) })
-		v1.POST("/qubes", func(c *gin.Context) { c.Status(http.StatusCreated) })
-		v1.POST("/qubes/:id/start", func(c *gin.Context) { c.Status(http.StatusAccepted) })
-		v1.POST("/zones", func(c *gin.Context) { c.Status(http.StatusCreated) })
-	})
+	return auditedAPIWith(t, tune, mountStubRoutes)
+}
+
+// mountStubRoutes mounts handlers that only answer, so a test observes the
+// middleware chain and nothing else.
+func mountStubRoutes(v1 *gin.RouterGroup) {
+	v1.POST("/session", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
+	v1.GET("/qubes", func(c *gin.Context) { c.Status(http.StatusOK) })
+	v1.POST("/qubes", func(c *gin.Context) { c.Status(http.StatusCreated) })
+	v1.POST("/qubes/:id/start", func(c *gin.Context) { c.Status(http.StatusAccepted) })
+	v1.POST("/zones", func(c *gin.Context) { c.Status(http.StatusCreated) })
 }
 
 // auditedAPIWith is auditedAPI with the caller's own routes mounted behind
-// the production chain.
-func auditedAPIWith(t *testing.T, tune func(*config.Config), mount func(*gin.RouterGroup)) (*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
+// the production chain. An optional sink also receives every audit event, the
+// way startAuditTrail hands them to the persister.
+func auditedAPIWith(t *testing.T, tune func(*config.Config), mount func(*gin.RouterGroup), sink ...audit.Sink) (
+	*gin.Engine, *bytes.Buffer, *middleware.SessionStore) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -76,7 +82,12 @@ func auditedAPIWith(t *testing.T, tune func(*config.Config), mount func(*gin.Rou
 	r := gin.New()
 	require.NoError(t, configureTrustedProxies(r))
 	v1 := r.Group("/api/v1")
-	v1.Use(apiMiddleware(cfg, sessions, ownershipFixture{}, audit.NewRecorder(&buf))...)
+	rec := audit.NewRecorder(&buf)
+	if len(sink) > 0 {
+		require.Len(t, sink, 1, "the recorder has one sink")
+		rec = rec.WithSink(sink[0])
+	}
+	v1.Use(apiMiddleware(cfg, sessions, ownershipFixture{}, rec)...)
 	mount(v1)
 	return r, &buf, sessions
 }

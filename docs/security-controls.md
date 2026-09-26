@@ -173,10 +173,60 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   远低于 journald 默认的单行上限（`LineMax=48K`），不会被拆成非 JSON 片段。已认证请求的行长还
   取决于配置里 zone 列表的长度，由管理员控制。
 - 限流在认证之后，被认证拒绝的请求到不了限流器，所以这类变更请求不受限流，每次都会写一行审计
-  （登录接口不做 Bearer 校验，仍按来源地址限流）。写入条数与访问日志同量级，每行受上一条的上界
-  约束；做持久化审计（M2-2）之前需要重新评估写入量。
+  （登录接口不做 Bearer 校验，仍按来源地址限流）。日志的写入条数与访问日志同量级，每行受上一条的
+  上界约束；落库的条数另有预算和上限，见下一节。
 
-审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
+### 持久化审计（schema 4）
+
+每个审计事件写出 JSON 行之后，同一个事件写进 SQLite 的 `audit_events` 表（`cmd/server/audittrail.go`
+的 `startAuditTrail` 接线）。行与日志逐字段一致：`time` 存成 `occurred_at`（Unix 纳秒），其余键同名同值
+（`TestAPIAuditPersistsExactlyTheLoggedLine` 对已认证、匿名、只读 scope 拒绝、登录失败、截断的 object、
+鉴权关闭逐一断言，并核对响应头 `X-Request-Id` 等于行里的 `request_id`）。没有读取 API，查询直接读库，
+例如 `sqlite3 <db> "SELECT datetime(occurred_at/1e9,'unixepoch'), subject, method, route, object, status, outcome FROM audit_events ORDER BY occurred_at DESC LIMIT 50"`。
+
+- **不阻塞请求**：落库在请求之外进行，有界队列（1024）加一个写入 goroutine，每次写 5 秒超时。库写
+  失败、超时或队列满都不改变、也不推迟响应，JSON 行照写（`TestAPIAuditStoreFailureDoesNotChangeTheResponse`）。
+- **丢失可见**：日志 `audit: N audit write(s) lost since the last report (latest: request_id=…: <原因>)`，
+  第一次立刻写，之后每分钟最多一行并带计数；恢复时写 `audit: persisting audit events again`。`/health` 的
+  `audit_trail` 字段为 `degraded`（最近一次写失败或有事件被丢，此后还没有成功写入），正常为 `ok`。
+  它只是信息，不把 `/health` 变红，也不带错误细节：日志行照写，而 `/health` 是 compose 的 liveness
+  probe，审计库写不进去不该让控制台被重启。
+- **停机**：`Dependencies.Close` 先排空队列、写出待写的汇总行，再关数据库；排空最多 5 秒加在途写入
+  的超时，剩下的计为丢失并记日志（`TestCloseDrainsTheAuditTrailBeforeTheDatabase`）。
+- **留存**：90 天，严格早于 `now − 90 天` 的行被删（恰好等于的保留）；每小时清理一次，每批 1000 行、
+  每次最多 30 秒，停机时取消。
+- **两类行，各有硬上限**（`persist_class`）：
+  - `full`：已认证的请求，以及成功的请求（登录成功、鉴权关闭时成功的请求）。每条都存，上限 200,000 行。
+  - `sampled`：没有解析出凭据**且**没有成功的请求（401、未认证时的 413/429/400/5xx）。先过全局令牌桶
+    （突发 20 条，之后每 10 秒 1 条），超出的只计数，有计数时每分钟写一条汇总行（`outcome: suppressed`、
+    `suppressed` 为条数、`suppressed_since` 与 `occurred_at` 为首末时间，请求字段为空）。上限 20,000 行。
+  - 插入使某类超过上限时，在同一事务里删掉**该类**最旧的行，删到上限的 99%。两类互不驱逐，表的总行数
+    不超过 220,000。
+
+安全取舍：
+
+- 为什么限制放在存储层：审计中间件必须在认证和限流之前运行（这样才能记录被拒绝的请求），代价是一个
+  不持有任何凭据的调用方可以无限量制造 401/429 审计事件，在认证前加限流也没用，因为 429 同样要审计。
+  如果照单全收，匿名刷接口就能在 90 天内写满数据库，或把真实的操作记录挤出去。现在匿名失败事件先过
+  令牌桶，再受独立的行数上限；匿名洪水最多轮换 `sampled` 类自己的行，驱逐不了任何 `full` 类的行
+  （`TestAPIAuditFloodIsBoundedInTheTable` 走真实中间件链，`TestAuditRepositoryAnonymousFloodCannotEvictFullRows`
+  逐行核对上限）。
+- 代价一：洪水期间，同一时段里其他匿名失败事件（例如真实操作者输错 token）在库里也只剩汇总计数。令牌桶
+  是全局的，不按来源地址分：按来源分挡不住能轮换 IPv6 地址的调用方。逐条完整的记录只在 JSON 日志里，
+  所以 stderr 日志仍须由部署方接住（[生产部署安全要求](deployment-requirements.md)第 6 条）。
+- 代价二：持有凭据的调用方可以在 API 限流（UD-1，20 req/s）下轮换 `full` 类，满速约 3 小时就能把最旧的
+  行挤出 200,000 行的窗口。每一行都带着它的 `subject`，这种行为本身就留在审计里；更早的记录仍靠日志。
+- 鉴权关闭时没有请求是"已认证"的：成功的请求进 `full`，失败的进 `sampled`。
+- 空间（实测）：典型行含索引约 265 字节，最大约 683 字节（128 个非法字节记成 384 字节的 U+FFFD，加最长
+  的 IPv6 来源）；`full` 类约 53 MB，最坏 137 MB；`sampled` 类不超过 14 MB。SQLite 删除后不缩小文件，
+  但空出的页会被复用，文件大小以这个上限为准。
+- 敏感数据：行里没有请求体、请求头、token 或 cookie（上面的逐行测试扫描整张表找凭据值和
+  `Bearer`/`Authorization`/cookie 名）。`source` 是客户端 IP，属于个人数据，保留 90 天；数据库备份里
+  也有这张表（[灾难恢复](disaster-recovery.md)）。
+- 不是防篡改记录：表和控制台在同一台主机上，拿到主机 root 或数据库文件写权限的人可以改写它。需要
+  不可篡改的留存时，把 stderr 日志转发到异地。
+
+超过 90 天、逐条完整或防篡改的审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
 
 ## 监控读取接口
 

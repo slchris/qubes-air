@@ -156,6 +156,9 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
 - `/health`：`status` 是否为 `healthy`、`database` 是否为 `connected`、`worker.dispatcher` 是否为
   `alive`（`disabled` 表示编排被关掉，那是配置不是故障）。该检查会真的写一行探测标记再读回，
   并对调度器心跳判活（[灾难恢复](disaster-recovery.md) 第 69-72 行）。
+- **持久化审计**（schema 4 起）：`/health` 的 `audit_trail` 应为 `ok`。`degraded` 表示最近一次审计落库失败
+  或有事件被丢、此后没有成功写入（日志里有 `audit: … audit write(s) lost`）；它只是信息，不会让 `status`
+  变成 `unhealthy`，JSON 审计行照写。见[安全控制](security-controls.md)“持久化审计”。
 - **构建身份**：`/health` 的 `version` / `revision` / `build_time` / `tree` 四个字段就是这次构建的
   自我标识，与制品 `--version` 打印的是同一组值（同一份链接期注入，同一份 `buildinfo.Get()`）；
   命令与实测输出见 §3.2。
@@ -192,6 +195,7 @@ $ curl -s http://127.0.0.1:8080/health
 
 上面是本机实测（`make build-backend` 从**有未提交改动的工作树**构建，所以 `version` 以 `-dirty`
 结尾、`tree` 是 `dirty`；`dispatcher` 是 `disabled`，因为复现环境按 compose 的默认关掉了编排）。
+这次实测早于 schema 4；之后的构建在末尾多一个 `"audit_trail":"ok"`，其余键不变。
 
 **从发布制品读**（不读配置、不连库，打印完即退出，可以在一台还没部署的机器上跑）：
 

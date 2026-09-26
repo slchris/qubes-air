@@ -67,6 +67,7 @@ function health() {
     status: 'healthy', database: 'connected',
     worker: { dispatcher: 'running', queued: 0, running: 0 },
     version: 'v0.0.0-e2e', revision: '0'.repeat(40), build_time: '2026-09-26T00:00:00Z', tree: 'clean',
+    audit_trail: 'ok',
   };
 }
 
