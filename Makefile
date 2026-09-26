@@ -174,15 +174,20 @@ vuln-check:
 # Warning 也属于失败：保持为 0，不建立可永久继承的告警基线。
 FRONTEND_WARNING_BUDGET ?= 0
 
+# 显式指定 --output human-verbose：svelte-check 4.x 在 CLAUDECODE=1（Claude Code 会话）下
+# 默认改用 machine 格式，下面要读的汇总行就不存在了。汇总行对 1 用单数
+# （"1 error" / "1 warning"），两种写法都要认。读不到汇总行时按失败处理，不猜数量。
 frontend-check:
 	cd console/frontend && npm ci
-	@output="$$(cd console/frontend && npm run check 2>&1)"; status=$$?; \
+	@output="$$(cd console/frontend && npm run check -- --output human-verbose --no-color 2>&1)"; status=$$?; \
 	printf '%s\n' "$$output"; \
-	[ $$status -eq 0 ] || exit $$status; \
-	warnings="$$(printf '%s\n' "$$output" | sed -n 's/.*found 0 errors and \([0-9][0-9]*\) warnings.*/\1/p' | tail -n 1)"; \
-	[ -n "$$warnings" ] || { echo "无法读取 Svelte warning 数量" >&2; exit 1; }; \
+	counts="$$(printf '%s\n' "$$output" | sed -n 's/.*svelte-check found \([0-9][0-9]*\) errors\{0,1\} and \([0-9][0-9]*\) warnings\{0,1\}.*/\1 \2/p' | tail -n 1)"; \
+	[ -n "$$counts" ] || { echo "无法读取 svelte-check 汇总行 (退出码 $$status)" >&2; exit 1; }; \
+	errors="$${counts% *}"; warnings="$${counts#* }"; \
+	[ "$$errors" -eq 0 ] || { echo "Svelte error: $$errors (必须为 0)" >&2; exit 1; }; \
+	[ $$status -eq 0 ] || { echo "svelte-check 退出码 $$status" >&2; exit $$status; }; \
 	[ "$$warnings" -le "$(FRONTEND_WARNING_BUDGET)" ] || { \
-		echo "Svelte warning 增加: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
+		echo "Svelte warning 超出预算: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
 	}
 	cd console/frontend && npm run build
 	cd console/frontend && npm run test
