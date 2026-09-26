@@ -80,6 +80,11 @@ func TestConsoleRowCheckQueryFlagsPlantedRows(t *testing.T) {
 	add("qubes-air-old-token", "proxmox", "NOT-CANONICAL")
 	add("legacy-row", "PKI", "NOT-CANONICAL")
 	add("zone-b-töken", "api_key", "NOT-CANONICAL NON-ASCII")
+	// Types the API hides as the console's because they fold or trim to "pki".
+	add("pve-kelvin", "p\u212ai", "NOT-CANONICAL NON-ASCII")
+	add("pve-nel", "\u0085pki", "NOT-CANONICAL NON-ASCII")
+	add("pve-pad", "pki ", "NOT-CANONICAL")
+	add("pve-upper", " PKI ", "NOT-CANONICAL")
 
 	rows, err := db.DB().QueryContext(ctx, documentedSQL(t, consoleRowCheckMarker))
 	require.NoError(t, err)
@@ -93,6 +98,16 @@ func TestConsoleRowCheckQueryFlagsPlantedRows(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, want, got)
+
+	// Whatever the fixture holds, every row the credentials API hides must be
+	// listed: the check is how an operator finds rows the API no longer shows.
+	all, err := repo.List(ctx)
+	require.NoError(t, err)
+	for _, c := range all {
+		if models.IsConsoleCredential(c.Name, c.Type) {
+			assert.Contains(t, got, c.ID, "hidden row %q (type %q) must be listed", c.Name, c.Type)
+		}
+	}
 }
 
 // TestZoneReferenceCheckQueryFlagsHiddenReferences runs the documented zone
@@ -120,6 +135,11 @@ func TestZoneReferenceCheckQueryFlagsHiddenReferences(t *testing.T) {
 	legacyPKI := cred("legacy-row", "PKI")
 	nonASCII := cred("zone-b-t\u00f6ken", "proxmox")
 	lookalike := cred("qube\u017f-air-ca-key", "other")
+	kelvinType := cred("pve-kelvin", "p\u212ai")
+	nelType := cred("pve-nel", "\u0085pki")
+	paddedType := cred("pve-pad", "pki ")
+	upperPaddedType := cred("pve-upper", " PKI ")
+	paddedName := cred("  QUBES-AIR-x", "proxmox")
 
 	want := map[string]string{} // zone id + path -> flags
 	zone := func(id string, cfg models.ZoneConfig) {
@@ -143,6 +163,11 @@ func TestZoneReferenceCheckQueryFlagsHiddenReferences(t *testing.T) {
 	proxmox("z-non-ascii", nonASCII, "NON-ASCII")
 	proxmox("z-lookalike", lookalike, "NON-ASCII")
 	proxmox("z-missing", "no-such-credential", "MISSING")
+	proxmox("z-kelvin-type", kelvinType, "NON-ASCII")
+	proxmox("z-nel-type", nelType, "NON-ASCII")
+	proxmox("z-padded-type", paddedType, "PKI-TYPE")
+	proxmox("z-upper-padded-type", upperPaddedType, "PKI-TYPE")
+	proxmox("z-padded-name", paddedName, "CONSOLE-NAMESPACE")
 	zone("z-gcp", models.ZoneConfig{GCP: &models.GCPZoneConfig{CredentialID: caKey}})
 	want["z-gcp $.gcp.credential_id"] = "CONSOLE-NAMESPACE PKI-TYPE"
 	zone("z-both", models.ZoneConfig{
@@ -163,4 +188,29 @@ func TestZoneReferenceCheckQueryFlagsHiddenReferences(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, want, got)
+
+	// Whatever the fixture holds, a zone whose reference is missing or names a
+	// row the credentials API hides is listed. (The query also lists zones
+	// referencing non-ASCII-named operator rows, for a human to judge.)
+	all, err := zones.List(ctx, DefaultZoneListOptions())
+	require.NoError(t, err)
+	for _, z := range all {
+		refs := map[string]string{}
+		if z.Config.Proxmox != nil {
+			refs["$.proxmox.credential_id"] = z.Config.Proxmox.CredentialID
+		}
+		if z.Config.GCP != nil {
+			refs["$.gcp.credential_id"] = z.Config.GCP.CredentialID
+		}
+		for path, ref := range refs {
+			if ref == "" {
+				continue
+			}
+			row, err := creds.GetByID(ctx, ref)
+			require.NoError(t, err)
+			if row == nil || models.IsConsoleCredential(row.Name, row.Type) {
+				assert.Contains(t, got, z.ID+" "+path, "zone %s references a hidden or missing row", z.ID)
+			}
+		}
+	}
 }

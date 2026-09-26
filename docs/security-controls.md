@@ -233,10 +233,14 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 把两段 SQL 依次存进同一个文件，再运行：
 
 ```bash
+systemctl show -p LoadState --value qubes-air-console    # 必须输出 loaded
 U=$(systemctl show -p User --value qubes-air-console)   # 为空表示服务以 root 运行
 sudo -u "${U:-root}" sqlite3 -readonly -header -column \
   /rw/config/qubesair/qubes-air.db < console-row-check.sql
 ```
+
+先确认第一行输出 `loaded`：unit 名写错或没加载时，`systemctl show` 同样返回空的 `User`，
+上面的写法就会退回 root 执行，正是要避免的情况。
 
 第一段查询列出可能冒充控制台密钥的凭据行：
 
@@ -249,6 +253,7 @@ WITH c AS (
   WHERE lower(trim(name, ' ' || char(9, 10, 11, 12, 13))) LIKE 'qubes-air-%'
      OR lower(trim(type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
      OR length(name) <> length(CAST(name AS BLOB))
+     OR length(type) <> length(CAST(type AS BLOB))
 )
 SELECT id, quote(name) AS name, quote(type) AS type, created_at,
        trim(
@@ -262,13 +267,15 @@ SELECT id, quote(name) AS name, quote(type) AS type, created_at,
          || CASE WHEN (SELECT count(*) FROM c AS d WHERE d.folded = c.folded) > 1
               THEN 'DUPLICATE ' ELSE '' END
          || CASE WHEN length(name) <> length(CAST(name AS BLOB))
+                   OR length(type) <> length(CAST(type AS BLOB))
               THEN 'NON-ASCII' ELSE '' END) AS flags
 FROM c
 ORDER BY folded, created_at;
 ```
 
 查询列出名称（去掉首尾空白、按 ASCII 转小写后）以 `qubes-air-` 开头、类型为 `pki`（同样处理）、
-或名称含非 ASCII 字符的每一行。`flags` 为空的行正是控制台自己会写的样子；其余按标记处理：
+或名称、类型含非 ASCII 字符的每一行。凭据 API 隐藏的每一行（`IsConsoleCredential` 为真）都在其中。
+`flags` 为空的行正是控制台自己会写的样子；其余按标记处理：
 
 - `NOT-CANONICAL`：名称与规范写法不逐字节相同，或类型不恰好是 `pki`。规范写法只有
   `qubes-air-ca-cert`、`qubes-air-ca-key`、`qubes-air-luks-master`、`qubes-air-luks-key-<现存 Qube 的 id>`
@@ -277,14 +284,17 @@ ORDER BY folded, created_at;
   也可能是预先放进去的，需要按下文的审计和日志判断。
 - `DUPLICATE`：同一个折叠后名称下不止一行。真正的那一行也会带上这个标记，因为它和冒充者在
   同一组里；按 `created_at`、审计和日志判断哪一行是控制台写的。
-- `NON-ASCII`：名称含非 ASCII 字符。控制台的名称全是 ASCII；`ſ`（U+017F）、`K`（U+212A）
-  这类字符按大小写折叠会对上控制台的名称，而 SQLite 的 `lower()` 只处理 ASCII，所以这类行只能
-  靠这个标记找出来。运维方自己用中文等非 ASCII 字符命名的凭据也会列出来（同时带
-  `NOT-CANONICAL`）：名称如果不是把 `qubes-air-…` 换了几个形近字母的写法，就是运维行，可以不管。
+- `NON-ASCII`：名称或类型含非 ASCII 字符。控制台写的名称和类型全是 ASCII；`ſ`（U+017F）、`K`
+  （U+212A）这类字符按大小写折叠会对上控制台的名称或 `pki`，首尾的 U+0085、U+00A0 会被 Go 的
+  `TrimSpace` 去掉，而 SQLite 的 `lower()` 和 `trim()` 只处理 ASCII，所以这类行只能靠这个标记找出来。
+  例如类型 `pKi`（用 `K` 拼）或 `\u0085pki` 的行会被凭据 API 当作控制台行隐藏。运维方自己用中文等
+  非 ASCII 字符命名的凭据也会列出来（同时带 `NOT-CANONICAL`）：名称如果不是把 `qubes-air-…`
+  换了几个形近字母的写法，类型也不是 `pki` 的形近写法，就是运维行，可以不管。
 
 `TestConsoleRowCheckQueryFlagsPlantedRows`（`internal/repository`）从本文件读出这段 SQL，
-在一个放了大小写变体、`ſ` 和 `K` 变体、同名重复、错误类型、填充空白以及指向不存在 Qube 的
-DEK 的临时库上运行，逐行核对标记。
+在一个放了大小写变体、`ſ` 和 `K` 变体、同名重复、错误类型、形近类型（`pKi`、`pki `、`\u0085pki`）、
+填充空白以及指向不存在 Qube 的 DEK 的临时库上运行，逐行核对标记，并核对凭据 API 隐藏的每一行
+都被列出。
 
 第二段查询列出引用了这类行，或引用了不存在的行的 zone。Proxmox 和 GCP 的 `credential_id` 都查：
 
@@ -299,6 +309,7 @@ SELECT z.id AS zone_id, quote(z.name) AS zone, r.path,
          || CASE WHEN lower(trim(c.type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
               THEN 'PKI-TYPE ' ELSE '' END
          || CASE WHEN length(c.name) <> length(CAST(c.name AS BLOB))
+                   OR length(c.type) <> length(CAST(c.type AS BLOB))
               THEN 'NON-ASCII' ELSE '' END) AS flags
 FROM zones AS z
 JOIN (SELECT id AS zone_id, '$.proxmox.credential_id' AS path,
@@ -312,11 +323,13 @@ WHERE r.ref IS NOT NULL AND r.ref <> ''
   AND (c.id IS NULL
        OR lower(trim(c.name, ' ' || char(9, 10, 11, 12, 13))) LIKE 'qubes-air-%'
        OR lower(trim(c.type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
-       OR length(c.name) <> length(CAST(c.name AS BLOB)))
+       OR length(c.name) <> length(CAST(c.name AS BLOB))
+       OR length(c.type) <> length(CAST(c.type AS BLOB)))
 ORDER BY z.name, r.path;
 ```
 
-没有列出的 zone 都引用了一条正常的运维凭据，或者没有引用任何凭据。列出的按标记处理：
+没有列出的 zone 都引用了一条凭据 API 可见的运维凭据，或者没有引用任何凭据：凭据 API 隐藏的行，
+无论是按名称、按类型还是按非 ASCII 的形近写法隐藏，都会让引用它的 zone 列出来。列出的按标记处理：
 
 - `MISSING`：引用的行不存在。这个 zone 本来就无法 provision。从 G-D9 的修复起，对它的任何
   config 写入都会得到 422，直到用 fleet token 把它指向一条存在的运维凭据。
@@ -328,10 +341,13 @@ ORDER BY z.name, r.path;
   - 引用的是修复前建的运维行（名称在 `qubes-air-` 下或类型为 `pki`）。provision 照常使用它，
     但对这个 zone 的任何 config 写入都会得到 422，直到 fleet token 用同一个 secret 新建一条
     命名空间外的运维凭据（类型如 `proxmox`），再把 zone 指向这条新凭据。
-- `NON-ASCII`：与第一段查询相同，看名称是不是 `qubes-air-…` 的形近写法。
+- `NON-ASCII`：引用行的名称或类型含非 ASCII 字符，看法与第一段查询相同。名称是 `qubes-air-…`
+  的形近写法，或类型是 `pki` 的形近写法（如 `pKi`、`\u0085pki`）时，凭据 API 同样隐藏这一行，按
+  上一条的两种情况处理。
 
 `TestZoneReferenceCheckQueryFlagsHiddenReferences`（`internal/repository`）同样从本文件读出这段
-SQL，在临时库上核对每一种引用。
+SQL，在临时库上核对每一种引用，包括类型为 `pKi`、`pki `、` PKI `、`\u0085pki` 的行和名称为
+`  QUBES-AIR-x` 的行，并核对引用凭据 API 隐藏行或不存在行的 zone 全部列出。
 
 查询发现不了一种行：在控制台写入自己那一行**之前**，就以完全相同的名称和 `pki` 类型存进去的
 单独一行（例如在某个 Qube 的 DEK 生成前放进 `qubes-air-luks-key-<id>`，或在控制台第一次创建 CA
@@ -352,9 +368,16 @@ SQL，在临时库上核对每一种引用。
 
 1. 停止控制台：`systemctl stop qubes-air-console`。
 2. 备份：按[升级与回滚](upgrade-rollback.md) §3 第 1 步运行 `qubes-air-backup create`。
-3. 离线删除不是控制台写的行，只按 `id` 删，同样以服务用户运行：
-   `sudo -u "${U:-root}" sqlite3 /rw/config/qubesair/qubes-air.db "DELETE FROM credentials WHERE id IN ('<id>', ...);"`，
-   然后重跑两段查询。第一段的 `flags` 应全部为空；第二段列出的 zone 要先用 fleet token 改指到
+3. 离线删除不是控制台写的行，只按 `id` 删，同样以服务用户运行（先按上文确认 `LoadState` 为
+   `loaded`；控制台已停止时 unit 仍是 loaded）：
+
+   ```bash
+   U=$(systemctl show -p User --value qubes-air-console)   # 为空表示服务以 root 运行
+   sudo -u "${U:-root}" sqlite3 /rw/config/qubesair/qubes-air.db \
+     "DELETE FROM credentials WHERE id IN ('<id>', ...);"
+   ```
+
+   然后重跑两段查询。第一段除已判定为运维行的 `NON-ASCII` 行外，`flags` 应全部为空；第二段列出的 zone 要先用 fleet token 改指到
    一条运维凭据（控制台启动后经 `PUT /api/v1/zones/:id`），再核对一次。
 4. 冒充的 CA 行如果曾经被使用过（重启后控制台用它签发过证书），就按 CA 泄露处理：按
    [灾难恢复](disaster-recovery.md)“CA 灾难恢复”更换 CA，所有 agent 重新 bootstrap。某个 Qube
