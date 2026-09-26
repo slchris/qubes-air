@@ -71,9 +71,16 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 这条规则决定了一切：**升级过 schema 之后，回滚二进制不是回滚，而是让控制台起不来。** 所以
 "回滚"在 schema 变更后只有一个手段——从备份恢复（见 §4）。
 
-当前是 schema 3：在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，
-见 §2.4），纯加列，已有行保留、pin 为空。v2 → v3 的迁移与“再次打开无变化”由
-`internal/database/database_upgrade_test.go` 对冻结的 v2 夹具验证。
+当前是 schema 4：
+- 3 在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，见 §2.4），纯加列，
+  已有行保留、pin 为空。
+- 4 新增 `audit_events` 表（持久化的 API 审计轨迹），纯加表，不动已有行；升级后该表为空，升级前的审计
+  只在当时的日志里。库里若已有列不同的同名表（未发布构建留下的），控制台拒绝打开并点名列差异，
+  `user_version` 保持原值。
+
+v2 → 当前、v3 → 当前的迁移与“再次打开无变化”由 `internal/database/database_upgrade_test.go` 与
+`audit_upgrade_test.go` 对冻结的 v2 夹具（及由它构造的 v3 状态）验证；v2 库的备份恢复后打开即升级由
+`cmd/qubes-air-backup/upgrade_test.go` 验证。
 
 ### 2.3 API 与前端
 

@@ -50,6 +50,8 @@
 > 2026-09-26 合并后追加：凭据 API 修复把 `credentialSvc` 挪到 zone service 之前（`initDependencies` 中段 +3 行、
 > 其后净 +1）。§1.1 中 UD-1c/UD-1d/UD-1e/UD-1g/UD-23/UD-25 指向 `cmd/server/main.go` 的引用已按合并后的工作树
 > 逐条重算并用 `sed -n` 核对。
+> 2026-09-26 schema 4 追加：新表 `audit_events`（§2 与 §2.1）。v4 步骤放在新文件 `internal/database/audit.go`，
+> `migrate()` 里的命名步骤改成按版本顺序的循环，行数不变，`database.go` 既有引用不位移。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -166,18 +168,23 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表。它嵌在只供测试导入的 `dbtest` 包里
 （`WriteV2Fixture` 写出 v2 库、`AssertV2RowsPreserved` 核对行），各包的升级测试共用同一份，
 证明“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（如 `internal/database/database_upgrade_test.go`、
-`internal/repository/bootstrap_pin_test.go`）。
+`internal/repository/bootstrap_pin_test.go`）。schema 4 另从同一夹具构造 v3 状态（夹具 + v3 加列 +
+一个带 pin 的 token，盖 `user_version = 3`）验证 v3 → v4（`internal/database/audit_upgrade_test.go`），
+并验证 v2 库的加密备份经 `qubes-air-backup restore` 恢复后打开即升级
+（`cmd/qubes-air-backup/upgrade_test.go`）。
 
 | 项 | 事实 | 位置 |
 |---|---|---|
-| 当前 schema 版本 | `SchemaVersion = 3`（3：`bootstrap_tokens.placeholder_spki_sha256`，bootstrap 对端 pin） | `console/backend/internal/database/database.go:232`；v3 迁移步骤 `internal/database/bootstrappin.go`（`migrateBootstrapPeerPin`） |
+| 当前 schema 版本 | `SchemaVersion = 4`（3：`bootstrap_tokens.placeholder_spki_sha256`，bootstrap 对端 pin；4：新表 `audit_events`，持久化 API 审计轨迹） | `console/backend/internal/database/database.go:232`；命名迁移步骤按版本顺序在 `migrate()` 里依次执行（`database.go:285`）：v3 `internal/database/bootstrappin.go`（`migrateBootstrapPeerPin`）、v4 `internal/database/audit.go:86`（`migrateAudit`） |
 | 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:299-317`（`applySchemaVersion`）、`:320-326`（`UserVersion`） |
 | 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:328-339`（说明）、`:341`（实现） |
 | 备份/恢复侧的版本校验 | `ErrSchemaTooNew`；"新控制台备份恢复到旧控制台"会被拒绝 | `docs/disaster-recovery.md:80`、`:84-89` |
 | 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:424-431`（注释与建表） |
 | 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:465-472` |
+| 无外键设计（`audit_events`） | 审计行必须比它点名的 qube/zone 活得久，与 `jobs` 同理 | `internal/database/audit.go:34-35`（注释） |
+| 同名表列校验（`audit_events`） | 库里已有同名表、但开头的列不是 v4 这一组（未发布构建建过不含 `request_id` 的版本）时**拒绝打开**并点名列差异，`user_version` 不被改写，而不是在建索引时报 `no such column` 或混写两种格式；v4 之后的列只允许追加在末尾，这样的库按“schema 比本构建新”拒绝 | `internal/database/audit.go:102`（`checkAuditEventsColumns`）；测试 `internal/database/audit_upgrade_test.go`（`TestRefusesAuditEventsFromAnotherBuild`） |
 
-### 2.1 表与索引清单（10 张表 / 7 个索引）
+### 2.1 表与索引清单（11 张表 / 10 个索引）
 
 | # | 表 | 建表位置 | 主键 | 关键列（节选） |
 |---|---|---|---|---|
@@ -190,15 +197,16 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | 7 | `bootstrap_tokens` | `database.go:531` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用）, **placeholder_spki_sha256**（v3 加列迁移，默认空串；空 pin 被读取方拒绝） |
 | 8 | `credentials` | `database.go:544` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
 | 9 | `settings` | `database.go:557` | `key` | value, updated_at |
-| 10 | `_health_probe` | `database.go:208` | `id`（`CHECK (id = 1)`，恒定单行） | marker（每次探测新随机值）, checked_at |
+| 10 | `audit_events` | `internal/database/audit.go:37` | `id`（`INTEGER PRIMARY KEY`） | occurred_at（Unix 纳秒，等于审计行的 `time`）, request_id, authenticated, auth_disabled, subject, source, method, route, object, object_truncated, status, outcome, latency_ms, zone_scope（与审计 JSON 行逐字段一致）；**persist_class**（`full`/`sampled`）、**suppressed** / **suppressed_since**（仅汇总行非 0）。v4 新表，布尔列与 `persist_class` 有 `CHECK` |
+| 11 | `_health_probe` | `database.go:208` | `id`（`CHECK (id = 1)`，恒定单行） | marker（每次探测新随机值）, checked_at |
 
-> 表清单按 `database.go` 里 `migrate()` 的建表顺序列出；`_health_probe` 不在该清单内，由
+> 表清单按 `database.go` 里 `migrate()` 的建表顺序列出，`audit_events` 由其后的 v4 步骤建立（`internal/database/audit.go`）；`_health_probe` 不在该清单内，由
 > `HealthCheck` 惰性创建（`CREATE TABLE IF NOT EXISTS`），因此列在末尾。下面的二级索引建在同批
 > `Exec` 中。
 > **计数口径**：`database.go` 中 `CREATE TABLE IF NOT EXISTS` 命中 **10** 处、
-> `CREATE INDEX IF NOT EXISTS` 命中 **7** 处（`grep -c`）。
+> `CREATE INDEX IF NOT EXISTS` 命中 **7** 处（`grep -c`）；`audit.go` 另有 1 张表、3 个索引。
 > `runtime-context.md` 原先写的"表清单（10 张）"与其基线代码**不一致**（其自身表格也只列了 9 行），
-> 登记为开放问题 O-2，已于 2026-09-26 更正为 9 张并指向本节。应用 schema 仍是 **9 张表**，`_health_probe` 是探测用表、
+> 登记为开放问题 O-2，已于 2026-09-26 更正为 9 张并指向本节。应用 schema 是 **10 张表**（schema 4 加了 `audit_events`），`_health_probe` 是探测用表、
 > 不属于应用 schema；`zones`、`qubes`、`qube_infra`、`infrastructure`、
 > `credentials`、`settings` 未见显式二级索引。
 
@@ -211,6 +219,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | `idx_agent_certs_revoked` | `agent_certs` | `database.go:512` |
 | `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:541` |
 | `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:542` |
+| `idx_audit_events_occurred_at` | `audit_events` | `internal/database/audit.go:62` |
+| `idx_audit_events_request_id` | `audit_events` | `internal/database/audit.go:63` |
+| `idx_audit_events_class` | `audit_events` | `internal/database/audit.go:64` |
 
 ## 3. CI 工具链版本（D-4 的落点）
 
