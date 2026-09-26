@@ -400,7 +400,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		infraHandler:      handler.NewInfraHandler(infraSvc),
 		credentialHandler: handler.NewCredentialHandler(credentialSvc),
 		billingHandler:    handler.NewBillingHandler(),
-		monitoringHandler: handler.NewMonitoringHandler(),
+		monitoringHandler: newMonitoringHandler(zoneRepo, qubeRepo, qubeInfraRepo, providerRegistry),
 		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
 		revocations:       certIssuer,
 		sessionHandler:    handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),

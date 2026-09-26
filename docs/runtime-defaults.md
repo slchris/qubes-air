@@ -42,7 +42,8 @@
 > 其余文件沿用上次结果。
 > 2026-09-26 F1 追加：Proxmox 适配器在 `vmStatus` 之后加入 `RuntimeMetrics`，`internal/provider/proxmox/adapter.go`
 > 第 131 行之后的引用整体 +57；§1.6 UD-16 的 holder `memory=512` 已按本次工作树重算为 `:362`（原引用 `:306`
-> 指向的是下一行 `ostype`，一并纠正）。
+> 指向的是下一行 `ostype`，一并纠正）。新增监控读取预算（§1.1 UD-25）；监控接线放在 `cmd/server/monitoring.go`，
+> `cmd/server/main.go` 行号不变。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -63,6 +64,7 @@
 | UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验 | `config/config.go:237`（`AgentExecAllow`）、`:241`（`AgentFileCopyRoots`）、`:751`/`:754`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go`；写入 `internal/service/cloudinit.go:299` |
 | UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:127`（`bootLocked`：先取锁再 boot）、`:87`（main 的唯一调用点）、`:93`（失败即 `log.Fatalf`） |
 | UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1034`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1276`（`healthHandler` 入参）、`:1253`/`:1254`（`healthBody` 的 `build_time`/`tree` 键）、`:1373`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
+| UD-25 | `GET /api/v1/monitoring/qubes` 的读取预算与刷新 | 整次采集（含列出 qube）**10s**，单个 qube **5s**，同时最多 **8** 个 provider 读取，每个 zone 每次只构造一个适配器；到点未读到的 qube 标 `provider_metrics_timeout`，其余照常返回，不等待忽略 context 的 provider 调用，因而落在 15s `WriteTimeout` 之内。**无配置键**（编译期常量）。前端每 **60s** 重取 Qube 指标与主机概览，采样时间早于 **120s** 或超前 **30s** 标 stale | `console/backend/internal/service/runtime_metrics.go:18`（`runtimeMetricsWorkers`）、`:23`（`DefaultRuntimeMetricsSweepDeadline`）、`:26`（`DefaultRuntimeMetricsPerQubeTimeout`）；写超时 `cmd/server/main.go:1388`；前端 `console/frontend/src/components/MonitoringView.svelte:79`（`runtimeMetricsStaleAfterMs`）、`:193`（超前判定）、`:205`/`:206`（刷新定时器） |
 
 ### 1.2 transport（Relay ↔ console / agent）
 

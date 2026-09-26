@@ -1,18 +1,39 @@
 package handler
 
 import (
+	"context"
+	"log"
 	"net/http"
-	"runtime"
 
 	"github.com/gin-gonic/gin"
+	"github.com/slchris/qubes-air/console/internal/service"
+	"github.com/slchris/qubes-air/console/internal/systemmetrics"
 )
 
-// MonitoringHandler handles monitoring-related HTTP requests.
-type MonitoringHandler struct{}
+// hostMetricsSampler samples the host the Console runs on.
+type hostMetricsSampler interface {
+	Collect() systemmetrics.Metrics
+}
 
-// NewMonitoringHandler creates a new MonitoringHandler.
-func NewMonitoringHandler() *MonitoringHandler {
-	return &MonitoringHandler{}
+// qubeMetricsCollector reads live per-qube metrics from the providers.
+type qubeMetricsCollector interface {
+	Collect(context.Context) ([]service.QubeRuntimeMetrics, error)
+}
+
+// MonitoringHandler handles monitoring-related HTTP requests.
+//
+// Every /monitoring route aggregates across zones, so a zone-restricted
+// credential is refused before it gets here (middleware.RequireZones).
+type MonitoringHandler struct {
+	host  hostMetricsSampler
+	qubes qubeMetricsCollector
+	logf  func(format string, args ...any)
+}
+
+// NewMonitoringHandler creates a MonitoringHandler. host must be non-nil;
+// qubes may be nil, in which case GET /monitoring/qubes answers 501.
+func NewMonitoringHandler(host hostMetricsSampler, qubes qubeMetricsCollector) *MonitoringHandler {
+	return &MonitoringHandler{host: host, qubes: qubes, logf: log.Printf}
 }
 
 // RegisterRoutes registers monitoring routes.
@@ -20,49 +41,22 @@ func (h *MonitoringHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	monitoring := rg.Group("/monitoring")
 	monitoring.GET("", h.GetOverview)
 	monitoring.GET("/metrics", h.GetMetrics)
+	monitoring.GET("/qubes", h.GetQubeMetrics)
 	monitoring.GET("/alerts", h.GetAlerts)
 	monitoring.POST("/alerts/:id/acknowledge", h.AcknowledgeAlert)
 }
 
-// SystemMetrics represents metrics for the console process.
-//
-// IMPORTANT (honesty): MemoryUsage reflects the CONSOLE's own Go runtime, not
-// the managed qubes/zones. CPU/disk/network are not collected yet. The Source
-// field makes this explicit so a caller never mistakes these for fleet-wide
-// infrastructure metrics.
-type SystemMetrics struct {
-	CPUUsage    float64 `json:"cpuUsage"`
-	MemoryUsage float64 `json:"memoryUsage"`
-	DiskUsage   float64 `json:"diskUsage"`
-	NetworkIn   int64   `json:"networkIn"`
-	NetworkOut  int64   `json:"networkOut"`
-	// Source identifies where these numbers come from. Currently
-	// "console-process" — i.e. the backend's own runtime, not the fleet.
-	Source string `json:"source"`
-}
+// hostMetricsNote states the scope of the host metrics next to the numbers.
+const hostMetricsNote = "Host-wide Console metrics; these values do not describe managed qubes. " +
+	"Network rates sum non-loopback interfaces and can count bridged traffic more than once."
 
-// consoleProcessMetrics builds SystemMetrics from the console's own runtime.
-// Only memory is real; the rest require external collection (per-zone agents or
-// syscalls) and are left at zero with an explicit Source.
-func consoleProcessMetrics() SystemMetrics {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+// alertsNotImplemented is reported with every alert list until alerting is
+// wired to real health data: an empty list must not read as "all healthy".
+const alertsNotImplemented = "not_implemented"
 
-	memUsage := float64(m.Alloc) / float64(m.Sys) * 100.0
-	return SystemMetrics{
-		CPUUsage:    0, // TODO: needs a CPU sampler; not the fleet's CPU
-		MemoryUsage: memUsage,
-		DiskUsage:   0, // TODO: needs syscall/statfs
-		NetworkIn:   0,
-		NetworkOut:  0,
-		Source:      "console-process",
-	}
-}
-
-// monitoringNote flags that overview metrics describe the console process, not
-// the managed fleet.
-const monitoringNote = "PLACEHOLDER: metrics describe the console process (source=console-process), " +
-	"not the managed qubes/zones. Fleet metrics require per-zone collection."
+// qubeMetricsUnavailable is the only failure text a caller sees; the cause is
+// logged, because it can name internal endpoints or database paths.
+const qubeMetricsUnavailable = "provider runtime metrics are unavailable"
 
 // Alert represents a monitoring alert.
 type Alert struct {
@@ -74,45 +68,67 @@ type Alert struct {
 	Acknowledged bool   `json:"acknowledged"`
 }
 
-// GetOverview returns monitoring overview.
+// GetOverview returns the Console host metrics and the alert list.
 func (h *MonitoringHandler) GetOverview(c *gin.Context) {
-	metrics := consoleProcessMetrics()
-	alerts := []Alert{}
-
 	c.JSON(http.StatusOK, gin.H{
-		"metrics":     metrics,
-		"alerts":      alerts,
-		"placeholder": true,
-		"note":        monitoringNote,
+		"metrics":       h.host.Collect(),
+		"note":          hostMetricsNote,
+		"alerts":        []Alert{},
+		"alerts_status": alertsNotImplemented,
 	})
 }
 
-// GetMetrics returns detailed metrics.
+// GetMetrics returns the Console host metrics.
 func (h *MonitoringHandler) GetMetrics(c *gin.Context) {
-	metrics := consoleProcessMetrics()
-
 	c.JSON(http.StatusOK, gin.H{
-		"metrics":     metrics,
-		"placeholder": true,
-		"note":        monitoringNote,
+		"metrics": h.host.Collect(),
+		"note":    hostMetricsNote,
 	})
 }
 
-// GetAlerts returns all alerts.
+// GetQubeMetrics returns one entry per qube: live values read from its
+// provider, or a reason code saying why there are none. The collector bounds
+// the whole read (service.DefaultRuntimeMetricsSweepDeadline) inside the
+// server's write timeout.
+func (h *MonitoringHandler) GetQubeMetrics(c *gin.Context) {
+	if h.qubes == nil {
+		c.JSON(http.StatusNotImplemented, ErrorResponse{
+			Error:   http.StatusText(http.StatusNotImplemented),
+			Message: "provider runtime metrics are not configured",
+			Code:    http.StatusNotImplemented,
+		})
+		return
+	}
+	items, err := h.qubes.Collect(c.Request.Context())
+	if err != nil {
+		h.logf("monitoring: GET /monitoring/qubes: %v", err)
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error:   http.StatusText(http.StatusServiceUnavailable),
+			Message: qubeMetricsUnavailable,
+			Code:    http.StatusServiceUnavailable,
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// GetAlerts returns all alerts. Alerting is not implemented yet, which the
+// response says explicitly.
 func (h *MonitoringHandler) GetAlerts(c *gin.Context) {
-	alerts := []Alert{}
-
 	c.JSON(http.StatusOK, gin.H{
-		"alerts": alerts,
-		"total":  0,
+		"alerts":        []Alert{},
+		"total":         0,
+		"alerts_status": alertsNotImplemented,
 	})
 }
 
-// AcknowledgeAlert acknowledges an alert.
+// AcknowledgeAlert is a stub until alert persistence lands (F2). There are no
+// alerts to acknowledge and nowhere to record who did, so it answers 501
+// rather than reporting an acknowledgement that did not happen.
 func (h *MonitoringHandler) AcknowledgeAlert(c *gin.Context) {
-	id := c.Param("id")
-	c.JSON(http.StatusOK, gin.H{
-		"id":           id,
-		"acknowledged": true,
+	c.JSON(http.StatusNotImplemented, ErrorResponse{
+		Error:   http.StatusText(http.StatusNotImplemented),
+		Message: "alert acknowledgement is not implemented",
+		Code:    http.StatusNotImplemented,
 	})
 }

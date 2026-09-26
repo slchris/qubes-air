@@ -128,6 +128,34 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 
 审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
 
+## 监控读取接口
+
+`GET /api/v1/monitoring`、`/monitoring/metrics`、`/monitoring/qubes` 与 `/monitoring/alerts` 只读，
+代码在 `internal/handler/monitoring_handler.go`，接线在 `cmd/server/monitoring.go`。
+
+- 认证与授权：走完整的 `/api/v1` 链。未认证返回 401；read-only 与 control scope 都可读；
+  这些接口汇总所有 zone，zone token 一律 403，不提供按 zone 过滤的视图。
+- 请求体与限流：只有 GET，沿用链上的请求体上限（UD-1b）与每客户端限流（UD-1）。
+- 超时：`/monitoring/qubes` 整次读取 10 秒、单个 Qube 5 秒，最多 8 路并发。到点没读到的 Qube
+  标 `provider_metrics_timeout`，其余结果照常返回。收集方不等待忽略 context 的 provider 调用，
+  所以响应落在 15 秒写超时之内（[UD-25](runtime-defaults.md)）。
+- 审计：读请求不进审计，与其他 GET 一致。单个 Qube 读取失败时，服务端日志记录 Qube 名称、ID、
+  原因码和错误；整次失败时记录错误原文。provider 不支持该能力、VM 被备份等 provider 任务锁定
+  （`provider_busy`）是预期状态，不记日志。
+- `POST /monitoring/alerts/:id/acknowledge` 在告警实现之前是桩：返回 501 和固定文本
+  `alert acknowledgement is not implemented`，不记录任何确认；作为变更请求照常进审计。
+- 敏感响应：数据库、provider 的错误原文不进响应体。单个 Qube 只返回固定原因码；整次失败返回
+  503 和固定文本 `provider runtime metrics are unavailable`。响应只含 Qube 名称/ID、zone ID、状态
+  和读数，不含凭据或 provider 地址。
+- Proxmox 在读 `status/current` 之前先核验 compute VM 的所有权标记，不会读取、报告不属于该
+  Qube 的 VM。
+- 对 provider 的请求量：每次 `/monitoring/qubes`，每个有运行中 Qube 的 zone 构造一次适配器
+  （从加密库解析一次凭据）；用户名/密码凭据的 zone 再加 1 个 `POST /api2/json/access/ticket` 登录，
+  API token 凭据不登录；每个运行中的 Qube 发 2 个 GET（所有权核验读 `config`、再读 `status/current`）。
+  即每次请求 `2 × 运行中 Qube 数 + 使用密码凭据的 zone 数` 个 PVE 请求，最多 8 路并发。请求结束时关闭
+  这些适配器的空闲连接；provider HTTP 客户端的空闲连接另有 30 秒超时（[UD-8d](runtime-defaults.md)）。
+  目前只有每客户端限流约束，没有跨请求的结果复用。
+
 ## Exec：JSON 参数列表
 
 stdin 必须是 JSON 字符串数组，第一项为已允许的规范绝对可执行文件路径：

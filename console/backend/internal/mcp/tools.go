@@ -245,11 +245,11 @@ func readTools(cl *Client) []*Tool {
 		readGET(cl, "credential_get", "Get one stored credential — metadata only (GET /api/v1/credentials/{id}).",
 			"/api/v1/credentials/{id}", "id",
 			nil, "id"),
-		readGET(cl, "monitoring_overview", "Console process monitoring overview (GET /api/v1/monitoring).",
+		readGET(cl, "monitoring_overview", "Console host metrics and the alert list (GET /api/v1/monitoring). Host metrics describe the Console machine, not managed qubes; alerting is not implemented yet.",
 			"/api/v1/monitoring", "", nil),
-		readGET(cl, "monitoring_metrics", "Console process metrics (GET /api/v1/monitoring/metrics).",
+		readGET(cl, "monitoring_metrics", "Console host metrics (GET /api/v1/monitoring/metrics).",
 			"/api/v1/monitoring/metrics", "", nil),
-		readGET(cl, "monitoring_alerts", "List monitoring alerts (GET /api/v1/monitoring/alerts).",
+		readGET(cl, "monitoring_alerts", "List monitoring alerts (GET /api/v1/monitoring/alerts). Alerting is not implemented yet (alerts_status=not_implemented); an empty list does not mean the fleet is healthy.",
 			"/api/v1/monitoring/alerts", "", nil),
 		readGET(cl, "settings_get", "Read console settings (GET /api/v1/settings).",
 			"/api/v1/settings", "", nil),
@@ -296,7 +296,7 @@ func controlTools(cl *Client) []*Tool {
 			http.MethodPost, "/api/v1/qubes/{id}/start"),
 		writeAction(cl, "qube_stop", "Stop (suspend) a qube (POST /api/v1/qubes/{id}/stop). Queues a job.",
 			http.MethodPost, "/api/v1/qubes/{id}/stop"),
-		writeAction(cl, "alert_acknowledge", "Acknowledge a monitoring alert (POST /api/v1/monitoring/alerts/{id}/acknowledge).",
+		writeAction(cl, "alert_acknowledge", "Acknowledge a monitoring alert (POST /api/v1/monitoring/alerts/{id}/acknowledge). Stub until alerting is implemented: the Console answers 501 and records nothing.",
 			http.MethodPost, "/api/v1/monitoring/alerts/{id}/acknowledge"),
 	}
 }
