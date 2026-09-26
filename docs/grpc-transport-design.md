@@ -96,9 +96,10 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 ### UnlockData / RekeyData
 
 `qubesair.UnlockData` 在远端打开（首次则为格式化）LUKS 数据盘：stdin 是该 Qube 自己的数据
-密钥（DEK），stdout 是一行 `{"unlocked":bool,"detail":"..."}`，**始终 exit 0**，非零退出会被
-invoker 当作错误而吞掉 stdout。它只格式化真正空白的盘；已经带非 LUKS 文件系统的盘一律拒绝
-覆盖。它和 RekeyData 都拒绝服务参数，特权半段只能由外层经 systemd-run 进入（见
+密钥（DEK；stdin 连同末尾换行最多 4096 字节，超出或含 NUL 直接拒绝，不截断），stdout 是一行
+`{"unlocked":bool,"detail":"..."}`，**始终 exit 0**，非零退出会被 invoker 当作错误而吞掉
+stdout。它只格式化真正空白的盘；已经带非 LUKS 文件系统的盘一律拒绝覆盖。它和 RekeyData 都
+拒绝服务参数，特权半段只能由外层经 systemd-run 进入（见
 [安全控制](security-controls.md#数据盘迁移rekeydata)）。
 
 `qubesair.RekeyData` 只被迁移路径调用：把旧 keyslot 换成 DEK，并报告旧槽是否已移除。二者都

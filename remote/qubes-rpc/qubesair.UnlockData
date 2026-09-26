@@ -9,7 +9,9 @@
 # this process exits.
 #
 # Contract:
-#   stdin  : the LUKS passphrase (raw bytes, no framing). Pushed by the console.
+#   stdin  : the LUKS passphrase (raw bytes, no framing). At most 4096 bytes in
+#            total, trailing newlines included; those newlines are then not part of
+#            the passphrase. A NUL byte is refused. Pushed by the console.
 #   stdout : one JSON line {"unlocked":bool,"detail":"..."}. ALWAYS exit 0 so the
 #            invoker returns our stdout instead of swallowing it on a non-zero exit
 #            (same reason qubesair.Exec exits 0 — see internal/agent/invoker.go).
@@ -34,8 +36,16 @@
 # tracked in docs/grpc-transport-design.md.
 # =====================================================================================
 set +e
+# Byte semantics for read -n and ${#key} below, whatever locale the caller has.
+export LC_ALL=C
+# TMOUT is read's default timeout; a timeout must not end the passphrase early.
+unset TMOUT
 
 SELF="/etc/qubes-rpc/qubesair.UnlockData"
+# The console sends a 43-character base64 key. The cap only keeps a hostile caller
+# from making this service buffer unbounded input (RekeyData caps its request for
+# the same reason); a longer passphrase is refused, never truncated.
+MAX_KEY_BYTES=4096
 
 # ---- privileged inner half: runs under systemd-run, key on its stdin ----
 if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
@@ -115,7 +125,28 @@ if [ "$#" -gt 0 ]; then
     exit 0
 fi
 
-key="$(cat)"
+# Read at most MAX_KEY_BYTES + 1 raw bytes. Unlike a command substitution, read
+# keeps trailing newlines, so they count against the cap and an oversized input
+# cannot shrink under it. Status 0 means the byte limit or a NUL (which a shell
+# variable could not carry), 1 means end of input; anything else (a timeout, a
+# read error) may have left a partial passphrase and is refused.
+IFS= read -r -d '' -n $((MAX_KEY_BYTES + 1)) key
+read_status=$?
+if [ "$read_status" -gt 1 ]; then
+    printf '{"unlocked":false,"detail":"could not read passphrase"}\n'
+    exit 0
+fi
+if [ "${#key}" -gt "$MAX_KEY_BYTES" ]; then
+    printf '{"unlocked":false,"detail":"passphrase exceeds %s bytes"}\n' "$MAX_KEY_BYTES"
+    exit 0
+fi
+if [ "$read_status" -eq 0 ]; then
+    printf '{"unlocked":false,"detail":"passphrase contains a NUL byte"}\n'
+    exit 0
+fi
+while [ "${key%$'\n'}" != "$key" ]; do
+    key="${key%$'\n'}"
+done
 if [ -z "$key" ]; then
     printf '{"unlocked":false,"detail":"empty passphrase"}\n'
     exit 0

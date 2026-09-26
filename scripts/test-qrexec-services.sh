@@ -1215,6 +1215,8 @@ t_startapp_runuser_failure() {
 # run time from a plain-text marker so the source holds no key-shaped literal.
 KEY="$(printf '%s' 'qrexec-harness-fixture-not-a-real-disk-passphrase' | base64 | tr -d '=\n')"
 [ "${#KEY}" -ge 40 ] || die "could not build the fixture passphrase (is base64 installed?)"
+# The shell the services run under, for the one case whose outcome it decides.
+SERVICE_BASH_MAJOR="$(/bin/bash -c 'printf %s "${BASH_VERSINFO[0]}"')"
 DEV=''
 MAPPED=''
 DATA=''
@@ -1344,6 +1346,154 @@ t_unlockdata_refuses_service_argument() {
             case_end
         done
     done
+}
+
+# The console sends a 43-character key. The cap keeps a hostile caller from making
+# this root service buffer unbounded input, as RekeyData's request cap does. It
+# counts the raw stdin bytes: trailing newlines and NUL bytes are counted too, so
+# no oversized input can shrink under the limit and be used truncated.
+t_unlockdata_oversized_passphrase() {
+    local spec size
+    for spec in '4097 A|4097' '3 MiB|3145728'; do
+        size="${spec#*|}"
+        case_begin "UnlockData: a ${spec%|*} passphrase is refused before anything runs" || continue
+        unlock_setup
+        long_string A "$size" >"$C/stdin"
+        unlock_run
+        expect_rc 0
+        expect_stdout '{"unlocked":false,"detail":"passphrase exceeds 4096 bytes"}'
+        expect_no_calls
+        case_end
+    done
+}
+
+t_unlockdata_oversized_passphrase_with_newlines() {
+    local name
+    for name in '4096 A + LF + X' '4096 A + LF' '100 K + 4000 LF + TAIL'; do
+        case_begin "UnlockData: '$name' is over 4096 raw bytes and refused" || continue
+        unlock_setup
+        case "$name" in
+            '4096 A + LF + X') { long_string A 4096; printf '\nX'; } >"$C/stdin" ;;
+            '4096 A + LF') { long_string A 4096; printf '\n'; } >"$C/stdin" ;;
+            *) { long_string K 100; long_string $'\n' 4000; printf 'TAIL'; } >"$C/stdin" ;;
+        esac
+        unlock_run
+        expect_rc 0
+        expect_stdout '{"unlocked":false,"detail":"passphrase exceeds 4096 bytes"}'
+        expect_no_calls
+        case_end
+    done
+}
+
+# A NUL cannot be carried in a shell variable: it would be dropped silently and a
+# different key used, so the service refuses the input instead.
+t_unlockdata_nul_in_passphrase() {
+    local name
+    for name in 'KEY NUL MORE' 'KEY NUL' '4096 A NUL MORE'; do
+        case_begin "UnlockData: '$name' is refused, never used with the NUL dropped" || continue
+        unlock_setup
+        case "$name" in
+            'KEY NUL MORE') { printf '%s' "$KEY"; printf '\000MORE'; } >"$C/stdin" ;;
+            'KEY NUL') { printf '%s' "$KEY"; printf '\000'; } >"$C/stdin" ;;
+            *) { long_string A 4096; printf '\000MORE'; } >"$C/stdin" ;;
+        esac
+        unlock_run
+        expect_rc 0
+        expect_stdout '{"unlocked":false,"detail":"passphrase contains a NUL byte"}'
+        expect_no_calls
+        case_end
+    done
+}
+
+# The cap counts bytes even when the caller's locale is UTF-8: 1366 x U+4F60 is
+# 1366 characters but 4098 bytes.
+t_unlockdata_utf8_locale_counts_bytes() {
+    local i=0
+    case_begin "UnlockData: under a UTF-8 locale 4098 bytes of U+4F60 still exceed the cap" || return 0
+    unlock_setup
+    while [ "$i" -lt 1366 ]; do
+        printf '\344\275\240'
+        i=$((i + 1))
+    done >"$C/stdin"
+    run_svc LC_ALL=C.UTF-8 LANG=C.UTF-8 QREXEC_REMOTE_DOMAIN=console -- "$SVC"
+    expect_rc 0
+    expect_stdout '{"unlocked":false,"detail":"passphrase exceeds 4096 bytes"}'
+    expect_no_calls
+    case_end
+}
+
+# stall_stdin FIRST REST: make the case's stdin a pipe that delivers FIRST, pauses
+# 2 s, then delivers REST.
+stall_stdin() {
+    rm -f "$C/stdin"
+    mkfifo "$C/stdin"
+    { printf '%s' "$1"; sleep 2; printf '%s' "$2"; } >"$C/stdin" 2>/dev/null &
+    WRITER=$!
+}
+
+# TMOUT is read's default timeout. A caller-side TMOUT must not end the read early
+# and leave a partial passphrase to be used.
+t_unlockdata_tmout_cannot_truncate() {
+    case_begin "UnlockData: TMOUT=1 and a stalling writer still yield the whole passphrase" || return 0
+    unlock_setup
+    stall_stdin "${KEY:0:20}" "${KEY:20}"
+    run_svc TMOUT=1 QREXEC_REMOTE_DOMAIN=console -- "$SVC"
+    wait "$WRITER"
+    expect_rc 0
+    expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}'
+    expect_disk_key "$KEY"
+    case_end
+}
+
+# The status check behind that: with the TMOUT reset taken out of a copy, the read
+# does time out. bash 5 returns >128 and keeps the partial input, which must be
+# refused; bash 3.2 (macOS /bin/bash) returns 1 and discards it, which lands on
+# the empty-passphrase refusal instead.
+t_unlockdata_read_timeout_refused() {
+    local variant="$SVCDIR/keep-tmout/qubesair.UnlockData" want
+    case_begin "UnlockData: a read that times out is refused, never used truncated" || return 0
+    unlock_setup
+    if [ ! -x "$variant" ]; then
+        mkdir -p "${variant%/*}"
+        cp "$SVC" "$variant"
+        literal_replace "$variant" 'unset TMOUT' ':' ||
+            die "qubesair.UnlockData no longer resets TMOUT; update this case"
+        literal_replace "$variant" "SELF=\"$SVC\"" "SELF=\"$variant\"" ||
+            die "qubesair.UnlockData SELF rewrite missing; update this case"
+        chmod 755 "$variant"
+    fi
+    stall_stdin "${KEY:0:20}" "${KEY:20}"
+    run_svc TMOUT=1 QREXEC_REMOTE_DOMAIN=console -- "$variant"
+    wait "$WRITER"
+    want='could not read passphrase'
+    [ "$SERVICE_BASH_MAJOR" -ge 4 ] || want='empty passphrase'
+    expect_rc 0
+    expect_stdout "{\"unlocked\":false,\"detail\":\"$want\"}"
+    expect_no_calls
+    case_end
+}
+
+t_unlockdata_passphrase_size_boundary() {
+    local key
+    key="$(long_string A 4096)"
+    case_begin "UnlockData: a 4096-byte passphrase is accepted" || return 0
+    unlock_setup
+    put "$C/stdin" "$key"
+    unlock_run
+    expect_rc 0
+    expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}'
+    expect_disk_key "$key"
+    case_end
+
+    key="$(long_string A 4095)"
+    case_begin "UnlockData: 4095 bytes plus a trailing LF fit; the LF is not part of the key" || return 0
+    unlock_setup
+    put "$C/stdin" "$key"$'\n'
+    unlock_run
+    expect_rc 0
+    expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}'
+    expect_disk_key "$key"
+    case_end
 }
 
 t_unlockdata_first_boot() {
