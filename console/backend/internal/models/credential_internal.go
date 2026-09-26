@@ -85,8 +85,9 @@ var (
 // names and types it quotes were written by whoever planted them, and the
 // error reaches the log, 500 bodies and lookups an unauthenticated caller can
 // trigger (GET /pki/revocations). So at most maxConflictRowsNamed rows are
-// named, and each ID, name and type is cut to maxQuotedField bytes: one
-// refusal stays under 8 KiB however many or however long the planted rows are.
+// named, and each ID, name and type is cut to maxQuotedField bytes: each
+// conflict error stays under 8 KiB however many or however long the planted
+// rows are. (Loading the CA can join two of them, one per half.)
 const (
 	maxConflictRowsNamed = 8
 	maxQuotedField       = 64

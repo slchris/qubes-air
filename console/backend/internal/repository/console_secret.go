@@ -26,30 +26,37 @@ type ConsoleSecretStore interface {
 //   - models.ErrConsoleRowNotFound when no row answers to the name;
 //   - a models.ErrConsoleRowConflict error when rows the console did not write
 //     answer to it (see models.SelectConsoleRow). No secret is read, and the
-//     conflict is logged with the rows' IDs, once per name while it stands.
+//     conflict is logged with the rows' IDs, once per name while it stands
+//     (see reportConflict).
 func ConsoleSecret(ctx context.Context, store ConsoleSecretStore, name string) (string, error) {
 	list, err := store.List(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list credentials: %w", err)
 	}
 	row, err := models.SelectConsoleRow(list, name)
+	if errors.Is(err, models.ErrConsoleRowConflict) {
+		reportConflict(name, err)
+		return "", err
+	}
+	// No conflict stands under this name any more, so the next one, even an
+	// identical one, is news and is logged.
+	reportedConflicts.Delete(name)
 	if err != nil {
-		if errors.Is(err, models.ErrConsoleRowConflict) {
-			reportConflict(name, err)
-		}
 		return "", err
 	}
 	return store.GetSecret(ctx, row.ID)
 }
 
-// reportedConflicts holds, per console name, the conflict last logged for it.
+// reportedConflicts holds, per console name, the conflict logged for it while
+// it stands. A lookup that finds no conflict removes the entry.
 var reportedConflicts sync.Map
 
 // reportConflict logs a conflict once per name for as long as it stands. The
 // lookups behind it run on every public revocation read and every lifecycle
 // retry, so logging each call would let anyone who can reach
 // GET /pki/revocations fill the journal with the same line. A changed
-// conflict under the same name — a row added or removed — is logged again.
+// conflict under the same name — a row added or removed — is logged again,
+// and so is one that returns after a lookup found none.
 func reportConflict(name string, err error) {
 	msg := err.Error()
 	if prev, seen := reportedConflicts.Swap(name, msg); seen && prev == msg {

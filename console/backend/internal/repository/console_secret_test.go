@@ -167,3 +167,51 @@ func TestConsoleSecretLogsAStandingConflictOnce(t *testing.T) {
 	}
 	assert.Equal(t, 2, lines(), "a changed conflict is logged again, once")
 }
+
+// TestConsoleSecretLogsAConflictAgainAfterItClears — once a lookup finds no
+// conflict, the same conflict coming back (the planted row renamed away and
+// back) is news and is logged again, once.
+func TestConsoleSecretLogsAConflictAgainAfterItClears(t *testing.T) {
+	var logged bytes.Buffer
+	prev, flags := log.Writer(), log.Flags()
+	log.SetOutput(&logged)
+	t.Cleanup(func() {
+		log.SetOutput(prev)
+		log.SetFlags(flags)
+	})
+
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	kr, err := keyring.NewSingle([]byte(oldKey))
+	require.NoError(t, err)
+	repo := NewCredentialRepository(db, kr)
+	ctx := context.Background()
+	name := "qubes-air-luks-key-" + t.Name()
+	_, err = repo.Create(ctx, models.CredentialCreateRequest{Name: name, Type: models.ConsoleRowType, SecretValue: "genuine"})
+	require.NoError(t, err)
+	planted, err := repo.Create(ctx, models.CredentialCreateRequest{Name: strings.ToUpper(name), Type: models.ConsoleRowType, SecretValue: "planted"})
+	require.NoError(t, err)
+	rename := func(to string) {
+		_, err := repo.Update(ctx, planted.ID, models.CredentialUpdateRequest{Name: &to})
+		require.NoError(t, err)
+	}
+	lines := func() int { return strings.Count(logged.String(), "SECURITY: pki:") }
+	conflict := func() {
+		_, err := ConsoleSecret(ctx, repo, name)
+		require.ErrorIs(t, err, models.ErrConsoleRowConflict)
+	}
+
+	conflict()
+	conflict()
+	assert.Equal(t, 1, lines())
+
+	rename("unrelated-operator-row")
+	secret, err := ConsoleSecret(ctx, repo, name)
+	require.NoError(t, err, "with the planted row renamed away the lookup succeeds")
+	assert.Equal(t, "genuine", secret)
+
+	rename(strings.ToUpper(name))
+	conflict()
+	conflict()
+	assert.Equal(t, 2, lines(), "the same conflict returning after a clean lookup is logged again, once")
+}

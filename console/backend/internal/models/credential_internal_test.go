@@ -161,10 +161,12 @@ func TestSelectConsoleRowBoundsTheError(t *testing.T) {
 func TestSelectConsoleRowBoundsLongFields(t *testing.T) {
 	const name = "qubes-air-ca-key"
 	pad := strings.Repeat(" ", 1<<20)
-	rows := make([]Credential, 0, 22)
+	longID := "id-long\n" + strings.Repeat("\x07", 1<<20)
+	rows := make([]Credential, 0, 23)
 	rows = append(rows,
 		Credential{ID: "id-padded", Name: pad + name, Type: ConsoleRowType},
 		Credential{ID: "id-long-type", Name: name, Type: strings.Repeat("\x00", 1<<20)},
+		Credential{ID: longID, Name: name, Type: ConsoleRowType},
 	)
 	for i := range 20 {
 		rows = append(rows, Credential{ID: fmt.Sprintf("id-%02d", i), Name: name + pad, Type: pad})
@@ -177,9 +179,13 @@ func TestSelectConsoleRowBoundsLongFields(t *testing.T) {
 	assert.Contains(t, msg, "id-padded")
 	assert.Contains(t, msg, "id-long-type")
 	assert.Contains(t, msg, fmt.Sprintf("…(+%d bytes)", len(pad)+len(name)-maxQuotedField))
-	assert.Contains(t, msg, "and 14 more")
+	assert.Contains(t, msg, "and 15 more")
+	assert.Contains(t, msg, `"id-long\n\a`, "a long ID with control characters is quoted and cut")
+	assert.Contains(t, msg, fmt.Sprintf("…(+%d bytes)", len(longID)-maxQuotedField))
 	assert.True(t, utf8.ValidString(msg))
-	assert.NotContains(t, msg, "\x00", "control characters stay escaped")
+	for _, raw := range []string{"\x00", "\x07", "\n"} {
+		assert.NotContains(t, msg, raw, "control characters stay escaped")
+	}
 }
 
 func TestQuoteCapped(t *testing.T) {
