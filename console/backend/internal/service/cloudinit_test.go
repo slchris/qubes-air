@@ -936,3 +936,35 @@ func TestRenderWarnsAboutPathsWithoutTheirService(t *testing.T) {
 	renderWith(t, pkg)
 	assert.NotContains(t, logs.String(), "does not allow", "a paired grant is not worth a warning")
 }
+
+// withDefaultAllowedServices swaps the package default for one test. No test
+// in this package runs in parallel, so the swap cannot race another reader.
+func withDefaultAllowedServices(t *testing.T, services []string) {
+	t.Helper()
+	prev := DefaultAllowedServices
+	DefaultAllowedServices = services
+	t.Cleanup(func() { DefaultAllowedServices = prev })
+}
+
+// When no service list is configured, the list validated must be the defaulted
+// one that is actually written to agent.env, not the empty configured one.
+// Each half fails if the render validates the raw (empty) list instead.
+func TestRenderValidatesTheDefaultedServiceList(t *testing.T) {
+	t.Run("a default that grants Exec pairs with Exec paths", func(t *testing.T) {
+		withDefaultAllowedServices(t, []string{pingService, "qubesair.Exec"})
+		logs := captureLog(t)
+		pkg := testAgentPackage()
+		pkg.ExecAllow = []string{"/usr/bin/id"}
+		out, _ := renderWith(t, pkg)
+
+		assert.Contains(t, fileContent(t, parseConfig(t, out), "agent.env"), "QUBESAIR_ALLOW=qubesair.Ping,qubesair.Exec")
+		assert.NotContains(t, logs.String(), "does not allow",
+			"the written list grants Exec, so warning about it would mean the raw list was checked")
+	})
+	t.Run("an invalid default is refused although nothing was configured", func(t *testing.T) {
+		withDefaultAllowedServices(t, []string{pingService, pingService})
+		id, _ := testIdentityDoc(t)
+		_, err := RenderAgentUserData("remote-dev", id, "0.0.0.0:8443", testAgentPackage(), false)
+		require.ErrorContains(t, err, "QUBESAIR_ALLOW: \"qubesair.Ping\" is listed twice")
+	})
+}
