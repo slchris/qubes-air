@@ -148,9 +148,11 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 数据库没有 migrations 目录：建表语句是 Go 常量，在打开数据库时执行
 `CREATE TABLE IF NOT EXISTS`。版本号存在文件自身的 `PRAGMA user_version` 里。
-仓库里唯一的 `.sql` 文件是升级测试夹具 `console/backend/internal/database/testdata/schema_v2.sql`：
-冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表；每个改 schema 的阶段都用它证明
-“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（`database_upgrade_test.go`）。
+仓库里唯一的 `.sql` 文件是升级测试夹具 `console/backend/internal/database/dbtest/schema_v2.sql`：
+冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表。它嵌在只供测试导入的 `dbtest` 包里
+（`WriteV2Fixture` 写出 v2 库、`AssertV2RowsPreserved` 核对行），各包的升级测试共用同一份，
+证明“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（如 `internal/database/database_upgrade_test.go`、
+`internal/repository/bootstrap_pin_test.go`）。
 
 | 项 | 事实 | 位置 |
 |---|---|---|
