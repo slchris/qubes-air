@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -238,6 +239,50 @@ func TestRealPingScript(t *testing.T) {
 	}
 	if fields[1] != "remote-dev" {
 		t.Errorf("want the remote name, got %q", fields[1])
+	}
+}
+
+// TestRealPingScriptIgnoresArgumentAndInput — the shipped Ping reads neither a
+// service argument nor stdin: a 1 MiB request changes nothing about the answer.
+func TestRealPingScriptIgnoresArgumentAndInput(t *testing.T) {
+	src, err := os.ReadFile("../../../../remote/qubes-rpc/qubesair.Ping")
+	if err != nil {
+		t.Fatalf("shipped Ping script not found: %v", err)
+	}
+	dir := serviceDir(t, map[string]string{"qubesair.Ping": string(src)})
+
+	out, err := invokerOver(dir, "qubesair.Ping").
+		Invoke(context.Background(), "t", "qubesair.Ping+extra", []byte(strings.Repeat("x", 1<<20)))
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	fields := strings.Fields(string(out.Stdout))
+	if out.ExitCode != 0 || len(fields) != 3 || fields[0] != "pong" || fields[1] != "remote-dev" {
+		t.Fatalf(`want exit 0 and "pong remote-dev <ts>", got exit %d and %q`, out.ExitCode, out.Stdout)
+	}
+}
+
+// TestRealPingScriptFailsWithoutAName — with no QUBESAIR_REMOTE_NAME and no
+// working hostname command, Ping must exit non-zero instead of answering "pong"
+// for a name it does not know.
+func TestRealPingScriptFailsWithoutAName(t *testing.T) {
+	script := "../../../../remote/qubes-rpc/qubesair.Ping"
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("shipped Ping script not found: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// An empty PATH directory: neither hostname nor date can be found.
+	cmd := exec.CommandContext(ctx, "/bin/sh", script)
+	cmd.Env = []string{"PATH=" + t.TempDir()}
+	out, err := cmd.Output()
+
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() == 0 {
+		t.Fatalf("want a non-zero exit, got err=%v", err)
+	}
+	if strings.Contains(string(out), "pong") {
+		t.Fatalf("must not answer pong, got %q", out)
 	}
 }
 

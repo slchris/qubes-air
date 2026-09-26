@@ -6,7 +6,7 @@
 	pre-commit audit check-tools diff-check test-race lint-new gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
-	agent-deb-test
+	agent-deb-test qrexec-test
 
 # 默认目标
 help:
@@ -104,10 +104,10 @@ SHELLCHECK ?= shellcheck
 GOVULNCHECK ?= govulncheck
 
 pre-commit: check-tools diff-check test-race lint-new gosec-new gosec-ci-new complexity-new \
-	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
+	vuln-check frontend-check frontend-audit-new shellcheck-new qrexec-test docs-check
 
 audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
-	vuln-check frontend-check frontend-audit shellcheck-all docs-check
+	vuln-check frontend-check frontend-audit shellcheck-all qrexec-test docs-check
 
 check-tools:
 	@for tool in git go node npm python3 $(GOLANGCI_LINT) $(SHELLCHECK) $(GOVULNCHECK); do \
@@ -207,6 +207,12 @@ complexity-all:
 shellcheck-all:
 	@files="$$(git grep -l -E '^\#\!.*/(ba)?sh')"; \
 	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no shell files"; fi
+
+# qrexec 服务脚本的契约测试 (AGENTS.md §6): 空输入、非法参数、超量输入输出、非零退出。
+# 用桩命令代替 qrexec/QubesDB/cryptsetup/systemd-run, 不需要 Qubes、root 或 Docker,
+# 本地与 CI 的 qrexec-services job 走同一入口; 与改动范围无关, 增量与完整门禁都全量跑 (本机约 20 秒)。
+qrexec-test:
+	scripts/test-qrexec-services.sh
 
 # 清理
 clean:

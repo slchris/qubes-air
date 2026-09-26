@@ -129,3 +129,19 @@ jobs:
             salt/
             .github/workflows/
           config_file: .yamllint.yml
+
+  # qrexec 服务脚本契约测试 (AGENTS.md §6)，与 make pre-commit / make audit 同一入口
+  qrexec-services:
+    name: qrexec Service Tests
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
+    # Runs repository scripts only; the token only needs to read the repo.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run qrexec service contract tests
+        run: make qrexec-test
