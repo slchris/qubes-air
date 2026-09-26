@@ -94,9 +94,15 @@ RemoteVM 不是一台本地 VM，而是一条包含 `relayvm`、`transport_rpc` 
 > **dom0 policy 授权的服务多于上表**：`dom0-scripts/policy.d/30-qubes-air.policy` 另外授权
 > `qubesair.Status`（第 48 行）、`qubesair.Deploy`（第 54 行）、`qubesair.SSHProxy`（第 68、71 行）、
 > `qubesair.VaultRead`（第 88 行）、`qubesair.GetCredential`（第 121 行）。
-> 其中 `qubesair.SSHProxy` 由 `relay/transport/qubesair.SSHProxy` 实现；`qubesair.Status` 与
-> `qubesair.Deploy` 的脚本**不在本仓库**（权威来源是外部 `qubes-salt-config`），排查时不要
-> 假设本仓库里能找到它们。对应地，本仓库实现的 `qubesair.RekeyData` 只在迁移路径被调用。
+> 其中只有 `qubesair.SSHProxy` 有实现（`relay/transport/qubesair.SSHProxy`）。其余四个服务的脚本
+> **既不在本仓库，也不在 `qubes-salt-config`**：在它的 `v0.1.0`（`db1b68d`）与 `main`（`464ef0f`）
+> 上 `git grep` 都找不到这四个服务的脚本，它的 `salt/config.jinja` 还写明 `qubesair.Status` 尚未实现。
+> 也就是说，这几条 policy 授权的服务两个仓库都没有提供，排查时不要假设能在哪个仓库里找到它们。
+> `qubesair.GetCredential` 是控制台和 Relay 在 `QUBES_AIR_TRANSPORT_VAULT_CERTS=true` 时向 vault
+> 取 mTLS 材料所调用的服务；由于没有部署它的 state，这个开关要保持关闭（代码默认和
+> `qubes-salt-config` 的 `remotevm.grpc.vault_certs` 默认都是关闭）。开关打开而取不到证书时，
+> 控制台退回 `NoopTransport`，Relay 客户端拨号失败，两边都不会建立连接。
+> 对应地，本仓库实现的 `qubesair.RekeyData` 只在迁移路径被调用。
 
 ## 存算分离与加密
 

@@ -113,8 +113,11 @@ agent：dom0 policy 把调用改写后送到 Relay（`dom0-scripts/policy.d/30-q
 
 `dom0-scripts/policy.d/30-qubes-air.policy` 还授权了 `qubesair.Status`（第 48 行）、
 `qubesair.Deploy`（第 54 行）、`qubesair.VaultRead`（第 88 行）、
-`qubesair.GetCredential`（第 121 行）。它们的实现脚本**不在本仓库**，权威来源是外部
-`qubes-salt-config`；本节只登记"policy 里有"，不等于本仓库已实现或已验收。
+`qubesair.GetCredential`（第 121 行）。它们的服务脚本**不在本仓库，也不在 `qubes-salt-config`**
+（`qubes-salt-config` 的 `v0.1.0` 与 `main` 上都找不到），依据见[架构与信任边界](architecture.md)的"远端服务"一节。
+本节只登记"policy 里有"，不等于已实现或已验收。其中 `qubesair.GetCredential` 是
+`QUBES_AIR_TRANSPORT_VAULT_CERTS=true` 时向 vault 取 mTLS 材料的服务，在它有部署来源之前，
+这个开关保持关闭，mTLS 材料走 cert/key/CA 文件路径。
 
 ## 证书验证
 

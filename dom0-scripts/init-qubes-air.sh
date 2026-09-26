@@ -86,22 +86,6 @@ setup_qrexec_policy() {
     log_info "qrexec policy configured (single source: 30-qubes-air.policy)"
 }
 
-# 创建 Qubes Air Salt 状态目录
-setup_salt() {
-    local salt_dir="/srv/salt/qubes-air"
-    local pillar_dir="/srv/pillar/qubes-air"
-    
-    log_info "Setting up Salt directories..."
-    
-    mkdir -p "$salt_dir"
-    mkdir -p "$pillar_dir"
-    
-    # 创建符号链接到项目目录 (如果存在)
-    # ln -sf /path/to/qubes-air/salt/qubes-air/* "$salt_dir/"
-    
-    log_info "Salt directories ready"
-}
-
 # 主函数
 main() {
     log_info "=== Qubes Air Initialization ==="
@@ -118,7 +102,6 @@ main() {
     
     create_relay
     setup_qrexec_policy
-    setup_salt
 
     log_info "=== Qubes Air initialization complete ==="
     log_info "Next steps (阶段2 RemoteVM 链路, 详见 docs/runbook-remotevm.md):"
