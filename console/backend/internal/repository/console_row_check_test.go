@@ -13,18 +13,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// consoleRowCheckMarker precedes the SQL block in docs/security-controls.md
-// that operators run before upgrading.
-const consoleRowCheckMarker = "<!-- console-row-check:"
+// Markers precede the SQL blocks in docs/security-controls.md that operators
+// run before upgrading.
+const (
+	consoleRowCheckMarker     = "<!-- console-row-check:"
+	consoleZoneRefCheckMarker = "<!-- console-zone-ref-check:"
+)
 
-// documentedConsoleRowCheck returns the SQL exactly as the docs print it, so
-// the query operators copy is the query this test runs.
-func documentedConsoleRowCheck(t *testing.T) string {
+// documentedSQL returns the SQL block after marker exactly as the docs print
+// it, so the query operators copy is the query the test runs.
+func documentedSQL(t *testing.T, marker string) string {
 	t.Helper()
 	doc, err := os.ReadFile("../../../../docs/security-controls.md")
 	require.NoError(t, err)
-	_, after, found := strings.Cut(string(doc), consoleRowCheckMarker)
-	require.True(t, found, "the docs must keep the console-row-check marker")
+	_, after, found := strings.Cut(string(doc), marker)
+	require.True(t, found, "the docs must keep the %s marker", marker)
 	_, block, found := strings.Cut(after, "```sql\n")
 	require.True(t, found, "the marker must be followed by a sql block")
 	query, _, found := strings.Cut(block, "```")
@@ -78,7 +81,7 @@ func TestConsoleRowCheckQueryFlagsPlantedRows(t *testing.T) {
 	add("legacy-row", "PKI", "NOT-CANONICAL")
 	add("zone-b-töken", "api_key", "NOT-CANONICAL NON-ASCII")
 
-	rows, err := db.DB().QueryContext(ctx, documentedConsoleRowCheck(t))
+	rows, err := db.DB().QueryContext(ctx, documentedSQL(t, consoleRowCheckMarker))
 	require.NoError(t, err)
 	defer rows.Close()
 	got := map[string]string{}
@@ -87,6 +90,76 @@ func TestConsoleRowCheckQueryFlagsPlantedRows(t *testing.T) {
 		var created any
 		require.NoError(t, rows.Scan(&id, &name, &typ, &created, &flags))
 		got[id] = flags
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, want, got)
+}
+
+// TestZoneReferenceCheckQueryFlagsHiddenReferences runs the documented zone
+// check: every zone whose Proxmox or GCP credential_id names a missing row, a
+// row in the console's namespace, a pki-typed row or a non-ASCII-named row is
+// listed with the matching flags; zones referencing ordinary operator rows,
+// or nothing, are not listed.
+func TestZoneReferenceCheckQueryFlagsHiddenReferences(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+	kr, err := keyring.NewSingle([]byte(oldKey))
+	require.NoError(t, err)
+	creds := NewCredentialRepository(db, kr)
+	zones := NewZoneRepository(db)
+
+	cred := func(name, typ string) string {
+		c, err := creds.Create(ctx, models.CredentialCreateRequest{Name: name, Type: typ, SecretValue: "x"})
+		require.NoError(t, err)
+		return c.ID
+	}
+	operator := cred("pve-prod", "proxmox")
+	caKey := cred(models.ConsoleCAKeyName, models.ConsoleRowType)
+	legacyNamespaced := cred("qubes-air-old-token", "proxmox")
+	legacyPKI := cred("legacy-row", "PKI")
+	nonASCII := cred("zone-b-t\u00f6ken", "proxmox")
+	lookalike := cred("qube\u017f-air-ca-key", "other")
+
+	want := map[string]string{} // zone id + path -> flags
+	zone := func(id string, cfg models.ZoneConfig) {
+		now := time.Now()
+		require.NoError(t, zones.Create(ctx, &models.Zone{
+			ID: id, Name: id, Type: models.ZoneTypeProxmox, Status: models.ZoneStatusConnected,
+			Config: cfg, CreatedAt: now, UpdatedAt: now,
+		}))
+	}
+	proxmox := func(id, ref, flags string) {
+		zone(id, models.ZoneConfig{Proxmox: &models.ProxmoxZoneConfig{CredentialID: ref}})
+		if flags != "-" {
+			want[id+" $.proxmox.credential_id"] = flags
+		}
+	}
+	proxmox("z-operator", operator, "-")
+	proxmox("z-none", "", "-")
+	proxmox("z-ca-key", caKey, "CONSOLE-NAMESPACE PKI-TYPE")
+	proxmox("z-legacy-namespaced", legacyNamespaced, "CONSOLE-NAMESPACE")
+	proxmox("z-legacy-pki", legacyPKI, "PKI-TYPE")
+	proxmox("z-non-ascii", nonASCII, "NON-ASCII")
+	proxmox("z-lookalike", lookalike, "NON-ASCII")
+	proxmox("z-missing", "no-such-credential", "MISSING")
+	zone("z-gcp", models.ZoneConfig{GCP: &models.GCPZoneConfig{CredentialID: caKey}})
+	want["z-gcp $.gcp.credential_id"] = "CONSOLE-NAMESPACE PKI-TYPE"
+	zone("z-both", models.ZoneConfig{
+		Proxmox: &models.ProxmoxZoneConfig{CredentialID: operator},
+		GCP:     &models.GCPZoneConfig{CredentialID: "gone"},
+	})
+	want["z-both $.gcp.credential_id"] = "MISSING"
+
+	rows, err := db.DB().QueryContext(ctx, documentedSQL(t, consoleZoneRefCheckMarker))
+	require.NoError(t, err)
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var zoneID, name, path, ref, flags string
+		var credName any
+		require.NoError(t, rows.Scan(&zoneID, &name, &path, &ref, &credName, &flags))
+		got[zoneID+" "+path] = flags
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, want, got)

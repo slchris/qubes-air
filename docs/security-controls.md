@@ -210,15 +210,35 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   类型存进去的一行。这时库里只有这一行，控制台会把它当作自己的。升级前按下文“升级前核查”执行。
 - 更换 CA，以及在确认没有未迁移盘后删除 `qubes-air-luks-master`，都不再有 API 路径，只能在控制台
   停止时离线操作数据库；目前没有专用工具。
-- zone 的 `credential_id` 不校验是否指向控制台行。调用方要先知道该行的 UUID，而 API 已不再给出。
+- zone 的 `credential_id` 从 G-D9 的修复起在创建和更新时校验（见“Console API 对象级授权”）。
+  修复前已经存进去的引用由下文第二段查询列出。引用了修复前运维行（现在不可见）的 zone 仍能
+  provision，但对它的任何 config 写入都会得到 422，直到 fleet token 把它指向一条新的运维凭据。
 
 ### 升级前核查：找出不是控制台写的行
 
 适用于从本修复之前的版本升级。修复之前，control scope 的 token 能经 API 在控制台的命名空间里
-建行、改名。下面的查询只读，在控制台所在 qube 上对它的库执行（默认
-`/rw/config/qubesair/qubes-air.db`，即[升级与回滚](upgrade-rollback.md) §3 备份命令的 `-db`）。
-先把 SQL 存成文件，再运行
-`sqlite3 -readonly -header -column /rw/config/qubesair/qubes-air.db < console-row-check.sql`：
+建行、改名，也能让 zone 引用任意一行。下面两段查询都只读，在控制台所在 qube 上对它的库执行
+（默认 `/rw/config/qubesair/qubes-air.db`，即[升级与回滚](upgrade-rollback.md) §3 备份命令的
+`-db`）。
+
+运行条件：
+
+- 控制台 qube 里要有 `sqlite3` 命令（Debian 包 `sqlite3`，Fedora 包 `sqlite`），版本不低于 3.38，
+  因为第二段查询要用内置的 JSON 函数。本仓库不负责安装它。
+- 以控制台服务的运行用户执行，不要直接 `sudo sqlite3`。库是 WAL 模式，打开时可能新建 `-wal`、
+  `-shm` 文件；由 root 建出来的这两个文件会让之后以普通用户运行的控制台打不开库。
+- 在 macOS 上用系统自带的 sqlite3 复核库的副本时，`-readonly` 打开 WAL 库可能失败；那是该构建的
+  限制，与控制台 qube 无关，那里用的是 Debian/Fedora 打包的 sqlite3（推断，未在真机上验证）。
+
+把两段 SQL 依次存进同一个文件，再运行：
+
+```bash
+U=$(systemctl show -p User --value qubes-air-console)   # 为空表示服务以 root 运行
+sudo -u "${U:-root}" sqlite3 -readonly -header -column \
+  /rw/config/qubesair/qubes-air.db < console-row-check.sql
+```
+
+第一段查询列出可能冒充控制台密钥的凭据行：
 
 <!-- console-row-check: TestConsoleRowCheckQueryFlagsPlantedRows 运行下面这段 SQL，改动时同步 -->
 ```sql
@@ -266,6 +286,53 @@ ORDER BY folded, created_at;
 在一个放了大小写变体、`ſ` 和 `K` 变体、同名重复、错误类型、填充空白以及指向不存在 Qube 的
 DEK 的临时库上运行，逐行核对标记。
 
+第二段查询列出引用了这类行，或引用了不存在的行的 zone。Proxmox 和 GCP 的 `credential_id` 都查：
+
+<!-- console-zone-ref-check: TestZoneReferenceCheckQueryFlagsHiddenReferences 运行下面这段 SQL，改动时同步 -->
+```sql
+SELECT z.id AS zone_id, quote(z.name) AS zone, r.path,
+       quote(r.ref) AS credential_id, quote(c.name) AS credential_name,
+       trim(
+         CASE WHEN c.id IS NULL THEN 'MISSING ' ELSE '' END
+         || CASE WHEN lower(trim(c.name, ' ' || char(9, 10, 11, 12, 13))) LIKE 'qubes-air-%'
+              THEN 'CONSOLE-NAMESPACE ' ELSE '' END
+         || CASE WHEN lower(trim(c.type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
+              THEN 'PKI-TYPE ' ELSE '' END
+         || CASE WHEN length(c.name) <> length(CAST(c.name AS BLOB))
+              THEN 'NON-ASCII' ELSE '' END) AS flags
+FROM zones AS z
+JOIN (SELECT id AS zone_id, '$.proxmox.credential_id' AS path,
+             json_extract(config, '$.proxmox.credential_id') AS ref
+      FROM zones
+      UNION ALL
+      SELECT id, '$.gcp.credential_id', json_extract(config, '$.gcp.credential_id')
+      FROM zones) AS r ON r.zone_id = z.id
+LEFT JOIN credentials AS c ON c.id = r.ref
+WHERE r.ref IS NOT NULL AND r.ref <> ''
+  AND (c.id IS NULL
+       OR lower(trim(c.name, ' ' || char(9, 10, 11, 12, 13))) LIKE 'qubes-air-%'
+       OR lower(trim(c.type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
+       OR length(c.name) <> length(CAST(c.name AS BLOB)))
+ORDER BY z.name, r.path;
+```
+
+没有列出的 zone 都引用了一条正常的运维凭据，或者没有引用任何凭据。列出的按标记处理：
+
+- `MISSING`：引用的行不存在。这个 zone 本来就无法 provision。从 G-D9 的修复起，对它的任何
+  config 写入都会得到 422，直到用 fleet token 把它指向一条存在的运维凭据。
+- `CONSOLE-NAMESPACE`、`PKI-TYPE`：引用的行在凭据 API 里不可见，分两种情况。
+  - 引用的是控制台自己的行（CA、DEK、迁移标记、legacy master）。这些值不会被当作 Proxmox 凭据：
+    API token 需要 `!` 和 `=`，用户名密码需要 `:`，而 PEM、无填充 base64 和 `pending` 里都没有
+    这些组合，解析结果为空，凭据解析器直接报错，什么也不发出。
+    `TestZoneReferencingAConsoleRowSendsNothing` 对控制台写的每种行都验证了这一点。
+  - 引用的是修复前建的运维行（名称在 `qubes-air-` 下或类型为 `pki`）。provision 照常使用它，
+    但对这个 zone 的任何 config 写入都会得到 422，直到 fleet token 用同一个 secret 新建一条
+    命名空间外的运维凭据（类型如 `proxmox`），再把 zone 指向这条新凭据。
+- `NON-ASCII`：与第一段查询相同，看名称是不是 `qubes-air-…` 的形近写法。
+
+`TestZoneReferenceCheckQueryFlagsHiddenReferences`（`internal/repository`）同样从本文件读出这段
+SQL，在临时库上核对每一种引用。
+
 查询发现不了一种行：在控制台写入自己那一行**之前**，就以完全相同的名称和 `pki` 类型存进去的
 单独一行（例如在某个 Qube 的 DEK 生成前放进 `qubes-air-luks-key-<id>`，或在控制台第一次创建 CA
 前放进 CA 两行）。库里只有这一行，它与控制台写的没有区别，控制台也会照常使用它。只能从库外
@@ -285,9 +352,10 @@ DEK 的临时库上运行，逐行核对标记。
 
 1. 停止控制台：`systemctl stop qubes-air-console`。
 2. 备份：按[升级与回滚](upgrade-rollback.md) §3 第 1 步运行 `qubes-air-backup create`。
-3. 离线删除不是控制台写的行，只按 `id` 删：
-   `sqlite3 /rw/config/qubesair/qubes-air.db "DELETE FROM credentials WHERE id IN ('<id>', ...);"`，
-   然后重跑上面的查询，确认 `flags` 全部为空。
+3. 离线删除不是控制台写的行，只按 `id` 删，同样以服务用户运行：
+   `sudo -u "${U:-root}" sqlite3 /rw/config/qubesair/qubes-air.db "DELETE FROM credentials WHERE id IN ('<id>', ...);"`，
+   然后重跑两段查询。第一段的 `flags` 应全部为空；第二段列出的 zone 要先用 fleet token 改指到
+   一条运维凭据（控制台启动后经 `PUT /api/v1/zones/:id`），再核对一次。
 4. 冒充的 CA 行如果曾经被使用过（重启后控制台用它签发过证书），就按 CA 泄露处理：按
    [灾难恢复](disaster-recovery.md)“CA 灾难恢复”更换 CA，所有 agent 重新 bootstrap。某个 Qube
    的 DEK 如果是预先放进去的，这块盘就是用调用方已知的密钥格式化的，应当视为已泄露，重新

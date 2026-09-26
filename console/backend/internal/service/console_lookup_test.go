@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
+	"github.com/slchris/qubes-air/console/internal/scheduler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -369,5 +373,58 @@ func TestRevocationDocumentRefusesPlantedCARows(t *testing.T) {
 			}
 			assert.Equal(t, 1, strings.Count(logged.String(), "SECURITY: pki:"))
 		})
+	}
+}
+
+// TestZoneReferencingAConsoleRowSendsNothing pins the reasoning behind the
+// zone check in the docs: a zone saved before credential_id was validated may
+// reference one of the console's own rows, and the resolver must never turn
+// such a value into a Proxmox credential. Each kind of row the console writes,
+// in several fresh instances, parses to nothing, so the resolver refuses and
+// the adapter is never built with it.
+func TestZoneReferencingAConsoleRowSendsNothing(t *testing.T) {
+	ctx := context.Background()
+	repo, certs := newLookupStore(t)
+	db := certTestDB(t)
+	zones := repository.NewZoneRepository(db)
+	resolve := NewZoneCredentialResolver(zones, repo)
+	keys := NewDataKeyManager(repo)
+
+	for i := range 5 {
+		qube := fmt.Sprintf("q%d", i)
+		_, err := keys.EnsureDataKey(ctx, qube)
+		require.NoError(t, err)
+		require.NoError(t, keys.MarkMigrationPending(ctx, qube))
+	}
+	master := make([]byte, 32)
+	_, err := rand.Read(master)
+	require.NoError(t, err)
+	plant(t, repo, plantedRow{dataMasterCredentialName, models.ConsoleRowType}, base64.RawURLEncoding.EncodeToString(master))
+	_, err = NewCertIssuer(repo, certs, "", "", AgentPackage{}).CA(ctx)
+	require.NoError(t, err)
+
+	rows, err := repo.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, rows, 13, "CA pair, master, and a key and a marker for five qubes")
+	for _, row := range rows {
+		require.True(t, models.IsConsoleCredential(row.Name, row.Type))
+		secret, err := repo.GetSecret(ctx, row.ID)
+		require.NoError(t, err)
+		assert.Equal(t, scheduler.Credentials{}, parseProxmoxSecret(secret), "%s must not parse as a Proxmox credential", row.Name)
+
+		zoneID := "zone-" + row.ID
+		now := time.Now()
+		require.NoError(t, zones.Create(ctx, &models.Zone{
+			ID: zoneID, Name: zoneID, Type: models.ZoneTypeProxmox,
+			Config: models.ZoneConfig{
+				Endpoint: "https://attacker.example:8006",
+				Proxmox:  &models.ProxmoxZoneConfig{CredentialID: row.ID},
+			},
+			CreatedAt: now, UpdatedAt: now,
+		}))
+		creds, err := resolve(ctx, zoneID)
+		require.Error(t, err, "%s: the resolver must refuse", row.Name)
+		assert.Equal(t, scheduler.Credentials{}, creds)
+		assert.NotContains(t, err.Error(), secret, "the refusal must not carry the value")
 	}
 }
