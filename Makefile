@@ -246,15 +246,31 @@ frontend-audit-new:
 frontend-audit:
 	cd console/frontend && npm audit --audit-level=high
 
-# 检查相对 BASE_REV 修改及新建的所有 shell/shebang 文件，包括无 .sh 后缀的 qrexec 服务。
+# ShellCheck 选文件的规则（应与 CI 的 ShellCheck job 保持一致）：首行是 sh/bash shebang 的文件
+# （qrexec 服务、Debian 维护脚本没有 .sh 后缀；`#!/usr/bin/env bash` 也算），加上所有 *.sh。
+# 路径全程按 NUL 分隔，文件名里有空格或换行也不会被拆成几个参数。这需要 bash 的 read -d '' 和
+# 数组，所以两个 shellcheck 目标的 recipe 用 /bin/bash（macOS 自带的 3.2 就够）。
+SHELL_SHEBANG_RE := ^\#!.*(/|env[[:space:]]+)(ba)?sh([[:space:]]|$$)
+
+# 从 stdin 读 NUL 分隔的路径，把其中的 shell 文件放进数组 files。用法: $(SELECT_SHELL_FILES) < <(...)
+SELECT_SHELL_FILES = files=(); while IFS= read -r -d '' file; do \
+	[ -f "$$file" ] || continue; \
+	case "$$file" in *.sh) ;; *) head -n 1 -- "$$file" | grep -Eq '$(SHELL_SHEBANG_RE)' || continue ;; esac; \
+	files+=("$$file"); \
+	done
+
+# 检查相对 BASE_REV 修改及新建的 shell 文件。BASE_REV 无效时直接失败：否则 git diff 的错误会被
+# 进程替换吞掉，变成"没有改动的 shell 文件"而通过。
+shellcheck-new: SHELL := /bin/bash
 shellcheck-new:
-	@files="$$( \
-		{ git diff --name-only --diff-filter=ACMR $(BASE_REV) --; git ls-files --others --exclude-standard; } | \
-		sort -u | while IFS= read -r file; do \
-			if [ -f "$$file" ] && head -n 1 "$$file" | grep -Eq '^\#\!.*/(ba)?sh'; then printf '%s\n' "$$file"; fi; \
-		done \
-	)"; \
-	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no changed shell files"; fi
+	@git rev-parse --verify --quiet '$(BASE_REV)^{commit}' >/dev/null || { \
+		echo "shellcheck-new: BASE_REV=$(BASE_REV) 不是有效的提交" >&2; exit 1; \
+	}; \
+	$(SELECT_SHELL_FILES) < <(git diff -z --name-only --diff-filter=ACMR '$(BASE_REV)' --; \
+		git ls-files -z --others --exclude-standard); \
+	if [ $${#files[@]} -eq 0 ]; then echo "ShellCheck: no changed shell files"; exit 0; fi; \
+	printf 'ShellCheck: %d 个改动的 shell 文件\n' $${#files[@]}; printf '  %s\n' "$${files[@]}"; \
+	$(SHELLCHECK) -- "$${files[@]}"
 
 # 检查全部被跟踪、且没有被 .yamllint.yml 的 ignore 排除的 YAML。排除范围只由这份配置决定，这里
 # 不另列目录：写死的目录清单会和配置的 ignore 分叉，最后变成"一个文件也没检查却是绿的"。
@@ -305,9 +321,13 @@ gosec-ci-new:
 complexity-all:
 	$(call golangci_gate,--enable-only=$(COMPLEXITY_LINTERS))
 
+# 全部被跟踪的 shell 文件。一个也选不到说明选择规则坏了，按失败处理，而不是"没有问题"。
+shellcheck-all: SHELL := /bin/bash
 shellcheck-all:
-	@files="$$(git grep -l -E '^\#\!.*/(ba)?sh')"; \
-	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no shell files"; fi
+	@$(SELECT_SHELL_FILES) < <(git ls-files -z); \
+	if [ $${#files[@]} -eq 0 ]; then echo "ShellCheck: 没有选到任何 shell 文件，选择规则有问题" >&2; exit 1; fi; \
+	printf 'ShellCheck: %d 个文件\n' $${#files[@]}; printf '  %s\n' "$${files[@]}"; \
+	$(SHELLCHECK) -- "$${files[@]}"
 
 # 清理
 clean:
