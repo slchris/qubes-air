@@ -3,6 +3,7 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -67,17 +68,18 @@ func TestRecorderEmitsJSONLine(t *testing.T) {
 		t.Fatalf("audit output is not JSON: %v\n%s", err, line)
 	}
 	for key, want := range map[string]any{
-		"msg":           "audit",
-		"request_id":    "REQ1",
-		"authenticated": true,
-		"subject":       "operator@zone",
-		"zone_scope":    "fleet",
-		"source":        "10.0.0.9",
-		"method":        "POST",
-		"route":         "/api/v1/qubes/:id/purge",
-		"object":        "qa-smoke1",
-		"status":        float64(200),
-		"outcome":       "success",
+		"msg":              "audit",
+		"request_id":       "REQ1",
+		"authenticated":    true,
+		"subject":          "operator@zone",
+		"zone_scope":       "fleet",
+		"source":           "10.0.0.9",
+		"method":           "POST",
+		"route":            "/api/v1/qubes/:id/purge",
+		"object":           "qa-smoke1",
+		"object_truncated": false,
+		"status":           float64(200),
+		"outcome":          "success",
 	} {
 		if got[key] != want {
 			t.Errorf("audit field %q = %v, want %v", key, got[key], want)
@@ -123,4 +125,58 @@ func TestRecorderRendersUnauthenticatedEntry(t *testing.T) {
 	if strings.Contains(buf.String(), "operator@zone") || strings.Contains(buf.String(), "zone-a") {
 		t.Errorf("unauthenticated entry leaked an unproven identity: %s", buf.String())
 	}
+}
+
+// TestBoundObjectCutsOnCharacterBoundary covers the object cap at and around
+// MaxObjectBytes, including a multi-byte character straddling the cap, which
+// must be dropped whole rather than split into invalid UTF-8.
+func TestBoundObjectCutsOnCharacterBoundary(t *testing.T) {
+	a := func(n int) string { return strings.Repeat("a", n) }
+	cases := []struct {
+		name, in, want string
+		truncated      bool
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "at cap", in: a(MaxObjectBytes), want: a(MaxObjectBytes)},
+		{name: "one over", in: a(MaxObjectBytes + 1), want: a(MaxObjectBytes), truncated: true},
+		{name: "two-byte rune straddles cap", in: a(MaxObjectBytes-1) + "é", want: a(MaxObjectBytes - 1), truncated: true},
+		{name: "three-byte rune straddles cap", in: a(MaxObjectBytes-2) + "€x", want: a(MaxObjectBytes - 2), truncated: true},
+		{name: "rune ends at cap", in: a(MaxObjectBytes-2) + "é" + "x", want: a(MaxObjectBytes-2) + "é", truncated: true},
+		{name: "invalid bytes", in: strings.Repeat("\xff", MaxObjectBytes+5), want: strings.Repeat("\xff", MaxObjectBytes), truncated: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, truncated := boundObject(tc.in)
+			if got != tc.want || truncated != tc.truncated {
+				t.Errorf("boundObject(%d bytes) = (%d bytes, %v), want (%d bytes, %v)",
+					len(tc.in), len(got), truncated, len(tc.want), tc.truncated)
+			}
+			if len(got) > MaxObjectBytes {
+				t.Errorf("kept %d bytes, over the %d cap", len(got), MaxObjectBytes)
+			}
+		})
+	}
+}
+
+// TestRecorderTruncatesObject checks the cap is applied on the way out and
+// flagged, so a reader can tell a cut object from a short one.
+func TestRecorderTruncatesObject(t *testing.T) {
+	var buf bytes.Buffer
+	NewRecorder(&buf).Record(Entry{Object: strings.Repeat("q", 10*MaxObjectBytes)})
+
+	got := decodeLine(t, &buf)
+	if got["object"] != strings.Repeat("q", MaxObjectBytes) || got["object_truncated"] != true {
+		t.Errorf("object = %d chars truncated=%v, want %d chars truncated=true",
+			len(fmt.Sprint(got["object"])), got["object_truncated"], MaxObjectBytes)
+	}
+}
+
+// decodeLine parses the single JSON line the recorder wrote.
+func decodeLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	var got map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &got); err != nil {
+		t.Fatalf("audit output is not JSON: %v\n%s", err, buf.String())
+	}
+	return got
 }

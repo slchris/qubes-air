@@ -150,13 +150,14 @@ func assertNoCredentialMaterial(t *testing.T, buf *bytes.Buffer, secrets ...stri
 
 func anonymousDenial(route, object string) map[string]any {
 	return map[string]any{
-		"outcome":       audit.OutcomeDenied,
-		"authenticated": false,
-		"subject":       audit.AnonymousSubject,
-		"zone_scope":    "none",
-		"method":        http.MethodPost,
-		"route":         route,
-		"object":        object,
+		"outcome":          audit.OutcomeDenied,
+		"authenticated":    false,
+		"subject":          audit.AnonymousSubject,
+		"zone_scope":       "none",
+		"method":           http.MethodPost,
+		"route":            route,
+		"object":           object,
+		"object_truncated": false,
 	}
 }
 
@@ -190,6 +191,54 @@ func TestAPIAuditRecordsMutationRefusedByAuthentication(t *testing.T) {
 			require.Equal(t, http.StatusUnauthorized, w.Code)
 			assertAuditFields(t, onlyAuditLine(t, buf), w, anonymousDenial(startRoute, "q-a"))
 			assertNoCredentialMaterial(t, buf, tc.secret)
+		})
+	}
+}
+
+// maxAnonymousAuditLine bounds the audit line one unauthenticated request can
+// write. Every field but the object is fixed by the server and together they
+// stay under 400 bytes; the object is capped at audit.MaxObjectBytes of input,
+// and the JSON encoder turns one input byte into at most six (\u00XX, \ufffd).
+const maxAnonymousAuditLine = 2048
+
+// TestAPIAuditBoundsOversizedObject is the regression for the object field
+// being unbounded while Audit runs before authentication: one unauthenticated
+// POST with a path parameter near the 1 MiB header limit used to write a line
+// that long, which journald splits into fragments that are not JSON. The
+// escaping cases pin that bytes needing escapes (newline, quote, control,
+// invalid UTF-8) neither break the line nor push it past the bound.
+func TestAPIAuditBoundsOversizedObject(t *testing.T) {
+	cases := []struct {
+		name, segment, wantObject string
+	}{
+		{
+			name:       "ascii",
+			segment:    strings.Repeat("A", 900_000),
+			wantObject: strings.Repeat("A", audit.MaxObjectBytes),
+		},
+		{
+			name:       "newline quote and control bytes",
+			segment:    strings.Repeat("%01%0A%22", 100_000),
+			wantObject: strings.Repeat("\x01\n\"", 100_000)[:audit.MaxObjectBytes],
+		},
+		{
+			name:       "invalid utf-8",
+			segment:    strings.Repeat("%FF", 300_000),
+			wantObject: strings.Repeat("\uFFFD", audit.MaxObjectBytes),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, buf, _ := auditedAPI(t, nil)
+
+			w := apiRequest(r, http.MethodPost, "/api/v1/qubes/"+tc.segment+"/start", "", nil)
+
+			require.Equal(t, http.StatusUnauthorized, w.Code)
+			assert.Equal(t, 1, strings.Count(buf.String(), "\n"), "one request must write one line")
+			assert.LessOrEqual(t, buf.Len(), maxAnonymousAuditLine, "audit line exceeds its bound")
+			want := anonymousDenial(startRoute, tc.wantObject)
+			want["object_truncated"] = true
+			assertAuditFields(t, onlyAuditLine(t, buf), w, want)
 		})
 	}
 }

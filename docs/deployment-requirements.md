@@ -19,7 +19,7 @@
 | 3 | **session cookie 的 `Secure` 属性**（与要求 1 是同一件事的两面） | `secure` 直接绑在 `server.tls.enabled` 上，**没有**单独的开关：TLS 终结在反代时 console 看到的是明文请求，cookie 就不会带 `Secure`，浏览器可能明文回传登录态 | 登录后看响应头是否 `Set-Cookie: ...; Secure`。反代终结 TLS 的场景满足不了这条，所以要求 1 才要求 TLS 由 console 自己终结、或只监听 loopback |
 | 4 | **独立 API token 并按用途分权** | 与浏览器登录共用一个全权 token，任何脚本泄露都等于全权泄露 | 用 scoped token 调 `/api/v1/*`：越权的对象应得 403 而不是 200，且审计里能看到被拒的 scope |
 | 5 | **32 字节加密密钥 / 版本化 keyring 的保管** | 数据库备份**只含密文**，恢复时缺 keyring 等于备份不可用；丢失 `qubes-air-luks-master` 会让尚未迁移的旧加密盘无法解锁 | 按[凭据与轮换](credential-vault.md)核对：密钥不在仓库、不与备份同介质存放，且恢复演练时真的能用它解开一份备份 |
-| 6 | **审计留存由部署方自己接住** | 审计是 JSON lines 写到 **stderr**，没有内置文件落地、轮转与留存期；console 重启或日志被截断即丢失 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期，且每行含 request_id/authenticated/subject/source/method/route/object/status/outcome/zone scope；被拒绝的变更请求（401/403 等）同样有记录 |
+| 6 | **审计留存由部署方自己接住** | 审计是 JSON lines 写到 **stderr**，没有内置文件落地、轮转与留存期；console 重启或日志被截断即丢失 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期，且每行含 request_id/authenticated/subject/source/method/route/object/object_truncated/status/outcome/zone scope；被拒绝的变更请求（401/403 等）同样有记录 |
 | 7 | **把"重启即全员登出"写进运维预期** | session 存在内存 map 里，console 重启后所有浏览器登录失效；依赖 session 的自动化会在重启后集体失败 | 重启 console，确认旧 session 请求得到 401；自动化改用 Bearer token（第 4 条） |
 | 8 | **snippet 共享目录只导出给 PVE 节点** | 该目录是 `0755`、文件是 `0644`，其中含**一次性 bootstrap token** 与公开 CA（无私钥）。机密性完全落在"谁能挂载这个 share"上，文件权限不提供保护 | 检查导出配置（NFS/SMB/PVE storage）的允许客户端列表只含 PVE 节点；确认它没有被挂进通用共享 |
 | 9 | **bootstrap 只能发生在可信网段内** | 首次 bootstrap 时 console 拨号**不认证对端**（无可 pin 的 CA/角色，`InsecureSkipVerify`），一次性 token 是唯一认证；同网段第三方若能读到 token 就能冒充 agent | 确认 bootstrap 期 console 与目标节点处在可信二层/网段；token 用后即失效，但仍按 secret 处理（见第 8 条） |

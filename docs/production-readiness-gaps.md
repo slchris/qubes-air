@@ -142,7 +142,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 |---|---|---|---|---|
 | G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 238-249 行；[security-controls](security-controls.md) 第 82 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
 | G-D2 | console 默认可以明文 HTTP 对外服务（TLS 是可选配置 `IsTLSEnabled`），session cookie 因此不能带 `Secure`；部署文档只要求"受限 CORS"，未把 TLS 或"仅 loopback"写成硬要求 | `cmd/server/main.go`:1256-1270（HTTP/HTTPS 二选一）；`handler/session_handler.go`:80-83（`secure` 由调用方决定） | **A-阻塞** | 生产部署要求成文（TLS 或仅本机监听），并在部署 checklist 中可核对 |
-| G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:70 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
+| G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:78 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
 | G-D4 | 无外部安全审计/渗透测试；现有结论来自自查与 P0 加固记录 | [P0 安全记录](reviews/2026-09-20-p0-security.md) 范围自述 | B-阻塞 | 一次独立审计或明确声明"未审计" |
 | G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:39-52 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
 | G-D6 | **真实基础设施地址已存在于公开历史**：仓库是 public，`10.31.0.x`（内网段、artifact store、节点名、QA-01 记录里的具体主机与吊销端点）出现在 8 个已公开文件与本次待推的 5 个新文件中，违反 `AGENTS.md` §5「不得提交真实基础设施地址」 | `git grep -lE "10\.31\.0\.[0-9]+" origin/main` → 8 个文件（含 `internal/config/config.go`、`.github/workflows/release.yml`）；待推范围新增 `docs/reviews/2026-09-22-qa01-proxmox.md` 等 5 个 | A-需要（已决策） | 2026-09-22 决定**接受**：增量暴露仅几个临时租约 IP，而改写 23 个 commit 会作废 `l2_verified_sha`/`qa_verified_sha` 整条信任链。后续新文档不得再写真实地址；是否做一次性历史清理由发布决策定 |

@@ -49,6 +49,10 @@ func markDenied(c *gin.Context) {
 // missing Bearer, an unknown session, a login attempt) is recorded as
 // unauthenticated, which the recorder renders as the anonymous subject.
 //
+// Object is the one field the caller chooses freely, and Audit runs before
+// authentication, so the recorder caps it (audit.MaxObjectBytes) to keep one
+// unauthenticated request from writing an arbitrarily long line.
+//
 // The request ID is generated here and never taken from the client: a caller
 // that could choose it could make its request collide with another's line.
 func Audit(rec *audit.Recorder) gin.HandlerFunc {

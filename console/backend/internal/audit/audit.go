@@ -61,6 +61,14 @@ const AnonymousSubject = "anonymous"
 // no scope at all.
 const noZoneScope = "none"
 
+// MaxObjectBytes caps the object field. The object is a path parameter and the
+// audit middleware runs before authentication, so it is the one field an
+// unauthenticated caller chooses freely; without a cap a single request could
+// write a line as long as the server's header limit (1 MiB by default), which a
+// line-oriented collector such as journald splits into non-JSON fragments. 128
+// bytes is the longest app ID the console accepts and over three times a UUID.
+const MaxObjectBytes = 128
+
 // Recorder emits entries as JSON lines.
 type Recorder struct {
 	logger *slog.Logger
@@ -75,11 +83,17 @@ func NewRecorder(w io.Writer) *Recorder {
 
 // Record writes one entry. The handler stamps the time, so it is not carried on
 // Entry (two "time" keys would be worse than none).
+//
+// The object is cut to MaxObjectBytes and object_truncated says whether it was.
+// It is the only field a caller writes freely: the others are fixed by the
+// server (the method and template of a registered route, the configured
+// credential name and zones, the connection's peer address, the status).
 func (r *Recorder) Record(e Entry) {
 	subject, scope := e.Subject, zoneScope(e.ZoneScope)
 	if !e.Authenticated {
 		subject, scope = AnonymousSubject, noZoneScope
 	}
+	object, truncated := boundObject(e.Object)
 	r.logger.LogAttrs(context.Background(), slog.LevelInfo, "audit",
 		slog.String("request_id", e.RequestID),
 		slog.Bool("authenticated", e.Authenticated),
@@ -87,7 +101,8 @@ func (r *Recorder) Record(e Entry) {
 		slog.String("source", e.Source),
 		slog.String("method", e.Method),
 		slog.String("route", e.Route),
-		slog.String("object", e.Object),
+		slog.String("object", object),
+		slog.Bool("object_truncated", truncated),
 		slog.Int("status", e.Status),
 		slog.String("outcome", e.Outcome),
 		slog.Int64("latency_ms", e.LatencyMS),
@@ -104,6 +119,24 @@ func zoneScope(zones []string) string {
 		return "fleet"
 	}
 	return strings.Join(zones, ",")
+}
+
+// boundObject cuts object to at most MaxObjectBytes, on a UTF-8 character
+// boundary so the kept prefix is not ended by half a character. Bytes that are
+// not valid UTF-8 count as one-byte characters; the JSON encoder escapes them
+// (and every control character), so the cut value cannot break the line.
+func boundObject(object string) (string, bool) {
+	if len(object) <= MaxObjectBytes {
+		return object, false
+	}
+	cut := 0
+	for i := range object {
+		if i > MaxObjectBytes {
+			break
+		}
+		cut = i
+	}
+	return object[:cut], true
 }
 
 // Outcome values. They are exported because callers and tests switch on them;
