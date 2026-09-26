@@ -91,22 +91,22 @@ M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 �
 
 阻塞列含义：**A-阻塞** = 不解决就不能算 A 档；**A-需要** = A 档应有、可短期绕过；**B-阻塞** = 只挡对外发布；技术债 = 不挡可用性，挡长期回归风险。
 
-**状态汇总**（2026-09-26 重算，共 57 条；按 batch-1 的八个分支——含本次状态更正——全部合入 `main` 后的树计，未合并分支上的工作不计）。
+**状态汇总**（2026-09-26 重算，共 57 条；按 batch-1 的九个分支——含本次状态更正——与 batch-2 首批三个分支（bootstrap 对端 pin、session scope 与会话时长、Xpra 截图库）全部合入 `main` 后的树计，未合并分支上的工作不计）。
 判定规则：**已解除 = 验收条件已满足，且本行没有记录任何剩余工作**（真机演练或复验、残留暴露面、未做的功能、
 待同步的引用等都算剩余工作）；验收条件满足了全部或一部分、但本行仍记有剩余工作的，记部分解除；验收条件一项都
 未满足的，记未解决。"阻塞"列的等级措辞不参与判定。G-D6 是接受风险的决定、G-H12 只登记，都记未解决。
 §3 里程碑的勾选只表示该条交付已合入，对应 G-* 行的剩余工作仍按本汇总计。
 
-- 已解除 12 条：G-A2、A3、A4、D5、F5、F8、F10、G2、G4、G5、H5、H6；
-- 部分解除 21 条（括号内是剩余工作）：G-A1（修复 `2d409fd` 随本次更正合入，等合并后 `main` 上首轮 CI 全绿）、
+- 已解除 13 条：G-A2、A3、A4、D5、E7、F5、F8、F10、G2、G4、G5、H5、H6；
+- 部分解除 22 条（括号内是剩余工作）：G-A1（修复 `2d409fd` 随本次更正合入，等合并后 `main` 上首轮 CI 全绿）、
   B1（真机 Exec/FileCopy 正负值）、B5（TOFU 指纹未替换）、C2（真机 apply 与 timer 触发）、C3（真机升级 + 回滚演练）、
   D2（代码默认仍可明文监听）、D7（共享存储路径的 0644 待部署决策；SSH 上传路径的 `0600` 待真机复核；cloud-init 盘里的 token 副本只靠单次兑换与 1 小时 TTL；首次启动后删除 snippet 未做）、
-  F1（CI 不校验覆盖率阈值、不跑入口冒烟）、F2（"副作用"所列行号引用未同步）、F3（余 16 处 `nolint`）、F6（O-5）、
+  E1（2FA、邮件、webhook）、F1（CI 不校验覆盖率阈值、不跑入口冒烟）、F2（"副作用"所列行号引用未同步）、F3（余 16 处 `nolint`）、F6（O-5）、
   F9（各 action 捆绑的工具版本未记进文档；本机 yamllint 版本不钉住）、
   G3（发布演练）、H1（真机长 provision，M0-5）、H2（真机上 503 时服务管理器的反应）、H3（真机生命周期复验，M0-5）、
   H7（真机 systemd 重叠重启）、H8（独立复验；握手版本仍报 `dev`）、H9（告警路径；真机复验）、
-  H10（改小已有盘；per-zone 配额）、H11（[部署要求](deployment-requirements.md)第 9 条没写 1 小时 TTL）；
-- 未解决 24 条：G-B2、B3、B4、B6、C1、C4、C5、D1、D3、D4、D6（已决定接受风险）、E1..E7、F4、F7、F11、
+  H10（改小已有盘；per-zone 配额）、H11（新 agent 包 + 新控制台在真机上走通一次首次 bootstrap，M0-5；读到 token 即可派生同一把占位密钥，保护仍靠 G-D7 与[部署要求](deployment-requirements.md)第 8、9 条）；
+- 未解决 22 条：G-B2、B3、B4、B6、C1、C4、C5、D1、D3、D4、D6（已决定接受风险）、E2..E6、F4、F7、F11、
   G1、H4、H12（只登记）。
 
 ### 0.2 M0 收尾结果（2026-09-22）
@@ -170,7 +170,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-E1 | UI-01：设置页的 2FA / 邮件 / webhook 存了不生效（**session timeout 已接入**：5–1440 分钟、保存即生效、已签发的只缩短不延长，启动读取存量值、越界告警并回退 30 分钟；邮件与 2FA 已禁用且服务端拒存） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 242-245、272-284 行；session timeout 的端到端证据：`cmd/server/session_timeout_test.go`（启动→登录→保存→再登录） | B-阻塞 | 每项接入并给出端到端证据；未接入项继续显示"未实现" |
+| G-E1 | UI-01：设置页的 2FA / 邮件 / webhook 存了不生效（**session timeout 已接入**：5–1440 分钟、保存即生效、已签发的只缩短不延长，启动读取存量值、越界告警并回退 30 分钟；邮件与 2FA 已禁用且服务端拒存） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 242-245、272-284 行；session timeout 的端到端证据：`cmd/server/session_timeout_test.go`（启动→登录→保存→再登录） | 部分解除（原 B-阻塞；session timeout 已接入并有端到端测试，未接入的项 UI 继续标"未实现"。剩余：2FA、邮件、webhook） | 每项接入并给出端到端证据；未接入项继续显示"未实现" |
 | G-E2 | OBS-01：监控与账单是 placeholder（CPU/磁盘恒 0；无成本数据源） | `internal/handler/monitoring_handler.go`:53,55；`internal/handler/billing_handler.go`:11,51,56 | B-阻塞 | 接真实数据源；过期/缺失不得伪装为正常值；移除 placeholder |
 | G-E3 | GUI-01：无缝桌面（appmenu、单击启动、多窗口、断线恢复）未闭环 | [TODO](TODO.md) GUI-01 条目 | B-阻塞 | 桌面闭环验收，含 Xpra 与 RemoteVM 权限边界 |
 | G-E4 | 前端无 E2E 框架（无 playwright/cypress），QA-02 剩余"真实首次 bootstrap、应用启动 E2E、取消场景"只能手工 | `console/frontend/package.json` 无 E2E 依赖；[TODO](TODO.md) QA-02 条目 | B-阻塞 | E2E 覆盖登录→创建→provision→purge 主路径 |
