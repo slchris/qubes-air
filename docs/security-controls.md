@@ -9,6 +9,11 @@ Agent 服务端在每次 TLS 握手（包含恢复会话）校验 CA、ClientAut
 Relay/Console 角色。角色校验不依赖 CertRegistry 是否存在。Console/Relay 客户端仍校验
 目标 agent 的证书角色与名称；本地 dom0 policy 和服务 allowlist 继续生效。
 
+动数据盘密钥与首次身份的服务还要求专用的 console 身份：`qubesair.UnlockData` /
+`RekeyData` 只对 CN 为 `console-unlock`、`qubesair.BeginBootstrap` / `CompleteBootstrap` 只对
+`console-bootstrap` 的 console 角色证书执行；其它 CA 签发的 Relay/Console 证书（探测、续期、
+relay-call）在进入 invoker 前被拒。
+
 实际 agent 启动入口必须配置 `--revocation-url`；打包 unit 从
 `QUBESAIR_REVOCATION_URL` 传入。Console 用以下配置把地址写进 cloud-init：
 
@@ -48,6 +53,24 @@ Agent 用已有公共 CA 校验精确签名数据。HTTPS 仍校验服务器证�
 这是撤销列表，不是远端完整注册表：CA 签发且角色合法、未列为撤销的临时 Console 证书仍可
 使用。Console 临时探测证书不逐张登记；CA 泄露、逐对象授权、备份恢复后的撤销历史一致性
 需要单独处置，见 [TODO](TODO.md)。
+
+## Bootstrap 首次连接：token 派生公钥 pin
+
+尚未拿到证书的 agent 只能出示自签名占位证书。占位证书的密钥由一次性 token 与 qube 名经
+HKDF-SHA256 派生（Ed25519，`pki.NewBootstrapPlaceholderCertificate`）；console 签发 token 时
+算出对应公钥的 SPKI SHA-256，存进 `bootstrap_tokens.placeholder_spki_sha256`，token 本身只存哈希。
+
+console 拨号时（`pki.BootstrapDialTLSConfig`）在每次握手的 `VerifyConnection` 里校验：pin 一致、
+CN 为 `bootstrap-<qube>`、在有效期内、只有 digitalSignature + ServerAuth、自签名、恰好一个
+agent 角色。任一不符即握手失败，console 不发出任何请求，所以冒充者既拿不到调用、也换不到
+证书。agent 一侧仍要求客户端证书链到 cloud-init 下发的 CA，双向在第一帧之前都已认证。
+
+- 没有 pin 就不拨号：未装配 pin provider、没有未兑换且未过期的 token、升级前签发的旧 token
+  （pin 为空）都报 `not_configured`，原因写明“需要重新 provision”，不回退到不认证的握手。
+- 读到 token 的人能派生同一把密钥，这与他能兑换 token 是同一个能力；token 的暴露面见
+  [生产部署安全要求](deployment-requirements.md)第 8、9 条。
+- 升级顺序：agent deb 必须先于 console 升级，在途 token 需重新 provision，见
+  [升级与回滚](upgrade-rollback.md) §3。
 
 ## Console API 对象级授权
 
@@ -137,7 +160,7 @@ printf '%s\n' '["/usr/bin/id","-u"]' |
   qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
-必须显式启用 `QUBESAIR_ALLOW` 中的 Exec，并在 `QUBESAIR_EXEC_ALLOW` 中允许该可执行文件。两个白名单都由 console 随 qube 下发到 guest 的 `agent.env`：服务白名单来自 `agent_allowed_services`，路径白名单来自 `agent_exec_allow` / `agent_filecopy_roots`（或环境变量 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）。console 在启动配置校验和渲染 cloud-init 时各校验一次路径白名单（必须是绝对、规范化、不含冒号与控制字符的路径），所以写错的值在启动或 provision 阶段就失败，而不是变成 guest 里一次被拒的调用。
+必须显式启用 `QUBESAIR_ALLOW` 中的 Exec，并在 `QUBESAIR_EXEC_ALLOW` 中允许该可执行文件。两个白名单都由 console 随 qube 下发到 guest 的 `agent.env`：服务白名单来自 `agent_allowed_services`，路径白名单来自 `agent_exec_allow` / `agent_filecopy_roots`（或环境变量 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）。console 在启动配置校验和渲染 cloud-init 时各校验一次整组授权（`qrexec.ValidateAgentGrants`）：服务名必须过传输层的名字白名单（不含逗号、空白与控制字符，否则会把一项拆成两项或在 `agent.env` 里多写一行）且不重复；路径必须是绝对、规范化、不含冒号与任何控制字符（含制表符、DEL）的路径且不重复。所以写错的值在启动或 provision 阶段就失败，而不是变成 guest 里一次被拒的调用。路径表不空、但服务白名单里没有对应的 `qubesair.Exec` / `qubesair.FileCopy` 时，agent 会整体拒绝该服务，这组路径什么也不授予：console 只在启动日志（`WARNING: agent grants:`）和渲染日志里告警，不拒绝启动。
 默认仍只启用 Ping。限制为 64 KiB 请求、1～128 个参数、每项最多 4096 UTF-8 字节，禁止 NUL、
 非法路径和服务 `+argument`。错误分别以非零退出码上报；stdout/stderr/exit code 保持独立。
 

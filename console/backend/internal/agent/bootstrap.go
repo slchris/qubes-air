@@ -16,17 +16,20 @@
 // because the reverse direction would demand connectivity that does not
 // otherwise need to exist — see docs/bootstrap-design.md §9.3.
 //
-// Authentication is deliberately asymmetric:
+// Both directions are authenticated before any bootstrap data moves:
 //
 //   - The agent trusts the CALLER because this listener requires a client
 //     certificate chaining to the CA cloud-init delivered. The token is never
 //     handed to a peer the CA did not vouch for; that check lives in the TLS
 //     config, before Begin ever runs.
-//   - The console trusts the AGENT because of the token. The listener's own
-//     certificate is a self-signed placeholder — there is no real one yet, that
-//     is the problem being solved — so the tunnel proves nothing about who
-//     answered. Possession of the one-shot token is what does, and the console
-//     redeems it against a store that guarantees exactly one winner.
+//   - The console trusts the AGENT's listener before it sends anything. The
+//     listener has no CA-issued certificate yet — that is the problem being
+//     solved — so it presents a self-signed placeholder whose key is DERIVED
+//     from the one-shot token (pki.NewBootstrapPlaceholderCertificate). The
+//     console computed that key's public pin when it minted the token and
+//     refuses any peer that does not hold it. The token itself then travels
+//     inside that verified session and is redeemed against a store that
+//     guarantees exactly one winner.
 //
 // Like renewal, the agent installs BEFORE it replies. A lost reply therefore
 // describes an agent that already holds its identity — recoverable by the next
@@ -47,7 +50,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"sync"
 	"time"
 
@@ -74,10 +76,10 @@ const DefaultPendingBootstrapTTL = DefaultPendingRenewalTTL
 const maxPendingBootstraps = 4
 
 // placeholderCertLifetime is how long the self-signed listener certificate
-// lasts. It authenticates nothing, so its expiry is not a security boundary;
-// it only needs to outlive the longest plausible gap between the agent
-// starting and the console dialing in, with slack for a first boot whose
-// clock has not settled yet.
+// lasts. Its expiry is not the security boundary — the token's own TTL and
+// single use are — so it only needs to outlive the longest plausible gap
+// between the agent starting and the console dialing in, with slack for a
+// first boot whose clock has not settled yet.
 const placeholderCertLifetime = 24 * time.Hour
 
 // Bootstrap errors.
@@ -159,7 +161,7 @@ func NewBootstrapService(id *Identity, remoteName, token string, onInstalled fun
 	if token == "" {
 		return nil, errors.New("bootstrap needs a token; without one the console cannot tell this agent from anyone answering its address")
 	}
-	placeholder, err := selfSignedPlaceholder(remoteName)
+	placeholder, err := selfSignedPlaceholder(remoteName, token)
 	if err != nil {
 		return nil, fmt.Errorf("mint placeholder listener certificate: %w", err)
 	}
@@ -404,45 +406,12 @@ func verifyOfferedCA(id *Identity, caPEM string) error {
 }
 
 // selfSignedPlaceholder mints the certificate the listener presents before it
-// has a real one.
+// has a CA-issued identity.
 //
-// It proves nothing and is trusted by nobody: the console dialing a
-// bootstrapping agent does not verify the server certificate — it cannot,
-// nothing has been issued — and relies on the token instead. This exists only
-// because a TLS listener must present something to complete a handshake. The
-// key behind it is generated here and discarded with the process.
-func selfSignedPlaceholder(remoteName string) (*tls.Certificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	serial, err := rand.Int(rand.Reader, big.NewInt(0).Lsh(big.NewInt(1), 62))
-	if err != nil {
-		return nil, err
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "bootstrap-" + remoteName},
-		// Generous NotBefore: a first boot's clock may still be settling, and a
-		// placeholder that is "not yet valid" reads as a dead VM from outside.
-		NotBefore: time.Now().Add(-time.Hour),
-		NotAfter:  time.Now().Add(placeholderCertLifetime),
-		KeyUsage:  x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{
-			x509.ExtKeyUsageServerAuth,
-		},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, err
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return nil, err
-	}
-	return &tls.Certificate{
-		Certificate: [][]byte{der},
-		PrivateKey:  key,
-		Leaf:        leaf,
-	}, nil
+// Its key is derived from the token and this remote's name, so it is the one
+// key the console will accept here: the console pinned the matching public key
+// when it minted the token. A process that was handed a different token — or
+// an impostor at this address that was handed none — cannot present it.
+func selfSignedPlaceholder(remoteName, token string) (*tls.Certificate, error) {
+	return pki.NewBootstrapPlaceholderCertificate(token, remoteName, time.Now(), placeholderCertLifetime)
 }

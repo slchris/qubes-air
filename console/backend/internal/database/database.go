@@ -229,7 +229,7 @@ const listDatabases = `PRAGMA database_list`
 // newer code no longer understands, and the failure would surface as corrupted
 // data rather than an error. Restoring a backup into an older console is the
 // same hazard, which is why backup carries the version too.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // migrate runs database migrations.
 func (d *DB) migrate() error {
@@ -283,6 +283,9 @@ func (d *DB) migrate() error {
 	}
 
 	if err := d.migrateLifecycle(); err != nil {
+		return err
+	}
+	if err := d.migrateBootstrapPeerPin(); err != nil {
 		return err
 	}
 	return d.applySchemaVersion()
@@ -524,7 +527,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_certs_revoked ON agent_certs(revoked_at)`
 //
 // redeemed_at is what makes the token single-use, and it is set by the same
 // statement that authorizes the redemption. See BootstrapTokenRepository.Redeem
-// for why that has to be one statement.
+// for why that has to be one statement. placeholder_spki_sha256: see migrateBootstrapPeerPin.
 const createBootstrapTokensTable = `
 CREATE TABLE IF NOT EXISTS bootstrap_tokens (
 	secret_hash TEXT PRIMARY KEY,
@@ -532,7 +535,8 @@ CREATE TABLE IF NOT EXISTS bootstrap_tokens (
 	qube_name   TEXT NOT NULL,
 	created_at  DATETIME NOT NULL,
 	not_after   DATETIME NOT NULL,
-	redeemed_at DATETIME
+	redeemed_at DATETIME,
+	placeholder_spki_sha256 TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_qube_id ON bootstrap_tokens(qube_id);
 CREATE INDEX IF NOT EXISTS idx_bootstrap_tokens_not_after ON bootstrap_tokens(not_after)`

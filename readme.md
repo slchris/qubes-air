@@ -16,7 +16,7 @@ agent。
 |---|---|---|
 | Web 控制台 | 已实现 | Go + Svelte；Zone、Qube、凭据、任务与设置管理，日志流式输出 |
 | Proxmox 置备 | 已真机验证 | 从 UI 创建 VM，cloud-init 安装 agent，健康状态最终变为 `healthy` |
-| 无私钥 bootstrap | 已真机验证 | cloud-init 只携带 CA 和单次 token；agent 在 guest 内生成私钥并提交 CSR |
+| 无私钥 bootstrap | 已真机验证 | cloud-init 只携带 CA 和单次 token；agent 在 guest 内生成私钥并提交 CSR。首次连接按 token 派生公钥 pin 认证 agent 是之后加入的，尚未上真机 |
 | 存算分离 | 已真机验证 | suspend 释放计算实例，resume 挂回持久数据盘；支持 LUKS 数据盘 |
 | RemoteVM + qrexec | 已真机验证 | 自动注册 RemoteVM、同步端点，经独立 Relay 调用远端 agent |
 | gRPC 传输 | 部分真机验证 | mTLS、零额外公网入站、证书续期、断线重连已实现；2026-09-22 回归中控制台的健康探测经 mTLS 隧道跑通 `Ping`，证书续期与断线重连只有[历史记录](docs/reviews/validation-history.md)（当前代码的断线重连与取消有自动化回归） |

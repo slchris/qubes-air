@@ -21,14 +21,15 @@ flowchart TD
   Provision --> CloudInit["cloud-init 投递 CA、token、agent URL / SHA256 / version"]
   CloudInit --> Install["Guest 校验 SHA256，安装并启动 bootstrap listener"]
   Install --> CSR["Agent 本地生成 P-256 private key 和 CSR"]
-  CSR --> Redeem["Console 主动连接 agent，验证并消费 token"]
+  CSR --> Pin["Console 主动连接 agent，按 token 派生的公钥 pin 认证占位证书"]
+  Pin --> Redeem["Console 验证并消费 agent 出示的 token"]
   Redeem --> Sign["Console CA 签 CSR，返回 cert / CA"]
   Sign --> MTLS["Agent 原子保存身份并切换 mTLS 服务"]
   MTLS --> Health["Console health probe 标记 healthy"]
   Health --> Register["注册 dom0 RemoteVM，Relay 同步 endpoint"]
 ```
 
-Proxmox 真机已经跑通这条闭环。
+Proxmox 真机已经跑通这条闭环；首次连接的公钥 pin（§9）是之后加入的，尚未上真机验证。
 
 ## 3. 为什么由 console 主动连接
 
@@ -97,7 +98,10 @@ Token 具备以下属性：
 - 有明确过期时间，当前默认设计为 1 小时以覆盖较慢的 apt/首次启动；
 - 验证与消费在同一原子操作中完成；
 - resume 或重建需要时重新签发，而不是复用旧 token；
-- 只允许换取被身份规则钉住的 agent 证书。
+- 只允许换取被身份规则钉住的 agent 证书；
+- 同时派生 agent 占位监听的密钥：token + qube 名经 HKDF-SHA256 得到 Ed25519 种子，数据库只存
+  其公钥的 SPKI SHA-256（`placeholder_spki_sha256`），console 拨号时据此认证对端，取不到 pin
+  （无有效 token、升级前签发的旧 token）就不拨号。细节见[安全控制](security-controls.md)。
 
 ## 10. Provider 差异
 

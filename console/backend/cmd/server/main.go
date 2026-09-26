@@ -79,7 +79,7 @@ func main() {
 	}
 
 	logConfig(cfg)
-	logSecurityWarnings(cfg)
+	logStartupWarnings(cfg)
 
 	// Build the dependencies under the single-instance lock: building them is
 	// what reconciles state that may belong to a live process (see bootLocked).
@@ -992,7 +992,7 @@ func buildBootstrapper(
 		certIssuer,
 		service.NewBootstrapIssuer(tokens, certIssuer, certs),
 		cfg.Orchestrator.AgentListen,
-		service.DefaultBootstrapTimeout)
+		service.DefaultBootstrapTimeout).WithBootstrapPeerPinProvider(tokens) // first-contact pins
 }
 
 // configureTrustedProxies makes c.ClientIP() report the peer address instead of
@@ -1457,4 +1457,15 @@ func (r objectZoneResolver) ZoneOfJob(ctx context.Context, jobID string) (string
 		return "", false, err
 	}
 	return r.ZoneOfQube(ctx, job.QubeID)
+}
+
+// logStartupWarnings logs everything about the loaded configuration that is
+// allowed to start but should not go unnoticed: the insecure settings first,
+// then agent grants that are valid but inert (a path allowlist whose qrexec
+// service the agents may not run, so it grants nothing in the guest).
+func logStartupWarnings(cfg *config.Config) {
+	logSecurityWarnings(cfg)
+	for _, w := range cfg.AgentGrantWarnings() {
+		log.Printf("WARNING: agent grants: %s", w)
+	}
 }

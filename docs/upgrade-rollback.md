@@ -58,22 +58,45 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 | 不含对端版本 | 其它 | 拒绝，**先回一条带原因的 `CodeProtocolMismatch`** 再断流（`server.go:388-398`），日志给出"支持的版本"清单 |
 | 对端版本为空 | — | 同上路径，提示信息按"未上报版本"处理 |
 
-因此**协议不是升级顺序的约束**，只要新构建仍列出旧版本。真正的顺序约束来自下面两条。
+因此**协议不是升级顺序的约束**，只要新构建仍列出旧版本。真正的顺序约束来自下面三条（§2.2–§2.4）。
 
 ### 2.2 数据库 schema：前向单向
 
 `SchemaVersion` 是编译期常量（[database.go](../console/backend/internal/database/database.go) 第 232 行），
-存在 SQLite 的 `user_version` 里（`UserVersion`，第 311 行）。打开一个**更新**版本的库会被拒绝：
+存在 SQLite 的 `user_version` 里（`UserVersion`，第 320 行）。打开一个**更新**版本的库会被拒绝：
 
 > `database schema version N is newer than this console supports (M); upgrade the console before opening this database`
-> （`applySchemaVersion`，第 290-305 行）
+> （`applySchemaVersion`，第 299-317 行）
 
 这条规则决定了一切：**升级过 schema 之后，回滚二进制不是回滚，而是让控制台起不来。** 所以
 "回滚"在 schema 变更后只有一个手段——从备份恢复（见 §4）。
 
+当前是 schema 3：在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，
+见 §2.4），纯加列，已有行保留、pin 为空。v2 → v3 的迁移与“再次打开无变化”由
+`internal/database/database_upgrade_test.go` 对冻结的 v2 夹具验证。
+
 ### 2.3 API 与前端
 
 前端与二进制必须**同批**升级：前端只讲 `/api/v1`，两者来自同一次 release。
+
+### 2.4 bootstrap 对端 pin：agent 包先于控制台
+
+从 schema 3 起，控制台只在对端出示“由该 qube 的一次性 token 派生的占位证书”时才完成首次
+bootstrap 握手（[安全控制](security-controls.md)“Bootstrap 首次连接”）。这让两侧不再对称：
+
+| 控制台 | guest 里的 agent 包 | 首次 bootstrap |
+|---|---|---|
+| 新（pin） | 新（token 派生占位证书） | 正常 |
+| 旧（不校验对端） | 新 | 正常：旧控制台本来就不校验占位证书，新 agent 对它照常工作 |
+| 新 | **旧（随机占位证书）** | **永远失败**：pin 不符，bootstrap 反复记为 `unreachable`，日志 `refusing the listener … does not match the pin` |
+
+所以 **agent 包必须先于控制台、或与控制台同一次 `state.apply` 升级**。已经拿到证书的 qube 不再走
+bootstrap，不受影响。
+
+升级那一刻**还没完成 bootstrap 的 qube**（token 最长 1 小时有效）一律 fail closed：它们的 token 在
+schema 3 之前签发、没有 pin，控制台报 `not_configured`、原因写“predates peer pinning; re-provision
+it”，并且不会拨号。处理方式是重新 provision（resume 或重建 compute）以签发带 pin 的新 token；
+不要试图手工补 pin——guest 里的旧 agent 也出示不了匹配的密钥。
 
 ## 3. 升级顺序
 
@@ -87,14 +110,18 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
    口令从环境变量读（命令行会被同机 `ps` 看到），输出 `O_EXCL` + `0600`。
    细节与恢复步骤见[灾难恢复](disaster-recovery.md)。
 2. **控制台**：改 `console_binary_*` 与 `console_web_*` 两组 pin → `state.apply qubesair.console`。
-   两个制品必须同批改，理由见 §2.3。
+   两个制品必须同批改，理由见 §2.3。**跨过 schema 3（bootstrap 对端 pin）的这次升级**，
+   `agent_package_url/sha256/version` 必须在同一次（或更早的）`state.apply` 里指向带 token 派生
+   占位证书的 agent 包，否则之后新建的 qube 都完不成 bootstrap（§2.4）；升级前后正在 bootstrap
+   的 qube 需要重新 provision。
 3. **验证**（见 §3.1）。
 4. **agent/relay 侧**：改 `agent_package_url/sha256/version` → 重建 compute。注意它们的生效路径：
    这三个键由 Salt 渲染进**控制台的环境**（`QUBES_AIR_AGENT_PACKAGE_*`，经 `EnvironmentFile=` 注入，
    见 `salt/qubesair/console.sls` 第 365-367 行），控制台在**生成身份文档时**把它们交给新 provision
    的 VM。所以改完必须重新 `state.apply`（否则控制台进程里还是旧值），而**既有 qube 不会自己换
-   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 139-145 行
-   的回滚指示也正是"重建 compute"）。按 §2.1，它与控制台升级的先后顺序不影响兼容性。
+   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 142-148 行
+   的回滚指示也正是"重建 compute"）。按 §2.1，协议不约束它与控制台的先后；但 §2.4 要求 agent 包
+   不晚于控制台（新 agent 包对旧控制台兼容，反之不行）。
 
 ### 3.1 怎么确认升级成功（今天可用的手段）
 
@@ -181,8 +208,8 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 |---|---|---|
 | schema **未**升过（新旧 `SchemaVersion` 相同） | 把两组 pin 恢复到上一组值 → 重新 `state.apply`（`source_hash` 会拒绝不匹配的制品）→ 重启服务 | `/health` healthy；二进制 sha256 等于旧 pin；且 `/health` 的 `version`/`revision` 等于**旧制品** `--version` 报的值（§3.2）——这一步才证明回滚的进程真的换回去了 |
 | schema **已**升过 | **只能**从备份恢复：`qubes-air-backup restore -db … -in … -force`（[灾难恢复](disaster-recovery.md) 第 58-65 行），并确保进程持有**同一把** keyring 密钥 | `/health` healthy，且能真的提交一个 job |
-| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 139-145 行） | — |
-| agent 发布故障 | 恢复上一组 `agent_package_*` 后**重建** compute（同上） | 新 compute 上的 agent 能完成 bootstrap 与探测 |
+| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 142-148 行） | — |
+| agent 发布故障 | 恢复上一组 `agent_package_*` 后**重建** compute（同上）。控制台在 schema 3 及以上时，回退目标必须仍是带 token 派生占位证书的包，否则新 compute 完不成 bootstrap（§2.4） | 新 compute 上的 agent 能完成 bootstrap 与探测 |
 | 协议不匹配 | 两侧版本集合无交集：把有交集的那一侧升（或降）回去 | 握手日志出现 `relay %q connected (protocol …)` |
 
 回滚的顺序与控制台升级相反：**先恢复 pin 再重启服务**，不要先停服务再慢慢找旧制品——停机期间
@@ -197,6 +224,8 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 控制台报 schema 更新而拒绝启动 | 回滚错了方向（二进制旧、库新） | 按 §4 第二行处理：恢复备份，或把二进制升回 |
 | 远端 qube 连不上 | agent 版本/协议不在 console 的集合里 | 看握手日志的 `rejecting relay …`（带支持版本清单） |
 | 页面能开但接口全 404/400 | 前端与二进制不同批 | 两组 pin 一起改 |
+| 升级后新 qube 一直 `unreachable`，日志 `refusing the listener … does not match the pin` | guest 装的是早于 pin 的 agent 包（§2.4） | 把 `agent_package_*` 指向新包、`state.apply`，再重建这些 compute |
+| 升级后某 qube 的 bootstrap 报 `not_configured`，原因 `predates peer pinning` | 升级时它的 token 还没兑换 | 重新 provision 该 qube（新 token 带 pin） |
 
 ## 6. 尚未闭合
 

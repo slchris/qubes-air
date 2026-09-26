@@ -29,11 +29,11 @@
 #     QUBESAIR_UNLOCK_INNER=1, which the outer half sets via systemd-run --setenv
 #     and which neither the agent nor qrexec lets a caller set.
 #
-# NOTE (hardening TODO): the agent accepts any CA-signed client cert, so possession of
-# the correct derived key is what actually authorizes an unlock (a wrong key just fails
-# luksOpen). The one race is a fleet-internal actor luksFormat-ing a BLANK disk before
-# the console does. Restricting this service to the console's client-cert CN closes it;
-# tracked in docs/grpc-transport-design.md.
+# Caller: the agent runs this service (and RekeyData) only for a verified client cert
+# with the console role AND the dedicated "console-unlock" CN (authorizePrivilegedService-
+# Caller in console/backend/internal/transport/grpc/server.go). Other CA-signed Relay or
+# Console certs are refused before this script starts, which closes the race of a
+# fleet-internal caller luksFormat-ing a BLANK disk before the console does.
 # =====================================================================================
 set +e
 # Byte semantics for read -n and ${#key} below, whatever locale the caller has.

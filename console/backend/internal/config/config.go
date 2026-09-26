@@ -1068,7 +1068,7 @@ func (c *Config) Validate() error {
 	if err := c.validateAuth(); err != nil {
 		return err
 	}
-	if err := validateQrexecAllowlists(c.Orchestrator.AgentExecAllow, c.Orchestrator.AgentFileCopyRoots); err != nil {
+	if _, err := c.validateAgentGrants(); err != nil {
 		return err
 	}
 	if err := c.validateServerTLS(); err != nil {
@@ -1109,15 +1109,32 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateQrexecAllowlists checks both path allowlists at startup so a typo
-// fails here rather than as a refused call inside a guest during a provision.
-// The renderer re-checks before writing agent.env; this is the earlier, louder
-// gate.
-func validateQrexecAllowlists(execAllow, fileCopyRoots []string) error {
-	if err := qrexec.ValidatePathAllowlist("agent_exec_allow", execAllow, false); err != nil {
-		return err
+// agentGrantLabels names the grant lists by their config keys in messages.
+var agentGrantLabels = qrexec.GrantLabels{
+	Services: "agent_allowed_services",
+	Exec:     "agent_exec_allow",
+	FileCopy: "agent_filecopy_roots",
+}
+
+// validateAgentGrants checks the service list and both path allowlists at
+// startup so a typo fails here rather than as a refused call inside a guest
+// during a provision. The renderer re-checks before writing agent.env; this is
+// the earlier, louder gate.
+func (c *Config) validateAgentGrants() ([]string, error) {
+	o := c.Orchestrator
+	return qrexec.ValidateAgentGrants(agentGrantLabels, o.AgentAllowedServices, o.AgentExecAllow, o.AgentFileCopyRoots)
+}
+
+// AgentGrantWarnings returns the grants that are valid but inert — a path
+// allowlist whose service the agents are not allowed to run — for the startup
+// log. Validate has already refused anything worse, so an error here yields no
+// warnings.
+func (c *Config) AgentGrantWarnings() []string {
+	warnings, err := c.validateAgentGrants()
+	if err != nil {
+		return nil
 	}
-	return qrexec.ValidatePathAllowlist("agent_filecopy_roots", fileCopyRoots, true)
+	return warnings
 }
 
 // validateServerTLS requires the certificate pair when TLS is on, and checks

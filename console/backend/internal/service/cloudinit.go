@@ -174,11 +174,13 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 			return "", err
 		}
 	}
-	if err := qrexec.ValidatePathAllowlist("QUBESAIR_EXEC_ALLOW", pkg.ExecAllow, false); err != nil {
+	grantWarnings, err := qrexec.ValidateAgentGrants(qrexec.AgentEnvLabels,
+		agentAllowedServices(pkg), pkg.ExecAllow, pkg.FileCopyRoots)
+	if err != nil {
 		return "", err
 	}
-	if err := qrexec.ValidatePathAllowlist("QUBESAIR_FILECOPY_ROOTS", pkg.FileCopyRoots, true); err != nil {
-		return "", err
+	for _, w := range grantWarnings {
+		log.Printf("cloud-init for %q: %s", remoteName, w)
 	}
 	if err := id.validate(); err != nil {
 		return "", err
@@ -196,6 +198,16 @@ func RenderAgentUserData(remoteName string, id AgentIdentityDoc, listen string, 
 	writeIdentityFiles(&b, id, remoteName, listen, pkg, encryptData)
 	writeRuncmd(&b, encryptData)
 	return b.String(), nil
+}
+
+// agentAllowedServices is the QUBESAIR_ALLOW list a provision actually gets:
+// the configured one, or DefaultAllowedServices when none is configured. It is
+// the list validated and the list written, so the two cannot differ.
+func agentAllowedServices(pkg AgentPackage) []string {
+	if len(pkg.AllowedServices) == 0 {
+		return DefaultAllowedServices
+	}
+	return pkg.AllowedServices
 }
 
 // writeUserDataHeader writes the #cloud-config preamble that marks this as
@@ -281,10 +293,7 @@ func writeIdentityFiles(b *strings.Builder, id AgentIdentityDoc, remoteName, lis
 	b.WriteString("write_files:\n")
 	writeFile(b, agentInstallDir+"/ca.pem", "0644", id.CAPEM)
 	writeFile(b, agentInstallDir+"/bootstrap-token", "0600", id.BootstrapToken)
-	allowed := pkg.AllowedServices
-	if len(allowed) == 0 {
-		allowed = DefaultAllowedServices
-	}
+	allowed := agentAllowedServices(pkg)
 	env := fmt.Sprintf("QUBESAIR_REMOTE_NAME=%s\nQUBESAIR_LISTEN=%s\nQUBESAIR_ALLOW=%s\nQUBESAIR_REVOCATION_URL=%s\n",
 		remoteName, listen, strings.Join(allowed, ","), pkg.RevocationURL)
 	// Omitted when empty rather than written blank: the agent treats a missing

@@ -57,7 +57,7 @@
 | UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:627`（接线） |
 | UD-1f | `/health` 的编排 dispatcher 心跳：空闲轮询间隔 / 判死阈值 | **5s / 15s**（阈值 = 3 次丢拍）；dispatcher 正在执行 job 时预算再加该 job 的超时（UD-1e）。**无配置键**（编译期常量） | `internal/orchestrator/health.go:11`（`DispatcherPollInterval`）、`:22`（`DispatcherStaleAfter`） |
 | UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1325`（`healthProbeInterval`） |
-| UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验 | `config/config.go:237`（`AgentExecAllow`）、`:241`（`AgentFileCopyRoots`）、`:751`/`:754`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go`；写入 `internal/service/cloudinit.go:299` |
+| UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验；重复项与任何控制字符都被拒。路径表不空而 `agent_allowed_services` 未含对应服务（`qubesair.Exec` / `qubesair.FileCopy`）时**只告警不拒绝**（启动日志 `WARNING: agent grants:`，渲染日志 `cloud-init for …`），因为 agent 会整体拒绝该服务、这组路径不授予任何能力 | `config/config.go:237`（`AgentExecAllow`）、`:242`（`AgentFileCopyRoots`）、`:901`/`:904`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go:48`（`ValidateAgentGrants`，启动时 `config.go:1071`、渲染时 `internal/service/cloudinit.go:177`）；写入 `internal/service/cloudinit.go:308` |
 | UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:127`（`bootLocked`：先取锁再 boot）、`:87`（main 的唯一调用点）、`:93`（失败即 `log.Fatalf`） |
 | UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1034`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1276`（`healthHandler` 入参）、`:1253`/`:1254`（`healthBody` 的 `build_time`/`tree` 键）、`:1373`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
 
@@ -66,7 +66,7 @@
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
 | UD-2 | keepalive 心跳间隔 | **20s** | `internal/transport/grpc/client.go:59-60`（`withDefaults`：`KeepAlive = 20 * time.Second`） |
-| UD-3 | 重连退避 | **min 500ms / max 30s**，指数翻倍 + 抖动 | `internal/transport/grpc/client.go:63-68`（下限/上限）、`:145-150`（`jitter(backoff)`、`backoff *= 2`、封顶 `ReconnectMax`） |
+| UD-3 | 重连退避 | **min 500ms / max 30s**，指数翻倍 + 抖动 | `internal/transport/grpc/client.go:63-68`（下限/上限）、`:148-153`（`jitter(backoff)`、`backoff *= 2`、封顶 `ReconnectMax`） |
 
 ### 1.3 agent 侧（调用、探测、bootstrap、解锁、续期）
 
@@ -85,9 +85,9 @@
 | UD-9d | agent 失败连续段的判定预算（`agent_recovery=manual` 的阈值） | **300s**（= 单元 `StartLimitIntervalSec`，不可配置） | `internal/models/qube.go:127`（`AgentStartLimitBudget`）；导出依据 `packaging/agent-deb/qubes-air-agent.service:10-11`（`StartLimitIntervalSec=300`、`StartLimitBurst=5`）与 `:33`（`RestartSec=5`）；一致性测试 `internal/models/agentrecovery_test.go`（读单元文件断言预算覆盖窗口与 `(burst−1)×RestartSec`） |
 | UD-9e | 失败连续段起点 `agent_failing_since` 的写入/清空，与 `agent_recovery` 的派生 | 写：`unreachable` 时 `COALESCE` 保留首次时间，其它判定一律清空；派生：`最后一次探测时刻 − 失败起点 ≥ UD-9d` 为 `manual`，否则 `pending`，非失败判定为 `none`（**不看墙钟**） | 写 `internal/repository/qube_repo.go:453-456`；读/派生 `:199`（`scanQube`，列表与详情共用同一条路径）与 `internal/models/qube.go:137-153`；加列迁移 `internal/database/database.go:278`；API 字段 `internal/models/qube.go:66`（`agent_failing_since`）、`:72`（`agent_recovery`） |
 | UD-9f | 周期探测间隔（多久重新判定一次 agent 健康） | **60s** | `internal/config/config.go`:252（`agent_probe_interval_seconds`）、`:665`（默认 60）；兜底常量 `internal/service/agenthealth.go:19`（`DefaultAgentProbeInterval`） |
-| UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:48`（`DefaultDataUnlockTimeout`） |
-| UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:33`（`unlockCertLifetime`） |
-| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:66`（`DefaultBootstrapTimeout`） |
+| UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:49`（`DefaultDataUnlockTimeout`） |
+| UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:34`（`unlockCertLifetime`） |
+| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:70`（`DefaultBootstrapTimeout`） |
 | UD-11b | bootstrap 重试退避 | **base 15s / max 10 分钟** | `internal/service/bootstrapsched.go:49`、`:50`（`bootstrapRetryBase`、`bootstrapRetryMax`） |
 | UD-12 | 证书续期单次超时 | **30s** | `internal/service/certrenew.go:50`（`DefaultCertRenewalTimeout`） |
 | UD-12b | 续期用 relay 证书寿命 | **1 小时** | `internal/service/certrenew.go:91`（`renewRelayCertLifetime`） |
@@ -146,31 +146,34 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 ## 2. SQLite 结构（D-6）
 
-数据库没有 migrations 目录，也没有 `.sql` 文件：建表语句是 Go 常量，在打开数据库时执行
+数据库没有 migrations 目录：建表语句是 Go 常量，在打开数据库时执行
 `CREATE TABLE IF NOT EXISTS`。版本号存在文件自身的 `PRAGMA user_version` 里。
+仓库里唯一的 `.sql` 文件是升级测试夹具 `console/backend/internal/database/testdata/schema_v2.sql`：
+冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表；每个改 schema 的阶段都用它证明
+“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（`database_upgrade_test.go`）。
 
 | 项 | 事实 | 位置 |
 |---|---|---|
-| 当前 schema 版本 | `SchemaVersion = 2` | `console/backend/internal/database/database.go:232` |
-| 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:296-314`（`applySchemaVersion`）、`:317-323`（`UserVersion`） |
-| 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:325-336`（说明）、`:338`（实现） |
+| 当前 schema 版本 | `SchemaVersion = 3`（3：`bootstrap_tokens.placeholder_spki_sha256`，bootstrap 对端 pin） | `console/backend/internal/database/database.go:232`；v3 迁移步骤 `internal/database/bootstrappin.go`（`migrateBootstrapPeerPin`） |
+| 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:299-317`（`applySchemaVersion`）、`:320-326`（`UserVersion`） |
+| 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:328-339`（说明）、`:341`（实现） |
 | 备份/恢复侧的版本校验 | `ErrSchemaTooNew`；"新控制台备份恢复到旧控制台"会被拒绝 | `docs/disaster-recovery.md:80`、`:84-89` |
-| 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:421-428`（注释与建表） |
-| 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:462-469` |
+| 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:424-431`（注释与建表） |
+| 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:465-472` |
 
 ### 2.1 表与索引清单（10 张表 / 7 个索引）
 
 | # | 表 | 建表位置 | 主键 | 关键列（节选） |
 |---|---|---|---|---|
-| 1 | `zones` | `database.go:379` | `id` | name, type, status（默认 `disconnected`）, config(JSON), created_at, updated_at |
-| 2 | `qubes` | `database.go:398` | `id` | zone_id, status（默认 `stopped`）, ip_address, agent_health（默认 `unknown`）, agent_last_probed_at, agent_last_healthy_at, agent_last_error, **agent_failing_since（加列迁移，默认 NULL）** |
-| 3 | `qube_infra` | `database.go:428` | `qube_id` | provider, node, storage_vmid, compute_vmid, data_volume, identity_vol, observed_state, **protected（默认 1）**, observed_at, created_at, updated_at |
-| 4 | `infrastructure` | `database.go:444` | `id` | name, type, status, region, config(JSON), resource_count |
-| 5 | `jobs` | `database.go:469` | `id` | qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at |
-| 6 | `agent_certs` | `database.go:497` | `fingerprint`（SHA-256 DER） | qube_id, subject_cn, issued_at, expires_at, **revoked_at**, revoked_reason, last_seen_at |
-| 7 | `bootstrap_tokens` | `database.go:528` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用） |
-| 8 | `credentials` | `database.go:540` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
-| 9 | `settings` | `database.go:553` | `key` | value, updated_at |
+| 1 | `zones` | `database.go:382` | `id` | name, type, status（默认 `disconnected`）, config(JSON), created_at, updated_at |
+| 2 | `qubes` | `database.go:401` | `id` | zone_id, status（默认 `stopped`）, ip_address, agent_health（默认 `unknown`）, agent_last_probed_at, agent_last_healthy_at, agent_last_error, **agent_failing_since（加列迁移，默认 NULL）** |
+| 3 | `qube_infra` | `database.go:431` | `qube_id` | provider, node, storage_vmid, compute_vmid, data_volume, identity_vol, observed_state, **protected（默认 1）**, observed_at, created_at, updated_at |
+| 4 | `infrastructure` | `database.go:447` | `id` | name, type, status, region, config(JSON), resource_count |
+| 5 | `jobs` | `database.go:472` | `id` | qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at |
+| 6 | `agent_certs` | `database.go:500` | `fingerprint`（SHA-256 DER） | qube_id, subject_cn, issued_at, expires_at, **revoked_at**, revoked_reason, last_seen_at |
+| 7 | `bootstrap_tokens` | `database.go:531` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用）, **placeholder_spki_sha256**（v3 加列迁移，默认空串；空 pin 被读取方拒绝） |
+| 8 | `credentials` | `database.go:544` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
+| 9 | `settings` | `database.go:557` | `key` | value, updated_at |
 | 10 | `_health_probe` | `database.go:208` | `id`（`CHECK (id = 1)`，恒定单行） | marker（每次探测新随机值）, checked_at |
 
 > 表清单按 `database.go` 里 `migrate()` 的建表顺序列出；`_health_probe` 不在该清单内，由
@@ -185,13 +188,13 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | 索引 | 表 | 位置 |
 |---|---|---|
-| `idx_jobs_qube_id` | `jobs` | `database.go:481` |
-| `idx_jobs_enqueued_at` | `jobs` | `database.go:482` |
-| `idx_jobs_state` | `jobs` | `database.go:483` |
-| `idx_agent_certs_qube_id` | `agent_certs` | `database.go:508` |
-| `idx_agent_certs_revoked` | `agent_certs` | `database.go:509` |
-| `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:537` |
-| `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:538` |
+| `idx_jobs_qube_id` | `jobs` | `database.go:484` |
+| `idx_jobs_enqueued_at` | `jobs` | `database.go:485` |
+| `idx_jobs_state` | `jobs` | `database.go:486` |
+| `idx_agent_certs_qube_id` | `agent_certs` | `database.go:511` |
+| `idx_agent_certs_revoked` | `agent_certs` | `database.go:512` |
+| `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:541` |
+| `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:542` |
 
 ## 3. CI 工具链版本（D-4 的落点）
 

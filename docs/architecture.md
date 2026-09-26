@@ -88,7 +88,7 @@ RemoteVM 不是一台本地 VM，而是一条包含 `relayvm`、`transport_rpc` 
 > **UnlockData 的密钥语义（易误读，以代码为准）**：master secret 只读、只用于迁移、
 > **永不自动创建**；缺 master 时迁移报错并让磁盘保持关闭，而不是退回派生密钥解锁。
 > 见 `console/backend/internal/service/datakey.go`（`:19-24`、`:56-92`）与
-> `console/backend/internal/service/agentunlock.go`（`:144-155`、`:265-293`）。
+> `console/backend/internal/service/agentunlock.go`（`:145-156`、`:266-294`）。
 > 运维默认值与 LUKS/DEK 相关的取值见[运行期默认值与数据库结构](runtime-defaults.md)。
 
 > **dom0 policy 授权的服务多于上表**：`dom0-scripts/policy.d/30-qubes-air.policy` 另外授权

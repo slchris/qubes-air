@@ -28,6 +28,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"io"
 	"regexp"
 )
 
@@ -41,6 +42,18 @@ type Transport interface {
 	// It does not perform authorization — that happened at dom0 before Call,
 	// and happens again at the remote dom0 after the frame arrives.
 	Call(ctx context.Context, target, service string, in []byte) ([]byte, error)
+}
+
+// StreamTransport is the optional bidirectional streaming capability: stdin is
+// sent as it is read and the response is written to stdout as it arrives, for
+// protocols (Xpra, VNC) that cannot be framed as one request and one reply.
+//
+// It is separate from Transport so call-only implementations stay small, and so
+// a caller that needs streaming type-asserts for it and fails closed when the
+// configured transport cannot stream, instead of silently buffering a
+// connection that never ends.
+type StreamTransport interface {
+	CallStream(ctx context.Context, target, service string, stdin io.Reader, stdout io.Writer) error
 }
 
 // Result is the outcome of one qrexec call: the service's stdout and stderr and
@@ -101,4 +114,14 @@ func (NoopTransport) Call(_ context.Context, target, service string, _ []byte) (
 		return nil, ErrInvalidName
 	}
 	return nil, ErrNoTransport
+}
+
+// CallStream validates inputs then reports that no transport is wired, the same
+// loud failure Call gives: a caller holding the default transport learns it
+// cannot stream rather than reading an empty stream.
+func (NoopTransport) CallStream(_ context.Context, target, service string, _ io.Reader, _ io.Writer) error {
+	if !ValidName(target) || !ValidName(service) {
+		return ErrInvalidName
+	}
+	return ErrNoTransport
 }

@@ -67,11 +67,11 @@ Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的�
 | # | 决策 | 证据 | 约束含义 |
 |---|---|---|---|
 | AD-1 | 本地 dom0 是正常 RemoteVM 调用的唯一授权根，远端没有第二个 policy | `docs/architecture.md` §安全边界 1 | 任何"绕开 dom0"的设计都违反信任模型 |
-| AD-2 | 不保留 Terraform/OpenTofu；`qube_infra` 表是资源身份唯一真源 | `docs/architecture.md` §存算分离；`internal/database/database.go`:288 | 资源身份必须落库后才允许产生副作用 |
+| AD-2 | 不保留 Terraform/OpenTofu；`qube_infra` 表是资源身份唯一真源 | `docs/architecture.md` §存算分离；`internal/database/database.go`:291 | 资源身份必须落库后才允许产生副作用 |
 | AD-3 | provider 生命周期拆成 `suspend`（销毁计算）+ `resume`（从模板重建并挂回同一数据盘） | `docs/architecture.md` §存算分离 | 数据盘是持久边界，计算是短生命周期 |
 | AD-4 | agent 身份强制 CA 签名撤销状态；刷新失败拒绝授权 | `docs/security-controls.md`；`internal/agent/*` | 撤销状态源可达性是**新增部署要求** |
 | AD-5 | 数据盘用独立随机 DEK；legacy master 只读、只用于迁移、**永不自动创建** | `internal/service/datakey.go`:19-24,72-81 | 缺 master 时迁移失败并报错，不得静默派生 |
-| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:144-147；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
+| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:167-170；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
 | AD-7 | 请求取消后的失败状态写入有独立 5 秒期限 | `docs/reliability-design.md`:14-15 | 取消不是"不落状态"的理由 |
 | AD-8 | Console 不进入数据面：只发布端点与签证书 | `docs/architecture.md` §数据面 | console 不进 RemoteVM 调用链路 |
 | AD-9 | Qubes 侧部署的唯一权威来源是外部仓库 `qubes-salt-config` | `AGENTS.md`:12 | 本仓库不复制平行部署入口 |
@@ -186,14 +186,14 @@ qubes-air/
 | R-TECH-3 | 1200 行级文件 4 个（基线 `fae0aea`）：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047；2026-09-26 合入 batch-1 后依次为 1360、1192、1460、1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
 | R-TECH-4 | `console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例（基线 `fae0aea`；2026-09-26 为 1003 行、14 个用例，见 gaps G-F4） | `wc -l`；`QubeList.test.ts` | 大组件 + 薄测试 = 改动高风险 |
 | R-TECH-5 | 存量 `nolint` 原 **24 处**；2026-09-26 合入 batch-1 后实测 **16 处**，其中 `gocyclo` 豁免 3 处、`gosec` 9 处（G-F10 的修复净减 1 处 `gosec`） | `git grep -n nolint -- '*.go'` | 豁免均已注明理由，但仍缺"何时可移除"的退出条件（G-F3） |
-| R-TECH-6 | 源码内真·待办仅 **4 处**（`handler/billing_handler.go`:50,56；`handler/monitoring_handler.go`:53,55）+ 1 处脚本内 `remote/qubes-rpc/qubesair.UnlockData`:26 hardening TODO | `grep -rnE 'TODO\|FIXME\|XXX'` 去噪后 | 待办本身不重，但 4 处都在"假装有数据"的占位路径上，UI 必须继续标记未接入 |
+| R-TECH-6 | 源码内真·待办仅 **4 处**（`handler/billing_handler.go`:50,56；`handler/monitoring_handler.go`:53,55）+ 1 处脚本内 `remote/qubes-rpc/qubesair.UnlockData`:26 hardening TODO（已关闭：agent 只对 `console-unlock` 身份运行 UnlockData/RekeyData，TODO 注释已改为现状说明） | `grep -rnE 'TODO\|FIXME\|XXX'` 去噪后 | 待办本身不重，但 4 处都在"假装有数据"的占位路径上，UI 必须继续标记未接入 |
 
 ### 9.3 测试覆盖度未知项
 
 | ID | 未知项 | 证据 | 影响 |
 |---|---|---|---|
 | R-COV-1 | `go test` 语句覆盖 60.7%，但 **331 个函数 0.0%**；`cmd/*` 几乎全为 0% | `go tool cover -func=coverage.out` | 入口/接线层无回归网，改动靠手工验证 |
-| R-COV-2 | 传输可靠性未经门禁：`Reconnect` 关键字在测试名中 **0 次**；`Cancel` 2 次、`Disconnect` 3 次、`Restart` 3 次 | `grep "^func Test" \| grep -i` | `client.go`:125-158 的 reconnect/backoff/jitter 循环无直接回归测试 |
+| R-COV-2 | 传输可靠性未经门禁：`Reconnect` 关键字在测试名中 **0 次**；`Cancel` 2 次、`Disconnect` 3 次、`Restart` 3 次 | `grep "^func Test" \| grep -i` | `client.go`:128-161 的 reconnect/backoff/jitter 循环无直接回归测试 |
 | R-COV-3 | `internal/qrexec` 是 Exec/FileCopy 的传输关键路径，仅 4 个 `Test*`、覆盖率 **32.1%** | `go test` 输出；`qrexec/*_test.go` | qrexec 服务边界回归薄 |
 | R-COV-4 | 前端 19 个组件中只有 3 个有测试；`MonitoringView`(502)/`CredentialList`(505)/`ZonesView`(504) 全无 | `ls components/` vs `*.test.ts` | UI 回归只能靠手工点击 |
 | R-COV-5 | 覆盖率为既有本地产物（`coverage.out` 未跟踪），无 CI 阈值门禁 | 本地 `make coverage-gate`（`pre-commit`/`audit` 都包含）按 61% 校验 `test-race` 生成的 profile；CI 的 Go Test 只生成、上传，不校验 | CI 上覆盖率仍可悄悄下降而不报警 |

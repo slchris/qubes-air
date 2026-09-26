@@ -33,6 +33,32 @@ func TestNoopTransport(t *testing.T) {
 	}
 }
 
+func TestNoopStreamTransport(t *testing.T) {
+	var tr StreamTransport = NoopTransport{} // compile-time: NoopTransport can be asked to stream
+	for _, bad := range []struct{ target, service string }{
+		{"bad target", "qubesair.StreamTCP+10005"},
+		{"remote-gpu", "has space"},
+		{"", "qubesair.StreamTCP+10005"},
+		{"remote-gpu", ""},
+	} {
+		if err := tr.CallStream(context.Background(), bad.target, bad.service, nil, nil); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("CallStream(%q, %q) = %v, want ErrInvalidName", bad.target, bad.service, err)
+		}
+	}
+	if err := tr.CallStream(context.Background(), "remote-gpu", "qubesair.StreamTCP+10005", nil, nil); !errors.Is(err, ErrNoTransport) {
+		t.Fatalf("valid request error = %v, want ErrNoTransport", err)
+	}
+}
+
+// A call-only transport does not claim streaming, so a caller that needs it can
+// detect the gap and refuse rather than fall back to a buffered Call.
+func TestFakeTransportDoesNotClaimStreaming(t *testing.T) {
+	var tr Transport = &FakeTransport{}
+	if _, ok := tr.(StreamTransport); ok {
+		t.Fatal("FakeTransport has no streaming path and must not satisfy StreamTransport")
+	}
+}
+
 func TestFakeTransport(t *testing.T) {
 	var tr Transport = &FakeTransport{} // compile-time: *FakeTransport satisfies Transport
 	f := tr.(*FakeTransport)

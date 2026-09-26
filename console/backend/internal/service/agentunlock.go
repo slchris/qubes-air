@@ -25,11 +25,12 @@ import (
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/pki"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
 
 const (
-	unlockRelayName    = "console-unlock"
+	unlockRelayName    = pki.ConsoleUnlockCN // the agent restricts disk-key services to it
 	unlockCertLifetime = 5 * time.Minute
 	unlockDataService  = "qubesair.UnlockData"
 	rekeyDataService   = "qubesair.RekeyData"

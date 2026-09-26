@@ -7,22 +7,24 @@
 //	console   (redeems the token, signs the CSR, registers the fingerprint)
 //	console → qubesair.CompleteBootstrap  → agent installs and confirms
 //
-// The trust in each direction is established differently, and neither relies
-// on the transport:
+// Both directions are authenticated before any bootstrap data moves:
 //
 //   - The AGENT authenticates this console by the client certificate offered
 //     here, which chains to the CA cloud-init delivered. That check happens on
 //     the agent, in its listener, before it surrenders the token.
-//   - This console authenticates the AGENT by the token. It cannot do so by
-//     certificate — the whole point is that the agent has none yet — so the
-//     server certificate is deliberately NOT verified, and the token, redeemed
-//     against a store that guarantees exactly one winner, is what proves the
-//     answering host is the one we provisioned.
+//   - This console authenticates the AGENT's listener by a public-key pin. The
+//     agent has no CA-issued certificate yet — that is the condition being
+//     repaired — so it presents a placeholder whose key is derived from its
+//     one-shot token. The pin of that key was stored when the token was minted
+//     (BootstrapPeerPinProvider), and pki.BootstrapDialTLSConfig refuses any
+//     peer that does not hold it, before the first request is sent. The token
+//     that comes back inside that session is then redeemed against a store
+//     that guarantees exactly one winner.
 //
 // A man in the middle is closed off from both sides: impersonating the agent
-// yields no token, and impersonating the console requires a CA-signed client
-// certificate. Relaying is not available either, since a client certificate
-// signs the handshake transcript it appears in.
+// requires the token-derived private key, and impersonating the console
+// requires a CA-signed client certificate. Relaying is not available either,
+// since a client certificate signs the handshake transcript it appears in.
 //
 // Ordering mirrors renewal exactly — sign, REGISTER, then deliver — because
 // the failure modes are the same. See BootstrapIssuer for why redemption comes
@@ -38,10 +40,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/agent"
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
@@ -56,7 +60,7 @@ const (
 // Distinct from renewRelayName so an agent's logs say which conversation it
 // was part of, and so a certificate minted for one is not silently reused for
 // the other.
-const bootstrapRelayName = "console-bootstrap"
+const bootstrapRelayName = pki.ConsoleBootstrapCN // the agent restricts bootstrap to it
 
 // DefaultBootstrapTimeout bounds one qube's whole bootstrap exchange.
 //
@@ -140,8 +144,16 @@ type AgentBootstrapper struct {
 	// so the three cannot disagree about reachability (see agentdial.go).
 	dialer  AgentDialer
 	issuer  FirstCertificateIssuer
+	pins    BootstrapPeerPinProvider
 	port    string
 	timeout time.Duration
+}
+
+// BootstrapPeerPinProvider returns the public-key pin a pending qube's listener
+// must present: the one derived from the newest unredeemed, unexpired token
+// minted for it. Implemented by *repository.BootstrapTokenRepository.
+type BootstrapPeerPinProvider interface {
+	PendingPlaceholderSPKIFingerprint(ctx context.Context, qubeID, qubeName string, now time.Time) (string, error)
 }
 
 // NewAgentBootstrapper builds the bootstrapper.
@@ -156,6 +168,14 @@ func NewAgentBootstrapper(ca CAProvider, issuer FirstCertificateIssuer, agentLis
 		port:    agentPortFrom(agentListen),
 		timeout: timeout,
 	}
+}
+
+// WithBootstrapPeerPinProvider supplies the pins first contact is checked
+// against. Without it Bootstrap refuses to dial: there is no unauthenticated
+// fallback.
+func (b *AgentBootstrapper) WithBootstrapPeerPinProvider(pins BootstrapPeerPinProvider) *AgentBootstrapper {
+	b.pins = pins
+	return b
 }
 
 // beginBootstrapReply is what qubesair.BeginBootstrap returns.
@@ -219,10 +239,18 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 	// a caller that formats its own address is a caller the seam does not cover.
 	addr := b.dialer.Address(qube)
 
+	// The pin comes before the dial. Without one there is nothing to tell this
+	// qube's listener from anyone else answering at its address, and "dial
+	// anyway" is exactly the unauthenticated first contact pinning removed.
+	pin, err := b.peerPin(ctx, qube)
+	if err != nil {
+		return done(BootstrapNotConfigured, "cannot authenticate first contact with qube %q: %v", qube.Name, err)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 
-	sess, err := b.dial(ctx, qube, addr)
+	sess, err := b.dial(ctx, qube, addr, pin)
 	if err != nil {
 		return done(BootstrapUnreachable, "%v", err)
 	}
@@ -335,22 +363,48 @@ func (b *AgentBootstrapper) exchange(
 	return res
 }
 
+// peerPin loads the pin for this qube's pending token. Any failure — no
+// provider wired, no live token, a token from before pinning — is an error:
+// the caller must not dial.
+func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (string, error) {
+	if b.pins == nil {
+		return "", errors.New("no bootstrap peer pin provider is configured")
+	}
+	return b.pins.PendingPlaceholderSPKIFingerprint(ctx, qube.ID, qube.Name, time.Now())
+}
+
+// logFirstPeerRefusal makes a refused listener visible. The tunnel client
+// retries the handshake until the attempt times out and then reports only
+// "tunnel not connected", which reads as a VM that is down; the reason the
+// console refused the peer — a pin mismatch means an agent package older than
+// pinning, another qube's user-data, or an impostor — is what the operator
+// needs. Logged once per attempt, not once per retry.
+func logFirstPeerRefusal(cfg *tls.Config, addr, qubeName string) {
+	verify := cfg.VerifyConnection
+	var once sync.Once
+	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		err := verify(cs)
+		if err != nil {
+			once.Do(func() {
+				log.Printf("bootstrap: refusing the listener at %s as qube %q's pending agent: %v", addr, qubeName, err)
+			})
+		}
+		return err
+	}
+}
+
 // dial opens a tunnel to an agent that has no certificate yet.
 //
-// The server certificate is deliberately NOT verified. A bootstrapping agent
-// presents a self-signed placeholder — it has nothing else, which is the
-// condition being repaired — so there is no chain to check and no name to
-// match. What makes this safe is that the agent verifies US: it will not
-// surrender its token to a peer whose client certificate does not chain to the
-// CA cloud-init delivered, so an impostor listening at this address learns
-// nothing and receives nothing. The token it would have to produce is what
-// authenticates the agent in return.
+// The agent has no CA-issued certificate to verify, so the peer is checked
+// against peerPin instead (pki.BootstrapDialTLSConfig): the placeholder must be
+// the one derived from the token minted for this qube. Each direction is
+// therefore authenticated before the first frame — the agent will not answer a
+// peer whose client certificate does not chain to its cloud-init CA, and this
+// console will not send to a peer that cannot present the pinned key.
 //
-// This is the ONLY dial in the console that skips peer verification, and it is
-// confined to hosts that have no identity to verify. Once bootstrap succeeds,
-// every later conversation with this qube runs through the prober's and
-// renewer's fully verified paths.
-func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr string) (*agentSession, error) {
+// Once bootstrap succeeds, every later conversation with this qube runs through
+// the prober's and renewer's CA-verified paths.
+func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr, peerPin string) (*agentSession, error) {
 	qubeName := qube.Name
 	ca, err := b.ca.CA(ctx)
 	if err != nil {
@@ -365,27 +419,11 @@ func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr st
 		return nil, fmt.Errorf("client certificate for %s is unusable: %w", addr, err)
 	}
 
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{pair},
-		MinVersion:   tls.VersionTLS13,
-		// See the doc comment: there is no issued certificate to verify yet.
-		// The token, not the transport, authenticates the agent.
-		//
-		// This is a deliberate exception to AGENTS.md §5 ("InsecureSkipVerify
-		// requires a complete VerifyConnection"), recorded as G-H11 in
-		// docs/production-readiness-gaps.md. The peer holds only a per-process,
-		// self-signed placeholder (internal/agent/bootstrap.go:406), so there is
-		// no CA, role or identity that could be pinned in advance and a
-		// VerifyConnection here could only check claims an attacker also mints.
-		// What authenticates the agent is the one-shot token it presents
-		// (:266-276), which the console never sends. Residual risk: an on-path
-		// attacker during a first bootstrap can block the agent's message and
-		// redeem the token itself, obtaining a certificate for that qube name —
-		// bounded by the token's one-hour TTL and single use. Closing it means
-		// deriving the placeholder key from the token so the console can pin it
-		// (G-H11 option ②), not tightening the mode of a shared file.
-		InsecureSkipVerify: true, // #nosec G402 -- nothing exists to pin at bootstrap; the one-shot token authenticates the agent //nolint:gosec // bootstrap peers hold no certificate; the one-shot token authenticates them
+	tlsCfg, err := pki.BootstrapDialTLSConfig(pair, qubeName, peerPin)
+	if err != nil {
+		return nil, fmt.Errorf("cannot pin the bootstrap peer at %s: %w", addr, err)
 	}
+	logFirstPeerRefusal(tlsCfg, addr, qubeName)
 
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: addr,

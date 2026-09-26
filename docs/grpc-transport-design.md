@@ -86,6 +86,11 @@ rename；成功响应包含字节数和 SHA256。错误写入 stderr 并返回�
 建立原始双向 byte stream，供 Xpra/VNC/RDP 等协议使用。端口不直接暴露给 LAN，数据仍经过
 agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 target 和 port。
 
+控制台侧的流式调用是可选能力 `transport.StreamTransport`（`CallStream`），与只做一问一答的
+`transport.Transport` 分开：gRPC `Client` 实现它；默认的 `NoopTransport` 校验名字后返回
+`ErrNoTransport`；`FakeTransport` 不实现它。需要流的调用方应类型断言，拿不到就拒绝，而不是
+退回缓冲式 `Call`。
+
 ### Appmenus / StartApp
 
 `qubes.GetAppmenus` 枚举 `.desktop` 应用，`qubes.StartApp+<app-id>` 在远端 Xpra display
@@ -106,6 +111,13 @@ stdout。它只格式化真正空白的盘；已经带非 LUKS 文件系统的�
 **不是**"派生密钥回退解锁"——缺 DEK 走的是迁移，且迁移后旧槽必须被移除，否则保持 pending 并在
 下次解锁重试移除。密钥语义与默认值见[架构](architecture.md)的远端服务小节与
 [运行期默认值与数据库结构](runtime-defaults.md)。
+
+调用方身份：任何链到 CA、角色为 Relay/Console 的客户端证书都能建隧道，但 agent 在执行前
+（`internal/transport/grpc/server.go` 的 `authorizePrivilegedServiceCaller`，在 `handleForward`
+的名字校验之后）只对**已验证链**上角色为 console、CN 恰为 `console-unlock` 的证书运行这两个服务；
+`qubesair.BeginBootstrap` / `CompleteBootstrap` 同理只对 `console-bootstrap`。探测、续期、Relay
+证书以及带 `+参数` 的同名服务一律回 `denied`，不会进入 invoker。两个 CN 定义在
+`internal/pki/console_identity.go`，console 签发与 agent 校验共用。
 
 ### SSHProxy
 
