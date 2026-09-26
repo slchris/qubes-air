@@ -55,9 +55,9 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 | 前端 | Svelte 5 + TS 5.9 + Vite 7 | `console/frontend/package.json` devDependencies |
 | 前端测试 | Vitest 5 + Testing Library + jsdom | `package.json`；配置 `vitest.config.ts` |
 | 门禁工具 | golangci-lint 2.x / gosec / gocyclo / funlen / govulncheck / shellcheck | `Makefile`:65-98；根 `.golangci.yml` |
-| CI 运行时 | Go 1.26、Node 20（build/lint/dependency/docs） | `.github/workflows/*.yml` env |
+| CI 运行时 | Go 1.26、Node 22（全部 workflow，与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
 
-**已知不一致（登记，不在本 Sprint 修）**：`release.yml`:90 用 Node **22**，其余 workflow 用 Node 20；
+Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的分叉已消除，全部为 **22**；
 本机 Node 为 **22.14.0**。
 
 ## 4. 关键架构决策与约束（已有代码反推）

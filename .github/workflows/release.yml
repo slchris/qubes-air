@@ -40,6 +40,11 @@ on:
 permissions:
   contents: write # required to create the release and upload assets
 
+env:
+  # Same Node major as the PR workflows and .nvmrc, so the bundle that is
+  # published is built by the Node that CI tested it with.
+  NODE_VERSION: '22'
+
 jobs:
   release:
     # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
@@ -89,7 +94,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: console/frontend/package-lock.json
 

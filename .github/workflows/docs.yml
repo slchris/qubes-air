@@ -9,6 +9,9 @@
 
 name: Docs and Gates
 
+env:
+  NODE_VERSION: '22'
+
 on:
   push:
     branches: [main, develop]
@@ -28,7 +31,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Check Markdown links
         run: node scripts/check-doc-links.mjs
