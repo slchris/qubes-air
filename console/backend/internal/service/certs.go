@@ -21,13 +21,12 @@ import (
 // whoever has it can mint any agent identity in the fleet. It lives in the
 // encrypted credential store rather than on disk so it is protected by the same
 // keyring, and can be rotated by the same machinery.
-// gosec G101 fires on both names because they contain "cert"/"key". They are
-// the LOOKUP NAMES a secret is stored under, not the secret — the value they
-// address never appears in this file.
+// The names are defined once, in models, because the CLI tools that read the
+// CA (repository.LoadConsoleCA) look them up too.
 const (
-	caCertCredentialName = "qubes-air-ca-cert" // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
-	caKeyCredentialName  = "qubes-air-ca-key"  // #nosec G101 -- a store key, not a credential //nolint:gosec // G101: a store key, not a credential
-	caCredentialType     = "pki"
+	caCertCredentialName = models.ConsoleCACertName
+	caKeyCredentialName  = models.ConsoleCAKeyName
+	caCredentialType     = models.ConsoleRowType
 )
 
 // CertIssuer owns the console CA and the credentials a qube is provisioned
@@ -343,8 +342,8 @@ func (c *CertIssuer) loadOrCreateCA(ctx context.Context) (*pki.CA, error) {
 		return c.ca, nil
 	}
 
-	certPEM, certErr := lookupCredential(ctx, c.creds, caCertCredentialName)
-	keyPEM, keyErr := lookupCredential(ctx, c.creds, caKeyCredentialName)
+	certPEM, certErr := repository.ConsoleSecret(ctx, c.creds, caCertCredentialName)
+	keyPEM, keyErr := repository.ConsoleSecret(ctx, c.creds, caKeyCredentialName)
 
 	switch {
 	case !absentOrNil(certErr) || !absentOrNil(keyErr):

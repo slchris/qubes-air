@@ -329,3 +329,38 @@ func TestClearMigrationPendingRemovesEveryMarker(t *testing.T) {
 	assert.False(t, pending)
 	assert.Zero(t, rowCount(t, repo))
 }
+
+// TestRevocationDocumentRefusesPlantedCARows — the public revocation document
+// is signed with the CA read through the shared fail-closed loader: a planted
+// long-s certificate or a duplicate key next to the genuine CA yields no
+// document at all rather than one signed with the look-alike.
+func TestRevocationDocumentRefusesPlantedCARows(t *testing.T) {
+	attacker, err := pki.NewCA("attacker", time.Hour)
+	require.NoError(t, err)
+	certPEM, keyPEM, err := attacker.MarshalCA()
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	for label, row := range map[string]struct {
+		planted plantedRow
+		secret  string
+	}{
+		"long-s certificate": {plantedRow{longSVariant(caCertCredentialName), models.ConsoleRowType}, certPEM},
+		"duplicate key":      {plantedRow{caKeyCredentialName, models.ConsoleRowType}, keyPEM},
+	} {
+		t.Run(label, func(t *testing.T) {
+			repo, certs := newLookupStore(t)
+			issuer := NewCertIssuer(repo, certs, "", "", AgentPackage{})
+			_, err := issuer.CA(ctx)
+			require.NoError(t, err)
+			doc, err := issuer.RevocationDocument(ctx)
+			require.NoError(t, err, "the genuine CA alone signs a document")
+			require.NotEmpty(t, doc)
+
+			plant(t, repo, row.planted, row.secret)
+			doc, err = NewCertIssuer(repo, certs, "", "", AgentPackage{}).RevocationDocument(ctx)
+			assert.ErrorIs(t, err, models.ErrConsoleRowConflict)
+			assert.Nil(t, doc)
+		})
+	}
+}

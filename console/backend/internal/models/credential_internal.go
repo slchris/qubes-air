@@ -35,6 +35,12 @@ const (
 	// names avoid the word "credential": gosec G101 reads any such constant
 	// holding a string as a hard-coded secret.)
 	ConsoleRowNamePrefix = "qubes-air-"
+
+	// ConsoleCACertName and ConsoleCAKeyName name the two rows of the agent
+	// CA: the certificate, and the private key that can mint any agent
+	// identity.
+	ConsoleCACertName = "qubes-air-ca-cert"
+	ConsoleCAKeyName  = "qubes-air-ca-key"
 )
 
 // IsConsoleCredential reports whether a credential row with this name and type

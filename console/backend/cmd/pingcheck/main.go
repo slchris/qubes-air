@@ -20,7 +20,6 @@ import (
 
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/keyring"
-	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
@@ -52,10 +51,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	certPEM := secretNamed(ctx, creds, "qubes-air-ca-cert")
-	keyPEM := secretNamed(ctx, creds, "qubes-air-ca-key")
-
-	ca, err := pki.ParseCA(certPEM, keyPEM)
+	ca, err := loadCA(ctx, creds)
 	must(err)
 	fmt.Printf("  CA          : %s\n", ca.Cert.Subject.CommonName)
 
@@ -124,18 +120,10 @@ func reportVerifiedAgent(cfg *tls.Config, w io.Writer) {
 	}
 }
 
-// secretNamed reads the console's own row through the same fail-closed
-// selection the console uses: a missing row, or rows under the name that the
-// console did not write, stop the tool instead of handing it a look-alike.
-func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
-	list, err := r.List(ctx)
-	must(err)
-	row, err := models.SelectConsoleRow(list, name)
-	must(err)
-	s, err := r.GetSecret(ctx, row.ID)
-	must(err)
-	return s
-}
+// loadCA is the tool's only way to the CA: the console's own fail-closed read
+// (repository.LoadConsoleCA). Rows under the CA's names that the console did
+// not write stop the tool instead of handing it a look-alike to sign with.
+var loadCA = repository.LoadConsoleCA
 
 func must(err error) {
 	if err != nil {

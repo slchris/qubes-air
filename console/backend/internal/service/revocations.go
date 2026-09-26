@@ -4,21 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/repository"
 )
 
 // RevocationDocument reads existing CA material; a public read never creates
 // or rotates a CA. Signed content contains only revoked certificate hashes.
 func (c *CertIssuer) RevocationDocument(ctx context.Context) ([]byte, error) {
-	cert, err := lookupCredential(ctx, c.creds, caCertCredentialName)
-	if err != nil {
-		return nil, err
-	}
-	key, err := lookupCredential(ctx, c.creds, caKeyCredentialName)
-	if err != nil {
-		return nil, err
-	}
-	ca, err := pki.ParseCA(cert, key)
+	ca, err := repository.LoadConsoleCA(ctx, c.creds)
 	if err != nil {
 		return nil, err
 	}

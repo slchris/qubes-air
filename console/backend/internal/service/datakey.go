@@ -9,6 +9,7 @@ import (
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/repository"
 )
 
 // Credential name+type for the data-disk master secret and per-qube keys. They
@@ -190,7 +191,7 @@ func (m *DataKeyManager) ClearMigrationPending(ctx context.Context, qubeID strin
 
 // rowsAnswering returns the rows that answer to the console name under
 // models.MatchesConsoleName. The marker is a non-secret flag, so its readers
-// take any answering row; secrets go through lookupCredential, which refuses
+// take any answering row; secrets go through repository.ConsoleSecret, which refuses
 // more than one.
 func rowsAnswering(list []models.Credential, name string) []models.Credential {
 	var rows []models.Credential
@@ -205,7 +206,7 @@ func rowsAnswering(list []models.Credential, name string) []models.Credential {
 // storedKey returns a qube's own data key, or "" when it has none. Rows under
 // the key's name that the console did not write are an error, never a key.
 func (m *DataKeyManager) storedKey(ctx context.Context, qubeID string) (string, error) {
-	key, err := lookupCredential(ctx, m.creds, dataKeyCredentialPrefix+qubeID)
+	key, err := repository.ConsoleSecret(ctx, m.creds, dataKeyCredentialPrefix+qubeID)
 	if errors.Is(err, errCredentialNotFound) {
 		return "", nil
 	}
@@ -221,7 +222,7 @@ func (m *DataKeyManager) loadMaster(ctx context.Context) (string, error) {
 	if m.master != "" {
 		return m.master, nil
 	}
-	existing, err := lookupCredential(ctx, m.creds, dataMasterCredentialName)
+	existing, err := repository.ConsoleSecret(ctx, m.creds, dataMasterCredentialName)
 	if err != nil {
 		if errors.Is(err, errCredentialNotFound) {
 			return "", fmt.Errorf("legacy data-disk master secret %q is not in the credential store; "+
@@ -240,27 +241,4 @@ var errCredentialNotFound = models.ErrConsoleRowNotFound
 // opposed to failing.
 func absentOrNil(err error) bool {
 	return err == nil || errors.Is(err, errCredentialNotFound)
-}
-
-// lookupCredential returns the secret of the console's own row named name.
-//
-// It is the one lookup behind the CA, the data keys and the legacy master, so
-// "absent", "broken" and "ambiguous" are decided the same way everywhere:
-// errCredentialNotFound when no row answers to the name, and a
-// models.ErrConsoleRowConflict error — logged, naming the rows by ID, and with
-// no secret read — when rows the console did not write answer to it (see
-// models.SelectConsoleRow).
-func lookupCredential(ctx context.Context, creds CredentialStore, name string) (string, error) {
-	list, err := creds.List(ctx)
-	if err != nil {
-		return "", fmt.Errorf("list credentials: %w", err)
-	}
-	row, err := models.SelectConsoleRow(list, name)
-	if err != nil {
-		if errors.Is(err, models.ErrConsoleRowConflict) {
-			log.Printf("SECURITY: pki: %v", err)
-		}
-		return "", err
-	}
-	return creds.GetSecret(ctx, row.ID)
 }

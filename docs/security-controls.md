@@ -176,10 +176,11 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   crypto-shred（`DataKeyManager.DeleteDataKey`）都直接使用 repository；zone 按 `credential_id`
   读取 secret 也一样。
 
-控制台读取自己的密钥时也不再“取最新的同名行”。CA 证书与私钥、DEK、legacy master 的查找，以及
-`issue-relay-cert`、`relay-call`、`pingcheck` 三个工具读 CA，都走同一个选择函数
-`models.SelectConsoleRow`：名称按 `models.MatchesConsoleName`（忽略首尾空白、Unicode 简单大小写
-折叠）比较。控制台对每个名称只写一行，名称逐字节等于规范写法、类型恰好是 `pki`。所以只要有第二行
+控制台读取自己的密钥时也不再“取最新的同名行”。CA 证书与私钥、DEK、legacy master 的查找，
+吊销状态文档，以及 `issue-relay-cert`、`relay-call`、`pingcheck` 三个工具读 CA，都走同一条读取路径
+`repository.ConsoleSecret`（读 CA 两半的是 `repository.LoadConsoleCA`，工具只在调用处 `log.Fatal`），
+行由 `models.SelectConsoleRow` 选出，名称按 `models.MatchesConsoleName`（忽略首尾空白、Unicode
+简单大小写折叠）比较。控制台对每个名称只写一行，名称逐字节等于规范写法、类型恰好是 `pki`。所以只要有第二行
 能对上这个名称，或者唯一对上的那一行拼写或类型不对，查找就失败关闭：不读取任何密钥，返回并记录
 一条带 `SECURITY: pki:` 前缀的错误，列出涉及行的 ID、名称和类型（不含密钥），最多列 8 行。
 

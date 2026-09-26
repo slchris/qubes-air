@@ -211,8 +211,7 @@ func resolveRelayCredentials(ctx context.Context, f relayCredentialFlags, target
 	if endpoint == "" {
 		endpoint, target = resolveAgent(ctx, repository.NewQubeRepository(db), target, f.port)
 	}
-	ca, err := pki.ParseCA(secretNamed(ctx, creds, "qubes-air-ca-cert"),
-		secretNamed(ctx, creds, "qubes-air-ca-key"))
+	ca, err := loadCA(ctx, creds)
 	must(err)
 	pair, pool = mintFromCA(ca)
 	return pair, pool, endpoint, target, nil
@@ -353,18 +352,10 @@ func dialAndStream(ctx context.Context, pair tls.Certificate, pool *x509.CertPoo
 	}
 }
 
-// secretNamed reads the console's own row through the same fail-closed
-// selection the console uses: a missing row, or rows under the name that the
-// console did not write, stop the tool instead of handing it a look-alike.
-func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
-	list, err := r.List(ctx)
-	must(err)
-	row, err := models.SelectConsoleRow(list, name)
-	must(err)
-	s, err := r.GetSecret(ctx, row.ID)
-	must(err)
-	return s
-}
+// loadCA is the tool's only way to the CA: the console's own fail-closed read
+// (repository.LoadConsoleCA). Rows under the CA's names that the console did
+// not write stop the tool instead of handing it a look-alike to sign with.
+var loadCA = repository.LoadConsoleCA
 
 func must(err error) {
 	if err != nil {
