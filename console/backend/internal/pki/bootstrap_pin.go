@@ -49,10 +49,12 @@ const bootstrapPlaceholderBackdate = time.Hour
 // a qube presents before it has an identity.
 func BootstrapPlaceholderCommonName(qubeName string) string { return "bootstrap-" + qubeName }
 
-// BootstrapPlaceholderPrivateKey derives the placeholder listener key from the
-// one-shot token, scoped to one qube name. Both sides compute it; neither
-// persists it.
-func BootstrapPlaceholderPrivateKey(token, qubeName string) (ed25519.PrivateKey, error) {
+// bootstrapPlaceholderPrivateKey derives the placeholder listener key from the
+// one-shot token, scoped to one qube name. Unexported on purpose: outside this
+// package the key is only ever needed inside a placeholder certificate or as
+// its public pin, and a private key that can be asked for by name is one that
+// eventually gets logged or stored.
+func bootstrapPlaceholderPrivateKey(token, qubeName string) (ed25519.PrivateKey, error) {
 	if token == "" || qubeName == "" {
 		return nil, errors.New("pki: bootstrap placeholder key needs a token and a qube name")
 	}
@@ -68,7 +70,7 @@ func BootstrapPlaceholderPrivateKey(token, qubeName string) (ed25519.PrivateKey,
 // It is public and safe to store; the token it came from is not recoverable
 // from it.
 func BootstrapPlaceholderSPKIFingerprint(token, qubeName string) (string, error) {
-	key, err := BootstrapPlaceholderPrivateKey(token, qubeName)
+	key, err := bootstrapPlaceholderPrivateKey(token, qubeName)
 	if err != nil {
 		return "", err
 	}
@@ -89,7 +91,7 @@ func NewBootstrapPlaceholderCertificate(token, qubeName string, now time.Time, l
 	if lifetime <= 0 {
 		return nil, errors.New("pki: bootstrap placeholder needs a positive lifetime")
 	}
-	key, err := BootstrapPlaceholderPrivateKey(token, qubeName)
+	key, err := bootstrapPlaceholderPrivateKey(token, qubeName)
 	if err != nil {
 		return nil, err
 	}

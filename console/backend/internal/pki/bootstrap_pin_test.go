@@ -27,23 +27,23 @@ const (
 )
 
 func TestBootstrapPlaceholderKeyIsDeterministicAndScoped(t *testing.T) {
-	first, err := BootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
+	first, err := bootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
 	require.NoError(t, err)
-	second, err := BootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
+	second, err := bootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
 	require.NoError(t, err)
 	require.Equal(t, first, second, "both sides must derive the same key from the same token")
 
-	otherToken, err := BootstrapPlaceholderPrivateKey("different-secret", pinTestQube)
+	otherToken, err := bootstrapPlaceholderPrivateKey("different-secret", pinTestQube)
 	require.NoError(t, err)
 	require.NotEqual(t, first, otherToken)
-	otherName, err := BootstrapPlaceholderPrivateKey(pinTestToken, "remote-b")
+	otherName, err := bootstrapPlaceholderPrivateKey(pinTestToken, "remote-b")
 	require.NoError(t, err)
 	require.NotEqual(t, first, otherName, "a token must not pin the same key for two qubes")
 }
 
 func TestBootstrapPlaceholderRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct{ token, name string }{{"", "remote"}, {"token", ""}, {"", ""}} {
-		_, err := BootstrapPlaceholderPrivateKey(tc.token, tc.name)
+		_, err := bootstrapPlaceholderPrivateKey(tc.token, tc.name)
 		require.Error(t, err)
 		_, err = BootstrapPlaceholderSPKIFingerprint(tc.token, tc.name)
 		require.Error(t, err)
@@ -88,7 +88,7 @@ type placeholderSpec struct {
 
 func mintVariant(t *testing.T, spec placeholderSpec) *x509.Certificate {
 	t.Helper()
-	key, err := BootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
+	key, err := bootstrapPlaceholderPrivateKey(pinTestToken, pinTestQube)
 	require.NoError(t, err)
 	now := time.Now()
 	tmpl := &x509.Certificate{
