@@ -119,7 +119,7 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
    这三个键由 Salt 渲染进**控制台的环境**（`QUBES_AIR_AGENT_PACKAGE_*`，经 `EnvironmentFile=` 注入，
    见 `salt/qubesair/console.sls` 第 365-367 行），控制台在**生成身份文档时**把它们交给新 provision
    的 VM。所以改完必须重新 `state.apply`（否则控制台进程里还是旧值），而**既有 qube 不会自己换
-   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 144-150 行
+   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 146-152 行
    的回滚指示也正是"重建 compute"）。按 §2.1，协议不约束它与控制台的先后；但 §2.4 要求 agent 包
    不晚于控制台（新 agent 包对旧控制台兼容，反之不行）。
 
@@ -208,7 +208,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 |---|---|---|
 | schema **未**升过（新旧 `SchemaVersion` 相同） | 把两组 pin 恢复到上一组值 → 重新 `state.apply`（`source_hash` 会拒绝不匹配的制品）→ 重启服务 | `/health` healthy；二进制 sha256 等于旧 pin；且 `/health` 的 `version`/`revision` 等于**旧制品** `--version` 报的值（§3.2）——这一步才证明回滚的进程真的换回去了 |
 | schema **已**升过 | **只能**从备份恢复：`qubes-air-backup restore -db … -in … -force`（[灾难恢复](disaster-recovery.md) 第 58-65 行），并确保进程持有**同一把** keyring 密钥 | `/health` healthy，且能真的提交一个 job |
-| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 144-150 行） | — |
+| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 146-152 行） | — |
 | agent 发布故障 | 恢复上一组 `agent_package_*` 后**重建** compute（同上）。控制台在 schema 3 及以上时，回退目标必须仍是带 token 派生占位证书的包，否则新 compute 完不成 bootstrap（§2.4） | 新 compute 上的 agent 能完成 bootstrap 与探测 |
 | 协议不匹配 | 两侧版本集合无交集：把有交集的那一侧升（或降）回去 | 握手日志出现 `relay %q connected (protocol …)` |
 

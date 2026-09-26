@@ -147,6 +147,14 @@ func VerifyBootstrapPlaceholder(certs []*x509.Certificate, qubeName, wantPin str
 	return checkBootstrapPlaceholder(leaf, qubeName, time.Now())
 }
 
+// CheckBootstrapPin reports whether pin is well formed: a lowercase or
+// uppercase hex SHA-256 digest. It lets a caller tell a damaged stored pin
+// from a peer that fails verification.
+func CheckBootstrapPin(pin string) error {
+	_, err := decodeBootstrapPin(pin)
+	return err
+}
+
 // decodeBootstrapPin refuses anything that is not a SHA-256 digest in hex. An
 // empty pin in particular must never mean "skip the check".
 func decodeBootstrapPin(pin string) ([]byte, error) {

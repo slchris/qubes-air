@@ -48,6 +48,8 @@ Console 日志应能区分：
   bootstrap 报 `unreachable`，console 日志每次尝试有一行 `bootstrap: refusing the listener at …`，
   原因含 `does not match the pin`；
 - token 过期、已消费或早于 pin（升级前签发）：bootstrap 报 `not_configured`，原因提示重新 provision；
+- 查 pin 失败（数据库错误）或库中 pin 损坏：bootstrap 报 `console_failed`（`could not load the bootstrap
+  peer pin` / `stored bootstrap peer pin is damaged`），先查控制台与数据库，不要去动 VM；
 - 握手通过但交出的 token 不是派生本会话 pin 的那一枚：bootstrap 报 `refused`（`not the one its session
   was pinned to`），该 token 未被兑换；按“guest 拿到了别的 qube 的 user-data 或 token 外泄”排查；
 - agent package URL/SHA 不一致；

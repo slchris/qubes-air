@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -18,8 +19,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/slchris/qubes-air/console/internal/agent"
+	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
@@ -250,9 +253,11 @@ func TestBootstrapRefusesToDialWithoutAPeerPin(t *testing.T) {
 		pins BootstrapPeerPinProvider
 		want string
 	}{
-		"no provider wired":         {pins: nil, want: "no bootstrap peer pin provider"},
-		"no live token":             {pins: staticPin{err: errors.New("qube \"remote-dev\" has no unredeemed, unexpired bootstrap token")}, want: "no unredeemed"},
-		"token from before pinning": {pins: staticPin{err: errors.New("predates peer pinning; re-provision it")}, want: "predates peer pinning"},
+		"no provider wired": {pins: nil, want: "no bootstrap peer pin provider"},
+		"no live token": {pins: staticPin{err: fmt.Errorf("%w: qube \"remote-dev\" has no unredeemed, unexpired bootstrap token",
+			repository.ErrNoBootstrapPin)}, want: "no unredeemed"},
+		"token from before pinning": {pins: staticPin{err: fmt.Errorf("%w: predates peer pinning; re-provision it",
+			repository.ErrNoBootstrapPin)}, want: "predates peer pinning"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			issuer := &fakeIssuer{}
@@ -272,12 +277,61 @@ func TestBootstrapRefusesToDialWithoutAPeerPin(t *testing.T) {
 }
 
 // A pin that is not a SHA-256 digest can only come from a damaged row. It must
-// stop the dial, not build a verifier that silently rejects every peer.
+// stop the dial — not build a verifier that silently rejects every peer — and
+// be reported as the console's fault, not as an unreachable VM.
 func TestBootstrapRefusesAMalformedPin(t *testing.T) {
-	b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
-		WithBootstrapPeerPinProvider(staticPin{pin: "not-a-digest"})
-	res := b.Bootstrap(context.Background(), testBootstrapQube())
+	for _, pin := range []string{"not-a-digest", "abcd", strings.Repeat("zz", 32)} {
+		issuer := &fakeIssuer{}
+		b := NewAgentBootstrapper(stubCA{}, issuer, "", 0).
+			WithBootstrapPeerPinProvider(staticPin{pin: pin})
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
 
-	assert.Equal(t, BootstrapUnreachable, res.Status)
-	assert.Contains(t, res.Reason, "cannot pin the bootstrap peer")
+		assert.Equal(t, BootstrapConsoleFailed, res.Status, pin)
+		assert.True(t, res.Status.AgentAnswered(), "a console-side fault must not be recorded against the VM")
+		assert.Contains(t, res.Reason, "stored bootstrap peer pin is damaged")
+		assert.Empty(t, issuer.gotToken)
+	}
+}
+
+// A lookup that fails for a reason other than "no pinned token" — the database
+// is locked, closed, or broken — says nothing about whether the qube can be
+// bootstrapped. It is the console's failure and is retried, not reported as
+// "this console cannot bootstrap at all".
+func TestBootstrapTreatsAPinLookupFailureAsAConsoleFault(t *testing.T) {
+	t.Run("provider error", func(t *testing.T) {
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
+			WithBootstrapPeerPinProvider(staticPin{err: errors.New("database is locked")})
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapConsoleFailed, res.Status)
+		assert.Contains(t, res.Reason, "could not load the bootstrap peer pin: database is locked")
+	})
+	t.Run("real repository on a closed database", func(t *testing.T) {
+		cfg := database.DefaultConfig()
+		cfg.DSN = filepath.Join(t.TempDir(), "closed.db")
+		db, err := database.New(cfg)
+		require.NoError(t, err)
+		tokens := repository.NewBootstrapTokenRepository(db)
+		require.NoError(t, db.Close())
+
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).WithBootstrapPeerPinProvider(tokens)
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapConsoleFailed, res.Status, res.Reason)
+		assert.Contains(t, res.Reason, "could not load the bootstrap peer pin")
+	})
+	t.Run("real repository with no token stays not_configured", func(t *testing.T) {
+		cfg := database.DefaultConfig()
+		cfg.DSN = filepath.Join(t.TempDir(), "empty.db")
+		db, err := database.New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
+			WithBootstrapPeerPinProvider(repository.NewBootstrapTokenRepository(db))
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapNotConfigured, res.Status, res.Reason)
+		assert.Contains(t, res.Reason, "re-provision it")
+	})
 }

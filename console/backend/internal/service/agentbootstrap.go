@@ -92,9 +92,10 @@ const (
 	// already spent. The qube needs a fresh token, which means re-provisioning
 	// its user-data; no amount of retrying will help.
 	BootstrapRefused BootstrapStatus = "refused"
-	// BootstrapConsoleFailed means the agent did its part and this console
-	// could not do its own: the CA would not sign, or the registry would not
-	// record the result.
+	// BootstrapConsoleFailed means this console could not do its own part:
+	// the CA would not sign, the registry would not record the result, or the
+	// pin that authenticates first contact could not be loaded or is damaged.
+	// Either way the VM is not at fault, so it is never read as unreachable.
 	BootstrapConsoleFailed BootstrapStatus = "console_failed"
 	// BootstrapInstallFailed means the certificate was signed and registered
 	// but the agent did not install it. The token is spent, so recovery is a
@@ -242,9 +243,9 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 	// The pin comes before the dial. Without one there is nothing to tell this
 	// qube's listener from anyone else answering at its address, and "dial
 	// anyway" is exactly the unauthenticated first contact pinning removed.
-	pin, err := b.peerPin(ctx, qube)
+	pin, status, err := b.peerPin(ctx, qube)
 	if err != nil {
-		return done(BootstrapNotConfigured, "cannot authenticate first contact with qube %q: %v", qube.Name, err)
+		return done(status, "cannot authenticate first contact with qube %q: %v", qube.Name, err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
@@ -384,14 +385,30 @@ func tokenDerivesPin(token, qubeName, pin string) bool {
 	return err == nil && pin != "" && derived == pin
 }
 
-// peerPin loads the pin for this qube's pending token. Any failure — no
-// provider wired, no live token, a token from before pinning — is an error:
-// the caller must not dial.
-func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (string, error) {
+// peerPin loads the pin for this qube's pending token. Any failure is an
+// error — the caller must not dial — classified by what fixes it:
+//
+//   - not_configured: no provider is wired, or the qube has no pinned token
+//     (none live, or one from before pinning). Retrying changes nothing until
+//     the console is fixed or the qube is re-provisioned.
+//   - console_failed: the lookup itself failed (a transient database error) or
+//     the stored pin is malformed (a damaged row). The console's side broke,
+//     not the VM's; the sweep retries on its usual backoff.
+func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (string, BootstrapStatus, error) {
 	if b.pins == nil {
-		return "", errors.New("no bootstrap peer pin provider is configured")
+		return "", BootstrapNotConfigured, errors.New("no bootstrap peer pin provider is configured")
 	}
-	return b.pins.PendingPlaceholderSPKIFingerprint(ctx, qube.ID, qube.Name, time.Now())
+	pin, err := b.pins.PendingPlaceholderSPKIFingerprint(ctx, qube.ID, qube.Name, time.Now())
+	switch {
+	case errors.Is(err, repository.ErrNoBootstrapPin):
+		return "", BootstrapNotConfigured, err
+	case err != nil:
+		return "", BootstrapConsoleFailed, fmt.Errorf("could not load the bootstrap peer pin: %w", err)
+	}
+	if err := pki.CheckBootstrapPin(pin); err != nil {
+		return "", BootstrapConsoleFailed, fmt.Errorf("the stored bootstrap peer pin is damaged (%w); re-provision the qube", err)
+	}
+	return pin, "", nil
 }
 
 // logFirstPeerRefusal makes a refused listener visible. The tunnel client

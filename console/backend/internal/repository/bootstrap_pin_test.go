@@ -70,6 +70,7 @@ func TestPendingBootstrapPinFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	_, err = repo.PendingPlaceholderSPKIFingerprint(ctx, "qube-1", "remote-dev", now)
 	require.ErrorContains(t, err, "no unredeemed, unexpired bootstrap token", "a spent token pins nothing")
+	require.ErrorIs(t, err, ErrNoBootstrapPin)
 }
 
 func TestLegacyBootstrapTokenWithoutPinFailsClosed(t *testing.T) {
@@ -83,6 +84,17 @@ func TestLegacyBootstrapTokenWithoutPinFailsClosed(t *testing.T) {
 
 	_, err = repo.PendingPlaceholderSPKIFingerprint(ctx, "qube-1", "remote-dev", time.Now())
 	require.ErrorContains(t, err, "predates peer pinning")
+	require.ErrorIs(t, err, ErrNoBootstrapPin, "callers must be able to tell this from a failed lookup")
+}
+
+// A failed lookup is NOT ErrNoBootstrapPin: the caller must not tell the
+// operator to re-provision a qube because the database hiccuped.
+func TestPendingBootstrapPinLookupFailureIsNotNoPin(t *testing.T) {
+	repo := tokenRepo(t)
+	require.NoError(t, repo.db.Close())
+	_, err := repo.PendingPlaceholderSPKIFingerprint(context.Background(), "qube-1", "remote-dev", time.Now())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNoBootstrapPin)
 }
 
 // openV2FixtureDB loads the frozen schema-v2 database the database package's
