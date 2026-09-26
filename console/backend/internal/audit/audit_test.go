@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOutcomeClassifiesAuthorizationFailures(t *testing.T) {
@@ -213,4 +215,159 @@ func decodeLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 		t.Fatalf("audit output is not JSON: %v\n%s", err, buf.String())
 	}
 	return got
+}
+
+// captureSink records every event it is handed.
+type captureSink struct{ events []Event }
+
+func (s *captureSink) Submit(ev Event) { s.events = append(s.events, ev) }
+
+// lineFromEvent is what the JSON line must hold for ev: every field, under the
+// line's key, in the type JSON decoding gives it.
+func lineFromEvent(ev Event) map[string]any {
+	return map[string]any{
+		"msg":              "audit",
+		"level":            "INFO",
+		"request_id":       ev.RequestID,
+		"authenticated":    ev.Authenticated,
+		"auth_disabled":    ev.AuthDisabled,
+		"subject":          ev.Subject,
+		"source":           ev.Source,
+		"method":           ev.Method,
+		"route":            ev.Route,
+		"object":           ev.Object,
+		"object_truncated": ev.ObjectTruncated,
+		"status":           float64(ev.Status),
+		"outcome":          ev.Outcome,
+		"latency_ms":       float64(ev.LatencyMS),
+		"zone_scope":       ev.ZoneScope,
+	}
+}
+
+// TestRecorderHandsTheSinkTheLoggedEvent pins the property persistence rests
+// on: the sink gets exactly what the line says, field for field and to the
+// nanosecond, for each way an entry is rendered.
+func TestRecorderHandsTheSinkTheLoggedEvent(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry Entry
+	}{
+		{name: "authenticated", entry: Entry{RequestID: "R1", Authenticated: true, Subject: "operator",
+			Source: "192.0.2.7", Method: "POST", Route: "/api/v1/qubes/:id/start", Object: "q-a",
+			Status: 202, Outcome: OutcomeSuccess, LatencyMS: 3, ZoneScope: []string{"zone-a", "zone-b"}}},
+		{name: "anonymous", entry: Entry{RequestID: "R2", Subject: "operator", ZoneScope: []string{"zone-a"},
+			Method: "POST", Route: "/api/v1/zones", Status: 401, Outcome: OutcomeDenied}},
+		{name: "auth disabled", entry: Entry{RequestID: "R3", AuthDisabled: true, Method: "DELETE",
+			Route: "/api/v1/qubes/:id", Object: "q-b", Status: 204, Outcome: OutcomeSuccess}},
+		{name: "truncated object", entry: Entry{RequestID: "R4", Method: "POST", Route: "/api/v1/qubes/:id/start",
+			Object: strings.Repeat("é", MaxObjectBytes), Status: 401, Outcome: OutcomeDenied}},
+		{name: "invalid utf-8", entry: Entry{RequestID: "R5", Authenticated: true, Subject: "op\xfferator",
+			Method: "POST", Route: "/api/v1/qubes/:id/start", Object: "q\xff\xfe" + strings.Repeat("\xff", 2*MaxObjectBytes),
+			Status: 401, Outcome: OutcomeDenied}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			sink := &captureSink{}
+			at := time.Date(2026, 9, 26, 10, 11, 12, 123456789, time.UTC)
+			rec := NewRecorder(&buf).WithSink(sink)
+			rec.now = func() time.Time { return at }
+
+			rec.Record(tc.entry)
+
+			if len(sink.events) != 1 {
+				t.Fatalf("sink got %d events, want 1", len(sink.events))
+			}
+			ev := sink.events[0]
+			line := decodeLine(t, &buf)
+			stamp, err := time.Parse(time.RFC3339Nano, fmt.Sprint(line["time"]))
+			if err != nil || !stamp.Equal(ev.Time) || !ev.Time.Equal(at) {
+				t.Errorf("line time %v (err %v), event time %v, want both %v", line["time"], err, ev.Time, at)
+			}
+			delete(line, "time")
+			if want := lineFromEvent(ev); !reflect.DeepEqual(line, want) {
+				t.Errorf("line and sink event disagree:\nline  %v\nevent %v", line, want)
+			}
+		})
+	}
+}
+
+// TestValidUTF8ReplacesByteForByte pins the replacement to what the JSON
+// encoder writes: one U+FFFD per invalid byte, valid text untouched.
+func TestValidUTF8ReplacesByteForByte(t *testing.T) {
+	cases := map[string]string{
+		"":                 "",
+		"q-a":              "q-a",
+		"é€":               "é€",
+		"a\xffb":           "a\uFFFDb",
+		"\xff\xfe":         "\uFFFD\uFFFD",
+		"\xe2\x82":         "\uFFFD\uFFFD", // a truncated three-byte sequence
+		"ok\xe2\x82\xacok": "ok€ok",
+	}
+	for in, want := range cases {
+		if got := validUTF8(in); got != want {
+			t.Errorf("validUTF8(%q) = %q, want %q", in, got, want)
+		}
+		raw, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded string
+		if err := json.Unmarshal(raw, &decoded); err != nil || decoded != validUTF8(in) {
+			t.Errorf("JSON round trip of %q = %q, validUTF8 = %q", in, decoded, validUTF8(in))
+		}
+	}
+}
+
+// TestRecorderWritesAuthDisabled pins the new line field: the stored row keeps
+// auth_disabled, so the line must carry it too.
+func TestRecorderWritesAuthDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	NewRecorder(&buf).Record(Entry{AuthDisabled: true})
+	if got := decodeLine(t, &buf)["auth_disabled"]; got != true {
+		t.Errorf("auth_disabled = %v, want true", got)
+	}
+}
+
+// TestRecorderWithoutSinkOnlyLogs keeps the plain recorder a plain recorder,
+// and WithSink a copy rather than a mutation of the original.
+func TestRecorderWithoutSinkOnlyLogs(t *testing.T) {
+	var buf bytes.Buffer
+	plain := NewRecorder(&buf)
+	sink := &captureSink{}
+	_ = plain.WithSink(sink)
+
+	plain.Record(Entry{RequestID: "R5"})
+
+	if len(sink.events) != 0 {
+		t.Errorf("WithSink changed the recorder it was called on")
+	}
+	if decodeLine(t, &buf)["request_id"] != "R5" {
+		t.Errorf("the plain recorder must still write the line")
+	}
+}
+
+// TestEventClassSamplesOnlyUnprovenFailures pins which events a caller holding
+// no credential can make the store sample, and which are always stored.
+func TestEventClassSamplesOnlyUnprovenFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   Event
+		want Class
+	}{
+		{"authenticated success", Event{Authenticated: true, Outcome: OutcomeSuccess}, ClassFull},
+		{"authenticated denial", Event{Authenticated: true, Outcome: OutcomeDenied}, ClassFull},
+		{"authenticated throttle", Event{Authenticated: true, Outcome: OutcomeClientError}, ClassFull},
+		{"login with a valid token", Event{Outcome: OutcomeSuccess}, ClassFull},
+		{"auth disabled success", Event{AuthDisabled: true, Outcome: OutcomeSuccess}, ClassFull},
+		{"anonymous denial", Event{Outcome: OutcomeDenied}, ClassSampled},
+		{"anonymous throttle or oversized body", Event{Outcome: OutcomeClientError}, ClassSampled},
+		{"anonymous server error", Event{Outcome: OutcomeError}, ClassSampled},
+		{"auth disabled failure", Event{AuthDisabled: true, Outcome: OutcomeClientError}, ClassSampled},
+	}
+	for _, tc := range cases {
+		if got := tc.ev.Class(); got != tc.want {
+			t.Errorf("%s: Class() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }

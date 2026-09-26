@@ -206,7 +206,7 @@ func TestAPIAuditRecordsMutationRefusedByAuthentication(t *testing.T) {
 
 // maxAnonymousAuditLine bounds the audit line one unauthenticated request can
 // write. Every field but the object is fixed by the server and together they
-// come to about 400 bytes (416 in a contrived worst case); the object is capped at audit.MaxObjectBytes of input,
+// come to about 450 bytes (446 in a contrived worst case); the object is capped at audit.MaxObjectBytes of input,
 // and the JSON encoder turns one input byte into at most six (\u00XX, \ufffd).
 const maxAnonymousAuditLine = 2048
 

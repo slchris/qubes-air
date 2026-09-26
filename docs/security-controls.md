@@ -145,14 +145,17 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   `denied`，见下文“Console API 凭据”。
 - 限流拒绝（429）记为 `client_error`，不记为 `denied`：节流不是授权判定，把它混进 `denied`
   会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
-- 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、
-  `object`、`object_truncated`、`status`、`outcome`、`latency_ms`。
+- 字段：`time`、`request_id`、`authenticated`、`auth_disabled`、`subject`、`zone_scope`、`source`、`method`、
+  `route`、`object`、`object_truncated`、`status`、`outcome`、`latency_ms`。审计中间件把每个请求渲染成**一个**
+  事件（`internal/audit` 的 `Event`），这一行与交给持久化的副本都来自它，`time` 也是同一个时刻。
 - 没有解析出凭据的请求（认证失败、登录请求）记为 `authenticated: false`、`subject: anonymous`、
   `zone_scope: none`，不会被写成 fleet 范围。鉴权关闭（没有配置任何 token）时请求同样记为
-  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`。判断是否
-  认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
+  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`、`auth_disabled: true`。
+  判断是否认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
 - `object` 取路径参数 `:id`（没有时取 `:app`），最多保留前 128 字节，按 UTF-8 字符边界截断；
-  截断时 `object_truncated: true`。
+  截断时 `object_truncated: true`。不是合法 UTF-8 的字节（URL 里一个 `%FF` 就能带进来）逐字节记为
+  U+FFFD：JSON 行本来就这样显示，渲染时先做这一步，交给持久化的副本才与行一致（所以截断后的
+  `object` 最多是 128 个 U+FFFD，即 384 字节）。
 - `request_id` 由服务端生成（128 位随机），同一个值通过响应头 `X-Request-Id` 返回给调用方；
   客户端自带的 `X-Request-Id` 不采信，也不写入审计。
 - 记录不包含任何请求头或请求体：Authorization、Bearer token、session cookie 以及登录请求体里的
@@ -164,7 +167,8 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 
 - 单行长度有上界。审计在认证之前运行，未认证调用方能自由决定的只有 `object`（路径参数）；其余
   字段由服务端决定：已注册路由的方法和模板、配置里的 token 名和 zone 列表、连接的对端地址。
-  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 400 字节（构造的最坏情况实测 416 字节），所以
+  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 450 字节（构造的最坏情况实测 446 字节：
+  最长的 IPv6 来源、`latency_ms` 取 int64 上限、`auth_disabled: true` 与 `zone_scope: unrestricted`），所以
   一个未认证请求写出的审计行不超过 2 KiB（`TestAPIAuditBoundsOversizedObject` 按这个上界断言），
   远低于 journald 默认的单行上限（`LineMax=48K`），不会被拆成非 JSON 片段。已认证请求的行长还
   取决于配置里 zone 列表的长度，由管理员控制。
