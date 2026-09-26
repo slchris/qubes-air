@@ -331,17 +331,17 @@ describe('JobLog live stream', () => {
 // The server's duration cap (streamMaxDuration in job_handler.go).
 const STREAM_CAP_MS = 5 * 60_000
 
-// Ends a stream the way the server does at its cap: the clock has moved on by
-// the cap and the connection closes without a terminal event.
+// Ends a stream the way the server does at its cap: the cap's worth of time
+// has passed and the connection closes without a terminal event.
 async function endAtCap(stream: FakeStream): Promise<void> {
-  vi.setSystemTime(Date.now() + STREAM_CAP_MS)
+  await vi.advanceTimersByTimeAsync(STREAM_CAP_MS)
   stream.end()
   await flush()
 }
 
 describe('JobLog stream contract', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
   })
 
   it('reconnects from the last offset when the stream ends at its cap', async () => {
@@ -437,7 +437,7 @@ describe('JobLog stream contract', () => {
 
 describe('JobLog pacing and teardown', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
   })
 
   it('keeps polling on its interval while the job runs, from the returned offset', async () => {
@@ -516,6 +516,22 @@ describe('JobLog pacing and teardown', () => {
     expect(server.streams[1].offset).toBe(0)
   })
 
+  it('paces the reconnect on the monotonic clock, not the wall clock', async () => {
+    mount('j1', true)
+    await flush()
+    // The wall clock steps back an hour (NTP, resume from suspend) while the
+    // stream is open. Measured on Date, the elapsed time would be negative
+    // and the "rest of the minimum interval" would become an hour.
+    vi.setSystemTime(Date.now() - 60 * 60_000)
+    server.streams[0].end()
+    await flush()
+    expect(server.streams).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await flush()
+    expect(server.streams).toHaveLength(2)
+  })
+
   it('reconnects at once after a stream that ran for its full cap', async () => {
     mount('j1', true)
     await flush()
@@ -544,7 +560,7 @@ describe('JobLog pacing and teardown', () => {
 
 describe('JobLog inside the qube list', () => {
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
   })
 
   it('keeps the card stream attached while the qube list refreshes around it', async () => {

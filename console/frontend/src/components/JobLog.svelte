@@ -36,6 +36,8 @@
   // A stream that closes sooner than this after opening (a proxy dropping it,
   // not the server's multi-minute cap) waits out the rest before reconnecting,
   // so a misbehaving hop cannot turn the reconnect loop into a request storm.
+  // Measured on performance.now(), which is monotonic: a wall-clock step (NTP,
+  // suspend/resume, a manual change) must not stretch or skip the wait.
   const RECONNECT_MIN_MS = 2000;
 
   // One feed per job id, restarted only when the id itself changes.
@@ -102,7 +104,7 @@
   async function feed(id: string, signal: AbortSignal): Promise<void> {
     const onChunk = (chunk: JobLogChunk): void => apply(chunk, signal);
     while (running) {
-      const opened = Date.now();
+      const opened = performance.now();
       streaming = true;
       try {
         await streamJobLog(id, offset, onChunk, signal);
@@ -114,7 +116,7 @@
       }
       if (signal.aborted) return;
       streaming = false;
-      if (running) await wait(RECONNECT_MIN_MS - (Date.now() - opened), signal);
+      if (running) await wait(RECONNECT_MIN_MS - (performance.now() - opened), signal);
       if (signal.aborted) return;
     }
 
