@@ -19,7 +19,7 @@ help:
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
-	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/YAML/文档"
+	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/qrexec 契约/YAML/文档"
 	@echo "  audit          里程碑完整审计: 对全部存量代码执行所有门禁"
 	@echo "  clean          Clean build artifacts"
 	@echo ""
