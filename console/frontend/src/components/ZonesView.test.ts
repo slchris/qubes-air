@@ -14,12 +14,14 @@ vi.mock('../lib/api', async (importOriginal) => {
     apiFetch: vi.fn(),
     listZones: vi.fn(),
     createZone: vi.fn(),
+    connectZone: vi.fn(),
   }
 })
 
 const apiFetch = vi.mocked(api.apiFetch)
 const listZones = vi.mocked(api.listZones)
 const createZone = vi.mocked(api.createZone)
+const connectZone = vi.mocked(api.connectZone)
 
 function zoneFixture(overrides: Partial<Zone> = {}): Zone {
   return {
@@ -42,6 +44,7 @@ beforeEach(() => {
   zoneStore.reset()
   listZones.mockResolvedValue({ zones: [], total: 0 } as never)
   createZone.mockReset()
+  connectZone.mockReset()
   apiFetch.mockResolvedValue(jsonResponse({
     credentials: [{ id: 'c1', name: 'pve-root', type: 'proxmox' }],
   }))
@@ -139,6 +142,33 @@ describe('ZonesView create', () => {
     expect(await within(dialog).findByText(/provider not implemented/i)).toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: /add zone/i })).toBeInTheDocument()
   })
+
+  // A zone without a credential cannot reach its cluster, and one without a
+  // template clones a VM with no operating system. Both look configured and
+  // only fail minutes into a provision, so the form refuses them up front.
+  it('refuses a proxmox zone without a credential before posting', async () => {
+    const dialog = await openAddZone()
+
+    await userEvent.type(within(dialog).getByLabelText(/^name$/i), 'infra')
+    await userEvent.type(within(dialog).getByLabelText(/^api endpoint$/i), 'https://pve.example.com/')
+    await userEvent.type(within(dialog).getByLabelText(/^template vmid$/i), '901')
+    await userEvent.click(within(dialog).getByRole('button', { name: /create zone/i }))
+
+    expect(await within(dialog).findByText(/credential is required/i)).toBeInTheDocument()
+    expect(createZone).not.toHaveBeenCalled()
+  })
+
+  it('refuses a proxmox zone without a template VMID before posting', async () => {
+    const dialog = await openAddZone()
+
+    await userEvent.type(within(dialog).getByLabelText(/^name$/i), 'infra')
+    await userEvent.selectOptions(await within(dialog).findByLabelText(/^credential$/i), 'c1')
+    await userEvent.type(within(dialog).getByLabelText(/^api endpoint$/i), 'https://pve.example.com/')
+    await userEvent.click(within(dialog).getByRole('button', { name: /create zone/i }))
+
+    expect(await within(dialog).findByText(/template vmid is required/i)).toBeInTheDocument()
+    expect(createZone).not.toHaveBeenCalled()
+  })
 })
 
 describe('ZonesView zone cards', () => {
@@ -156,5 +186,23 @@ describe('ZonesView zone cards', () => {
     expect(within(gcpCard).getByText('not implemented')).toBeInTheDocument()
     const pveCard = screen.getByText('infra').closest('article') as HTMLElement
     expect(within(pveCard).queryByText('not implemented')).not.toBeInTheDocument()
+  })
+})
+
+describe('ZonesView connect', () => {
+  // connect() is the first call that reaches the cluster, so a bad credential
+  // or an unreachable endpoint surfaces here and nowhere else.
+  it('shows the cluster connection refusal and leaves the zone disconnected', async () => {
+    listZones.mockResolvedValue({ zones: [zoneFixture()], total: 1 } as never)
+    connectZone.mockRejectedValue(new api.ApiException(503, 'UNKNOWN_ERROR', 'cluster is unreachable'))
+    render(ZonesView)
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Connect' }))
+
+    expect(await screen.findByText('cluster is unreachable')).toBeInTheDocument()
+    expect(connectZone).toHaveBeenCalledWith('z1')
+    const card = screen.getByText('infra').closest('article') as HTMLElement
+    expect(within(card).getByText('disconnected')).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Connect' })).toBeEnabled()
   })
 })

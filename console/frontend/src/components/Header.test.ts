@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/svelte'
+import userEvent from '@testing-library/user-event'
 
 import Header from './Header.svelte'
 import * as api from '../lib/api'
@@ -72,5 +73,19 @@ describe('Header build identity', () => {
     // No version-shaped text in the header: neither a stamp nor a constant.
     expect(container.querySelector('.version')?.textContent ?? '').toBe('')
     expect(screen.queryByText(/0\.1\.0/)).toBeNull()
+  })
+})
+
+describe('Header menu', () => {
+  it('shows the console identity and forwards the menu action', async () => {
+    getHealth.mockResolvedValue(healthFixture('unknown'))
+    const onMenuClick = vi.fn()
+
+    render(Header, { props: { onMenuClick } })
+
+    expect(screen.getByText('Qubes Air')).toBeInTheDocument()
+    expect(screen.getByText('Connected')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Toggle menu' }))
+    expect(onMenuClick).toHaveBeenCalledOnce()
   })
 })
