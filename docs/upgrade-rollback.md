@@ -93,6 +93,14 @@ bootstrap 握手（[安全控制](security-controls.md)“Bootstrap 首次连接
 所以 **agent 包必须先于控制台、或与控制台同一次 `state.apply` 升级**。已经拿到证书的 qube 不再走
 bootstrap，不受影响。
 
+同一版本还收紧了**启动期**的授权校验（`qrexec.ValidateAgentGrants`）：`agent_allowed_services`
+里的服务名必须过传输层名字白名单且不重复，`agent_exec_allow` / `agent_filecopy_roots` 不得有重复项、
+不得含任何控制字符（含制表符、DEL）。不满足时**控制台拒绝启动**并在报错里指出字段与值。
+qubes-salt-config 出厂值（`v0.1.0` 与 `main` 的 `salt/config.jinja`：服务
+`qubesair.Ping,qubesair.UnlockData,qubesair.RekeyData`、两个路径表为空）不受影响；只有手工改过这些
+pillar 的部署需要先核对。路径表不空而服务表里没有对应的 `qubesair.Exec` / `qubesair.FileCopy` 时
+只告警（`WARNING: agent grants:`），不拒绝启动。
+
 升级那一刻**还没完成 bootstrap 的 qube**（token 最长 1 小时有效）一律 fail closed：它们的 token 在
 schema 3 之前签发、没有 pin，控制台报 `not_configured`、原因写“predates peer pinning; re-provision
 it”，并且不会拨号。处理方式是重新 provision（resume 或重建 compute）以签发带 pin 的新 token；
@@ -226,6 +234,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 页面能开但接口全 404/400 | 前端与二进制不同批 | 两组 pin 一起改 |
 | 升级后新 qube 一直 `unreachable`，日志 `refusing the listener … does not match the pin` | guest 装的是早于 pin 的 agent 包（§2.4） | 把 `agent_package_*` 指向新包、`state.apply`，再重建这些 compute |
 | 升级后某 qube 的 bootstrap 报 `not_configured`，原因 `predates peer pinning` | 升级时它的 token 还没兑换 | 重新 provision 该 qube（新 token 带 pin） |
+| 升级后控制台起不来，报错含 `agent_allowed_services` / `agent_exec_allow` / `agent_filecopy_roots` 与 `is not a valid qrexec service name`、`is listed twice` 或 `contains a control character` | pillar 里的授权值过不了新的启动校验（§2.4） | 按报错修正对应 pillar 值后重新 `state.apply`；出厂默认值不会触发 |
 
 ## 6. 尚未闭合
 
