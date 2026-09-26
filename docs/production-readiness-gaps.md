@@ -329,7 +329,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 **识别特征**：findings 全部落在 `internal/transport/relaypb/*.pb.go`（errcheck 指向 `relay_transport_grpc.pb.go` 的 stream 调用、
 goimports 指向两个 `.pb.go`、偶尔 gochecknoinits）——生成文件本不该被这三个 linter 检查，看到这个组合就是脏缓存，不是代码问题。
 本会话撞了两次；清缓存后同一命令 `0 issues`。
-增量门禁（`make pre-commit`）看不到既有函数的复杂度越界，里程碑合并以 CI 的全量 lint 为准。
+增量门禁（`make pre-commit`）对改动过的 Go 文件整文件检查 `gocyclo`/`funlen`（`complexity-new` 的 `--whole-files`），只改函数体让既有函数越界也会被拦；没改动的文件里的存量越界只有 `make audit` 与 CI 的全量 lint 看得见，里程碑合并仍以 CI 的全量 lint 为准。
 
 ```bash
 # 交付链状态

@@ -3,7 +3,7 @@
 # 常用构建和开发命令
 
 .PHONY: help build build-backup clean dev test agent-deb publish-agent-deb release-agent \
-	pre-commit audit check-tools diff-check test-race lint-new gosec-new gosec-ci-new \
+	pre-commit audit check-tools diff-check test-race lint-new lint-whole-module gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
 	agent-deb-test
@@ -96,6 +96,17 @@ test:
 # pre-commit 只拒绝 BASE_REV 之后新增的 lint/security/complexity 问题，避免当前阶段
 # 被不相关的存量债务卡死；测试、依赖漏洞、前端和文档仍做全量检查。
 # audit 用于里程碑/release，扫描全部存量代码，必须清零后才能发布。
+#
+# 增量模式只认"报告落在改动行上"的问题。下面几类问题的报告行可以不是改动行，
+# 所以单独补上（每一类都能让 pre-commit 通过、CI 的全量 lint 却报错）：
+#   - unused / unparam / staticcheck：报在声明或调用处，引发它的改动却在别处 → lint-whole-module
+#     全模块检查（具体情形见该目标上方的注释）；
+#   - funlen/gocyclo：报在函数声明行，只改函数体时声明行不算新 → complexity-new 加 --whole-files；
+#   - linux 专属文件：本机 GOOS 不编译它们，golangci-lint 根本看不到 → 每个 golangci-lint
+#     门禁再按 CI 的 linux/amd64 跑一遍（见 golangci_gate）。
+# 已知仍看不见：nolintlint 报的"无用豁免"（例如只改函数体、让 //nolint:gocyclo 不再需要，报在
+# 未改动的指令行）。它只在被豁免的 linter 同时运行时才报，全模块检查它就等于跑全量 lint，
+# 所以只由 `make audit` 和 CI 的全量 lint 发现。
 # ============================================================
 
 BASE_REV ?= HEAD
@@ -103,7 +114,7 @@ GOLANGCI_LINT ?= golangci-lint
 SHELLCHECK ?= shellcheck
 GOVULNCHECK ?= govulncheck
 
-pre-commit: check-tools diff-check test-race lint-new gosec-new gosec-ci-new complexity-new \
+pre-commit: check-tools diff-check test-race lint-new lint-whole-module gosec-new gosec-ci-new complexity-new \
 	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
 
 audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
@@ -120,15 +131,42 @@ diff-check:
 test-race:
 	cd console/backend && go test -race -coverprofile=coverage.out ./...
 
+# golangci-lint 只分析当前 GOOS/GOARCH 会编译的文件：在 macOS 上 *_linux.go 和
+# //go:build linux 文件整个不可见，而 CI 的 Go Lint 跑在 linux/amd64。所以每个 golangci-lint
+# 门禁先按本机平台跑，再按 linux/amd64 跑一遍；本机就是 linux/amd64 时不重复。
+GO_LINT_LINUX_ENV = $(if $(filter linux/amd64,$(shell go env GOOS)/$(shell go env GOARCH)),,GOOS=linux GOARCH=amd64)
+
+# 用法: $(call golangci_gate,<golangci-lint run 参数>)。两行是两条独立命令，任一失败即失败。
+# 参数里的逗号会被 $(call) 当成分隔符，含逗号的 linter 列表先放进变量再引用。
+define golangci_gate
+cd console/backend && $(GOLANGCI_LINT) run --timeout=5m $(1)
+$(if $(GO_LINT_LINUX_ENV),cd console/backend && $(GO_LINT_LINUX_ENV) $(GOLANGCI_LINT) run --timeout=5m $(1))
+endef
+
+COMPLEXITY_LINTERS := gocyclo,funlen
+
 lint-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV)
+	$(call golangci_gate,--new-from-rev=$(BASE_REV))
+
+# 这几个 linter 的报告行和引发它的改动可以不在同一处，所以不走增量，全模块检查：
+#   - unused：调用者删了，函数那一行没动（2d409fd 删掉的 runSSH）；
+#   - unparam：删掉部分调用者后其余都传同一个常量，或只改函数体让某个返回值恒为 nil；
+#   - staticcheck：给一个 API 标上 Deprecated，别处没改动的调用行报 SA1019。
+# 只开这几个 linter，不是全量 lint：它们在全模块上的任何存量问题在 CI 的全量 lint 里同样致命，
+# 所以这里不会比 CI 更严，也不会被无关的存量风格债务卡住。
+WHOLE_MODULE_LINTERS := unused,unparam,staticcheck
+
+lint-whole-module:
+	$(call golangci_gate,--enable-only=$(WHOLE_MODULE_LINTERS))
 
 # 显式单独运行安全和复杂度 linter，防止以后修改默认 linter 集合时悄悄丢掉门禁。
 gosec-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gosec
+	$(call golangci_gate,--new-from-rev=$(BASE_REV) --enable-only=gosec)
 
+# --whole-files：凡相对 BASE_REV 改动过的文件，其中全部 funlen/gocyclo 问题都算。
+# 函数体变长或变复杂必然改动它所在的文件，这样声明行没动也能拦住。
 complexity-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gocyclo,funlen
+	$(call golangci_gate,--new-from-rev=$(BASE_REV) --whole-files --enable-only=$(COMPLEXITY_LINTERS))
 
 vuln-check:
 	cd console/backend && $(GOVULNCHECK) ./...
@@ -176,10 +214,10 @@ docs-check:
 	node scripts/check-workflow-gates.mjs
 
 lint-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m
+	$(call golangci_gate)
 
 gosec-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gosec
+	$(call golangci_gate,--enable-only=gosec)
 
 # CI 跑的独立 gosec(版本与 .github/workflows/security.yml 钉的完全一致, 只有输出格式不同)。
 # 它和上面内嵌在 golangci-lint 里的 gosec 是两个程序, 抑制语法也不一样: 独立版认 `#nosec`,
@@ -204,7 +242,7 @@ gosec-ci-new:
 	fi
 
 complexity-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gocyclo,funlen
+	$(call golangci_gate,--enable-only=$(COMPLEXITY_LINTERS))
 
 shellcheck-all:
 	@files="$$(git grep -l -E '^\#\!.*/(ba)?sh')"; \

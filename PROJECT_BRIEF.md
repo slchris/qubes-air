@@ -105,7 +105,7 @@ qubes-air/
 
 | 门禁 | 命令 | 真实来源 |
 |---|---|---|
-| 增量总门禁 | `make pre-commit` | `Makefile`:70-71（11 个目标串行） |
+| 增量总门禁 | `make pre-commit` | `Makefile` 的 `pre-commit` 目标（依赖列表即全部子门禁，串行执行） |
 | 全量审计 | `make audit` | `Makefile`:73-74 |
 | diff 空白/冲突标记 | `make diff-check` | `Makefile`:81-82 |
 | Go 测试 + race + 覆盖 | `make test-race` | `Makefile`:84-85 |

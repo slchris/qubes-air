@@ -82,5 +82,8 @@ make pre-commit
 make audit
 ```
 
+Go lint 门禁（`lint-*`、`gosec-new`/`gosec-all`、`complexity-*`）在非 `linux/amd64` 主机上会
+再以 `GOOS=linux GOARCH=amd64` 跑一遍，与 CI 的 Go Lint 平台一致，不需要额外工具。
+
 容器测试必须挂载整个仓库并以 `console/backend` 为工作目录，测试会读取 `remote/` 和
 `packaging/`。Exec/FileCopy 测试需要 Python 3；开发镜像已包含该依赖。

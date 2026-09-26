@@ -28,6 +28,14 @@
 make BASE_REV=origin/main pre-commit
 ```
 
+增量模式只拦截报告落在改动行上的问题，因此 `make pre-commit` 对它看不见的几类问题另做检查：
+`unused`、`unparam`、`staticcheck` 全模块检查（删掉调用者会让别处未改动的声明变成死代码、让剩下的
+调用都传同一个常量；只改函数体会让未改动的签名上某个返回值恒为 nil；给 API 标 Deprecated 会让别处
+未改动的调用报 SA1019）；改动过的 Go 文件整文件检查 `gocyclo`/`funlen`（问题报在函数声明行，只改
+函数体时声明行不算新）；每个 golangci-lint 门禁再按 CI 的 `linux/amd64` 跑一遍（本机平台不编译的
+linux 专属文件否则不会被 lint）。仍看不见的是 `nolintlint` 报的无用豁免（改动让某条 `//nolint`
+不再需要时，问题报在未改动的指令行），只有 `make audit` 和 CI 的全量 lint 能发现。
+
 里程碑、release、合并大范围安全/transport/PKI 改动前还必须运行 `make audit`。完整审计会检查
 全部存量代码，不能用增量模式掩盖历史问题。
 
@@ -37,7 +45,7 @@ make BASE_REV=origin/main pre-commit
 |---|---|
 | Diff | `git diff --check <base>` 必须通过；不得提交冲突标记、尾随空格或意外生成物 |
 | Go 测试 | `go test -race -coverprofile=coverage.out ./...`；新增行为必须有成功、失败和边界测试 |
-| Go lint | `golangci-lint`，配置以根目录 `.golangci.yml` 为准 |
+| Go lint | `golangci-lint`，配置以根目录 `.golangci.yml` 为准；本机平台与 `linux/amd64` 各跑一遍 |
 | 安全扫描 | 显式运行 `gosec` linter；不得用 `-no-fail`；涉及依赖时运行 `govulncheck` |
 | 复杂度 | `gocyclo` 最大 15；函数最大 100 行、50 条语句，由 `gocyclo`/`funlen` 强制 |
 | Go 格式 | `gofmt`、`goimports` 由 `golangci-lint` formatter 检查 |
