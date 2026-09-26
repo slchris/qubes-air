@@ -27,7 +27,7 @@ func TestAuditTrailPrunesOldRowsThroughTheRealWiring(t *testing.T) {
 		"recent":  now.Add(-time.Hour),
 	} {
 		require.NoError(t, repo.AppendEvent(ctx, audit.Event{Time: at, RequestID: id, Authenticated: true,
-			Subject: "operator", Outcome: audit.OutcomeSuccess, ZoneScope: "fleet"}))
+			AuthMethod: audit.AuthMethodBearer, Subject: "operator", Outcome: audit.OutcomeSuccess, ZoneScope: "fleet"}))
 	}
 
 	var lines bytes.Buffer

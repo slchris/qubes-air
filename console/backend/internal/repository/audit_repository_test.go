@@ -27,14 +27,14 @@ func newAuditTestDB(t *testing.T) *database.DB {
 
 func fullEvent(i int) audit.Event {
 	return audit.Event{Time: auditT0.Add(time.Duration(i) * time.Second), RequestID: fmt.Sprintf("full-%d", i),
-		Authenticated: true, Subject: "operator", Source: "192.0.2.1", Method: "POST",
+		Authenticated: true, AuthMethod: audit.AuthMethodBearer, Subject: "operator", Source: "192.0.2.1", Method: "POST",
 		Route: "/api/v1/qubes/:id/start", Object: "q-a", Status: 202, Outcome: audit.OutcomeSuccess,
 		LatencyMS: 4, ZoneScope: "fleet"}
 }
 
 func sampledEvent(i int) audit.Event {
 	return audit.Event{Time: auditT0.Add(time.Duration(i) * time.Second), RequestID: fmt.Sprintf("anon-%d", i),
-		Subject: audit.AnonymousSubject, Source: "198.51.100.9", Method: "POST",
+		AuthMethod: audit.AuthMethodNone, Subject: audit.AnonymousSubject, Source: "198.51.100.9", Method: "POST",
 		Route: "/api/v1/qubes/:id/start", Object: "q-a", Status: 401, Outcome: audit.OutcomeDenied, ZoneScope: "none"}
 }
 
@@ -46,10 +46,10 @@ func storedEvent(t *testing.T, db *database.DB, requestID string) (audit.Event, 
 	var occurred, suppressed, since int64
 	var class string
 	require.NoError(t, db.DB().QueryRowContext(context.Background(), `
-		SELECT occurred_at, request_id, authenticated, auth_disabled, subject, source, method, route, object,
+		SELECT occurred_at, request_id, authenticated, auth_method, auth_disabled, subject, source, method, route, object,
 		       object_truncated, status, outcome, latency_ms, zone_scope, persist_class, suppressed, suppressed_since
 		FROM audit_events WHERE request_id = ?`, requestID).Scan(
-		&occurred, &ev.RequestID, &ev.Authenticated, &ev.AuthDisabled, &ev.Subject, &ev.Source, &ev.Method,
+		&occurred, &ev.RequestID, &ev.Authenticated, &ev.AuthMethod, &ev.AuthDisabled, &ev.Subject, &ev.Source, &ev.Method,
 		&ev.Route, &ev.Object, &ev.ObjectTruncated, &ev.Status, &ev.Outcome, &ev.LatencyMS, &ev.ZoneScope,
 		&class, &suppressed, &since))
 	ev.Time = time.Unix(0, occurred).UTC()
@@ -223,7 +223,7 @@ func TestAuditRepositoryPrunesABacklogInBatches(t *testing.T) {
 	require.NoError(t, err)
 	for i := range backlog {
 		_, err := tx.ExecContext(ctx, insertAuditEvent, auditT0.Add(time.Duration(i)).UnixNano(), fmt.Sprintf("old-%d", i),
-			true, false, "operator", "192.0.2.1", "POST", "/r", "", false, 200, "success", 0, "fleet", "full", 0, 0, 0, "")
+			true, false, "operator", "192.0.2.1", "POST", "/r", "", false, 200, "success", 0, "fleet", "full", 0, 0, 0, "", "bearer")
 		require.NoError(t, err)
 	}
 	require.NoError(t, tx.Commit())

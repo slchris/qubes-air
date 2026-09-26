@@ -58,17 +58,18 @@ func storedLine(t *testing.T, db *database.DB, requestID string) (map[string]any
 		occurred, status, latency                     int64
 		authenticated, authDisabled, truncated        bool
 		subject, source, method, route, object, scope string
-		outcome, rid                                  string
+		outcome, rid, authMethod                      string
 	)
 	require.NoError(t, db.DB().QueryRowContext(context.Background(), `
-		SELECT occurred_at, request_id, authenticated, auth_disabled, subject, source, method, route, object,
+		SELECT occurred_at, request_id, authenticated, auth_method, auth_disabled, subject, source, method, route, object,
 		       object_truncated, status, outcome, latency_ms, zone_scope
 		FROM audit_events WHERE request_id = ?`, requestID).Scan(
-		&occurred, &rid, &authenticated, &authDisabled, &subject, &source, &method, &route, &object,
+		&occurred, &rid, &authenticated, &authMethod, &authDisabled, &subject, &source, &method, &route, &object,
 		&truncated, &status, &outcome, &latency, &scope), "no stored row for request %s", requestID)
 	return map[string]any{
-		"request_id": rid, "authenticated": authenticated, "auth_disabled": authDisabled, "subject": subject,
-		"source": source, "method": method, "route": route, "object": object, "object_truncated": truncated,
+		"request_id": rid, "authenticated": authenticated, "auth_method": authMethod, "auth_disabled": authDisabled,
+		"subject": subject,
+		"source":  source, "method": method, "route": route, "object": object, "object_truncated": truncated,
 		"status": float64(status), "outcome": outcome, "latency_ms": float64(latency), "zone_scope": scope,
 	}, occurred
 }
@@ -129,26 +130,45 @@ func TestAPIAuditPersistsExactlyTheLoggedLine(t *testing.T) {
 		name, path, body string
 		tune             func(*config.Config)
 		mutate           func(*http.Request)
+		liveSession      bool
 		status           int
+		method           string
 	}{
-		{name: "authenticated success", path: "/api/v1/qubes/q-a/start", mutate: bearer(zoneTokenValue), status: http.StatusAccepted},
-		{name: "read-only denial", path: "/api/v1/qubes/q-a/start", mutate: bearer(auditorTokenValue), status: http.StatusForbidden},
-		{name: "unknown bearer", path: "/api/v1/qubes/q-a/start", mutate: bearer(unknown), status: http.StatusUnauthorized},
+		{name: "authenticated success", path: "/api/v1/qubes/q-a/start", mutate: bearer(zoneTokenValue),
+			status: http.StatusAccepted, method: audit.AuthMethodBearer},
+		{name: "read-only denial", path: "/api/v1/qubes/q-a/start", mutate: bearer(auditorTokenValue),
+			status: http.StatusForbidden, method: audit.AuthMethodBearer},
+		{name: "read-only session denial", path: "/api/v1/qubes/q-a/start", liveSession: true,
+			status: http.StatusForbidden, method: audit.AuthMethodSession},
+		{name: "unknown bearer", path: "/api/v1/qubes/q-a/start", mutate: bearer(unknown),
+			status: http.StatusUnauthorized, method: audit.AuthMethodNone},
 		{name: "stale session cookie", path: "/api/v1/qubes/q-a/start",
-			mutate: withHeader("Cookie", middleware.SessionCookieName+"="+cookie), status: http.StatusUnauthorized},
-		{name: "failed login", path: "/api/v1/session", body: `{"token":"` + guess + `"}`, status: http.StatusUnauthorized},
-		{name: "truncated object", path: "/api/v1/qubes/" + strings.Repeat("%FF", 500) + "/start", status: http.StatusUnauthorized},
-		{name: "auth disabled", path: "/api/v1/qubes/q-b/start", tune: noAuth, status: http.StatusAccepted},
+			mutate: withHeader("Cookie", middleware.SessionCookieName+"="+cookie), status: http.StatusUnauthorized,
+			method: audit.AuthMethodNone},
+		{name: "failed login", path: "/api/v1/session", body: `{"token":"` + guess + `"}`,
+			status: http.StatusUnauthorized, method: audit.AuthMethodNone},
+		{name: "truncated object", path: "/api/v1/qubes/" + strings.Repeat("%FF", 500) + "/start",
+			status: http.StatusUnauthorized, method: audit.AuthMethodNone},
+		{name: "auth disabled", path: "/api/v1/qubes/q-b/start", tune: noAuth, status: http.StatusAccepted,
+			method: audit.AuthMethodNone},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r, buf, db, persister, _ := persistingAPI(t, tc.tune, repository.DefaultAuditCaps(), audit.PersisterConfig{})
+			r, buf, db, persister, sessions := persistingAPI(t, tc.tune, repository.DefaultAuditCaps(), audit.PersisterConfig{})
+			mutate, sessionID := tc.mutate, ""
+			if tc.liveSession {
+				sess, err := sessions.Create("auditor", middleware.ScopeReadOnly, nil)
+				require.NoError(t, err)
+				sessionID = sess.ID
+				mutate = withHeader("Cookie", middleware.SessionCookieName+"="+sess.ID)
+			}
 
-			w := apiRequest(r, http.MethodPost, tc.path, tc.body, tc.mutate)
+			w := apiRequest(r, http.MethodPost, tc.path, tc.body, mutate)
 			require.Equal(t, tc.status, w.Code)
 			persister.Stop()
 
 			line := onlyAuditLine(t, buf)
+			assert.Equal(t, tc.method, line["auth_method"])
 			assertRowEqualsLine(t, db, line)
 			assert.Equal(t, w.Result().Header.Get(middleware.RequestIDHeader), line["request_id"],
 				"the row must carry the request ID the caller was given")
@@ -156,6 +176,9 @@ func TestAPIAuditPersistsExactlyTheLoggedLine(t *testing.T) {
 			for _, secret := range []string{guess, unknown, cookie, adminTokenValue, auditorTokenValue, zoneTokenValue,
 				"Bearer", "Authorization", middleware.SessionCookieName} {
 				assert.NotContains(t, stored, secret, "credential material reached the audit table")
+			}
+			if sessionID != "" {
+				assert.NotContains(t, stored, sessionID, "a session ID reached the audit table")
 			}
 		})
 	}

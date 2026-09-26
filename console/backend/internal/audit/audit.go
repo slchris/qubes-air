@@ -55,7 +55,19 @@ type Entry struct {
 	// authority. It only changes how an unauthenticated entry's zone scope
 	// reads ("unrestricted" rather than "none"); it grants nothing.
 	AuthDisabled bool
+	// SessionAuthenticated reports that the resolved credential was a browser
+	// session cookie rather than a Bearer token (middleware's typed session
+	// marker). It is rendered as auth_method and ignored unless
+	// Authenticated: an entry that proved nothing reads "none".
+	SessionAuthenticated bool
 }
+
+// Values of auth_method: how the request's credential was presented.
+const (
+	AuthMethodBearer  = "bearer"
+	AuthMethodSession = "session"
+	AuthMethodNone    = "none"
+)
 
 // AnonymousSubject is the subject recorded for a request no credential was
 // resolved for: one refused by authentication, a login attempt, or any request
@@ -91,6 +103,8 @@ type Event struct {
 	Time          time.Time
 	RequestID     string
 	Authenticated bool
+	// AuthMethod is AuthMethodBearer, AuthMethodSession or AuthMethodNone.
+	AuthMethod string
 	// AuthDisabled is on the line as auth_disabled so the stored row, which
 	// keeps it, is the line field for field.
 	AuthDisabled    bool
@@ -153,6 +167,7 @@ func (e Event) attrs() []slog.Attr {
 	return []slog.Attr{
 		slog.String("request_id", e.RequestID),
 		slog.Bool("authenticated", e.Authenticated),
+		slog.String("auth_method", e.AuthMethod),
 		slog.Bool("auth_disabled", e.AuthDisabled),
 		slog.String("subject", e.Subject),
 		slog.String("source", e.Source),
@@ -237,6 +252,7 @@ func (e Entry) render(at time.Time) Event {
 		Time:            at,
 		RequestID:       validUTF8(e.RequestID),
 		Authenticated:   e.Authenticated,
+		AuthMethod:      e.authMethod(),
 		AuthDisabled:    e.AuthDisabled,
 		Subject:         validUTF8(subject),
 		Source:          validUTF8(e.Source),
@@ -248,6 +264,20 @@ func (e Entry) render(at time.Time) Event {
 		Outcome:         validUTF8(e.Outcome),
 		LatencyMS:       e.LatencyMS,
 		ZoneScope:       validUTF8(scope),
+	}
+}
+
+// authMethod renders how the credential was presented. It follows
+// Authenticated the way the subject does: an entry that proved nothing is
+// "none" whatever else it carries.
+func (e Entry) authMethod() string {
+	switch {
+	case !e.Authenticated:
+		return AuthMethodNone
+	case e.SessionAuthenticated:
+		return AuthMethodSession
+	default:
+		return AuthMethodBearer
 	}
 }
 

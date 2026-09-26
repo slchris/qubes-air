@@ -129,5 +129,9 @@ func auditEntry(c *gin.Context, requestID string, started time.Time) audit.Entry
 		LatencyMS:     time.Since(started).Milliseconds(),
 		ZoneScope:     zones,
 		AuthDisabled:  c.GetBool(authDisabledContextKey),
+		// Read from the typed marker only the cookie branch of ScopedAuth
+		// sets, so nothing a handler writes can make a Bearer request read
+		// as a browser session.
+		SessionAuthenticated: SessionAuthenticated(c),
 	}
 }

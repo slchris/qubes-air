@@ -175,7 +175,8 @@ func TestAuditRetentionPrunesTheRealTrail(t *testing.T) {
 	ctx := context.Background()
 	for i, age := range []time.Duration{91 * 24 * time.Hour, 89 * 24 * time.Hour, time.Minute} {
 		require.NoError(t, repo.AppendEvent(ctx, audit.Event{Time: retentionNow.Add(-age), RequestID: fmt.Sprintf("r%d", i),
-			Authenticated: true, Subject: "operator", Outcome: audit.OutcomeSuccess, ZoneScope: "fleet"}))
+			Authenticated: true, AuthMethod: audit.AuthMethodBearer, Subject: "operator", Outcome: audit.OutcomeSuccess,
+			ZoneScope: "fleet"}))
 	}
 
 	r := NewAuditRetention(repo, AuditRetentionConfig{Now: func() time.Time { return retentionNow }})

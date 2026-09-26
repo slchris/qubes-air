@@ -7,8 +7,10 @@ import (
 )
 
 // createAuditEventsTable is schema step 4: the persisted Console API audit
-// trail. Each row is one JSON audit line (internal/audit), column for field,
-// so a trail read from the database and one read from the log cannot disagree:
+// trail. Each row is one JSON audit line (internal/audit), column for field
+// (the line's auth_method is the last column, added after the summary
+// columns), so a trail read from the database and one read from the log
+// cannot disagree:
 //
 //   - occurred_at is the line's "time" as Unix nanoseconds (UTC), an INTEGER
 //     rather than a DATETIME string so ordering and the retention cutoff are
@@ -58,7 +60,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
 	suppressed       INTEGER NOT NULL DEFAULT 0 CHECK (suppressed >= 0),
 	suppressed_since INTEGER NOT NULL DEFAULT 0,
 	suppressed_sources     INTEGER NOT NULL DEFAULT 0 CHECK (suppressed_sources >= 0),
-	suppressed_top_sources TEXT NOT NULL DEFAULT ''
+	suppressed_top_sources TEXT NOT NULL DEFAULT '',
+	auth_method      TEXT NOT NULL DEFAULT 'none' CHECK (auth_method IN ('bearer', 'session', 'none'))
 )`
 
 // createAuditEventsIndexes serves the three ways the trail is read or trimmed:
@@ -75,7 +78,7 @@ var auditEventsColumns = []string{
 	"subject", "source", "method", "route", "object", "object_truncated",
 	"status", "outcome", "latency_ms", "zone_scope",
 	"persist_class", "suppressed", "suppressed_since",
-	"suppressed_sources", "suppressed_top_sources",
+	"suppressed_sources", "suppressed_top_sources", "auth_method",
 }
 
 // migrateAudit is schema step 4. The table is new, so the step is additive:

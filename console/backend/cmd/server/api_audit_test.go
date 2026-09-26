@@ -172,6 +172,7 @@ func anonymousDenial(route, object string) map[string]any {
 	return map[string]any{
 		"outcome":          audit.OutcomeDenied,
 		"authenticated":    false,
+		"auth_method":      audit.AuthMethodNone,
 		"subject":          audit.AnonymousSubject,
 		"zone_scope":       "none",
 		"method":           http.MethodPost,
@@ -217,7 +218,7 @@ func TestAPIAuditRecordsMutationRefusedByAuthentication(t *testing.T) {
 
 // maxAnonymousAuditLine bounds the audit line one unauthenticated request can
 // write. Every field but the object is fixed by the server and together they
-// come to about 450 bytes (446 in a contrived worst case); the object is capped at audit.MaxObjectBytes of input,
+// come to about 470 bytes (467 in a contrived worst case); the object is capped at audit.MaxObjectBytes of input,
 // and the JSON encoder turns one input byte into at most six (\u00XX, \ufffd).
 const maxAnonymousAuditLine = 2048
 
@@ -290,6 +291,7 @@ func TestAPIAuditRecordsReadOnlyScopeDenial(t *testing.T) {
 		assertAuditFields(t, onlyAuditLine(t, buf), w, map[string]any{
 			"outcome":       audit.OutcomeDenied,
 			"authenticated": true,
+			"auth_method":   audit.AuthMethodBearer,
 			"subject":       "auditor",
 			"zone_scope":    "fleet",
 			"route":         startRoute,
@@ -310,6 +312,7 @@ func TestAPIAuditRecordsReadOnlyScopeDenial(t *testing.T) {
 		assertAuditFields(t, onlyAuditLine(t, buf), w, map[string]any{
 			"outcome":       audit.OutcomeDenied,
 			"authenticated": true,
+			"auth_method":   audit.AuthMethodSession,
 			"subject":       "auditor",
 		})
 		assertNoCredentialMaterial(t, buf, sess.ID)
@@ -416,6 +419,7 @@ func TestAPIAuditRecordsAuthDisabledAsUnrestricted(t *testing.T) {
 	assertAuditFields(t, onlyAuditLine(t, buf), w, map[string]any{
 		"outcome":       audit.OutcomeSuccess,
 		"authenticated": false,
+		"auth_method":   audit.AuthMethodNone,
 		"subject":       audit.AnonymousSubject,
 		"zone_scope":    "unrestricted",
 		"route":         startRoute,

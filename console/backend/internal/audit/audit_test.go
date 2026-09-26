@@ -230,6 +230,7 @@ func lineFromEvent(ev Event) map[string]any {
 		"level":            "INFO",
 		"request_id":       ev.RequestID,
 		"authenticated":    ev.Authenticated,
+		"auth_method":      ev.AuthMethod,
 		"auth_disabled":    ev.AuthDisabled,
 		"subject":          ev.Subject,
 		"source":           ev.Source,
@@ -257,6 +258,8 @@ func TestRecorderHandsTheSinkTheLoggedEvent(t *testing.T) {
 			Status: 202, Outcome: OutcomeSuccess, LatencyMS: 3, ZoneScope: []string{"zone-a", "zone-b"}}},
 		{name: "anonymous", entry: Entry{RequestID: "R2", Subject: "operator", ZoneScope: []string{"zone-a"},
 			Method: "POST", Route: "/api/v1/zones", Status: 401, Outcome: OutcomeDenied}},
+		{name: "session", entry: Entry{RequestID: "R6", Authenticated: true, SessionAuthenticated: true, Subject: "operator",
+			Method: "POST", Route: "/api/v1/zones", Status: 201, Outcome: OutcomeSuccess}},
 		{name: "auth disabled", entry: Entry{RequestID: "R3", AuthDisabled: true, Method: "DELETE",
 			Route: "/api/v1/qubes/:id", Object: "q-b", Status: 204, Outcome: OutcomeSuccess}},
 		{name: "truncated object", entry: Entry{RequestID: "R4", Method: "POST", Route: "/api/v1/qubes/:id/start",
@@ -315,6 +318,29 @@ func TestValidUTF8ReplacesByteForByte(t *testing.T) {
 		var decoded string
 		if err := json.Unmarshal(raw, &decoded); err != nil || decoded != validUTF8(in) {
 			t.Errorf("JSON round trip of %q = %q, validUTF8 = %q", in, decoded, validUTF8(in))
+		}
+	}
+}
+
+// TestRecorderRendersAuthMethod pins auth_method to how the credential came
+// in, and to "none" whenever nothing was proved, whatever else the entry says.
+func TestRecorderRendersAuthMethod(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry Entry
+		want  string
+	}{
+		{"bearer", Entry{Authenticated: true}, AuthMethodBearer},
+		{"session", Entry{Authenticated: true, SessionAuthenticated: true}, AuthMethodSession},
+		{"unauthenticated", Entry{}, AuthMethodNone},
+		{"unauthenticated with a stray session flag", Entry{SessionAuthenticated: true}, AuthMethodNone},
+		{"auth disabled", Entry{AuthDisabled: true}, AuthMethodNone},
+	}
+	for _, tc := range cases {
+		var buf bytes.Buffer
+		NewRecorder(&buf).Record(tc.entry)
+		if got := decodeLine(t, &buf)["auth_method"]; got != tc.want {
+			t.Errorf("%s: auth_method = %v, want %q", tc.name, got, tc.want)
 		}
 	}
 }

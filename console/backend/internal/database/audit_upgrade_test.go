@@ -184,4 +184,10 @@ func TestAuditEventsRejectsOutOfRangeValues(t *testing.T) {
 		_, err := db.DB().ExecContext(ctx, insert, args...)
 		assert.Error(t, err, name)
 	}
+	for _, method := range []string{"token", "", "Bearer"} {
+		_, err := db.DB().ExecContext(ctx, `INSERT INTO audit_events (occurred_at, request_id, authenticated, auth_disabled,
+			subject, source, method, route, object, object_truncated, status, outcome, latency_ms, zone_scope, persist_class,
+			auth_method) VALUES (1, 'r', 1, 0, 's', '192.0.2.1', 'POST', '/r', '', 0, 200, 'success', 0, 'fleet', 'full', ?)`, method)
+		assert.Error(t, err, "auth_method %q", method)
+	}
 }
