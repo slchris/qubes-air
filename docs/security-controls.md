@@ -191,8 +191,10 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   `audit_trail` 字段为 `degraded`（最近一次写失败或有事件被丢，此后还没有成功写入），正常为 `ok`。
   它只是信息，不把 `/health` 变红，也不带错误细节：日志行照写，而 `/health` 是 compose 的 liveness
   probe，审计库写不进去不该让控制台被重启。
-- **停机**：`Dependencies.Close` 先排空队列、写出待写的汇总行，再关数据库；排空最多 5 秒加在途写入
-  的超时，剩下的计为丢失并记日志（`TestCloseDrainsTheAuditTrailBeforeTheDatabase`）。
+- **停机**：`Dependencies.Close` 先排空队列、写出待写的汇总行，再关数据库。`Stop` 先等已在写的那一条
+  （最多一个写超时，5 秒），之后队列里的事件只在 5 秒宽限期内写，不再各自按完整写超时写，合计不超过
+  10 秒；剩下的计为丢失并记日志（`TestCloseDrainsTheAuditTrailBeforeTheDatabase`、
+  `TestPersisterStopIsBoundedByTheGrace`、`TestPersisterStopTakesPriorityOverTheQueue`）。
 - **留存**：90 天，严格早于 `now − 90 天` 的行被删（恰好等于的保留）；每小时清理一次，每批 1000 行、
   每次最多 30 秒，停机时取消。
 - **两类行，各有硬上限**（`persist_class`）：

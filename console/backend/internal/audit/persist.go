@@ -200,8 +200,9 @@ func (p *Persister) Start() {
 }
 
 // Stop closes the door to new events, writes what is queued and any pending
-// summary within StopGrace, and returns when the writer has exited. Call it
-// before the store's database is closed. It is safe to call more than once,
+// summary within StopGrace, and returns when the writer has exited. It waits
+// at most for the write already in flight (WriteTimeout) plus StopGrace. Call
+// it before the store's database is closed. It is safe to call more than once,
 // and without Start (queued events are then dropped and counted).
 func (p *Persister) Stop() {
 	p.stopOnce.Do(func() {
@@ -272,10 +273,20 @@ func (p *Persister) admit(ev Event) bool {
 	return false
 }
 
+// run is the writer. Stop is checked first on every turn: select picks at
+// random among ready cases, so without that a full queue could keep winning
+// and write one event after another, each under the full WriteTimeout, after
+// Stop was called. Once Stop is seen, finish takes over under StopGrace.
 func (p *Persister) run(ticker *time.Ticker) {
 	defer close(p.done)
 	defer ticker.Stop()
 	for {
+		select {
+		case <-p.stop:
+			p.finish()
+			return
+		default:
+		}
 		select {
 		case ev := <-p.queue:
 			p.writeEvent(context.Background(), ev)
@@ -352,9 +363,11 @@ func (p *Persister) write(parent context.Context, what string, call func(context
 	err := call(ctx)
 	cancel()
 	if err != nil {
-		p.failed.Add(1)
+		// The counter moves last, so whoever sees it has already been
+		// given the degraded flag and the log line.
 		p.degraded.Store(true)
 		p.report(what, err.Error())
+		p.failed.Add(1)
 		return false
 	}
 	if p.degraded.CompareAndSwap(true, false) {
@@ -368,9 +381,9 @@ func (p *Persister) write(parent context.Context, what string, call func(context
 
 // lose accounts for an event that will never reach the store.
 func (p *Persister) lose(requestID, reason string) {
-	p.dropped.Add(1)
 	p.degraded.Store(true)
 	p.report("request_id="+requestID, reason)
+	p.dropped.Add(1)
 }
 
 // report logs a loss at once if none was logged within FailureLogEvery, and

@@ -372,20 +372,28 @@ func TestPersisterStopDrainsThenRefuses(t *testing.T) {
 	}
 }
 
-// Shutdown must not hang on a stalled store: Stop returns once the in-flight
-// write times out and the grace is spent, and every queued event is
-// accounted for as failed or dropped.
+// Shutdown must not hang on a stalled store. With a write timeout far longer
+// than the grace and a full queue behind the write in flight, Stop waits for
+// that one write and then spends only the grace on the rest: writing the
+// queue one timeout at a time would take 50 x 200ms. Every event is still
+// accounted for, as failed or dropped.
 func TestPersisterStopIsBoundedByTheGrace(t *testing.T) {
+	const queued = 50
 	p, store, _, _ := newTestPersister(t, func(c *PersisterConfig) {
-		c.WriteTimeout = 30 * time.Millisecond
+		c.QueueSize = queued
+		c.WriteTimeout = 200 * time.Millisecond
 		c.StopGrace = 30 * time.Millisecond
 	})
 	store.hold = make(chan struct{}) // never released
+	store.entered = make(chan struct{}, queued+1)
 	p.Start()
-	for i := range 4 {
+	p.Submit(operatorAction(0))
+	<-store.entered // one write in flight; the rest queue behind it
+	for i := 1; i <= queued; i++ {
 		p.Submit(operatorAction(i))
 	}
 
+	began := time.Now()
 	stopped := make(chan struct{})
 	go func() {
 		p.Stop()
@@ -396,8 +404,84 @@ func TestPersisterStopIsBoundedByTheGrace(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop did not return while the store was stalled")
 	}
-	if st := p.Stats(); st.Failed+st.Dropped != 4 || st.Persisted != 0 {
-		t.Errorf("stats = %+v, want all 4 events failed or dropped", st)
+	if took := time.Since(began); took > 2*time.Second {
+		t.Errorf("Stop took %s; the in-flight write (200ms) plus the grace (30ms) should bound it", took)
+	}
+	if st := p.Stats(); st.Failed+st.Dropped != queued+1 || st.Persisted != 0 {
+		t.Errorf("stats = %+v, want all %d events failed or dropped", st, queued+1)
+	}
+}
+
+// deadlineStore holds its first write until released and fails every later
+// one at once, recording the deadline each later write was given.
+type deadlineStore struct {
+	release   chan struct{}
+	entered   chan struct{}
+	mu        sync.Mutex
+	first     bool
+	deadlines []time.Time
+}
+
+func (s *deadlineStore) AppendEvent(ctx context.Context, _ Event) error {
+	s.mu.Lock()
+	first := !s.first
+	s.first = true
+	s.mu.Unlock()
+	if first {
+		s.entered <- struct{}{}
+		<-s.release
+		return nil
+	}
+	deadline, _ := ctx.Deadline()
+	s.mu.Lock()
+	s.deadlines = append(s.deadlines, deadline)
+	s.mu.Unlock()
+	return errors.New("stalled")
+}
+
+func (s *deadlineStore) AppendSuppression(context.Context, Suppression) error { return nil }
+
+// Once Stop is called, no queued event may be written under the full
+// WriteTimeout: select picks at random among ready cases, so a writer that
+// only noticed Stop when select happened to choose it would keep writing the
+// queue. Each round below has a 1-in-2 chance of catching such a writer; 20
+// rounds make a miss one in a million.
+func TestPersisterStopTakesPriorityOverTheQueue(t *testing.T) {
+	const grace = 50 * time.Millisecond
+	for round := range 20 {
+		store := &deadlineStore{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+		p := NewPersister(store, PersisterConfig{WriteTimeout: time.Hour, StopGrace: grace, Logf: (&logCapture{}).Logf})
+		p.Start()
+		p.Submit(operatorAction(0))
+		<-store.entered
+		for i := 1; i <= 10; i++ {
+			p.Submit(operatorAction(i))
+		}
+
+		stopped := make(chan struct{})
+		go func() {
+			p.Stop()
+			close(stopped)
+		}()
+		waitFor(t, "Stop to signal the writer", func() bool {
+			select {
+			case <-p.stop:
+				return true
+			default:
+				return false
+			}
+		})
+		signaled := time.Now()
+		close(store.release)
+		<-stopped
+
+		store.mu.Lock()
+		for _, d := range store.deadlines {
+			if d.After(signaled.Add(grace + time.Second)) {
+				t.Fatalf("round %d: a queued event was written after Stop with deadline %s, beyond the grace", round, d.Sub(signaled))
+			}
+		}
+		store.mu.Unlock()
 	}
 }
 
