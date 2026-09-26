@@ -24,7 +24,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Lifetimes and the capacity bound.
+// Lifetimes and the capacity bound (docs/runtime-defaults.md UD-26, UD-26b, UD-26c).
 const (
 	// ApprovalTTL is how long a request waits for a decision. The requester's
 	// HTTP call is held open for this long, so it also bounds that call.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/database"
@@ -516,4 +517,42 @@ func TestQubeHandler_LaunchApp_TransportError(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// cancelAwareTransport blocks a call until its context ends.
+type cancelAwareTransport struct {
+	started chan struct{}
+}
+
+func (x cancelAwareTransport) Call(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+	close(x.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+var _ transport.Transport = cancelAwareTransport{}
+
+// A caller that goes away cancels the launch in flight rather than leaving it
+// to run against the qube with nobody to report to.
+func TestQubeHandler_LaunchApp_RequestCancellationCancelsTransport(t *testing.T) {
+	xport := cancelAwareTransport{started: make(chan struct{})}
+	router, id, _, cleanup := setupQubeAppsTestRouter(t, xport)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/qubes/"+id+"/apps/firefox.desktop/launch", nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+
+	<-xport.started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request did not return after its context was canceled")
+	}
 }

@@ -50,6 +50,10 @@
 > 2026-09-26 合并后追加：凭据 API 修复把 `credentialSvc` 挪到 zone service 之前（`initDependencies` 中段 +3 行、
 > 其后净 +1）。§1.1 中 UD-1c/UD-1d/UD-1e/UD-1g/UD-23/UD-25 指向 `cmd/server/main.go` 的引用已按合并后的工作树
 > 逐条重算并用 `sed -n` 核对。
+> 2026-09-26 MCP 桌面帧（新增 §1.7 UD-26 系列）：`cmd/server/main.go` 增加了桌面访问的
+> import、`Dependencies` 字段、`newDesktopAccessHandler` 与路由注册，其后的行整体下移；
+> `internal/service/qube_service.go` 在 `QubeServiceImpl` 与选项里各加一段，其后 +9。§1.1 与本节中
+> 指向这两个文件的引用已逐条重算并核对内容；其余文件沿用上次结果。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -136,7 +140,7 @@
 
 校验点在 service，取值来自配置；越界在**入队与 provider 调用之前**拒绝（`Create` 与 `Update`
 共用同一个校验器）。两端都是**闭区间**：min 与 max 本身允许，min-1 / max+1 拒绝。**0 不是尺寸而是
-"未设置"**：create 时由 `applyDefaultSpec` 换成类型默认值（`internal/service/qube_service.go:424`），
+"未设置"**：create 时由 `applyDefaultSpec` 换成类型默认值（`internal/service/qube_service.go:433`），
 data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/provider/proxmox/adapter.go:55`），
 所以下限只作用于真正给了值的字段。
 
@@ -157,6 +161,22 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 > 相关测试：`internal/service/specbounds_test.go`（边界双向、配置生效、非法配置不关闭校验、
 > provider 未被调用）、`internal/config/config_test.go:620` 起（默认值/env/非法值）、
 > `cmd/server/specbounds_test.go:19`（配置默认值与服务兜底同值）。
+
+### 1.7 MCP 桌面帧授权（MCP-01 部分）
+
+判定规则见[安全控制](security-controls.md#mcp-桌面帧授权)。全部是编译期常量，没有配置键。
+
+| # | 默认值 | 取值 | 位置 |
+|---|---|---|---|
+| UD-26 | 桌面访问审批窗口 | **30s**：请求在进程内等待 Console 操作者决定，MCP 的调用在此期间保持打开 | `console/backend/internal/desktopaccess/consent.go:31`（`ApprovalTTL`） |
+| UD-26b | 帧 grant 有效期 | **30s**，单次使用；取帧 lease 最长也只活到这里 | `internal/desktopaccess/consent.go:34`（`FrameGrantTTL`） |
+| UD-26c | 待决与有效请求上限 | **128**（pending + approved + active），超出返回 429 | `internal/desktopaccess/consent.go:38`（`MaxPendingRequests`） |
+| UD-26d | 桌面路由请求体上限 | **1 KiB**，超出 413；API 总上限 UD-1b 仍在其外 | `internal/handler/desktop_access_handler.go:26`（`desktopAccessBodyLimit`） |
+| UD-26e | 审批等待与取帧的写截止时间 | 各 **35s**（UD-26 / UD-26b + 5s），逐请求设置；服务端全局 `WriteTimeout` 仍是 15s | `internal/handler/desktop_access_handler.go:30`（`desktopWriteSlack`）、`:367`（`extendWriteDeadline`）；全局值 `cmd/server/main.go:1430` |
+| UD-26f | 并发取帧上限 | **2**；满时立即 503 + `Retry-After: 1`，不消耗 grant | `internal/handler/desktop_access_handler.go:35`（`MaxConcurrentDesktopFrames`） |
+| UD-26g | 单次取帧总时限 / `console-desktop` 证书寿命 | **20s / 2 分钟** | `internal/service/desktopframe.go:35`（`desktopFrameTimeout`）、`internal/service/desktopstream.go:34`（`desktopCertLifetime`） |
+| UD-26h | Xpra 对端数据上限 | 单 record **4 MiB**；会话 **10s**；PNG **2 MiB**、单边 **8192 px**、总像素 **4 Mi**。上限内的解码放大实测约 8.7 MB（集合）与 34 MB（16 位 RGBA PNG），UD-26f 因此限制并发 | `internal/xpra/rencode.go:26`（`MaxEncodedPacket`）；`internal/xpra/screenshot.go:22`（`ScreenshotTimeout`）、`:24`、`:26`、`:28` |
+| UD-26i | 桌面端口 | **10005**（`qubesair.StreamTCP+10005`）；agent 只对 Relay 与 `console-desktop` 开放 | `internal/transport/grpc/server.go:848`（`DesktopStreamPort`）、`:859`（`authorizeStreamCaller`） |
 
 ## 2. SQLite 结构（D-6）
 

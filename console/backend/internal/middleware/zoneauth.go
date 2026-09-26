@@ -30,6 +30,9 @@ var fleetPrefixes = []string{
 	"/api/v1/monitoring",
 	"/api/v1/billing",
 	"/api/v1/status",
+	// The desktop approval queue lists requests for every zone's qubes and is
+	// acted on by a fleet-wide operator.
+	"/api/v1/desktop-access",
 }
 
 // maxZoneProbeBytes bounds how much of a create body is read to find zone_id.
