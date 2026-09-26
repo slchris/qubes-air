@@ -75,8 +75,8 @@ describe('Dashboard agent recovery alert', () => {
   })
 
   // The count is derived from the running qubes, so a parked qube's leftover
-  // reading never reaches it. Regression guard for the same defect the QubeList
-  // badge had: recovery steps pointed at a qube that is not up.
+  // reading never reaches it. Regression guard for the same defect the qube
+  // table's badge (QubeTable.svelte) had: recovery steps aimed at a parked qube.
   it('does not count a parked qube that kept a manual reading', async () => {
     await renderWithQubes([
       qubeFixture({

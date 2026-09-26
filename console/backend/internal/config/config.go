@@ -356,9 +356,9 @@ type OrchestratorConfig struct {
 // either disable the check or refuse every request.
 type QubeSpecConfig struct {
 	// MinVCPU / MaxVCPU bound spec.vcpu (default 1..32). The upper bound is the
-	// UI's own create/edit maximum (console/frontend/src/components/QubeList.svelte
-	// :471, :579) and 8x the 4 cores per node of the reference cluster the
-	// scheduler was built against.
+	// UI's own create/edit maximum
+	// (console/frontend/src/components/QubeFormDialog.svelte:202) and 8x the 4
+	// cores per node of the reference cluster the scheduler was built against.
 	// Env: QUBES_AIR_QUBE_SPEC_MIN_VCPU / QUBES_AIR_QUBE_SPEC_MAX_VCPU.
 	MinVCPU int `yaml:"min_vcpu"`
 	MaxVCPU int `yaml:"max_vcpu"`

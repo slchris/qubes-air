@@ -17,6 +17,7 @@ vi.mock('../lib/api', async (importOriginal) => {
     getQube: vi.fn(),
     purgeQube: vi.fn(),
     createQube: vi.fn(),
+    updateQube: vi.fn(),
     getZoneCapacity: vi.fn(),
   }
 })
@@ -42,6 +43,7 @@ beforeEach(() => {
   vi.mocked(api.listZones).mockResolvedValue({ zones: [], total: 0 } as never)
   vi.mocked(api.getZoneCapacity).mockResolvedValue({} as never)
   purgeQube.mockReset()
+  vi.mocked(api.updateQube).mockReset()
 })
 
 afterEach(() => {
@@ -157,97 +159,63 @@ describe('QubeList create flow', () => {
   })
 })
 
-// "unreachable" answers whether the agent answers; agent_recovery answers
-// whether waiting can still fix it. The list is where an operator scans for
-// trouble, so the second reading has to be visible there — and, just as
-// important, absent when it does not apply.
-describe('QubeList agent recovery state', () => {
-  it('marks an agent that has outlasted the unit restart budget', async () => {
+describe('QubeList edit flow', () => {
+  it('saves edited values and closes the dialog on success', async () => {
     const qube = qubeFixture({
-      status: 'running',
-      agent_health: 'unreachable',
-      agent_recovery: 'manual',
-      agent_failing_since: '2026-09-22T10:00:00Z',
-      agent_last_error: 'nothing is listening on 10.0.0.7:8443',
+      zone_id: 'z1',
+      spec: { vcpu: 1, memory: 512, disk: 20, data_disk_gb: 15 },
     })
+    vi.mocked(api.listZones).mockResolvedValue({
+      zones: [{ id: 'z1', name: 'zone-a', type: 'proxmox', status: 'disconnected' }],
+      total: 1,
+    } as never)
+    vi.mocked(api.updateQube).mockResolvedValue({ ...qube, name: 'renamed' })
 
     await renderWithQube(qube)
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    // Zone and type are shown, not editable: the backend does not move a qube.
+    expect(screen.getByLabelText(/^zone$/i)).toHaveValue('zone-a')
+    expect(screen.getByLabelText(/^zone$/i)).toBeDisabled()
+    expect(screen.getByLabelText(/^type$/i)).toBeDisabled()
+    const name = screen.getByLabelText(/^name$/i)
+    await userEvent.clear(name)
+    await userEvent.type(name, 'renamed')
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
-    const marker = screen.getByText(/manual recovery/i)
-    expect(marker).toBeInTheDocument()
-    // The tooltip is where the limit of what the console knows is stated: it
-    // must not read as "the console saw the unit fail".
-    expect(marker.getAttribute('title')).toMatch(/cannot read the unit inside the qube/i)
-    expect(marker.getAttribute('title')).toMatch(/systemctl status qubes-air-agent/)
-    expect(marker.getAttribute('title')).toMatch(/docs\/runbook-remotevm\.md/)
-    // Nor as "the agent is gone for good": the unit is enabled and starts again
-    // at boot, so the supportable claim is that it stopped restarting itself
-    // within this boot and needs its failed state cleared.
-    expect(marker.getAttribute('title')).toMatch(/in this boot it has stopped restarting/i)
-    expect(marker.getAttribute('title')).toMatch(/systemctl reset-failed/)
-    expect(marker.getAttribute('title')).not.toMatch(/will not come back on its own/i)
+    expect(api.updateQube).toHaveBeenCalledWith(qube.id, expect.objectContaining({
+      name: 'renamed',
+      spec: expect.objectContaining({ vcpu: 1, memory: 512, data_disk_gb: 15 }),
+    }))
+    expect(screen.queryByRole('dialog', { name: /edit qube/i })).not.toBeInTheDocument()
+    expect(await screen.findByText('renamed')).toBeInTheDocument()
   })
 
-  // A parked qube keeps whatever agent reading it had before it was parked, and
-  // nothing probes it any more (backend: computeRunning in qube_predicates.go).
-  // Rendering that leftover as a live problem would tell an operator to run
-  // recovery steps on a qube that is not even up.
-  it.each(['suspended', 'released', 'stopped'] as const)(
-    'does not mark a parked qube (%s) that kept a manual reading',
-    async (status) => {
-      const qube = qubeFixture({
-        status,
-        agent_health: 'unreachable',
-        agent_recovery: 'manual',
-        agent_failing_since: '2026-09-22T10:00:00Z',
-      })
-
-      await renderWithQube(qube)
-
-      expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
-    },
-  )
-
-  // The mirror of the parked case, and the reason the guard is a status
-  // predicate rather than `status === 'running'`: the backend probes qubes that
-  // are still coming up, so a transient status can carry a real reading.
-  it('still marks a qube that is coming up and failing', async () => {
-    const qube = qubeFixture({
-      status: 'resuming',
-      agent_health: 'unreachable',
-      agent_recovery: 'manual',
-      agent_failing_since: '2026-09-22T10:00:00Z',
-    })
+  it('keeps the edit dialog open and shows a backend refusal', async () => {
+    const qube = qubeFixture()
+    vi.mocked(api.updateQube).mockRejectedValue(
+      new api.ApiException(409, 'CONFLICT', 'qube cannot be changed while an operation is active'),
+    )
 
     await renderWithQube(qube)
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
-    expect(screen.getByText(/manual recovery/i)).toBeInTheDocument()
+    expect(await screen.findByText(/cannot be changed while an operation is active/i)).toBeInTheDocument()
+    expect(screen.getByRole('dialog', { name: /edit qube/i })).toBeInTheDocument()
   })
 
-  it('does not mark a failure that may still be a restart in flight', async () => {
-    const qube = qubeFixture({
-      status: 'running',
-      agent_health: 'unreachable',
-      agent_recovery: 'pending',
-      agent_last_error: 'nothing is listening on 10.0.0.7:8443',
-    })
+  it('discards unsaved edits on cancel and reopens with the stored values', async () => {
+    const qube = qubeFixture()
 
     await renderWithQube(qube)
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    await userEvent.clear(screen.getByLabelText(/^name$/i))
+    await userEvent.type(screen.getByLabelText(/^name$/i), 'half-typed')
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
 
-    expect(screen.getByText(/^unreachable$/)).toBeInTheDocument()
-    expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
-  })
-
-  it('does not mark a healthy agent', async () => {
-    const qube = qubeFixture({
-      status: 'running',
-      agent_health: 'healthy',
-      agent_recovery: 'none',
-    })
-
-    await renderWithQube(qube)
-
-    expect(screen.getByText(/^healthy$/)).toBeInTheDocument()
-    expect(screen.queryByText(/manual recovery/i)).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: /edit qube/i })).not.toBeInTheDocument()
+    expect(api.updateQube).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    expect(screen.getByLabelText(/^name$/i)).toHaveValue(qube.name)
   })
 })

@@ -47,33 +47,33 @@ type SpecBounds struct {
 // Where the numbers come from — and which ones are judgement calls:
 //
 //   - VCPU 1..32. Measured: the only UI refuses anything outside 1..32 on both
-//     its create and edit forms (console/frontend/src/components/QubeList.svelte
-//     :471, :579), so the API accepts exactly what an operator can express
-//     today. 32 is also 8x the 4 cores per node of the reference cluster the
+//     its create and edit forms (frontend QubeFormDialog.svelte:202, one input
+//     for both), so the API accepts exactly what an operator can express today.
+//     32 is also 8x the 4 cores per node of the reference cluster the
 //     scheduler was built against (internal/scheduler/scheduler_test.go:12-13),
 //     while the built-in type defaults are 2/4/8 (getDefaultVCPU).
 //   - Memory 512..262144 MB. The MINIMUM is measured: 512 MB is the UI's own
-//     minimum (QubeList.svelte:476) and the size of the console's smallest VM,
-//     the data-disk holder (provider/proxmox/adapter.go:306). The MAXIMUM has no
-//     basis in this repository — it is a JUDGEMENT CALL, not a measurement.
-//     256 GiB is 16x the largest built-in type default (16384 MB,
+//     minimum (QubeFormDialog.svelte:207) and the size of the console's
+//     smallest VM, the data-disk holder (provider/proxmox/adapter.go:306). The
+//     MAXIMUM has no basis in this repository — it is a JUDGEMENT CALL, not a
+//     measurement. 256 GiB is 16x the largest built-in type default (16384 MB,
 //     getDefaultMemory) and ~8x the reference node's 31 GiB of RAM
 //     (scheduler_test.go:13): above any request this project's deployment model
 //     would make, while still refusing a value wrong by orders of magnitude.
 //     Move it with qube_spec.max_memory_mb rather than trusting the number.
 //   - Disk 10..16384 GB. The MINIMUM is the UI's minimum for the root disk
-//     (QubeList.svelte:483); the template could demand more, but that only fails
-//     at Proxmox (models/qube.go:207-208). The MAXIMUM is a JUDGEMENT CALL:
-//     16 TiB is ~160x the largest built-in root-disk default (100 GB,
-//     getDefaultDisk), large enough that no single-operator node reaches it, and
-//     it refuses the 200000 GiB typo this bound exists for. The real ceiling is a
-//     property of the datastore, which the API cannot see, so this is deliberately
-//     a policy bound: qube_spec.max_disk_gb.
+//     (QubeFormDialog.svelte:214); the template could demand more, but that
+//     only fails at Proxmox (models/qube.go:207-208). The MAXIMUM is a
+//     JUDGEMENT CALL: 16 TiB is ~160x the largest built-in root-disk default
+//     (100 GB, getDefaultDisk), large enough that no single-operator node
+//     reaches it, and it refuses the 200000 GiB typo this bound exists for. The
+//     real ceiling is a property of the datastore, which the API cannot see, so
+//     this is deliberately a policy bound: qube_spec.max_disk_gb.
 //   - DataDiskGB 1..16384 GB. The MINIMUM is the UI's minimum
-//     (QubeList.svelte:488). The MAXIMUM shares the root disk's JUDGEMENT CALL
-//     and its rationale: this disk holds a qube's persistent data and is the one
-//     PVE will never shrink, so it is bounded by the same policy ceiling
-//     (qube_spec.max_data_disk_gb).
+//     (QubeFormDialog.svelte:219). The MAXIMUM shares the root disk's JUDGEMENT
+//     CALL and its rationale: this disk holds a qube's persistent data and is
+//     the one PVE will never shrink, so it is bounded by the same policy
+//     ceiling (qube_spec.max_data_disk_gb).
 //   - GPU count 1..8. JUDGEMENT CALL with no basis in the repository: no
 //     provider adapter reads Spec.GPU at all today (only negative counts are
 //     refused), so there is nothing to measure. 8 keeps a typo (or a GPU type

@@ -629,8 +629,9 @@ func TestConfig_QubeSpecBoundsDefaults(t *testing.T) {
 	}
 
 	// The three numbers the UI already constrains must stay in step with it
-	// (QubeList.svelte's own min/max), or the API would refuse what the form
-	// offers, or accept what it blocks.
+	// (QubeFormDialog.svelte's own min/max, pinned there by
+	// QubeFormDialog.test.ts), or the API would refuse what the form offers, or
+	// accept what it blocks.
 	assert.Equal(t, 1, q.MinVCPU)
 	assert.Equal(t, 32, q.MaxVCPU, "the create/edit form's max=\"32\" must be the API's maximum")
 	assert.Equal(t, 512, q.MinMemoryMB, "the form's min=\"512\" must be the API's minimum")

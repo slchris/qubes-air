@@ -128,10 +128,10 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-15 | vCPU 上下限 | **1..32**（0 = 未设置） | `internal/config/config.go:363-364`（字段）、`:691-692`（默认值）；服务侧同值 `internal/service/specbounds.go:84-85`；依据：表单自身 `console/frontend/src/components/QubeList.svelte:471`（create）与 `:579`（edit）的 `min="1" max="32"` |
-| UD-16 | 内存上下限（MB） | **512..262144**（256 GiB） | `config.go:372-373`（字段）、`:693-694`（默认值）；服务侧 `specbounds.go:86-87`；下限依据：表单 `QubeList.svelte:476` 的 `min="512"` 与 holder VM 自身的 `memory=512`（`internal/provider/proxmox/adapter.go:306`）；**上限无仓库依据，是判断值**（注释已写明） |
-| UD-17 | 根盘上下限（GB） | **10..16384**（16 TiB） | `config.go:380-381`（字段）、`:695-696`（默认值）；服务侧 `specbounds.go:88-89`；下限依据：表单 `QubeList.svelte:483` 的 `min="10"`；**上限是判断值** |
-| UD-18 | 数据盘上下限（GB） | **1..16384**（16 TiB） | `config.go:387-388`（字段）、`:697-698`（默认值）；服务侧 `specbounds.go:90-91`；下限依据：表单 `QubeList.svelte:488` 的 `min="1"`；**上限是判断值**（这张盘 PVE 不能缩回） |
+| UD-15 | vCPU 上下限 | **1..32**（0 = 未设置） | `internal/config/config.go:363-364`（字段）、`:691-692`（默认值）；服务侧同值 `internal/service/specbounds.go:84-85`；依据：表单自身 `console/frontend/src/components/QubeFormDialog.svelte:202`（create 与 edit 共用一个输入）的 `min="1" max="32"` |
+| UD-16 | 内存上下限（MB） | **512..262144**（256 GiB） | `config.go:372-373`（字段）、`:693-694`（默认值）；服务侧 `specbounds.go:86-87`；下限依据：表单 `QubeFormDialog.svelte:207` 的 `min="512"` 与 holder VM 自身的 `memory=512`（`internal/provider/proxmox/adapter.go:306`）；**上限无仓库依据，是判断值**（注释已写明） |
+| UD-17 | 根盘上下限（GB） | **10..16384**（16 TiB） | `config.go:380-381`（字段）、`:695-696`（默认值）；服务侧 `specbounds.go:88-89`；下限依据：表单 `QubeFormDialog.svelte:214` 的 `min="10"`；**上限是判断值** |
+| UD-18 | 数据盘上下限（GB） | **1..16384**（16 TiB） | `config.go:387-388`（字段）、`:697-698`（默认值）；服务侧 `specbounds.go:90-91`；下限依据：表单 `QubeFormDialog.svelte:219` 的 `min="1"`；**上限是判断值**（这张盘 PVE 不能缩回） |
 | UD-19 | GPU 卡数上下限 | **1..8** | `config.go:393-394`（字段）、`:699-700`（默认值）；服务侧 `specbounds.go:92-93`；**无仓库依据**（当前没有任何 provider 读 `Spec.GPU`），纯判断值 |
 | UD-20 | 上述 10 个键的 env 绑定 | `QUBES_AIR_QUBE_SPEC_{MIN,MAX}_{VCPU,MEMORY_MB,DISK_GB,DATA_DISK_GB,GPU_COUNT}`；缺失或非法取值保留默认（不会解析成 0） | `config.go:971-980`（逐个绑定）、`:986`（`intFromEnv`：空值与解析失败都回退到当前值） |
 | UD-21 | 非法 bounds 的处置 | **启动即失败**：`min < 1` 或 `max < min` 拒绝启动，而不是关掉校验；服务侧另有兜底（非法集合被忽略、保留默认） | `config.go:420`（`QubeSpecConfig.Validate`）、`:1046`（`Config.Validate` 中调用）；兜底 `specbounds.go:209`（`WithSpecBounds`） |
