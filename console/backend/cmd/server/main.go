@@ -992,7 +992,7 @@ func buildBootstrapper(
 		certIssuer,
 		service.NewBootstrapIssuer(tokens, certIssuer, certs),
 		cfg.Orchestrator.AgentListen,
-		service.DefaultBootstrapTimeout)
+		service.DefaultBootstrapTimeout).WithBootstrapPeerPinProvider(tokens) // first-contact pins
 }
 
 // configureTrustedProxies makes c.ClientIP() report the peer address instead of

@@ -22,7 +22,7 @@
 | 6 | **审计留存由部署方自己接住** | 审计是 JSON lines 写到 **stderr**，没有内置文件落地、轮转与留存期；console 重启或日志被截断即丢失 | `journalctl -u <unit> \| grep '"msg":"audit"'`（或你的日志文件）；确认有轮转与留存期，且每行含 request_id/authenticated/subject/source/method/route/object/object_truncated/status/outcome/zone scope；被拒绝的变更请求（401/403 等）同样有记录 |
 | 7 | **把"重启即全员登出"写进运维预期** | session 存在内存 map 里，console 重启后所有浏览器登录失效；依赖 session 的自动化会在重启后集体失败 | 重启 console，确认旧 session 请求得到 401；自动化改用 Bearer token（第 4 条） |
 | 8 | **snippet 共享目录只导出给 PVE 节点**（仅适用于共享存储投递，即配置了 `agent_snippet_datastore`） | 该目录是 `0755`、文件是 `0644`，其中含**一次性 bootstrap token** 与公开 CA（无私钥）。机密性完全落在"谁能挂载这个 share"上，文件权限不提供保护 | 检查导出配置（NFS/SMB/PVE storage）的允许客户端列表只含 PVE 节点；确认它没有被挂进通用共享 |
-| 9 | **bootstrap 只能发生在可信网段内** | 首次 bootstrap 时 console 拨号**不认证对端**（无可 pin 的 CA/角色，`InsecureSkipVerify`），一次性 token 是唯一认证；同网段第三方若能读到 token 就能冒充 agent | 确认 bootstrap 期 console 与目标节点处在可信二层/网段；token 用后即失效，但仍按 secret 处理（见第 8 条） |
+| 9 | **一次性 bootstrap token 按 secret 保管** | 首次 bootstrap 时 console 按 token 派生的公钥 pin 认证 agent 的占位监听（G-H11），没有 token 的同网段第三方冒充不了 agent；但**读到 token 的人**能派生同一把占位密钥、也能兑换 token，所以 token 的机密性仍是这一步的全部前提 | token 的每一份副本（snippet、cloud-init 盘）都按第 8 条与下方“已知暴露面”收口；token 用后即失效、默认 1 小时过期 |
 | 10 | **反代要么不挂，要么接受它的两个后果** | console 不信任任何代理头（`SetTrustedProxies(nil)`），`ClientIP` 是直连对端：挂反代后**所有请求共用一个限流桶**，审计来源只剩反代地址 | 从两个不同客户端各打一次接口，看审计里的 `source` 是否相同；相同即说明反代在中间，需要在反代侧限流与留痕 |
 | 11 | **反代必须关闭响应缓冲** | job 日志是 SSE：5 分钟上限、每事件 30 秒写窗口，console 已发 `X-Accel-Buffering: no`；反代若缓冲响应，流式会退化成"跑完一次性返回" | 起一个长 job，观察日志是否逐行到达；nginx 需 `proxy_buffering off` |
 | 12 | **备份/恢复按灾难恢复文档的判据执行** | 恢复判据是 `/health`；磁盘满、只读文件系统或库文件丢失必须让它变红，否则"恢复了"只是进程起来了 | 按[灾难恢复](disaster-recovery.md)跑一次恢复：`/health` 必须为 `healthy`，且要能真的提交一个 job。注意该探测的强度在 M1-14 落地后才成立（此前 `PingContext` 不碰库文件，磁盘满也报 healthy） |
@@ -35,7 +35,7 @@
 
 - **一次性 bootstrap token 落在 `0644` 文件**（要求 8）：只剩共享存储投递路径如此。文件权限不提供保护，安全性等于共享目录的导出策略；能否收紧取决于 share 类型与导出设置，需要部署方决定。默认的 SSH 上传路径现在把 snippet 写成 `0600`，前提是节点上的 `/var/lib/vz/snippets` 只有 SSH 登录名可写、没有默认 ACL：否则另一个账号可以抢先在临时文件路径上放置 FIFO，默认 ACL 也会让 `umask` 失效（两项的真机复核都见[验收清单](acceptance-real-machine.md)步骤 9）。改动前上传的旧文件仍是 `0644`，要到该 qube 下次 resume 或重新 provision 才会被替换。可以在节点上用 `find /var/lib/vz/snippets -maxdepth 1 -name 'qubes-air-*' -perm -o=r` 列出这些文件，再手工 `chmod 600`。
 - **token 也在 VM 的 cloud-init 盘里**：PVE 把 user-data 生成进 compute VM 的 cloud-init 盘，guest 正是从这里读到 token。能读取这个卷的人，以及有权通过 PVE API 读取该 VM cloud-init 数据的账号，都能看到它。文件权限管不到这份副本，暴露窗口只由单次兑换和默认 1 小时 TTL 限定。
-- **bootstrap 不认证对端**（要求 9）：没有可 pin 的身份，一次性 token 是唯一认证。
+- **bootstrap 的对端认证完全建立在 token 上**（要求 9）：console 用 token 派生的公钥 pin 认证 agent，读到 token 即可冒充；这一步不再依赖网段可信，但依赖 token 不外泄。
 - **审计无轮转与留存**（要求 6）：`internal/audit` 只有一个 `io.Writer` 记录器。
 - **session 存内存**（要求 7）：重启即失效；这是运维预期，不一定要改。
 - **明文 HTTP 是默认值**（要求 1）：TLS 是可选配置，默认关闭。

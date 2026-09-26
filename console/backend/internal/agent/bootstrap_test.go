@@ -11,6 +11,7 @@ package agent
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -105,6 +106,39 @@ func TestBootstrapBeginSurrendersTokenBesideACSRForThisAgent(t *testing.T) {
 	}
 	if n := svc.pendingCount(); n != 1 {
 		t.Fatalf("pendingCount = %d after one Begin, want 1", n)
+	}
+}
+
+// The placeholder a pending agent serves is the one certificate the console
+// will accept at this address: it must verify against the pin minted with this
+// host's token and name, and against nothing else.
+func TestBootstrapPlaceholderIsPinnedToThisHostsToken(t *testing.T) {
+	id, _, _ := pendingBootstrapIdentity(t)
+	svc := bootstrapService(t, id, nil)
+
+	cert, err := svc.ServerCertificate()
+	if err != nil {
+		t.Fatalf("ServerCertificate before install: %v", err)
+	}
+	peer := []*x509.Certificate{cert.Leaf}
+
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint(testBootstrapToken, "qube-1")
+	if err != nil {
+		t.Fatalf("derive pin: %v", err)
+	}
+	if err := pki.VerifyBootstrapPlaceholder(peer, "qube-1", pin); err != nil {
+		t.Fatalf("the console would refuse this agent's own placeholder: %v", err)
+	}
+
+	otherPin, err := pki.BootstrapPlaceholderSPKIFingerprint("some-other-token", "qube-1")
+	if err != nil {
+		t.Fatalf("derive other pin: %v", err)
+	}
+	if err := pki.VerifyBootstrapPlaceholder(peer, "qube-1", otherPin); err == nil {
+		t.Fatalf("a placeholder verified against a pin minted for a different token")
+	}
+	if err := pki.VerifyBootstrapPlaceholder(peer, "qube-2", pin); err == nil {
+		t.Fatalf("a placeholder verified as a different qube")
 	}
 }
 

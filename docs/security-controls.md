@@ -49,6 +49,24 @@ Agent 用已有公共 CA 校验精确签名数据。HTTPS 仍校验服务器证�
 使用。Console 临时探测证书不逐张登记；CA 泄露、逐对象授权、备份恢复后的撤销历史一致性
 需要单独处置，见 [TODO](TODO.md)。
 
+## Bootstrap 首次连接：token 派生公钥 pin
+
+尚未拿到证书的 agent 只能出示自签名占位证书。占位证书的密钥由一次性 token 与 qube 名经
+HKDF-SHA256 派生（Ed25519，`pki.NewBootstrapPlaceholderCertificate`）；console 签发 token 时
+算出对应公钥的 SPKI SHA-256，存进 `bootstrap_tokens.placeholder_spki_sha256`，token 本身只存哈希。
+
+console 拨号时（`pki.BootstrapDialTLSConfig`）在每次握手的 `VerifyConnection` 里校验：pin 一致、
+CN 为 `bootstrap-<qube>`、在有效期内、只有 digitalSignature + ServerAuth、自签名、恰好一个
+agent 角色。任一不符即握手失败，console 不发出任何请求，所以冒充者既拿不到调用、也换不到
+证书。agent 一侧仍要求客户端证书链到 cloud-init 下发的 CA，双向在第一帧之前都已认证。
+
+- 没有 pin 就不拨号：未装配 pin provider、没有未兑换且未过期的 token、升级前签发的旧 token
+  （pin 为空）都报 `not_configured`，原因写明“需要重新 provision”，不回退到不认证的握手。
+- 读到 token 的人能派生同一把密钥，这与他能兑换 token 是同一个能力；token 的暴露面见
+  [生产部署安全要求](deployment-requirements.md)第 8、9 条。
+- 升级顺序：agent deb 必须先于 console 升级，在途 token 需重新 provision，见
+  [升级与回滚](upgrade-rollback.md) §3。
+
 ## Console API 对象级授权
 
 `auth.tokens[*].zones` 给命名 token 增加对象级白名单。`api_token` 与未写 `zones` 的 token 是

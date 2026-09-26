@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -155,4 +156,76 @@ func TestV2FixtureIsFrozenAtVersion2(t *testing.T) {
 	require.NoError(t, raw.QueryRowContext(context.Background(),
 		`SELECT COUNT(*) FROM pragma_table_info('bootstrap_tokens')`).Scan(&cols))
 	assert.Equal(t, 6, cols, "the v2 bootstrap_tokens table has exactly six columns")
+}
+
+// tableColumns returns a table's columns with their declared type and default,
+// in declaration order.
+func tableColumns(t *testing.T, db *DB, table string) []string {
+	t.Helper()
+	rows, err := db.DB().QueryContext(context.Background(),
+		`SELECT name, type, "notnull", COALESCE(dflt_value, 'NULL') FROM pragma_table_info(?)`, table)
+	require.NoError(t, err)
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name, typ, dflt string
+		var notNull int
+		require.NoError(t, rows.Scan(&name, &typ, &notNull, &dflt))
+		out = append(out, name+" "+typ+" notnull="+strconv.Itoa(notNull)+" default="+dflt)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// Schema 3: bootstrap tokens carry the public-key pin of the placeholder their
+// token derives. Legacy rows must come out of the upgrade with the empty pin
+// the repository refuses (they predate the token-derived placeholder), the
+// purge guards on the table must still fire, and the upgrade must be a no-op
+// the second time.
+func TestUpgradeFromV2AddsBootstrapPin(t *testing.T) {
+	db, path := openV2Fixture(t)
+	ctx := context.Background()
+
+	// Step 3 introduced the column; later steps keep it, so this test holds for
+	// every SchemaVersion from 3 on without being edited.
+	require.GreaterOrEqual(t, SchemaVersion, 3)
+	got, err := db.UserVersion()
+	require.NoError(t, err)
+	require.Equal(t, SchemaVersion, got)
+
+	var pins []string
+	rows, err := db.DB().QueryContext(ctx, `SELECT placeholder_spki_sha256 FROM bootstrap_tokens ORDER BY secret_hash`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var pin string
+		require.NoError(t, rows.Scan(&pin))
+		pins = append(pins, pin)
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	assert.Equal(t, []string{"", ""}, pins, "legacy tokens have no pin and must not be given one")
+
+	// An upgraded table and a freshly created one must be the same table.
+	fresh := openPath(t, filepath.Join(t.TempDir(), "fresh.db"))
+	assert.Equal(t, tableColumns(t, fresh, "bootstrap_tokens"), tableColumns(t, db, "bootstrap_tokens"))
+
+	// The purge guards installed at v2 still cover the widened table: purging
+	// withdraws the outstanding legacy token and refuses a new one.
+	_, err = db.DB().ExecContext(ctx,
+		`UPDATE qubes SET purge_requested = 1, updated_at = '2026-09-20 10:05:00+00:00' WHERE id = 'qube-pending'`)
+	require.NoError(t, err)
+	assert.Equal(t, 0, countRows(t, db,
+		`SELECT COUNT(*) FROM bootstrap_tokens WHERE qube_id = 'qube-pending' AND redeemed_at IS NULL`))
+	_, err = db.DB().ExecContext(ctx, `INSERT INTO bootstrap_tokens
+		(secret_hash, qube_id, qube_name, created_at, not_after, placeholder_spki_sha256)
+		VALUES ('4444', 'qube-pending', 'remote-pending', '2026-09-20 10:06:00+00:00', '2026-09-20 11:06:00+00:00', 'pin')`)
+	require.ErrorContains(t, err, "purge requested")
+
+	before := schemaObjects(t, db)
+	require.NoError(t, db.Close())
+	again := openPath(t, path)
+	got, err = again.UserVersion()
+	require.NoError(t, err)
+	assert.Equal(t, SchemaVersion, got)
+	assert.Equal(t, before, schemaObjects(t, again), "re-opening an upgraded database must not alter it")
 }

@@ -44,7 +44,10 @@ Console 日志应能区分：
 - 地址尚未可达；
 - agent 未监听；
 - TLS/证书错误；
-- token 过期或已消费；
+- 占位证书与 pin 不符（guest 里是早于 pin 的旧 agent 包，或拿到的是别的 qube 的 user-data）：
+  bootstrap 报 `unreachable`，console 日志每次尝试有一行 `bootstrap: refusing the listener at …`，
+  原因含 `does not match the pin`；
+- token 过期、已消费或早于 pin（升级前签发）：bootstrap 报 `not_configured`，原因提示重新 provision；
 - agent package URL/SHA 不一致；
 - bootstrap 成功但后续健康探测失败。
 

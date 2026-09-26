@@ -69,8 +69,8 @@ func TestBootstrapOverTheTunnel(t *testing.T) {
 	_ = lis.Close()
 
 	// The listener still demands a client certificate chaining to the
-	// cloud-init CA — that requirement is what protects the token — while
-	// presenting the placeholder, because there is nothing else to present.
+	// cloud-init CA — that requirement protects the token — while presenting
+	// the placeholder derived from that token, which the console pins.
 	srv := NewServer(ServerConfig{
 		Listen:     addr,
 		TLS:        identity.ServerTLSConfig(),
@@ -81,9 +81,9 @@ func TestBootstrapOverTheTunnel(t *testing.T) {
 	go func() { _ = srv.Serve(ctx) }()
 	waitDial(t, addr)
 
-	// The console's side: a short-lived certificate from the same CA, and NO
-	// verification of the peer — the agent has no certificate yet, which is the
-	// condition being repaired. The token is what authenticates it in return.
+	// The console's side: a short-lived certificate from the same CA, and the
+	// production dial config, which accepts the peer only if it holds the key
+	// derived from the token minted for this qube.
 	consoleBundle, err := ca.IssueAgentCert("console-bootstrap", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("issue console cert: %v", err)
@@ -92,10 +92,31 @@ func TestBootstrapOverTheTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("console key pair: %v", err)
 	}
-	bootTLS := &tls.Config{
-		Certificates:       []tls.Certificate{consolePair},
-		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true,
+	peerPin, err := pki.BootstrapPlaceholderSPKIFingerprint(token, qubeName)
+	if err != nil {
+		t.Fatalf("derive bootstrap pin: %v", err)
+	}
+	bootTLS, err := pki.BootstrapDialTLSConfig(consolePair, qubeName, peerPin)
+	if err != nil {
+		t.Fatalf("bootstrap dial config: %v", err)
+	}
+
+	// The same console holding a pin for any other token cannot even finish
+	// the handshake with this agent.
+	otherPin, err := pki.BootstrapPlaceholderSPKIFingerprint("a-different-token", qubeName)
+	if err != nil {
+		t.Fatalf("derive other pin: %v", err)
+	}
+	wrongPinTLS, err := pki.BootstrapDialTLSConfig(consolePair, qubeName, otherPin)
+	if err != nil {
+		t.Fatalf("wrong-pin dial config: %v", err)
+	}
+	wrongPinConn, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", addr, wrongPinTLS)
+	if wrongPinConn != nil {
+		_ = wrongPinConn.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "does not match the pin") {
+		t.Fatalf("a console pinned to another token's key completed the first handshake (err=%v)", err)
 	}
 
 	cli := NewClient(ClientConfig{
@@ -195,13 +216,12 @@ func TestBootstrapOverTheTunnel(t *testing.T) {
 	}
 }
 
-// TestBootstrapRefusesAPeerTheCADidNotSign is the property the whole direction
-// rests on. The console dialing an un-bootstrapped agent cannot verify the
-// peer, so the token is the agent's only protection — and it must be
-// surrendered ONLY to a caller holding a certificate from the CA cloud-init
-// delivered. If a random client on the LAN could complete this handshake, the
-// token would be readable by anyone who can reach the port, and with it they
-// could obtain a real fleet identity.
+// TestBootstrapRefusesAPeerTheCADidNotSign is the agent's half of mutual
+// authentication at first contact. The token must be surrendered ONLY to a
+// caller holding a certificate from the CA cloud-init delivered. If a random
+// client on the LAN could complete this handshake, the token would be readable
+// by anyone who can reach the port — and with it they could both redeem a real
+// fleet identity and derive the placeholder key the console pins.
 func TestBootstrapRefusesAPeerTheCADidNotSign(t *testing.T) {
 	ca, err := pki.NewCA("qubes-air-console", 0)
 	if err != nil {

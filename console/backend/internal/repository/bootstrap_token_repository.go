@@ -29,6 +29,10 @@ type BootstrapToken struct {
 	CreatedAt  time.Time
 	NotAfter   time.Time
 	RedeemedAt *time.Time
+	// PlaceholderSPKIFingerprint is the public-key pin of the placeholder the
+	// token derives (pki.BootstrapPlaceholderSPKIFingerprint). Empty for a
+	// token minted before pinning existed, which can no longer be bootstrapped.
+	PlaceholderSPKIFingerprint string
 }
 
 // BootstrapTokenRepository stores one-shot bootstrap credentials.
@@ -45,6 +49,10 @@ func NewBootstrapTokenRepository(db *database.DB) *BootstrapTokenRepository {
 //
 // The secret is returned exactly once and is not recoverable from the row. A
 // caller that loses it must issue another; that is the property being bought.
+//
+// The row also records the pin of the placeholder key the secret derives, so
+// the console can authenticate the agent's listener at first contact without
+// having kept the secret itself.
 func (r *BootstrapTokenRepository) Issue(
 	ctx context.Context, qubeID, qubeName string, ttl time.Duration,
 ) (string, error) {
@@ -56,14 +64,51 @@ func (r *BootstrapTokenRepository) Issue(
 		return "", err
 	}
 
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint(secret, rec.QubeName)
+	if err != nil {
+		return "", fmt.Errorf("derive bootstrap peer pin for %q: %w", qubeName, err)
+	}
+
 	const q = `
-		INSERT INTO bootstrap_tokens (secret_hash, qube_id, qube_name, created_at, not_after)
-		VALUES (?, ?, ?, ?, ?)`
+		INSERT INTO bootstrap_tokens
+			(secret_hash, qube_id, qube_name, created_at, not_after, placeholder_spki_sha256)
+		VALUES (?, ?, ?, ?, ?, ?)`
 	if _, err := r.db.DB().ExecContext(ctx, q,
-		rec.SecretHash, qubeID, rec.QubeName, time.Now().UTC(), rec.NotAfter.UTC()); err != nil {
+		rec.SecretHash, qubeID, rec.QubeName, time.Now().UTC(), rec.NotAfter.UTC(), pin); err != nil {
 		return "", fmt.Errorf("store bootstrap token for %q: %w", qubeName, err)
 	}
 	return secret, nil
+}
+
+// PendingPlaceholderSPKIFingerprint returns the pin the console must see before
+// it trusts the listener of a qube that has not bootstrapped yet: the pin of
+// the newest token for this exact qube that is neither redeemed nor expired at
+// now.
+//
+// It fails closed. No such token means there is nothing the agent could
+// legitimately be holding, and a token from before pinning has an empty pin;
+// both are errors that name the fix (re-provision) rather than a fallback to an
+// unauthenticated handshake.
+func (r *BootstrapTokenRepository) PendingPlaceholderSPKIFingerprint(
+	ctx context.Context, qubeID, qubeName string, now time.Time,
+) (string, error) {
+	const q = `
+		SELECT placeholder_spki_sha256
+		  FROM bootstrap_tokens
+		 WHERE qube_id = ? AND qube_name = ?
+		   AND redeemed_at IS NULL AND not_after > ?
+		 ORDER BY created_at DESC LIMIT 1`
+	var pin string
+	err := r.db.DB().QueryRowContext(ctx, q, qubeID, qubeName, now.UTC()).Scan(&pin)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", fmt.Errorf("qube %q has no unredeemed, unexpired bootstrap token; re-provision it to mint one", qubeName)
+	case err != nil:
+		return "", fmt.Errorf("load bootstrap peer pin for %q: %w", qubeName, err)
+	case pin == "":
+		return "", fmt.Errorf("the bootstrap token for qube %q predates peer pinning; re-provision it to mint a pinned one", qubeName)
+	}
+	return pin, nil
 }
 
 // Redeem consumes a token and returns the qube it authorizes.
@@ -184,7 +229,8 @@ func (r *BootstrapTokenRepository) DeleteSpent(ctx context.Context, before time.
 // the digest is included, the secret is not recoverable.
 func (r *BootstrapTokenRepository) ListByQube(ctx context.Context, qubeID string) ([]*BootstrapToken, error) {
 	const q = `
-		SELECT secret_hash, qube_id, qube_name, created_at, not_after, redeemed_at
+		SELECT secret_hash, qube_id, qube_name, created_at, not_after, redeemed_at,
+		       placeholder_spki_sha256
 		  FROM bootstrap_tokens WHERE qube_id = ? ORDER BY created_at DESC`
 	rows, err := r.db.DB().QueryContext(ctx, q, qubeID)
 	if err != nil {
@@ -199,7 +245,7 @@ func (r *BootstrapTokenRepository) ListByQube(ctx context.Context, qubeID string
 			redeemed sql.NullTime
 		)
 		if err := rows.Scan(&t.SecretHash, &t.QubeID, &t.QubeName,
-			&t.CreatedAt, &t.NotAfter, &redeemed); err != nil {
+			&t.CreatedAt, &t.NotAfter, &redeemed, &t.PlaceholderSPKIFingerprint); err != nil {
 			return nil, err
 		}
 		if redeemed.Valid {
