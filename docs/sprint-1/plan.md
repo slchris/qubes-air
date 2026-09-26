@@ -1,6 +1,8 @@
 # Sprint 1 计划 — 工程质量体检 + 未门禁测试补齐
 
 > 作者：kixpower Producer（Remy）｜生成：2026-09-22
+> 状态（2026-09-26）：5 个任务的交付已随 PR #9（`5f0fd88`）合入 `main`，完成情况与逐项证据只记在 [`progress.md`](progress.md)；
+> 本计划正文（含 §1.0 的任务勾选表）保持规划期原样，不回填。
 > 基线：`kixpower/sprint-1` @ `fae0aea5370cbd87247255022ab16d13ff7951df`
 > 主题（用户已确认，选项 A 字面执行）：**工程质量体检 + 未门禁测试补齐**——
 > 全量 test/race/lint/gosec 基线体检；把已有但未门禁的测试接入 `verifiable_gates`；

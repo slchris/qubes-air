@@ -1,8 +1,8 @@
 ---
 sprint: 1
-status: in-progress
-last_updated: 2026-09-22
-completed_tasks: 0
+status: done                     # 2026-09-26 更正：5 个任务已交付，并随 PR #9（5f0fd88）合入 main（merged）；QA 签署记录不在本仓库
+last_updated: 2026-09-26
+completed_tasks: 5
 total_tasks: 5
 blocked_tasks: 0
 open_issues: {P0: 0, P1: 0, P2: 0}
@@ -50,21 +50,27 @@ blast_radius:
 > 运行态与漂移登记见 [`runtime-context.md`](runtime-context.md)；项目真相源见 `PROJECT_BRIEF.md`。
 > 分支：`kixpower/sprint-1`（**不要**在 `main` 提交）。
 
+> **状态更正（2026-09-26）**：本 Sprint 的交付已随 PR #9（merge `5f0fd88`，2026-09-22）合入 `main`，
+> 合并前第四轮 CI 21/21 全绿（[生产可用性缺口](../production-readiness-gaps.md) §0.1）。下面的任务勾选与门禁表
+> 已按合入的 commit 和两份分区报告（[`partitions/p1-go.md`](partitions/p1-go.md)、[`partitions/p2-nongo.md`](partitions/p2-nongo.md)）更新；
+> Trace Log 与 frontmatter 里的 L2/QA 字段保持规划期原样，没有补写。QA 签署记录与 Sprint 收尾报告不在本仓库，
+> 所以本文件不写"已签署"。
+
 ## 任务清单
 
-- [ ] **T1** 全量质量基线体检与覆盖率/门禁矩阵（hot；无依赖）
-- [ ] **T2** 传输可靠性回归——断线 / 取消 / 超时 / 重启（hot；依赖 T1）
-- [ ] **T3** 前端组件测试补齐（warm；依赖 T1）
-- [ ] **T4** 文档漂移修复与运维默认值落文档（hot；依赖 T1）
-- [ ] **T5** 门禁缺口修复——脚本护栏盲区 + 测试引用存在性（warm；依赖 T1）
+- [x] **T1** 全量质量基线体检与覆盖率/门禁矩阵（hot；无依赖）—— 只产出文档：`partitions/p1-go.md` §T1，随 `c161bfd` 提交
+- [x] **T2** 传输可靠性回归——断线 / 取消 / 超时 / 重启（hot；依赖 T1）—— `c161bfd`（`internal/transport/grpc/reliability_test.go`、`internal/qrexec/client_test.go`）；证据 `partitions/p1-go.md` §T2
+- [x] **T3** 前端组件测试补齐（warm；依赖 T1）—— `c161bfd`（`MonitoringView.test.ts`、`CredentialList.test.ts`）；证据 `partitions/p2-nongo.md` §4
+- [x] **T4** 文档漂移修复与运维默认值落文档（hot；依赖 T1）—— `8c302e6`（architecture / grpc-transport-design / quickstart 漂移修正与 `docs/runtime-defaults.md`）；证据 `partitions/p2-nongo.md` §2
+- [x] **T5** 门禁缺口修复——脚本护栏盲区 + 测试引用存在性（warm；依赖 T1）—— `4f52953`（`check-workflow-gates.mjs` 拒绝 `|| true`，`check-doc-links.mjs` 检查 Go 测试读取的仓库文件）；证据 `partitions/p2-nongo.md` §3
 
 ## 门禁状态
 
 | 层 | 状态 | 说明 |
 |---|---|---|
-| required local_gate（11 条） | **未开始** | 见 `plan.md` §2.1；`l2_verification_passed` 为空 |
-| ci_gate（10 条） | **未开始** | 需 push 触发；未 push 前 QA 只能 `CONDITIONAL` + `ci_pending: true` |
-| manual_gate（4 条） | **未开始** | 见 `plan.md` §2.3 |
+| required local_gate（11 条） | 分区内实测通过，没有统一的 L2 签收 | `partitions/p1-go.md`「门禁状态」、`partitions/p2-nongo.md` §3.5（`make pre-commit` exit 0）；`l2_verification_passed` 未回填 |
+| ci_gate（10 条） | PR #9 合并前 CI 21/21 全绿 | [生产可用性缺口](../production-readiness-gaps.md) §0.1；QA 的 ci_gate 签收记录不在本仓库 |
+| manual_gate（4 条） | 没有记录 | 本仓库没有 `plan.md` §2.3 所列 manual playthrough 的执行记录 |
 
 > **不要**把"planning 期跑过一次 `go test ./...` 全绿"读成 L2 通过：那是单点结果，
 > 不等于 plan 的 required gate manifest（11 条）在同一 revision 全过。
