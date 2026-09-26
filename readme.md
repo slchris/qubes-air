@@ -23,7 +23,7 @@ agent。
 | 远端操作 | 部分真机验证 | `Ping` 随控制台健康探测在 2026-09-22 回归中验证；`ConnectTCP` 流式转发只有[历史记录](docs/reviews/validation-history.md)；当前协议（JSON argv）的 `Exec` 与 `FileCopy` 尚无真机正/负例（M1-2） |
 | 无缝桌面 | 进行中 | Xpra、appmenu 与 `StartApp` 原语已加入，完整桌面体验仍在收尾 |
 | GCP / AWS / Azure | 未完成 | 未注册适配器，不能用于置备；API 拒绝创建这类 zone，UI 标为不可选 |
-| 控制台安全 | 已实现基础控制 | 短期 session、读写 scope、请求边界与结构化审计；命名 token 可按 zone 限制可见和可操作的对象，不是完整多租户，UI 未做可见性降级 |
+| 控制台安全 | 已实现基础控制 | 短期 session、读写 scope、请求边界与结构化审计；命名 token 可按 zone 限制可见和可操作的对象，不是完整多租户；zone-scoped session 在 UI 上置灰 fleet-only 视图（仅显示层，服务端判定不变） |
 | 备份 / 恢复 | 已实现工具 | 加密归档和 schema 检查；离机恢复演练尚未完成 |
 | 监控 / 账单 | 部分实现 | Console 主机指标（仅 Linux）与 Proxmox 运行中 Qube 的实时 CPU/内存/I/O 已接真实数据，缺失值带原因、不显示为零；Qube 读数未在真机 PVE 上核对；告警与云账单尚未接入 |
 
