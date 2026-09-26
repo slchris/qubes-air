@@ -12,23 +12,24 @@ on:
 
 env:
   GO_VERSION: '1.26'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   # Go Lint
   golangci-lint:
     name: Go Lint
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/backend
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: console/backend/go.sum
@@ -39,7 +40,7 @@ jobs:
       # noise that hid the real findings entirely. The linter's own toolchain has
       # to be at least as new as the module it reads.
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           working-directory: console/backend
@@ -48,17 +49,18 @@ jobs:
   # Go 单元测试
   go-test:
     name: Go Test
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/backend
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: console/backend/go.sum
@@ -67,7 +69,7 @@ jobs:
         run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: go-coverage
           path: console/backend/coverage.out
@@ -76,17 +78,18 @@ jobs:
   # Frontend Lint (ESLint + Svelte Check)
   frontend-lint:
     name: Frontend Lint
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/frontend
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -95,37 +98,124 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Warnings fail the job, as they do in `make frontend-check` (budget 0,
+      # AGENTS.md §3). Without the flag svelte-check exits 0 on warnings.
       - name: Svelte Check
-        run: npm run check
+        run: npm run check -- --fail-on-warnings
 
   # Shell Script Lint
   shellcheck:
     name: ShellCheck
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
+    # Downloads and runs a release binary; the token only needs to read the repo.
+    permissions:
+      contents: read
+    env:
+      SHELLCHECK_VERSION: v0.11.0
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          scandir: './dom0-scripts'
-          additional_files: 'crypto/scripts/*.sh packer/scripts/*.sh'
+      # A fixed ShellCheck release checked against its published digest, so the
+      # result does not depend on what the runner image preinstalls.
+      - name: Install ShellCheck 0.11.0
+        env:
+          # sha256 of shellcheck-v0.11.0.linux.x86_64.tar.xz (release asset digest)
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/shellcheck.tar.xz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  ${archive}" | sha256sum --check --strict -
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      # Every tracked shell file: each file whose first line is a sh/bash
+      # shebang (qrexec services and Debian maintainer scripts have no .sh
+      # suffix; `#!/usr/bin/env bash` counts too) plus every *.sh. This used to
+      # be ludeeus/action-shellcheck with scandir ./dom0-scripts: its
+      # additional_files entries are matched with `find -name`, which never
+      # matches a path, so only the 6 dom0-scripts files were ever checked.
+      # File names travel NUL-separated end to end, so no name is split or
+      # quoted on the way to shellcheck.
+      - name: Run ShellCheck on every tracked shell file
+        run: |
+          set -euo pipefail
+          # The image preinstalls its own shellcheck; fail rather than quietly
+          # lint with it if the pinned one is not the one on PATH.
+          installed="$(shellcheck --version | sed -n 's/^version: //p')"
+          if [ "$installed" != "${SHELLCHECK_VERSION#v}" ]; then
+            echo "shellcheck on PATH is '${installed}', expected ${SHELLCHECK_VERSION#v}: $(command -v shellcheck)" >&2
+            exit 1
+          fi
+          list="$RUNNER_TEMP/shell-files"
+          shebang='^#!.*(/|env[[:space:]]+)(ba)?sh([[:space:]]|$)'
+          {
+            git -c core.quotepath=off ls-files -z | while IFS= read -r -d '' f; do
+              if [ -f "$f" ] && head -n 1 -- "$f" | grep -E "$shebang" >/dev/null; then
+                printf '%s\0' "$f"
+              fi
+            done
+            git -c core.quotepath=off ls-files -z -- '*.sh'
+          } | sort -zu > "$list"
+          mapfile -d '' -t files < "$list"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no shell files found; the file selection above is broken" >&2
+            exit 1
+          fi
+          printf 'ShellCheck %s: %d files\n' "$installed" "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+          shellcheck -- "${files[@]}"
 
   # YAML Lint
   yaml-lint:
     name: YAML Lint
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
+    # Installs and runs a PyPI package; the token only needs to read the repo.
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      # A pinned yamllint instead of ibiqlik/action-yamllint, which ran whatever
+      # yamllint the runner image happened to ship.
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install yamllint
+        run: python -m pip install yamllint==1.35.1
+
+      # This job once passed while linting zero files (.yamllint.yml ignored
+      # .github/ and salt/ has no *.yml), and a green lint of nothing looks
+      # exactly like a clean one. So the files yamllint selects must be exactly
+      # the tracked *.yml/*.yaml files: an ignore entry or a yaml-files setting
+      # that drops a tracked file fails here instead of shrinking the lint.
+      - name: Check yamllint selects every tracked YAML file
+        run: |
+          set -euo pipefail
+          selected="$RUNNER_TEMP/yamllint-selected"
+          tracked="$RUNNER_TEMP/yaml-tracked"
+          yamllint -c .yamllint.yml --list-files . | sed 's|^\./||' | LC_ALL=C sort > "$selected"
+          git -c core.quotepath=off ls-files -- '*.yml' '*.yaml' | LC_ALL=C sort > "$tracked"
+          printf 'yamllint selects %d files (%d tracked):\n' "$(wc -l < "$selected")" "$(wc -l < "$tracked")"
+          sed 's/^/  /' "$selected"
+          if ! diff -u "$tracked" "$selected"; then
+            echo "yamllint's files differ from the tracked YAML files (-: tracked only, +: selected only)." >&2
+            echo "Check the ignore list and yaml-files in .yamllint.yml." >&2
+            exit 1
+          fi
+          if [ ! -s "$tracked" ]; then
+            echo "no tracked YAML files found; the file selection above is broken" >&2
+            exit 1
+          fi
 
       - name: Run yamllint
-        uses: ibiqlik/action-yamllint@v3
-        with:
-          file_or_dir: |
-            salt/
-            .github/workflows/
-          config_file: .yamllint.yml
+        run: yamllint --strict -c .yamllint.yml .

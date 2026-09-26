@@ -191,17 +191,21 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 ## 3. CI 工具链版本（D-4 的落点）
 
-工作流里的 Node 版本**不统一**，且没有任何 `docs/*.md` 声明过版本号：
+所有工作流统一用 Node **22**，与仓库根的 `.nvmrc` 一致：
 
 | 工作流 | Node | 位置 |
 |---|---|---|
-| `Lint` / `Build` / `Dependencies` | `env.NODE_VERSION: '20'` | `.github/workflows/lint.yml:15`、`build.yml:15`、`dependency.yml:23`（使用点 `:91`、`:67`、`:70`） |
-| `Docs and Gates` | `'20'`（内联） | `.github/workflows/docs.yml:29` |
-| `Release` | **`"22"`（内联）** | `.github/workflows/release.yml:88-90` |
+| `Lint` / `Build` / `Dependencies` | `env.NODE_VERSION: '22'` | `.github/workflows/lint.yml:15`、`build.yml:15`、`dependency.yml:23`（使用点 `:94`、`:69`、`:72`） |
+| `Docs and Gates` | `env.NODE_VERSION: '22'` | `.github/workflows/docs.yml:13`（使用点 `:34`） |
+| `Release` | `env.NODE_VERSION: '22'` | `.github/workflows/release.yml:46`（使用点 `:97`） |
+| 本地开发 | `22` | `.nvmrc`（`nvm use` 读取） |
+
+统一到 22 的直接原因：Node 20 已于 2026-04-30 EOL，而 `vitest` 5.0.1 声明
+`engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0`，在 Node 20 上 `npm ci` 会输出 `EBADENGINE`。
+以后改 Node 版本时，上表 5 处 workflow 与 `.nvmrc` 必须一起改。
 
 Go 版本统一走 `env.GO_VERSION: '1.26'` 或 `go-version-file: console/backend/go.mod`
-（`dependency.yml:22`、`release.yml:85`）。Node 的这处分叉是**已知不一致**，见开放问题 O-3
-（改 `release.yml` 属 release 构建行为变更，本机不可验证，未在本轮改动）。
+（`dependency.yml:22`、`release.yml:92`）。
 
 ## 4. 开放问题（本轮登记，不由本文件擅自"解决"）
 
@@ -209,6 +213,6 @@ Go 版本统一走 `env.GO_VERSION: '1.26'` 或 `go-version-file: console/backen
 |---|---|---|
 | O-1 | `ticketTTL` 在 `provider/proxmox/client.go:49` 与 `scheduler/proxmox.go:53` 各定义一份，改一处不会同步另一处 | 属存量重构（drift-check TD 类），需行为等价性验证，超出 T4/T5 范围 |
 | O-2 | `runtime-context.md:68` 写"表清单（10 张）"，代码实际只有 9 个 `CREATE TABLE IF NOT EXISTS` | 该文件是 Producer 的 sprint 工件，本分区不得修改（见分区报告）；本文件按代码登记 9 张，差异留在开放问题 |
-| O-3 | `release.yml` 用 Node 22，其余工作流用 20；无文档说明这是有意为之 | release 构建行为变更需 release 环境验证；QA/Sprint 2 处置 |
+| O-3 | ~~`release.yml` 用 Node 22，其余工作流用 20；无文档说明这是有意为之~~ **已解决**：全部工作流与 `.nvmrc` 统一为 22（见 §3） | release 仍用 22，构建所用 Node 未变；变化的是 PR CI 从 20 升到 22 |
 | O-4 | `go-licenses check` 在 `dependency.yml` 上是非阻塞步骤（原为 `\|\| true`，本轮改为显式 `continue-on-error`） | 本机离线无法验证该命令是否通过；见分区报告 T5 开放问题 |
 | O-5 | `qubesair.UnlockData:5` 的注释仍写"console derives it (HKDF over its master secret + this qube's id)"，与 `internal/service/datakey.go` 的 DEK 语义不符 | 该脚本在 `remote/**`，不在本分区写集合内 |

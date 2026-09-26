@@ -12,23 +12,24 @@ on:
 
 env:
   GO_VERSION: '1.26'
-  NODE_VERSION: '20'
+  NODE_VERSION: '22'
 
 jobs:
   # Go 后端构建
   build-backend:
     name: Build Go Backend
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/backend
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: console/backend/go.sum
@@ -43,7 +44,7 @@ jobs:
         run: go build -v -o bin/qubes-air-console ./cmd/server
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: backend-binary
           path: console/backend/bin/qubes-air-console
@@ -52,17 +53,18 @@ jobs:
   # Svelte 前端构建
   build-frontend:
     name: Build Svelte Frontend
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/frontend
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -71,8 +73,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Warnings fail the build too (see lint.yml's Svelte Check).
       - name: Type check
-        run: npm run check
+        run: npm run check -- --fail-on-warnings
 
       - name: Unit tests
         run: npm run test
@@ -81,7 +84,7 @@ jobs:
         run: npm run build
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: console/frontend/dist
@@ -90,11 +93,12 @@ jobs:
   # Agent Debian 包安装/升级冒烟 (Docker, 与 scripts/test-agent-deb.sh 相同入口)
   agent-package:
     name: Agent package install smoke
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build and smoke-test the .deb
         run: scripts/test-agent-deb.sh

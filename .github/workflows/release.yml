@@ -40,11 +40,17 @@ on:
 permissions:
   contents: write # required to create the release and upload assets
 
+env:
+  # Same Node major as the PR workflows and .nvmrc, so the bundle that is
+  # published is built by the Node that CI tested it with.
+  NODE_VERSION: '22'
+
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # build-agent-deb.sh derives its version from `git describe`, which
           # needs tags and history; a shallow clone yields a bare hash.
@@ -81,14 +87,14 @@ jobs:
           printf 'version=%s\n' "$v" >> "$GITHUB_OUTPUT"
           printf 'Building %s\n' "$v"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: console/backend/go.mod
           cache-dependency-path: console/backend/go.sum
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: console/frontend/package-lock.json
 
@@ -153,7 +159,7 @@ jobs:
           cat SHA256SUMS
 
       - name: Publish release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
@@ -189,4 +195,6 @@ jobs:
 
             Download URLs have the form:
 
-                https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/<file>
+            ```
+            https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/<file>
+            ```

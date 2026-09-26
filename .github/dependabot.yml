@@ -4,12 +4,12 @@
 
 version: 2
 
-registries:
-  # 如需私有 registry，在此配置
-  # npm-private:
-  #   type: npm-registry
-  #   url: https://npm.pkg.github.com
-  #   token: ${{ secrets.NPM_TOKEN }}
+# Validated in CI (dependency.yml, "Validate Dependabot Config") against the
+# SchemaStore Dependabot schema vendored in check-jsonschema, which is
+# community-maintained, not published by GitHub. Do not add `registries:`
+# without an entry -- an empty key is null, which the schema rejects -- and
+# do not add `reviewers:`: GitHub removed that option; Dependabot requests
+# reviews from CODEOWNERS instead.
 
 updates:
   # Go 依赖
@@ -26,8 +26,6 @@ updates:
     labels:
       - "dependencies"
       - "go"
-    reviewers:
-      - "your-github-username"
     groups:
       go-minor:
         patterns:

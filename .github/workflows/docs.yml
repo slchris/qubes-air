@@ -3,10 +3,14 @@
 # Two cheap checks that CI previously did not run:
 #   - every local Markdown link resolves (a moved/renamed doc used to go
 #     unnoticed until someone clicked it);
-#   - the workflow files do not weaken their own security gates
-#     (see scripts/check-workflow-gates.mjs).
+#   - the workflow files do not weaken their own security gates and do not
+#     use action releases that need the removed Node 20 runtime
+#     (see scripts/check-workflow-gates.mjs and its test).
 
 name: Docs and Gates
+
+env:
+  NODE_VERSION: '22'
 
 on:
   push:
@@ -17,19 +21,26 @@ on:
 jobs:
   docs:
     name: Docs and CI Gates
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Check Markdown links
         run: node scripts/check-doc-links.mjs
+
+      # The checker's own tests run first: they feed it fixture workflows that
+      # break each rule and require a failing exit, so a checker that quietly
+      # stopped matching cannot report the real workflows as clean.
+      - name: Test the CI gate checker
+        run: node --test scripts/check-workflow-gates.test.mjs
 
       - name: Check CI gate integrity
         run: node scripts/check-workflow-gates.mjs

@@ -55,9 +55,9 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 | 前端 | Svelte 5 + TS 5.9 + Vite 7 | `console/frontend/package.json` devDependencies |
 | 前端测试 | Vitest 5 + Testing Library + jsdom | `package.json`；配置 `vitest.config.ts` |
 | 门禁工具 | golangci-lint 2.x / gosec / gocyclo / funlen / govulncheck / shellcheck | `Makefile`:65-98；根 `.golangci.yml` |
-| CI 运行时 | Go 1.26、Node 20（build/lint/dependency/docs） | `.github/workflows/*.yml` env |
+| CI 运行时 | Go 1.26、Node 22（全部 workflow，与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
 
-**已知不一致（登记，不在本 Sprint 修）**：`release.yml`:90 用 Node **22**，其余 workflow 用 Node 20；
+Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的分叉已消除，全部为 **22**；
 本机 Node 为 **22.14.0**。
 
 ## 4. 关键架构决策与约束（已有代码反推）
@@ -125,6 +125,8 @@ qubes-air/
 
 **门禁环境缺口**：
 - `yamllint` 已进本地门禁：`make yaml-lint`（`pre-commit`、`audit` 都包含，`check-tools` 要求 yamllint 模块）按 `.yamllint.yml` 检查全部被跟踪的 YAML。
+  CI 的 `lint.yml` `yaml-lint` job 装固定版本 `yamllint==1.35.1`、对仓库全部 `*.yml`/`*.yaml`（不含 Salt `.sls`）跑 `--strict`；
+  本机缺 yamllint 时按同一 pin 安装：`python3 -m pip install yamllint==1.35.1`（`check-tools` 只查模块存在，不查版本）。
 - 本机无 `pwsh` → kixpower 的 `skills/kixpower/**/*.ps1`（hooks / verification-fidelity-check）
   一律不可执行，等价检查改由 shell/grep/read 承担（见 `docs/sprint-1/drift-check.md` §4）。
 

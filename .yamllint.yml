@@ -29,7 +29,10 @@ rules:
     min-spaces-inside: 0
     max-spaces-inside: 0
 
+# .github/ is linted on purpose. It used to be ignored here while CI pointed
+# yamllint at salt/ (no *.yml files) and .github/workflows/, so the YAML Lint
+# job checked zero files and still passed. lint.yml now fails unless
+# `yamllint --list-files .` selects exactly the tracked *.yml/*.yaml files.
 ignore: |
-  .github/
   node_modules/
   vendor/
