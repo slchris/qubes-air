@@ -79,6 +79,9 @@ auth:
 - 所属关系无法解析（数据库故障、body 不可解析或超限）时失败关闭，不回退为放行。
 - 审计记录 `subject` 与 `zone_scope`（`fleet`、ID 列表，未认证为 `none`，鉴权关闭为 `unrestricted`）；
   被拒绝的变更请求同样入库，见下文“Console API 审计”。
+- `GET /session` 对任何已认证 scope 开放，只返回凭据解析出的 `subject`、`scope` 与 `zones`
+  （fleet-wide 为空数组），带 `Cache-Control: no-store`（登录 `POST /session` 同样），不回显 token、session ID 或 cookie；
+  未认证 401。它只报告、不授予任何权限，供 UI 判断哪些视图会被拒绝；GET 按设计不写审计。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
 扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。

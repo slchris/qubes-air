@@ -35,15 +35,52 @@ func NewSessionHandler(apiToken string, scoped []middleware.Token, sessions *mid
 // RegisterRoutes mounts the session endpoints on the authenticated API group.
 func (h *SessionHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/session", h.Login)
+	rg.GET("/session", h.Current)
 	rg.DELETE("/session", h.Logout)
+}
+
+// sessionScope is the body of GET /session: whom the request authenticated as
+// and which zones it may address. It never carries the token, the session ID or
+// the cookie — only the labels ScopedAuth resolved from them.
+type sessionScope struct {
+	Subject string `json:"subject"`
+	Scope   string `json:"scope"`
+	// Zones is the object-level restriction; empty means fleet-wide. It is
+	// always an array so a client never has to tell null from [].
+	Zones []string `json:"zones"`
+}
+
+// Current reports the scope the caller authenticated with, by session cookie or
+// Bearer token. The UI reads it after a reload — when it holds an HttpOnly
+// cookie it cannot inspect — to hide the views a zone-scoped credential would be
+// refused. It grants nothing: every API route still enforces the scope in
+// middleware, whatever the UI shows.
+//
+// ScopedAuth has already refused an unauthenticated request with 401, and
+// RequireZones lets any scope read its own session. When authentication is
+// disabled the answer is empty labels and no zone restriction. The response is
+// marked no-store because it names the credential.
+func (h *SessionHandler) Current(c *gin.Context) {
+	subject, _ := middleware.SubjectFromContext(c)
+	scope, _ := middleware.ScopeFromContext(c)
+	zones, _ := middleware.ZoneScopeFromContext(c)
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, sessionScope{
+		Subject: subject,
+		Scope:   scope,
+		Zones:   append([]string{}, zones...),
+	})
 }
 
 type sessionLoginRequest struct {
 	Token string `json:"token" binding:"required"`
 }
 
-// Login exchanges a valid API token for a session cookie.
+// Login exchanges a valid API token for a session cookie. The answer, success
+// or refusal, is marked no-store: it names the credential and sets the cookie,
+// and neither belongs in a cache.
 func (h *SessionHandler) Login(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	var req sessionLoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondError(c, http.StatusBadRequest, err)

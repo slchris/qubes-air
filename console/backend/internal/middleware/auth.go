@@ -136,6 +136,7 @@ func ScopedAuth(apiToken string, scoped []Token, sessions *SessionStore) gin.Han
 			if cookie, err := c.Cookie(SessionCookieName); err == nil {
 				if sess, ok := sessions.Get(cookie); ok {
 					setAuthContext(c, sess.Subject, sess.Scope, sess.Zones)
+					markSessionAuthenticated(c)
 					c.Next()
 					return
 				}
@@ -245,6 +246,41 @@ func SubjectFromContext(c *gin.Context) (string, bool) {
 	}
 	s, ok := v.(string)
 	return s, ok
+}
+
+// sessionAuthenticatedContextKey is where ScopedAuth records that it accepted
+// the browser session cookie. gin's context keys are plain strings any package
+// can write, so the key alone proves nothing; the value is what carries the
+// claim (see sessionMarker).
+const sessionAuthenticatedContextKey = "middleware.auth.session"
+
+// sessionMarker is the only value SessionAuthenticated accepts. Its type is
+// unexported, so code outside this package cannot construct one: a foreign
+// c.Set(sessionAuthenticatedContextKey, true), or any other value under the
+// key, reads as "not a browser session". The check fails closed.
+type sessionMarker struct{}
+
+// markSessionAuthenticated records that the request authenticated with a live
+// session cookie rather than a Bearer token. Only the cookie branch of
+// ScopedAuth calls it.
+func markSessionAuthenticated(c *gin.Context) {
+	c.Set(sessionAuthenticatedContextKey, sessionMarker{})
+}
+
+// SessionAuthenticated reports whether ScopedAuth accepted the browser session
+// cookie for this request. It is false for a Bearer token, for a request whose
+// cookie was unknown or expired, and when authentication is disabled — a
+// console with no credential configured has no browser session to speak of —
+// and for any value under the key that ScopedAuth did not put there. Actions
+// that must come from a person at the console, not from a token held by
+// automation, gate on it.
+func SessionAuthenticated(c *gin.Context) bool {
+	v, ok := c.Get(sessionAuthenticatedContextKey)
+	if !ok {
+		return false
+	}
+	_, marked := v.(sessionMarker)
+	return marked
 }
 
 // unauthorized aborts with 401 and the Bearer challenge.

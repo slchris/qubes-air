@@ -87,3 +87,101 @@ func TestSessionStoreCarriesZoneScope(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, []string{"z1"}, got.Zones, "the session must not share the caller's slice")
 }
+
+// sessionMarkerRouter answers whether the request reached the handler marked as
+// a browser session.
+func sessionMarkerRouter(apiToken string, store *SessionStore) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(ScopedAuth(apiToken, nil, store))
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"session": SessionAuthenticated(c)})
+	})
+	return r
+}
+
+// TestSessionAuthenticatedOnlyForTheCookieBranch — the marker says "a person's
+// browser session", so it is set by the cookie branch of ScopedAuth and by
+// nothing else: not a Bearer token, not a Bearer that rescued an unknown or
+// expired cookie, and not a console with authentication disabled.
+func TestSessionAuthenticatedOnlyForTheCookieBranch(t *testing.T) {
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	store := NewSessionStore(time.Hour)
+	store.now = func() time.Time { return base }
+	expired, err := store.Create("api_token", ScopeControl, nil)
+	require.NoError(t, err)
+	store.now = func() time.Time { return base.Add(90 * time.Minute) }
+	live, err := store.Create("api_token", ScopeControl, nil)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name    string
+		apiTok  string
+		cookie  string
+		bearer  string
+		status  int
+		session bool
+	}{
+		{name: "live cookie", apiTok: "secret", cookie: live.ID, status: http.StatusOK, session: true},
+		{name: "bearer only", apiTok: "secret", bearer: "secret", status: http.StatusOK},
+		{name: "unknown cookie rescued by bearer", apiTok: "secret", cookie: "nope", bearer: "secret", status: http.StatusOK},
+		{name: "expired cookie rescued by bearer", apiTok: "secret", cookie: expired.ID, bearer: "secret", status: http.StatusOK},
+		{name: "expired cookie alone", apiTok: "secret", cookie: expired.ID, status: http.StatusUnauthorized},
+		{name: "auth disabled with a cookie", cookie: live.ID, status: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: tc.cookie})
+			}
+			if tc.bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			w := httptest.NewRecorder()
+			sessionMarkerRouter(tc.apiTok, store).ServeHTTP(w, req)
+			require.Equal(t, tc.status, w.Code)
+			if tc.status != http.StatusOK {
+				return
+			}
+			if tc.session {
+				assert.JSONEq(t, `{"session":true}`, w.Body.String())
+			} else {
+				assert.JSONEq(t, `{"session":false}`, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestSessionAuthenticatedIgnoresForeignValues — gin's context keys are plain
+// strings, so any package can write under the marker's key. Only the value
+// ScopedAuth stores (an unexported type) counts; everything else, including the
+// obvious forgery c.Set("middleware.auth.session", true), reads as false.
+func TestSessionAuthenticatedIgnoresForeignValues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		return c
+	}
+	assert.False(t, SessionAuthenticated(newContext()), "no marker at all")
+
+	for name, forged := range map[string]any{
+		"bool true":        true,
+		"string true":      "true",
+		"bool false":       false,
+		"pointer":          &sessionMarker{},
+		"empty struct":     struct{}{},
+		"nil":              nil,
+		"lookalike struct": struct{ session bool }{session: true},
+	} {
+		c := newContext()
+		c.Set("middleware.auth.session", forged)
+		assert.False(t, SessionAuthenticated(c), "a foreign %s under the key must not read as a session", name)
+	}
+
+	marked := newContext()
+	markSessionAuthenticated(marked)
+	assert.True(t, SessionAuthenticated(marked), "the marker ScopedAuth sets must read as a session")
+	marked.Set("middleware.auth.session", true)
+	assert.False(t, SessionAuthenticated(marked), "overwriting the marker must fail closed")
+}
