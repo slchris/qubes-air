@@ -73,7 +73,8 @@ SHA256 → 应用 `qubesair.console`。见 [`salt/qubesair/README.md`](https://g
 
 ## 本地质量门禁
 
-需将 Go 1.26、golangci-lint、govulncheck、Node/npm、Python 3 与 ShellCheck 加入 PATH。
+需将 Go 1.26、golangci-lint、govulncheck、Node/npm、Python 3 与 ShellCheck 加入 PATH，
+并给 Python 3 装上 yamllint 模块（`python3 -m pip install --user yamllint==1.35.1`）。
 本轮验证使用 Go 1.26.8、golangci-lint 2.12.2、govulncheck 1.1.4。
 
 ```bash
@@ -81,6 +82,9 @@ make check-tools
 make pre-commit
 make audit
 ```
+
+Go lint 门禁（`lint-*`、`gosec-new`/`gosec-all`、`complexity-*`）在非 `linux/amd64` 主机上会
+再以 `GOOS=linux GOARCH=amd64` 跑一遍，与 CI 的 Go Lint 平台一致，不需要额外工具。
 
 容器测试必须挂载整个仓库并以 `console/backend` 为工作目录，测试会读取 `remote/` 和
 `packaging/`。Exec/FileCopy 测试需要 Python 3；开发镜像已包含该依赖。

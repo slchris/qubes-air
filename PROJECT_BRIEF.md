@@ -105,7 +105,7 @@ qubes-air/
 
 | 门禁 | 命令 | 真实来源 |
 |---|---|---|
-| 增量总门禁 | `make pre-commit` | `Makefile`:70-71（11 个目标串行） |
+| 增量总门禁 | `make pre-commit` | `Makefile` 的 `pre-commit` 目标（依赖列表即全部子门禁，串行执行） |
 | 全量审计 | `make audit` | `Makefile`:73-74 |
 | diff 空白/冲突标记 | `make diff-check` | `Makefile`:81-82 |
 | Go 测试 + race + 覆盖 | `make test-race` | `Makefile`:84-85 |
@@ -124,7 +124,7 @@ qubes-air/
 `gocyclo/funlen/dupl/errcheck/gosec/noctx/gocritic/goconst/unparam` 有窄例外（`.golangci.yml` exclusions）。
 
 **门禁环境缺口**：
-- `yamllint` 本机缺失 → CI 的 `lint.yml` `yaml-lint` job 本地不可复现。
+- `yamllint` 已进本地门禁：`make yaml-lint`（`pre-commit`、`audit` 都包含，`check-tools` 要求 yamllint 模块）按 `.yamllint.yml` 检查全部被跟踪的 YAML。
 - 本机无 `pwsh` → kixpower 的 `skills/kixpower/**/*.ps1`（hooks / verification-fidelity-check）
   一律不可执行，等价检查改由 shell/grep/read 承担（见 `docs/sprint-1/drift-check.md` §4）。
 
@@ -191,7 +191,7 @@ qubes-air/
 | R-COV-2 | 传输可靠性未经门禁：`Reconnect` 关键字在测试名中 **0 次**；`Cancel` 2 次、`Disconnect` 3 次、`Restart` 3 次 | `grep "^func Test" \| grep -i` | `client.go`:125-158 的 reconnect/backoff/jitter 循环无直接回归测试 |
 | R-COV-3 | `internal/qrexec` 是 Exec/FileCopy 的传输关键路径，仅 4 个 `Test*`、覆盖率 **32.1%** | `go test` 输出；`qrexec/*_test.go` | qrexec 服务边界回归薄 |
 | R-COV-4 | 前端 19 个组件中只有 3 个有测试；`MonitoringView`(502)/`CredentialList`(505)/`ZonesView`(504) 全无 | `ls components/` vs `*.test.ts` | UI 回归只能靠手工点击 |
-| R-COV-5 | 覆盖率为既有本地产物（`coverage.out` 未跟踪），无 CI 阈值门禁 | `Makefile`:84-85 只生成不校验 | 覆盖率可悄悄下降而不报警 |
+| R-COV-5 | 覆盖率为既有本地产物（`coverage.out` 未跟踪），无 CI 阈值门禁 | 本地 `make coverage-gate`（`pre-commit`/`audit` 都包含）按 61% 校验 `test-race` 生成的 profile；CI 的 Go Test 只生成、上传，不校验 | CI 上覆盖率仍可悄悄下降而不报警 |
 
 ## 10. 团队与角色分工
 

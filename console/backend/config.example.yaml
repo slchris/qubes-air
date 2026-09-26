@@ -1,6 +1,6 @@
 # Qubes Air Console - Server Configuration
 # ==========================================
-# 
+#
 # This file configures the backend server.
 # Environment variables override these settings.
 #
@@ -19,21 +19,21 @@
 server:
   # Listen host (0.0.0.0 for all interfaces)
   host: "0.0.0.0"
-  
+
   # Listen port
   port: 8080
-  
+
   # Gin mode: debug, release, test
   mode: "release"
-  
+
   # TLS/HTTPS configuration
   tls:
     # Enable HTTPS
     enabled: false
-    
+
     # Path to TLS certificate file
     cert_file: ""
-    
+
     # Path to TLS private key file
     key_file: ""
 
@@ -46,7 +46,7 @@ cors:
   # Use "*" to allow all origins (not recommended for production)
   allowed_origins:
     - "*"
-  
+
   # Allowed HTTP methods
   allowed_methods:
     - "GET"
@@ -54,7 +54,7 @@ cors:
     - "PUT"
     - "DELETE"
     - "OPTIONS"
-  
+
   # Allowed HTTP headers
   allowed_headers:
     - "Content-Type"

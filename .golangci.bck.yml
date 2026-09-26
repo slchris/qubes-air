@@ -14,7 +14,7 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    
+
     # 额外启用
     - bodyclose
     - dogsled
@@ -43,32 +43,32 @@ linters-settings:
   errcheck:
     check-type-assertions: true
     check-blank: true
-  
+
   govet:
     enable:
       - shadow
-  
+
   gocyclo:
     min-complexity: 15
-  
+
   funlen:
     lines: 100
     statements: 50
-  
+
   goconst:
     min-len: 3
     min-occurrences: 3
-  
+
   misspell:
     locale: US
-  
+
   revive:
     rules:
       - name: exported
         severity: warning
       - name: var-naming
         severity: warning
-  
+
   gosec:
     excludes:
       - G104  # Audit errors not checked
@@ -90,7 +90,7 @@ issues:
         - gocritic
         - noctx
         - goconst
-    
+
     # main 函数允许初始化
     - path: main\.go
       linters:

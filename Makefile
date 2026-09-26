@@ -3,10 +3,11 @@
 # 常用构建和开发命令
 
 .PHONY: help build build-backup clean dev test agent-deb publish-agent-deb release-agent \
-	pre-commit audit check-tools diff-check test-race lint-new gosec-new gosec-ci-new \
+	pre-commit audit check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-new lint-whole-module gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
-	agent-deb-test
+	yaml-lint agent-deb-test
 
 # 默认目标
 help:
@@ -18,7 +19,7 @@ help:
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
-	@echo "  pre-commit     提交前增量门禁: test/race/lint/gosec/复杂度/前端/Shell/文档"
+	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/YAML/文档"
 	@echo "  audit          里程碑完整审计: 对全部存量代码执行所有门禁"
 	@echo "  clean          Clean build artifacts"
 	@echo ""
@@ -96,6 +97,17 @@ test:
 # pre-commit 只拒绝 BASE_REV 之后新增的 lint/security/complexity 问题，避免当前阶段
 # 被不相关的存量债务卡死；测试、依赖漏洞、前端和文档仍做全量检查。
 # audit 用于里程碑/release，扫描全部存量代码，必须清零后才能发布。
+#
+# 增量模式只认"报告落在改动行上"的问题。下面几类问题的报告行可以不是改动行，
+# 所以单独补上（每一类都能让 pre-commit 通过、CI 的全量 lint 却报错）：
+#   - unused / unparam / staticcheck：报在声明或调用处，引发它的改动却在别处 → lint-whole-module
+#     全模块检查（具体情形见该目标上方的注释）；
+#   - funlen/gocyclo：报在函数声明行，只改函数体时声明行不算新 → complexity-new 加 --whole-files；
+#   - linux 专属文件：本机 GOOS 不编译它们，golangci-lint 根本看不到 → 每个 golangci-lint
+#     门禁再按 CI 的 linux/amd64 跑一遍（见 golangci_gate）。
+# 已知仍看不见：nolintlint 报的"无用豁免"（例如只改函数体、让 //nolint:gocyclo 不再需要，报在
+# 未改动的指令行）。它只在被豁免的 linter 同时运行时才报，全模块检查它就等于跑全量 lint，
+# 所以只由 `make audit` 和 CI 的全量 lint 发现。
 # ============================================================
 
 BASE_REV ?= HEAD
@@ -103,16 +115,21 @@ GOLANGCI_LINT ?= golangci-lint
 SHELLCHECK ?= shellcheck
 GOVULNCHECK ?= govulncheck
 
-pre-commit: check-tools diff-check test-race lint-new gosec-new gosec-ci-new complexity-new \
-	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
+pre-commit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-new lint-whole-module gosec-new gosec-ci-new complexity-new \
+	vuln-check frontend-check frontend-audit-new shellcheck-new yaml-lint docs-check
 
-audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
-	vuln-check frontend-check frontend-audit shellcheck-all docs-check
+audit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-all gosec-all gosec-ci complexity-all \
+	vuln-check frontend-check frontend-audit shellcheck-all yaml-lint docs-check
 
 check-tools:
 	@for tool in git go node npm python3 $(GOLANGCI_LINT) $(SHELLCHECK) $(GOVULNCHECK); do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "缺少开发门禁工具: $$tool" >&2; exit 1; }; \
 	done
+	@python3 -m yamllint --version >/dev/null 2>&1 || { \
+		echo "缺少开发门禁工具: yamllint（python3 -m pip install --user yamllint==1.35.1）" >&2; exit 1; \
+	}
 
 diff-check:
 	git diff --check $(BASE_REV) --
@@ -120,15 +137,78 @@ diff-check:
 test-race:
 	cd console/backend && go test -race -coverprofile=coverage.out ./...
 
+# Go 语句总覆盖率下限，读 test-race 生成的 coverage.out（与 CI go-test 同为 -race 口径）。
+# 下调这个值就是放宽门禁，须按 AGENTS.md §4 在 commit 里写明原因和风险影响。
+GO_COVERAGE_MIN ?= 61.0
+
+coverage-gate: test-race
+	@coverage="$$(cd console/backend && go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$NF); print $$NF}')"; \
+	[ -n "$$coverage" ] || { echo "无法读取 Go 总覆盖率 (console/backend/coverage.out)" >&2; exit 1; }; \
+	awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" \
+		'BEGIN { if (actual + 0 < minimum + 0) { printf "Go 覆盖率不足: %s%% < %s%%\n", actual, minimum; exit 1 }; printf "Go 覆盖率: %s%% (门槛 %s%%)\n", actual, minimum }'
+
+# 入口冒烟：每个 cmd/* 都要能构建并启动到参数解析。只构建一次，二进制放临时目录、结束即删。
+# 入口列表取自构建产物，新增的 cmd 自动纳入；不支持 -h 的入口在 case 里单独处理：
+#   - grpc-smoke 在本机回环上完成一次真实的 mTLS 往返；
+#   - relay-client 不解析参数，改为验证它在 QUBES_AIR_TRANSPORT_ENABLED 不为 true 时拒绝启动；
+#   - qubes-air-backup 的 -h 挂在子命令上。
+# 每一项失败都立即让目标失败，而不是只看循环最后一次的退出码。
+smoke-entrypoints:
+	@bindir="$$(mktemp -d)" || exit 1; trap 'rm -rf "$$bindir"' EXIT; \
+	(cd console/backend && go build -o "$$bindir/" ./cmd/...) || { echo "smoke: 构建 cmd/... 失败" >&2; exit 1; }; \
+	"$$bindir/grpc-smoke" -addr 127.0.0.1:0 || { echo "smoke: grpc-smoke 本机 mTLS 往返失败" >&2; exit 1; }; \
+	for entry in qubes-air-agent server; do \
+		"$$bindir/$$entry" -version || { echo "smoke: $$entry -version 失败" >&2; exit 1; }; \
+	done; \
+	for path in "$$bindir"/*; do \
+		entry="$${path##*/}"; \
+		case "$$entry" in relay-client|qubes-air-backup) continue ;; esac; \
+		"$$path" -h >/dev/null 2>&1 || { echo "smoke: $$entry -h 失败" >&2; exit 1; }; \
+	done; \
+	"$$bindir/qubes-air-backup" create -h >/dev/null 2>&1 || { echo "smoke: qubes-air-backup create -h 失败" >&2; exit 1; }; \
+	output="$$(QUBES_AIR_TRANSPORT_ENABLED=false "$$bindir/relay-client" 2>&1)"; \
+	case "$$output" in \
+		*"QUBES_AIR_TRANSPORT_ENABLED is not true"*) ;; \
+		*) echo "smoke: relay-client 启动保护失效: $$output" >&2; exit 1 ;; \
+	esac; \
+	echo "smoke-entrypoints: OK"
+
+# golangci-lint 只分析当前 GOOS/GOARCH 会编译的文件：在 macOS 上 *_linux.go 和
+# //go:build linux 文件整个不可见，而 CI 的 Go Lint 跑在 linux/amd64。所以每个 golangci-lint
+# 门禁先按本机平台跑，再按 linux/amd64 跑一遍；本机就是 linux/amd64 时不重复。
+GO_LINT_LINUX_ENV = $(if $(filter linux/amd64,$(shell go env GOOS)/$(shell go env GOARCH)),,GOOS=linux GOARCH=amd64)
+
+# 用法: $(call golangci_gate,<golangci-lint run 参数>)。两行是两条独立命令，任一失败即失败。
+# 参数里的逗号会被 $(call) 当成分隔符，含逗号的 linter 列表先放进变量再引用。
+define golangci_gate
+cd console/backend && $(GOLANGCI_LINT) run --timeout=5m $(1)
+$(if $(GO_LINT_LINUX_ENV),cd console/backend && $(GO_LINT_LINUX_ENV) $(GOLANGCI_LINT) run --timeout=5m $(1))
+endef
+
+COMPLEXITY_LINTERS := gocyclo,funlen
+
 lint-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV)
+	$(call golangci_gate,--new-from-rev=$(BASE_REV))
+
+# 这几个 linter 的报告行和引发它的改动可以不在同一处，所以不走增量，全模块检查：
+#   - unused：调用者删了，函数那一行没动（2d409fd 删掉的 runSSH）；
+#   - unparam：删掉部分调用者后其余都传同一个常量，或只改函数体让某个返回值恒为 nil；
+#   - staticcheck：给一个 API 标上 Deprecated，别处没改动的调用行报 SA1019。
+# 只开这几个 linter，不是全量 lint：它们在全模块上的任何存量问题在 CI 的全量 lint 里同样致命，
+# 所以这里不会比 CI 更严，也不会被无关的存量风格债务卡住。
+WHOLE_MODULE_LINTERS := unused,unparam,staticcheck
+
+lint-whole-module:
+	$(call golangci_gate,--enable-only=$(WHOLE_MODULE_LINTERS))
 
 # 显式单独运行安全和复杂度 linter，防止以后修改默认 linter 集合时悄悄丢掉门禁。
 gosec-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gosec
+	$(call golangci_gate,--new-from-rev=$(BASE_REV) --enable-only=gosec)
 
+# --whole-files：凡相对 BASE_REV 改动过的文件，其中全部 funlen/gocyclo 问题都算。
+# 函数体变长或变复杂必然改动它所在的文件，这样声明行没动也能拦住。
 complexity-new:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --new-from-rev=$(BASE_REV) --enable-only=gocyclo,funlen
+	$(call golangci_gate,--new-from-rev=$(BASE_REV) --whole-files --enable-only=$(COMPLEXITY_LINTERS))
 
 vuln-check:
 	cd console/backend && $(GOVULNCHECK) ./...
@@ -136,15 +216,20 @@ vuln-check:
 # Warning 也属于失败：保持为 0，不建立可永久继承的告警基线。
 FRONTEND_WARNING_BUDGET ?= 0
 
+# 显式指定 --output human-verbose：svelte-check 4.x 在 CLAUDECODE=1（Claude Code 会话）下
+# 默认改用 machine 格式，下面要读的汇总行就不存在了。汇总行对 1 用单数
+# （"1 error" / "1 warning"），两种写法都要认。读不到汇总行时按失败处理，不猜数量。
 frontend-check:
 	cd console/frontend && npm ci
-	@output="$$(cd console/frontend && npm run check 2>&1)"; status=$$?; \
+	@output="$$(cd console/frontend && npm run check -- --output human-verbose --no-color 2>&1)"; status=$$?; \
 	printf '%s\n' "$$output"; \
-	[ $$status -eq 0 ] || exit $$status; \
-	warnings="$$(printf '%s\n' "$$output" | sed -n 's/.*found 0 errors and \([0-9][0-9]*\) warnings.*/\1/p' | tail -n 1)"; \
-	[ -n "$$warnings" ] || { echo "无法读取 Svelte warning 数量" >&2; exit 1; }; \
+	counts="$$(printf '%s\n' "$$output" | sed -n 's/.*svelte-check found \([0-9][0-9]*\) errors\{0,1\} and \([0-9][0-9]*\) warnings\{0,1\}.*/\1 \2/p' | tail -n 1)"; \
+	[ -n "$$counts" ] || { echo "无法读取 svelte-check 汇总行 (退出码 $$status)" >&2; exit 1; }; \
+	errors="$${counts% *}"; warnings="$${counts#* }"; \
+	[ "$$errors" -eq 0 ] || { echo "Svelte error: $$errors (必须为 0)" >&2; exit 1; }; \
+	[ $$status -eq 0 ] || { echo "svelte-check 退出码 $$status" >&2; exit $$status; }; \
 	[ "$$warnings" -le "$(FRONTEND_WARNING_BUDGET)" ] || { \
-		echo "Svelte warning 增加: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
+		echo "Svelte warning 超出预算: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
 	}
 	cd console/frontend && npm run build
 	cd console/frontend && npm run test
@@ -161,25 +246,55 @@ frontend-audit-new:
 frontend-audit:
 	cd console/frontend && npm audit --audit-level=high
 
-# 检查相对 BASE_REV 修改及新建的所有 shell/shebang 文件，包括无 .sh 后缀的 qrexec 服务。
+# ShellCheck 选文件的规则（应与 CI 的 ShellCheck job 保持一致）：首行是 sh/bash shebang 的文件
+# （qrexec 服务、Debian 维护脚本没有 .sh 后缀；`#!/usr/bin/env bash` 也算），加上所有 *.sh。
+# 路径全程按 NUL 分隔，文件名里有空格或换行也不会被拆成几个参数。这需要 bash 的 read -d '' 和
+# 数组，所以两个 shellcheck 目标的 recipe 用 /bin/bash（macOS 自带的 3.2 就够）。
+SHELL_SHEBANG_RE := ^\#!.*(/|env[[:space:]]+)(ba)?sh([[:space:]]|$$)
+
+# 从 stdin 读 NUL 分隔的路径，把其中的 shell 文件放进数组 files。用法: $(SELECT_SHELL_FILES) < <(...)
+SELECT_SHELL_FILES = files=(); while IFS= read -r -d '' file; do \
+	[ -f "$$file" ] || continue; \
+	case "$$file" in *.sh) ;; *) head -n 1 -- "$$file" | grep -Eq '$(SHELL_SHEBANG_RE)' || continue ;; esac; \
+	files+=("$$file"); \
+	done
+
+# 检查相对 BASE_REV 修改及新建的 shell 文件。BASE_REV 无效时直接失败：否则 git diff 的错误会被
+# 进程替换吞掉，变成"没有改动的 shell 文件"而通过。
+shellcheck-new: SHELL := /bin/bash
 shellcheck-new:
-	@files="$$( \
-		{ git diff --name-only --diff-filter=ACMR $(BASE_REV) --; git ls-files --others --exclude-standard; } | \
-		sort -u | while IFS= read -r file; do \
-			if [ -f "$$file" ] && head -n 1 "$$file" | grep -Eq '^\#\!.*/(ba)?sh'; then printf '%s\n' "$$file"; fi; \
-		done \
-	)"; \
-	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no changed shell files"; fi
+	@git rev-parse --verify --quiet '$(BASE_REV)^{commit}' >/dev/null || { \
+		echo "shellcheck-new: BASE_REV=$(BASE_REV) 不是有效的提交" >&2; exit 1; \
+	}; \
+	$(SELECT_SHELL_FILES) < <(git diff -z --name-only --diff-filter=ACMR '$(BASE_REV)' --; \
+		git ls-files -z --others --exclude-standard); \
+	if [ $${#files[@]} -eq 0 ]; then echo "ShellCheck: no changed shell files"; exit 0; fi; \
+	printf 'ShellCheck: %d 个改动的 shell 文件\n' $${#files[@]}; printf '  %s\n' "$${files[@]}"; \
+	$(SHELLCHECK) -- "$${files[@]}"
+
+# 检查全部被跟踪、且没有被 .yamllint.yml 的 ignore 排除的 YAML。排除范围只由这份配置决定，这里
+# 不另列目录：写死的目录清单会和配置的 ignore 分叉，最后变成"一个文件也没检查却是绿的"。
+# 所以实际检查的文件数为 0 时同样按失败处理。
+yaml-lint:
+	@files="$$(git ls-files '*.yml' '*.yaml')"; \
+	[ -n "$$files" ] || { echo "yamllint: 仓库里没有被跟踪的 YAML 文件" >&2; exit 1; }; \
+	listed="$$(python3 -m yamllint --list-files -c .yamllint.yml $$files)" || { \
+		echo "yamllint: 无法列出待检查的文件" >&2; exit 1; \
+	}; \
+	checked="$$(printf '%s' "$$listed" | grep -c .)"; \
+	[ "$$checked" -gt 0 ] || { echo "yamllint: .yamllint.yml 忽略了全部被跟踪的 YAML，没有检查任何文件" >&2; exit 1; }; \
+	python3 -m yamllint --strict -c .yamllint.yml $$files || exit 1; \
+	echo "yamllint: $$checked 个文件通过 --strict ($$(python3 -m yamllint --version))"
 
 docs-check:
 	node scripts/check-doc-links.mjs
 	node scripts/check-workflow-gates.mjs
 
 lint-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m
+	$(call golangci_gate)
 
 gosec-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gosec
+	$(call golangci_gate,--enable-only=gosec)
 
 # CI 跑的独立 gosec(版本与 .github/workflows/security.yml 钉的完全一致, 只有输出格式不同)。
 # 它和上面内嵌在 golangci-lint 里的 gosec 是两个程序, 抑制语法也不一样: 独立版认 `#nosec`,
@@ -192,7 +307,9 @@ gosec-ci:
 # 增量版: 只扫本次改动的包, 好让 `make pre-commit` 与 CI 对 gosec 的结论也一致。
 # 独立 gosec 没有 golangci-lint 的 --new-from-rev, 所以从 BASE_REV 自己算变更包;
 # 没有变更包就跳过 —— 不退回全量扫描, 否则每次提交都要付全仓代价 (那是 `make audit` 的事)。
-GOSEC_CI_PKGS = $(shell git diff --name-only $(BASE_REV) -- console/backend \
+# --diff-filter=ACMR: 删除的文件不算。整个包被删掉时它的目录已不存在, 把它交给 gosec 只会
+# 让 gosec 因找不到包而失败; 删除本身也不会引入新的 gosec 问题。
+GOSEC_CI_PKGS = $(shell git diff --name-only --diff-filter=ACMR $(BASE_REV) -- console/backend \
 	| sed -n 's|^console/backend/\(.*\)/[^/]*\.go$$|./\1/...|p' | sort -u | tr '\n' ' ')
 
 gosec-ci-new:
@@ -202,11 +319,15 @@ gosec-ci-new:
 	fi
 
 complexity-all:
-	cd console/backend && $(GOLANGCI_LINT) run --timeout=5m --enable-only=gocyclo,funlen
+	$(call golangci_gate,--enable-only=$(COMPLEXITY_LINTERS))
 
+# 全部被跟踪的 shell 文件。一个也选不到说明选择规则坏了，按失败处理，而不是"没有问题"。
+shellcheck-all: SHELL := /bin/bash
 shellcheck-all:
-	@files="$$(git grep -l -E '^\#\!.*/(ba)?sh')"; \
-	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no shell files"; fi
+	@$(SELECT_SHELL_FILES) < <(git ls-files -z); \
+	if [ $${#files[@]} -eq 0 ]; then echo "ShellCheck: 没有选到任何 shell 文件，选择规则有问题" >&2; exit 1; fi; \
+	printf 'ShellCheck: %d 个文件\n' $${#files[@]}; printf '  %s\n' "$${files[@]}"; \
+	$(SHELLCHECK) -- "$${files[@]}"
 
 # 清理
 clean:
