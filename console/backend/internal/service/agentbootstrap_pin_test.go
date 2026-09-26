@@ -198,6 +198,53 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// End to end: the listener serves the placeholder derived from this qube's
+// own token (so the pinned handshake passes), but its BeginBootstrap answers
+// with a token minted for another qube. The console must refuse before the
+// issuer ever sees that token, and must deliver nothing.
+func TestBootstrapRefusesAStolenTokenOverThePinnedSession(t *testing.T) {
+	ca := newCA(t)
+	const qubeName, ownToken = "remote-dev", "token-minted-for-remote-dev"
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}), 0o600))
+	identity, err := agent.NewPendingIdentity(filepath.Join(dir, "agent.pem"), filepath.Join(dir, "agent-key.pem"), caPath)
+	require.NoError(t, err)
+	// The placeholder comes from the qube's own token ...
+	own, err := agent.NewBootstrapService(identity, qubeName, ownToken, nil)
+	require.NoError(t, err)
+	// ... but the bootstrap calls answer with a token stolen from another qube.
+	thief, err := agent.NewBootstrapService(identity, qubeName, "token-minted-for-remote-other", nil)
+	require.NoError(t, err)
+	local := agent.NewLocalInvoker(qubeName, nil)
+	require.NoError(t, thief.RegisterBuiltins(local))
+	served := &recordingAgentInvoker{inner: local}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	require.NoError(t, lis.Close())
+	srv := transportgrpc.NewServer(transportgrpc.ServerConfig{Listen: addr, TLS: identity.ServerTLSConfig(), CertSource: own}, served)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx) }()
+	waitForListener(t, addr)
+	_, port := hostPort(t, addr)
+
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint(ownToken, qubeName)
+	require.NoError(t, err)
+	issuer := &signingIssuer{ca: ca, qubeName: qubeName}
+	b := NewAgentBootstrapper(fixedCA{ca}, issuer, "0.0.0.0:"+port, 10*time.Second).
+		WithBootstrapPeerPinProvider(staticPin{pin: pin})
+	res := b.Bootstrap(context.Background(), &models.Qube{ID: "qube-1", Name: qubeName, IPAddress: "127.0.0.1"})
+
+	assert.Equal(t, BootstrapRefused, res.Status, res.Reason)
+	assert.Empty(t, issuer.redeemed(), "the stolen token was redeemed")
+	assert.Equal(t, []string{agent.ServiceBeginBootstrap}, served.served(), "CompleteBootstrap must never be sent")
+	assert.False(t, identity.HasCertificate(), "no certificate may reach the guest")
+}
+
 func TestBootstrapRefusesToDialWithoutAPeerPin(t *testing.T) {
 	for name, tc := range map[string]struct {
 		pins BootstrapPeerPinProvider

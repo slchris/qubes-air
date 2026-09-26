@@ -256,12 +256,14 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 	}
 	defer sess.close()
 
-	return b.exchange(ctx, qube, sess, done)
+	return b.exchange(ctx, qube, sess, pin, done)
 }
 
-// exchange runs the protocol once the tunnel is up.
+// exchange runs the protocol once the tunnel is up. pin is the placeholder pin
+// the session was authenticated with; the token the agent surrenders must be
+// the one that derives it.
 func (b *AgentBootstrapper) exchange(
-	ctx context.Context, qube *models.Qube, sess agentCaller,
+	ctx context.Context, qube *models.Qube, sess agentCaller, pin string,
 	done func(BootstrapStatus, string, ...any) BootstrapResult,
 ) BootstrapResult {
 	out, err := sess.call(ctx, qube.Name, beginBootstrapService, nil)
@@ -296,6 +298,18 @@ func (b *AgentBootstrapper) exchange(
 		return done(BootstrapConsoleFailed,
 			"%s returned an incomplete reply (nonce=%t token=%t csr=%t)",
 			beginBootstrapService, begun.Nonce != "", begun.Token != "", begun.CSRPEM != "")
+	}
+
+	// The session proved the peer holds the key derived from THIS qube's
+	// token. The token it hands over must be that same token, checked before
+	// anything is redeemed: a guest that can serve its own placeholder but
+	// presents a token stolen from another qube would otherwise spend that
+	// qube's token and have agent-<other> signed and registered, and the CN
+	// check below would only notice after the damage.
+	if !tokenDerivesPin(begun.Token, qube.Name, pin) {
+		return done(BootstrapRefused,
+			"qube %q presented a bootstrap token that is not the one its session was pinned to; "+
+				"refused without redeeming it (another qube's token, or mixed-up user-data)", qube.Name)
 	}
 
 	// Redeem, sign and register. The CN is taken from the redeemed token, never
@@ -361,6 +375,13 @@ func (b *AgentBootstrapper) exchange(
 	log.Printf("bootstrap: qube %q installed its first certificate %s, valid until %s",
 		qube.Name, shortFingerprint(issued.Fingerprint), issued.NotAfter.UTC().Format(time.RFC3339))
 	return res
+}
+
+// tokenDerivesPin reports whether token, minted for qubeName, derives pin. The
+// pin is public, so a plain comparison leaks nothing.
+func tokenDerivesPin(token, qubeName, pin string) bool {
+	derived, err := pki.BootstrapPlaceholderSPKIFingerprint(token, qubeName)
+	return err == nil && pin != "" && derived == pin
 }
 
 // peerPin loads the pin for this qube's pending token. Any failure — no

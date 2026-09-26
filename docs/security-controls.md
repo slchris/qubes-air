@@ -67,6 +67,9 @@ agent 角色。任一不符即握手失败，console 不发出任何请求，所
 
 - 没有 pin 就不拨号：未装配 pin provider、没有未兑换且未过期的 token、升级前签发的旧 token
   （pin 为空）都报 `not_configured`，原因写明“需要重新 provision”，不回退到不认证的握手。
+- agent 在会话里交出的 token 必须正是派生本会话 pin 的那一枚，**在兑换之前**比对：通过了握手
+  却交出另一台 qube 的 token（被盗或 user-data 混用）时报 `refused`，那枚 token 不被兑换、
+  不签发也不下发任何证书。
 - 读到 token 的人能派生同一把密钥，这与他能兑换 token 是同一个能力；token 的暴露面见
   [生产部署安全要求](deployment-requirements.md)第 8、9 条。
 - 升级顺序：agent deb 必须先于 console 升级，在途 token 需重新 provision，见
