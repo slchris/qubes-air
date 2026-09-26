@@ -1041,21 +1041,10 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	// probing (docs/bootstrap-design.md §9.3); the issuance logic lives in
 	// service.BootstrapIssuer.
 
-	// All /api/v1 routes require a valid Bearer token when a token is
-	// configured (the legacy single api_token or the scoped list). When none
-	// is configured, the middleware is a pass-through and a warning is logged
-	// at startup (see logSecurityWarnings). RequireControl then enforces the
-	// fail-closed method rule on top of the resolved scope: GET/HEAD/OPTIONS
-	// are open to any authenticated scope, every other method needs control.
 	v1 := r.Group("/api/v1")
-	v1.Use(middleware.BodyLimit(cfg.Server.MaxBodyBytes))
-	v1.Use(middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg), deps.sessions))
-	v1.Use(middleware.RateLimit(middleware.NewRateLimiter(cfg.Server.RateLimitPerSec, cfg.Server.RateLimitBurst)))
-	v1.Use(middleware.RequireControl())
-	// Audit is registered BEFORE RequireZones so a zone denial (403/404) is
-	// recorded with the subject and zone scope that caused it.
-	v1.Use(middleware.Audit(audit.NewRecorder(os.Stderr)))
-	v1.Use(middleware.RequireZones(objectZoneResolver{qubes: deps.qubeRepo, jobs: deps.jobRepo}))
+	v1.Use(apiMiddleware(cfg, deps.sessions,
+		objectZoneResolver{qubes: deps.qubeRepo, jobs: deps.jobRepo},
+		audit.NewRecorder(os.Stderr))...)
 	deps.sessionHandler.RegisterRoutes(v1)
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
@@ -1071,6 +1060,38 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	registerWebUI(r, cfg)
 
 	return r
+}
+
+// apiMiddleware returns the /api/v1 middleware chain in the order the security
+// controls depend on.
+//
+// Audit is FIRST so it wraps every refusal below it: a mutating request turned
+// away by authentication (401), rate limiting (429), the method scope rule
+// (403) or the zone allowlist (403/404) leaves the same one audit line as a
+// request that reached its handler. It reads the subject and zone scope after
+// the chain has run, so the identity ScopedAuth resolves is still attributed.
+//
+// All /api/v1 routes require a valid Bearer token or session when a token is
+// configured (the legacy single api_token or the scoped list). When none is
+// configured, ScopedAuth is a pass-through and a warning is logged at startup
+// (see logSecurityWarnings). RequireControl then enforces the fail-closed
+// method rule on top of the resolved scope: GET/HEAD/OPTIONS are open to any
+// authenticated scope, every other method needs control. RequireZones runs
+// last because it needs the zone restriction ScopedAuth stored.
+func apiMiddleware(
+	cfg *config.Config,
+	sessions *middleware.SessionStore,
+	zones middleware.ObjectResolver,
+	rec *audit.Recorder,
+) []gin.HandlerFunc {
+	return []gin.HandlerFunc{
+		middleware.Audit(rec),
+		middleware.BodyLimit(cfg.Server.MaxBodyBytes),
+		middleware.ScopedAuth(cfg.Auth.APIToken, scopedTokens(cfg), sessions),
+		middleware.RateLimit(middleware.NewRateLimiter(cfg.Server.RateLimitPerSec, cfg.Server.RateLimitBurst)),
+		middleware.RequireControl(),
+		middleware.RequireZones(zones),
+	}
 }
 
 // registerWebUI serves the built frontend from cfg.Server.WebRoot, at the same

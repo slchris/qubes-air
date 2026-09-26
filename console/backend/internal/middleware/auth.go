@@ -120,6 +120,7 @@ func ScopedAuth(apiToken string, scoped []Token, sessions *SessionStore) gin.Han
 
 	return func(c *gin.Context) {
 		if authDisabled {
+			markAuthDisabled(c)
 			c.Next()
 			return
 		}
@@ -214,6 +215,7 @@ func RequireControl() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		markDenied(c)
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"error": "Forbidden",
 			"code":  http.StatusForbidden,
@@ -247,6 +249,7 @@ func SubjectFromContext(c *gin.Context) (string, bool) {
 
 // unauthorized aborts with 401 and the Bearer challenge.
 func unauthorized(c *gin.Context) {
+	markDenied(c)
 	c.Header("WWW-Authenticate", "Bearer")
 	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 		"error": "Unauthorized",

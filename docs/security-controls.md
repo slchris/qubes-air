@@ -77,10 +77,56 @@ auth:
   列表是 fleet 端点，zone token 一律 403（不做半真半假的过滤视图）。
 - `GET /zones` 与 `GET /qubes` 在查询层按白名单过滤，只返回可见对象。
 - 所属关系无法解析（数据库故障、body 不可解析或超限）时失败关闭，不回退为放行。
-- 审计记录 `subject` 与 `zone_scope`（`fleet` 或 ID 列表）；被拒绝的变更请求同样入库。
+- 审计记录 `subject` 与 `zone_scope`（`fleet`、ID 列表，未认证为 `none`，鉴权关闭为 `unrestricted`）；
+  被拒绝的变更请求同样入库，见下文“Console API 审计”。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
 扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。
+
+## Console API 审计
+
+审计中间件是 `/api/v1` 链的最外层，顺序为 Audit → BodyLimit → ScopedAuth → RateLimit →
+RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。它在整条链跑完后
+才读取身份，所以认证层解析出的主体仍能归属到记录上，而被任何一层拒绝的请求也都会留下记录。
+
+- 每个变更请求（GET/HEAD/OPTIONS 以外的方法，命中已注册路由）恰好写一行 JSON 到 stderr，
+  无论成功还是被拒绝。唯一的例外是 handler panic：panic 越过审计中间件，由最外层的 gin
+  Recovery 返回 500 并自行记录 panic，这个请求没有审计行。
+- `outcome: denied`：认证失败（缺少、格式错误或未知的 Bearer，未知或过期的 session，登录
+  token 错误）返回 401；只读 scope 发起变更请求返回 403；zone 判定拒绝返回 403 或 404。
+  zone 判定对调用方回 404 以免泄露对象是否存在，审计里仍记为 `denied`。zone token 创建 Qube 时
+  请求体读不出、无法解析或超过上限，按失败关闭返回 403，同样记为 `denied`；所属关系查询出错
+  返回 500，记为 `error`。
+- 限流拒绝（429）记为 `client_error`，不记为 `denied`：节流不是授权判定，把它混进 `denied`
+  会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
+- 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、
+  `object`、`object_truncated`、`status`、`outcome`、`latency_ms`。
+- 没有解析出凭据的请求（认证失败、登录请求）记为 `authenticated: false`、`subject: anonymous`、
+  `zone_scope: none`，不会被写成 fleet 范围。鉴权关闭（没有配置任何 token）时请求同样记为
+  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`。判断是否
+  认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
+- `object` 取路径参数 `:id`（没有时取 `:app`），最多保留前 128 字节，按 UTF-8 字符边界截断；
+  截断时 `object_truncated: true`。
+- `request_id` 由服务端生成（128 位随机），同一个值通过响应头 `X-Request-Id` 返回给调用方；
+  客户端自带的 `X-Request-Id` 不采信，也不写入审计。
+- 记录不包含任何请求头或请求体：Authorization、Bearer token、session cookie 以及登录请求体里的
+  token 都不会进入审计。`source` 取直连对端地址，不信任代理头。
+- 读请求不进审计，被拒绝的读请求也一样：读不改变状态，浏览器轮询产生的大量记录会淹没变更记录。
+  gin 访问日志仍逐条记录每个请求的方法、路径、状态和来源。
+
+限制：
+
+- 单行长度有上界。审计在认证之前运行，未认证调用方能自由决定的只有 `object`（路径参数）；其余
+  字段由服务端决定：已注册路由的方法和模板、配置里的 token 名和 zone 列表、连接的对端地址。
+  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 400 字节（构造的最坏情况实测 416 字节），所以
+  一个未认证请求写出的审计行不超过 2 KiB（`TestAPIAuditBoundsOversizedObject` 按这个上界断言），
+  远低于 journald 默认的单行上限（`LineMax=48K`），不会被拆成非 JSON 片段。已认证请求的行长还
+  取决于配置里 zone 列表的长度，由管理员控制。
+- 限流在认证之后，被认证拒绝的请求到不了限流器，所以这类变更请求不受限流，每次都会写一行审计
+  （登录接口不做 Bearer 校验，仍按来源地址限流）。写入条数与访问日志同量级，每行受上一条的上界
+  约束；做持久化审计（M2-2）之前需要重新评估写入量。
+
+审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
 
 ## Exec：JSON 参数列表
 

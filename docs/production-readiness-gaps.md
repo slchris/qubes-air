@@ -112,7 +112,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 |---|---|---|---|---|
 | G-A1 | 本地 `main` 领先 `origin/main` **20 个 commit**，`kixpower/sprint-1` 再领先 3 个；这批 commit（含 P0 安全加固、REL/DATA-01、QA-01 修复）从未被 CI 覆盖 | `git rev-list --left-right --count origin/main...main` → `0 20`；`git log --oneline origin/main..main` | **A-阻塞** | push 后 7 个 workflow 在目标 SHA 全绿；`docs/qa/qa-signoff-1.md` 的 `ci_pending` 转 PASS（该签署记录未纳入版本库，故只写路径不建链接） |
 | G-A2 | 工作停在 `kixpower/sprint-1`，未合并回 `main`（`main` 是 20 commit 的另一个头） | `git merge-base --is-ancestor kixpower/sprint-1 main` → 否 | **A-阻塞** | sprint 分支合入 `main` 且合并后 CI 绿 |
-| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:1044`（`v1.Use(middleware.BodyLimit(...))`）；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
+| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:1089`（`apiMiddleware` 里的 `middleware.BodyLimit(...)`）；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
 | G-A4 | 从未发布过任何版本：无 tag、无 release | `git tag -l` 为空 | A-需要（B-阻塞） | 至少一次 `v*` tag 走通 [release.yml](../.github/workflows/release.yml) 并产出 `SHA256SUMS` |
 
 ### 2.B 真机验收（A 档最大的一块）
@@ -140,9 +140,9 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 238-249 行；[security-controls](security-controls.md) 第 82 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
+| G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 238-249 行；[security-controls](security-controls.md) 第 83 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
 | G-D2 | console 默认可以明文 HTTP 对外服务（TLS 是可选配置 `IsTLSEnabled`），session cookie 因此不能带 `Secure`；部署文档只要求"受限 CORS"，未把 TLS 或"仅 loopback"写成硬要求 | `cmd/server/main.go`:1256-1270（HTTP/HTTPS 二选一）；`handler/session_handler.go`:80-83（`secure` 由调用方决定） | **A-阻塞** | 生产部署要求成文（TLS 或仅本机监听），并在部署 checklist 中可核对 |
-| G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:45 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
+| G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:89 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
 | G-D4 | 无外部安全审计/渗透测试；现有结论来自自查与 P0 加固记录 | [P0 安全记录](reviews/2026-09-20-p0-security.md) 范围自述 | B-阻塞 | 一次独立审计或明确声明"未审计" |
 | G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:39-52 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
 | G-D6 | **真实基础设施地址已存在于公开历史**：仓库是 public，`10.31.0.x`（内网段、artifact store、节点名、QA-01 记录里的具体主机与吊销端点）出现在 8 个已公开文件与本次待推的 5 个新文件中，违反 `AGENTS.md` §5「不得提交真实基础设施地址」 | `git grep -lE "10\.31\.0\.[0-9]+" origin/main` → 8 个文件（含 `internal/config/config.go`、`.github/workflows/release.yml`）；待推范围新增 `docs/reviews/2026-09-22-qa01-proxmox.md` 等 5 个 | A-需要（已决策） | 2026-09-22 决定**接受**：增量暴露仅几个临时租约 IP，而改写 23 个 commit 会作废 `l2_verified_sha`/`qa_verified_sha` 整条信任链。后续新文档不得再写真实地址；是否做一次性历史清理由发布决策定 |
@@ -158,7 +158,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 | G-E4 | 前端无 E2E 框架（无 playwright/cypress），QA-02 剩余"真实首次 bootstrap、应用启动 E2E、取消场景"只能手工 | `console/frontend/package.json` 无 E2E 依赖；[sprint-1 进展](sprint-1/progress.md) 第 343-347 行 | B-阻塞 | E2E 覆盖登录→创建→provision→purge 主路径 |
 | G-E5 | MCP-01 桌面帧与输入仍显式失败；MCP-02 HTTP transport 未决 | [TODO](TODO.md) 第 79-82 行；`cmd/qubes-air-mcp/main.go`:40（`enableComputerUse` 的说明写明帧采集与输入注入未实现） | B-阻塞 | 定义可见接管提示/中断/输入授权后再实现 |
 | G-E6 | CLOUD-01/02：GCP/AWS 原生适配器未实现（未验收前不得宣称可用） | [TODO](TODO.md) 第 77-78 行；`AGENTS.md` 第 10 行 | B-阻塞 | 各自独立生命周期 + 销毁验收 |
-| G-E7 | UI 侧无 zone 可见性降级（AUTH-01 已声明边界） | [security-controls](security-controls.md) 第 82 行 | A-需要 | 越权对象在 UI 不可见或明确置灰 |
+| G-E7 | UI 侧无 zone 可见性降级（AUTH-01 已声明边界） | [security-controls](security-controls.md) 第 83 行 | A-需要 | 越权对象在 UI 不可见或明确置灰 |
 
 ### 2.F 工程质量债（不挡可用性，挡长期回归风险）
 
