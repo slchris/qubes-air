@@ -3,6 +3,10 @@
 // stands up the mTLS gRPC server, dials it with the client, drives one forward
 // Call over the Tunnel, and prints the round-trip result.
 //
+// The leaves carry the roles the production PKI issues — agent for the server,
+// relay for the caller — because the server refuses a client certificate
+// without a relay or console role.
+//
 // It proves the compiled transport binary actually runs and completes an mTLS
 // bidi-stream round trip on the target host (e.g. a real Qubes AppVM). It does
 // NOT touch qrexec — the server side uses an in-process echo invoker.
@@ -24,9 +28,11 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
@@ -149,13 +155,17 @@ func mustLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey, cn string, server b
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 	}
+	role := pki.RoleRelay
 	if server {
+		role = pki.RoleAgent
 		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 		tmpl.IPAddresses = []net.IP{net.ParseIP("127.0.0.1")}
 		tmpl.DNSNames = []string{"localhost"}
 	} else {
 		tmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 	}
+	// Same URI SAN encoding pki.RoleOf reads.
+	tmpl.URIs = []*url.URL{{Scheme: "spiffe", Host: "qubes-air", Path: "/role/" + string(role)}}
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyDER, _ := x509.MarshalECPrivateKey(key)
