@@ -98,8 +98,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Warnings fail the job, as they do in `make frontend-check` (budget 0,
+      # AGENTS.md §3). Without the flag svelte-check exits 0 on warnings.
       - name: Svelte Check
-        run: npm run check
+        run: npm run check -- --fail-on-warnings
 
   # Shell Script Lint
   shellcheck:
