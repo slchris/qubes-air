@@ -83,8 +83,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   仍缺：Proxmox 读数未在真机 PVE 上核对；告警（`alerts_status=not_implemented`，确认接口返回 501）、费用数据源、其他 provider 的 Qube 指标与历史指标。
 - [ ] **CLOUD-01：GCP 原生适配器。** 实现资源与可信网络路径，完成独立生命周期及销毁验收。
 - [ ] **CLOUD-02：AWS 原生适配器。** 同样独立验收；不因 GCP 或 Proxmox 通过而视作可用。
-- [ ] **MCP-01：桌面帧与输入。** 工具仍显式失败；`internal/xpra` 单次截图客户端尚无调用方。
-  接线前定义可见接管提示、中断、policy 与输入授权；验收真实帧/输入和拒绝路径；依赖 GUI-01 与 SEC-01。
+- [ ] **MCP-01：桌面帧与输入。** 部分完成：desktop_frame_get 经 Console 逐帧人工批准（Desktop access 页 Allow/Deny/Stop）后读一帧，
+  一次性 grant、`console-desktop` 身份与 agent 端口限制有自动化测试（[记录](reviews/2026-09-23-mcp-xpra-screenshot.md)）。剩余：qube 内 Xpra 监听与认证的部署、
+  与真实 Xpra 的互通验收、输入（desktop_input_send 仍显式失败）、dom0 policy 层的接管提示；依赖 GUI-01 与 SEC-01。
 - [ ] **MCP-02：可选 HTTP transport。** 先明确部署需求与监听/认证边界，再考虑 loopback 或
   受控网络入口；stdio 继续作为当前入口，不把候选设计当作已提供能力。
 - [ ] **PUB-01：发布材料。** 决定开源时补许可证、安全报告入口；发布说明引用同版本构建、

@@ -585,8 +585,8 @@ PNG。实现：`internal/desktopaccess`（状态机）、`internal/handler/deskt
   凭据）即使是 fleet-wide control 也返回 403；zone-scoped session 也被拒（`/api/v1/desktop-access`
   是 fleet 前缀，handler 自己再查一次）。**鉴权关闭（没有配置任何 token）时没有 session，批准不可能
   发生**，发起请求也因没有具名 control 凭据而 403——即桌面帧在鉴权关闭的控制台上整体不可用。
-- `X-Console-Action` 不在 CORS 允许的请求头里，跨站表单和跨源脚本都带不上它；UI 同源提供，
-  不需要放宽 CORS。
+- 默认的 CORS 允许头只有 `Content-Type` 与 `Authorization`，不含 `X-Console-Action`，跨站表单和跨源
+  脚本都带不上它；UI 同源提供，不需要把它加进 `cors.allowed_headers`，加了就等于允许那些源发起审批。
 - grant 是 256 位随机值，只存 SHA-256；一次消费，30s 过期。以错误的 subject、qube 或 operation
   出示 grant 返回 403，且该 grant 随即作废（持有者不是它签发给的那个请求方）。`input` 操作一律
   400：没有消费输入的端点，`desktop_input_send` 仍是显式失败的桩。
