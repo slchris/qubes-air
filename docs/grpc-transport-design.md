@@ -122,7 +122,10 @@ Agent 和 Relay 证书都链到 console CA。某些连接按裸 IP 发起，证�
 实现使用自定义 `VerifyConnection` 对固定 CA 池做完整链验证，而不是无条件跳过 TLS 校验。
 
 当前签发已分离 agent 的 ServerAuth 与 Relay/Console 的 ClientAuth；Console/Relay 客户端
-要求目标证书为 agent 角色且 CN 匹配 `agent-<目标 qube>`。
+要求目标证书为 agent 角色且 CN 匹配 `agent-<目标 qube>`。这一判定（链到本 CA、有效期、
+ServerAuth、agent 角色、CN）只在 `pki.VerifyAgentChain` 实现一次：console 的探测、续期、
+解锁与 `relay-call`、`pingcheck` 都用它校验对端，负例矩阵见
+`console/backend/internal/pki/agentpeer_test.go`。
 
 实际 agent 启动入口现在必须接入 CA 签名的短期撤销状态源；服务端角色校验不依赖注册表。
 每次握手与长连接巡检都检查有效性，空闲接收会响应吊销取消。来源失效时拒绝调用；

@@ -247,7 +247,7 @@ func (r *RenewalService) Complete(_ context.Context, _ string, in []byte) ([]byt
 	}
 
 	// The identity must not change. The console holds the peer's common name to
-	// "agent-<qube name>" (service.verifyAgentChain); installing a certificate
+	// "agent-<qube name>" (pki.VerifyAgentChain); installing a certificate
 	// with any other name would make this agent unrecognizable to the probe
 	// that is supposed to notice it is unhealthy.
 	current, err := r.id.Leaf()

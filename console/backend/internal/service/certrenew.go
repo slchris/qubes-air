@@ -563,7 +563,7 @@ func (r *CertRenewer) exchange(
 	}
 
 	// The peer already proved which qube it is: the mTLS handshake pinned its
-	// certificate's common name to wantCN (see verifyAgentChain). A CSR naming
+	// certificate's common name to wantCN (see pki.VerifyAgentChain). A CSR naming
 	// anything else is an agent asking to be issued someone else's identity, so
 	// it fails loudly instead of being silently corrected to the right name.
 	if err := verifyRenewalCSR(begun.CSRPEM, wantCN); err != nil {
