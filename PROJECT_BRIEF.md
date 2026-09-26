@@ -172,7 +172,7 @@ qubes-air/
 | R-DOC-2 | `docs/quickstart.md`:63 断言 Ping 返回 `pong`，实际返回 `pong <remote_name> <unix_ts>`（`remote/qubes-rpc/qubesair.Ping`:10,22） | 双方原文 | 已消解（原 medium；Sprint 1 T4 `8c302e6` 改了 quickstart） |
 | R-DOC-3 | `docs/architecture.md`:83 把 `UnlockData` 描述为"仍有派生密钥回退路径"，而 `internal/service/datakey.go`:19-24,72-81 明确 master **只用于迁移、永不自动创建、缺 master 即报错** | 双方原文 | 已消解（原 **high**，安全语义；Sprint 1 T4 `8c302e6` 改了 architecture） |
 | R-DOC-4 | `docs/architecture.md` 与 `docs/grpc-transport-design.md` 的服务表未覆盖 `dom0-scripts/policy.d/30-qubes-air.policy` 中实际授权的 `qubesair.Status` / `qubesair.Deploy` / `qubesair.SSHProxy` / `qubesair.VaultRead` / `qubesair.GetCredential` | policy 文件 :45-121 vs 两份 doc 的服务表 | 已消解（原 medium；Sprint 1 T4 `8c302e6` 在两份文档里补了 policy 授权清单） |
-| R-DOC-5 | CI 内 Node 版本不自洽：`release.yml`:90 = 22，其余 = 20 | workflow 原文 | low |
+| R-DOC-5 | CI 内 Node 版本不自洽：`release.yml`:90 = 22，其余 = 20 | workflow 原文 | 已消解（原 low；全部 workflow 与新增的 `.nvmrc` 已统一为 Node 22，见 `docs/runtime-defaults.md` §3 与 gaps G-F5） |
 | R-DOC-6 | 根 README 实际文件名是小写 `readme.md`，`AGENTS.md` 与多处文档写 `README.md`；doc-link 检查不区分大小写所以不报警 | `git ls-files` 输出 | 已撤回（原 low；Sprint 1 T4 复核 D-5：没有文档把根文件写成 `README.md`） |
 
 > 复核边界：本清单是**抽样**（9 处文档面对代码核对），不是全仓审计。未覆盖的文档面标为未知。
@@ -183,9 +183,9 @@ qubes-air/
 |---|---|---|---|
 | R-TECH-1 | `internal/transport/grpc/server.go` 的 `(*Server).Tunnel`：**262 行**、gocyclo **44**，靠 `//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately` 保留 | `gocyclo -top`；`.go:346-347` | 已解除：M2-4（PR #24）拆成按帧类型命名的步骤，豁免已删（G-F2） |
 | R-TECH-2 | `internal/config/config.go` 的 `(*Config).loadFromEnv`：**199 行**、gocyclo **71**（全仓最高）；`(*Config).Validate` gocyclo **28** | `gocyclo -top`；`.go:588-589,792` | 已解除：M2-4（PR #24）按配置段拆分，豁免已删（G-F2） |
-| R-TECH-3 | 1200 行级文件 4 个（基线 `fae0aea`）：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047；2026-09-26 依次为 1360、1192、1435、1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
+| R-TECH-3 | 1200 行级文件 4 个（基线 `fae0aea`）：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047；2026-09-26 合入 batch-1 后依次为 1360、1192、1460、1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
 | R-TECH-4 | `console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例（基线 `fae0aea`；2026-09-26 为 1003 行、14 个用例，见 gaps G-F4） | `wc -l`；`QubeList.test.ts` | 大组件 + 薄测试 = 改动高风险 |
-| R-TECH-5 | 存量 `nolint` 原 **24 处**；2026-09-26 实测 **17 处**，其中 `gocyclo` 豁免 3 处、`gosec` 10 处 | `git grep -n nolint -- '*.go'` | 豁免均已注明理由，但仍缺"何时可移除"的退出条件（G-F3） |
+| R-TECH-5 | 存量 `nolint` 原 **24 处**；2026-09-26 合入 batch-1 后实测 **16 处**，其中 `gocyclo` 豁免 3 处、`gosec` 9 处（G-F10 的修复净减 1 处 `gosec`） | `git grep -n nolint -- '*.go'` | 豁免均已注明理由，但仍缺"何时可移除"的退出条件（G-F3） |
 | R-TECH-6 | 源码内真·待办仅 **4 处**（`handler/billing_handler.go`:50,56；`handler/monitoring_handler.go`:53,55）+ 1 处脚本内 `remote/qubes-rpc/qubesair.UnlockData`:26 hardening TODO | `grep -rnE 'TODO\|FIXME\|XXX'` 去噪后 | 待办本身不重，但 4 处都在"假装有数据"的占位路径上，UI 必须继续标记未接入 |
 
 ### 9.3 测试覆盖度未知项
