@@ -60,7 +60,7 @@ const (
 // Distinct from renewRelayName so an agent's logs say which conversation it
 // was part of, and so a certificate minted for one is not silently reused for
 // the other.
-const bootstrapRelayName = "console-bootstrap"
+const bootstrapRelayName = pki.ConsoleBootstrapCN // the agent restricts bootstrap to it
 
 // DefaultBootstrapTimeout bounds one qube's whole bootstrap exchange.
 //

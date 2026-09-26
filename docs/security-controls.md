@@ -9,6 +9,11 @@ Agent 服务端在每次 TLS 握手（包含恢复会话）校验 CA、ClientAut
 Relay/Console 角色。角色校验不依赖 CertRegistry 是否存在。Console/Relay 客户端仍校验
 目标 agent 的证书角色与名称；本地 dom0 policy 和服务 allowlist 继续生效。
 
+动数据盘密钥与首次身份的服务还要求专用的 console 身份：`qubesair.UnlockData` /
+`RekeyData` 只对 CN 为 `console-unlock`、`qubesair.BeginBootstrap` / `CompleteBootstrap` 只对
+`console-bootstrap` 的 console 角色证书执行；其它 CA 签发的 Relay/Console 证书（探测、续期、
+relay-call）在进入 invoker 前被拒。
+
 实际 agent 启动入口必须配置 `--revocation-url`；打包 unit 从
 `QUBESAIR_REVOCATION_URL` 传入。Console 用以下配置把地址写进 cloud-init：
 

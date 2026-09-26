@@ -726,6 +726,10 @@ func (s *Server) handleForward(ctx context.Context, reqID string, hdr *pb.Reques
 		_ = send(errorFrame(reqID, codeInvalid, "invalid target/service name"))
 		return
 	}
+	if err := authorizePrivilegedServiceCaller(ctx, service); err != nil {
+		_ = send(errorFrame(reqID, codeDenied, err.Error()))
+		return
+	}
 
 	// Reaching here means the remote dom0/policy has re-authorized this call.
 	res, err := s.invoker.Invoke(ctx, target, service, body)
@@ -752,6 +756,61 @@ func (s *Server) handleForward(ctx context.Context, reqID string, hdr *pb.Reques
 	if len(res.Stderr) > 0 {
 		_ = send(eosFrame(reqID, streamStderr))
 	}
+}
+
+// Services that act on the host's identity or its data disk. Any CA-signed
+// Relay or Console certificate may open a tunnel, but only the console
+// identity minted for that one conversation may call these: a probe, renewal
+// or relay certificate must not be able to format a disk, rekey it, or answer
+// a first-certificate exchange.
+const (
+	unlockDataService        = "qubesair.UnlockData"
+	rekeyDataService         = "qubesair.RekeyData"
+	beginBootstrapService    = "qubesair.BeginBootstrap"
+	completeBootstrapService = "qubesair.CompleteBootstrap"
+)
+
+// privilegedServiceCaller returns the only console identity allowed to call
+// service, or "" when any authenticated caller may. The "+argument" form is
+// judged by its service name.
+func privilegedServiceCaller(service string) string {
+	name, _, _ := strings.Cut(service, "+")
+	switch name {
+	case unlockDataService, rekeyDataService:
+		return pki.ConsoleUnlockCN
+	case beginBootstrapService, completeBootstrapService:
+		return pki.ConsoleBootstrapCN
+	default:
+		return ""
+	}
+}
+
+// authorizePrivilegedServiceCaller refuses a privileged service unless the
+// verified client certificate carries the console role AND the dedicated
+// common name for that service. The chain itself was verified during the
+// handshake (RequireAndVerifyClientCert); this reads the verified leaf, never
+// a presented-but-unverified one.
+func authorizePrivilegedServiceCaller(ctx context.Context, service string) error {
+	wantCN := privilegedServiceCaller(service)
+	if wantCN == "" {
+		return nil
+	}
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return fmt.Errorf("%s requires an authenticated %s identity", service, wantCN)
+	}
+	info, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(info.State.VerifiedChains) == 0 || len(info.State.VerifiedChains[0]) == 0 {
+		return fmt.Errorf("%s requires a verified client certificate", service)
+	}
+	leaf := info.State.VerifiedChains[0][0]
+	role, err := pki.RoleOf(leaf)
+	if err != nil || role != pki.RoleConsole || leaf.Subject.CommonName != wantCN {
+		log.Printf("grpc server: refusing %s to caller CN=%q: restricted to the %s console identity",
+			service, leaf.Subject.CommonName, wantCN)
+		return fmt.Errorf("%s is restricted to the %s console identity", service, wantCN)
+	}
+	return nil
 }
 
 // streamServicePrefix marks a request that should be TCP-proxied to a loopback

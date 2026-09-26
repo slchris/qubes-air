@@ -85,8 +85,8 @@
 | UD-9d | agent 失败连续段的判定预算（`agent_recovery=manual` 的阈值） | **300s**（= 单元 `StartLimitIntervalSec`，不可配置） | `internal/models/qube.go:127`（`AgentStartLimitBudget`）；导出依据 `packaging/agent-deb/qubes-air-agent.service:10-11`（`StartLimitIntervalSec=300`、`StartLimitBurst=5`）与 `:33`（`RestartSec=5`）；一致性测试 `internal/models/agentrecovery_test.go`（读单元文件断言预算覆盖窗口与 `(burst−1)×RestartSec`） |
 | UD-9e | 失败连续段起点 `agent_failing_since` 的写入/清空，与 `agent_recovery` 的派生 | 写：`unreachable` 时 `COALESCE` 保留首次时间，其它判定一律清空；派生：`最后一次探测时刻 − 失败起点 ≥ UD-9d` 为 `manual`，否则 `pending`，非失败判定为 `none`（**不看墙钟**） | 写 `internal/repository/qube_repo.go:453-456`；读/派生 `:199`（`scanQube`，列表与详情共用同一条路径）与 `internal/models/qube.go:137-153`；加列迁移 `internal/database/database.go:278`；API 字段 `internal/models/qube.go:66`（`agent_failing_since`）、`:72`（`agent_recovery`） |
 | UD-9f | 周期探测间隔（多久重新判定一次 agent 健康） | **60s** | `internal/config/config.go`:252（`agent_probe_interval_seconds`）、`:665`（默认 60）；兜底常量 `internal/service/agenthealth.go:19`（`DefaultAgentProbeInterval`） |
-| UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:48`（`DefaultDataUnlockTimeout`） |
-| UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:33`（`unlockCertLifetime`） |
+| UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:49`（`DefaultDataUnlockTimeout`） |
+| UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:34`（`unlockCertLifetime`） |
 | UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:70`（`DefaultBootstrapTimeout`） |
 | UD-11b | bootstrap 重试退避 | **base 15s / max 10 分钟** | `internal/service/bootstrapsched.go:49`、`:50`（`bootstrapRetryBase`、`bootstrapRetryMax`） |
 | UD-12 | 证书续期单次超时 | **30s** | `internal/service/certrenew.go:50`（`DefaultCertRenewalTimeout`） |

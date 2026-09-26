@@ -103,6 +103,13 @@ invoker 当作错误而吞掉 stdout。它只格式化真正空白的盘；已�
 下次解锁重试移除。密钥语义与默认值见[架构](architecture.md)的远端服务小节与
 [运行期默认值与数据库结构](runtime-defaults.md)。
 
+调用方身份：任何链到 CA、角色为 Relay/Console 的客户端证书都能建隧道，但 agent 在执行前
+（`internal/transport/grpc/server.go` 的 `authorizePrivilegedServiceCaller`，在 `handleForward`
+的名字校验之后）只对**已验证链**上角色为 console、CN 恰为 `console-unlock` 的证书运行这两个服务；
+`qubesair.BeginBootstrap` / `CompleteBootstrap` 同理只对 `console-bootstrap`。探测、续期、Relay
+证书以及带 `+参数` 的同名服务一律回 `denied`，不会进入 invoker。两个 CN 定义在
+`internal/pki/console_identity.go`，console 签发与 agent 校验共用。
+
 ### SSHProxy
 
 `qubesair.SSHProxy` 由 `relay/transport/qubesair.SSHProxy` 实现，落在 Relay 上而不是远端
