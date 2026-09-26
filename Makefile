@@ -286,8 +286,11 @@ yaml-lint:
 	python3 -m yamllint --strict -c .yamllint.yml $$files || exit 1; \
 	echo "yamllint: $$checked 个文件通过 --strict ($$(python3 -m yamllint --version))"
 
+# 与 CI 的 Docs and Gates job 同序：先跑检查器自己的测试（喂它逐条违规的 fixture workflow 并要求失败），
+# 再检查真实 workflow，免得一个悄悄失配的检查器把真实文件报成干净。
 docs-check:
 	node scripts/check-doc-links.mjs
+	node --test scripts/check-workflow-gates.test.mjs
 	node scripts/check-workflow-gates.mjs
 
 lint-all:
