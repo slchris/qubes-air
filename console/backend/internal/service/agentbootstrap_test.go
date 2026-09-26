@@ -87,8 +87,19 @@ func issuedFor(qubeName, fingerprint string) *IssuedBootstrapCert {
 	}
 }
 
-// runBootstrapExchange drives the protocol against a fake agent, skipping the dial.
+// runBootstrapExchange drives the protocol against a fake agent, skipping the
+// dial. The session pin is the one the fake agent's own token derives, as it
+// is for a genuine agent that passed the pinned handshake.
 func runBootstrapExchange(b *AgentBootstrapper, ag *fakeBootstrapAgent, qube *models.Qube) BootstrapResult {
+	pin := ""
+	if reply, ok := ag.beginReply.(beginBootstrapReply); ok && reply.Token != "" {
+		pin, _ = pki.BootstrapPlaceholderSPKIFingerprint(reply.Token, qube.Name)
+	}
+	return runBootstrapExchangePinned(b, ag, qube, pin)
+}
+
+// runBootstrapExchangePinned is runBootstrapExchange with an explicit session pin.
+func runBootstrapExchangePinned(b *AgentBootstrapper, ag *fakeBootstrapAgent, qube *models.Qube, pin string) BootstrapResult {
 	started := time.Now()
 	res := BootstrapResult{At: started.UTC(), QubeID: qube.ID, QubeName: qube.Name}
 	done := func(status BootstrapStatus, format string, args ...any) BootstrapResult {
@@ -99,7 +110,7 @@ func runBootstrapExchange(b *AgentBootstrapper, ag *fakeBootstrapAgent, qube *mo
 		}
 		return res
 	}
-	return b.exchange(context.Background(), qube, ag, done)
+	return b.exchange(context.Background(), qube, ag, pin, done)
 }
 
 func TestBootstrapExchangeSucceeds(t *testing.T) {
@@ -257,4 +268,39 @@ func TestBootstrapNotConfigured(t *testing.T) {
 
 	assert.Equal(t, BootstrapNotConfigured, res.Status)
 	assert.False(t, res.Status.AgentAnswered())
+}
+
+// A guest that passed the pinned handshake (it holds this qube's token-derived
+// key) but hands over a DIFFERENT token — one stolen from another qube — must
+// be refused before redemption. Redeeming first would spend the other qube's
+// token and sign and register agent-<other> before any name check ran.
+func TestBootstrapRefusesATokenThatDoesNotDeriveTheSessionPin(t *testing.T) {
+	sessionPin, err := pki.BootstrapPlaceholderSPKIFingerprint("remote-dev-own-token", "remote-dev")
+	require.NoError(t, err)
+	ag := &fakeBootstrapAgent{
+		beginReply:  beginBootstrapReply{Nonce: "n1", Token: "token-stolen-from-remote-other", CSRPEM: "csr"},
+		installedFP: "fp",
+	}
+	iss := &fakeIssuer{issued: issuedFor("remote-other", "fp")}
+	b := NewAgentBootstrapper(nil, iss, "", 0)
+
+	res := runBootstrapExchangePinned(b, ag, testBootstrapQube(), sessionPin)
+
+	assert.Equal(t, BootstrapRefused, res.Status)
+	assert.Contains(t, res.Reason, "not the one its session was pinned to")
+	assert.Contains(t, res.Reason, "without redeeming")
+	assert.Empty(t, iss.gotToken, "the stolen token must never reach redemption")
+	assert.Equal(t, []string{beginBootstrapService}, ag.calls, "nothing may be delivered to the guest")
+}
+
+// The same token under another qube's name derives another pin: a token is
+// bound to the name it was minted for, not only to its bytes.
+func TestTokenDerivesPinIsBoundToTheQubeName(t *testing.T) {
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint("tok", "remote-dev")
+	require.NoError(t, err)
+	assert.True(t, tokenDerivesPin("tok", "remote-dev", pin))
+	assert.False(t, tokenDerivesPin("tok", "remote-other", pin))
+	assert.False(t, tokenDerivesPin("other", "remote-dev", pin))
+	assert.False(t, tokenDerivesPin("", "remote-dev", pin))
+	assert.False(t, tokenDerivesPin("tok", "remote-dev", ""))
 }

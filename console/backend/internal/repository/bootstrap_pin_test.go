@@ -2,13 +2,11 @@ package repository
 
 import (
 	"context"
-	"database/sql"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/database/dbtest"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,6 +68,7 @@ func TestPendingBootstrapPinFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	_, err = repo.PendingPlaceholderSPKIFingerprint(ctx, "qube-1", "remote-dev", now)
 	require.ErrorContains(t, err, "no unredeemed, unexpired bootstrap token", "a spent token pins nothing")
+	require.ErrorIs(t, err, ErrNoBootstrapPin)
 }
 
 func TestLegacyBootstrapTokenWithoutPinFailsClosed(t *testing.T) {
@@ -83,28 +82,29 @@ func TestLegacyBootstrapTokenWithoutPinFailsClosed(t *testing.T) {
 
 	_, err = repo.PendingPlaceholderSPKIFingerprint(ctx, "qube-1", "remote-dev", time.Now())
 	require.ErrorContains(t, err, "predates peer pinning")
+	require.ErrorIs(t, err, ErrNoBootstrapPin, "callers must be able to tell this from a failed lookup")
 }
 
-// openV2FixtureDB loads the frozen schema-v2 database the database package's
-// upgrade tests use and opens it with database.New, i.e. upgrades it.
+// A failed lookup is NOT ErrNoBootstrapPin: the caller must not tell the
+// operator to re-provision a qube because the database hiccuped.
+func TestPendingBootstrapPinLookupFailureIsNotNoPin(t *testing.T) {
+	repo := tokenRepo(t)
+	require.NoError(t, repo.db.Close())
+	_, err := repo.PendingPlaceholderSPKIFingerprint(context.Background(), "qube-1", "remote-dev", time.Now())
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrNoBootstrapPin)
+}
+
+// openV2FixtureDB opens (and so upgrades) the frozen schema-v2 database the
+// database package's upgrade tests use, via the shared dbtest fixture.
 func openV2FixtureDB(t *testing.T) *database.DB {
 	t.Helper()
-	script, err := os.ReadFile(filepath.Join("..", "database", "testdata", "schema_v2.sql"))
-	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "v2.db")
-	raw, err := sql.Open("sqlite3", path)
-	require.NoError(t, err)
-	_, err = raw.ExecContext(context.Background(), string(script))
-	require.NoError(t, err)
-	_, err = raw.ExecContext(context.Background(), "PRAGMA user_version = 2")
-	require.NoError(t, err)
-	require.NoError(t, raw.Close())
-
 	cfg := database.DefaultConfig()
-	cfg.DSN = path
+	cfg.DSN = dbtest.WriteV2Fixture(t)
 	db, err := database.New(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
+	dbtest.AssertV2RowsPreserved(t, db.DB())
 	return db
 }
 

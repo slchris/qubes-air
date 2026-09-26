@@ -21,6 +21,12 @@ import (
 // the operator debugging a failed boot still gets a precise answer.
 var ErrBootstrapTokenRejected = errors.New("bootstrap token not accepted")
 
+// ErrNoBootstrapPin means a qube has no token whose pin could authenticate its
+// agent at first contact: none unredeemed and unexpired, or only one minted
+// before pinning existed. It is a state that re-provisioning fixes, which is
+// why callers tell it apart from a failed lookup.
+var ErrNoBootstrapPin = errors.New("no pinned bootstrap token")
+
 // BootstrapToken is a minted, unredeemed credential as stored.
 type BootstrapToken struct {
 	SecretHash string
@@ -102,11 +108,13 @@ func (r *BootstrapTokenRepository) PendingPlaceholderSPKIFingerprint(
 	err := r.db.DB().QueryRowContext(ctx, q, qubeID, qubeName, now.UTC()).Scan(&pin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return "", fmt.Errorf("qube %q has no unredeemed, unexpired bootstrap token; re-provision it to mint one", qubeName)
+		return "", fmt.Errorf("%w: qube %q has no unredeemed, unexpired bootstrap token; re-provision it to mint one",
+			ErrNoBootstrapPin, qubeName)
 	case err != nil:
 		return "", fmt.Errorf("load bootstrap peer pin for %q: %w", qubeName, err)
 	case pin == "":
-		return "", fmt.Errorf("the bootstrap token for qube %q predates peer pinning; re-provision it to mint a pinned one", qubeName)
+		return "", fmt.Errorf("%w: the bootstrap token for qube %q predates peer pinning; re-provision it to mint a pinned one",
+			ErrNoBootstrapPin, qubeName)
 	}
 	return pin, nil
 }

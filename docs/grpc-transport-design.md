@@ -116,7 +116,8 @@ stdout。它只格式化真正空白的盘；已经带非 LUKS 文件系统的�
 （`internal/transport/grpc/server.go` 的 `authorizePrivilegedServiceCaller`，在 `handleForward`
 的名字校验之后）只对**已验证链**上角色为 console、CN 恰为 `console-unlock` 的证书运行这两个服务；
 `qubesair.BeginBootstrap` / `CompleteBootstrap` 同理只对 `console-bootstrap`。探测、续期、Relay
-证书以及带 `+参数` 的同名服务一律回 `denied`，不会进入 invoker。两个 CN 定义在
+证书一律回 `denied`，不会进入 invoker。带 `+参数` 的形式（如 `qubesair.RekeyData+x`）按基础服务名
+判断：专用身份照常放行，其它身份同样 `denied`；参数本身由服务脚本决定是否接受。两个 CN 定义在
 `internal/pki/console_identity.go`，console 签发与 agent 校验共用。
 
 ### SSHProxy

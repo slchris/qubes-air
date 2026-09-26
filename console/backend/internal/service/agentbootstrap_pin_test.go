@@ -3,8 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -18,8 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/slchris/qubes-air/console/internal/agent"
+	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
+	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/transport"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
 )
@@ -166,7 +171,58 @@ func TestBootstrapNeverTalksToAPlaceholderMintedFromAnotherToken(t *testing.T) {
 	assert.Empty(t, issuer.redeemed(), "no token may reach the issuer from an unpinned peer")
 	out := logs.String()
 	assert.Contains(t, out, "does not match the pin", "the operator must be told why the listener was refused")
+	assert.Contains(t, out, "user-data from a superseded token")
+	assert.NotContains(t, out, "already holds a CA identity")
 	assert.Equal(t, 1, strings.Count(out, "refusing the listener"), "one line per attempt, not one per handshake retry")
+}
+
+// A guest that already bootstrapped serves its CA-issued agent certificate,
+// which cannot pass the placeholder pin. The console must still not talk to it,
+// and the log must name that specific, decidable cause: the registry lost the
+// certificate the guest holds.
+func TestBootstrapDiagnosesAGuestThatAlreadyHoldsAnIdentity(t *testing.T) {
+	ca := newCA(t)
+	const qubeName = "remote-dev"
+	inv := &fakeInvoker{resp: []byte("pong")}
+	addr, _ := startAgent(t, ca, ca, AgentCommonName(qubeName), inv)
+	_, port := hostPort(t, addr)
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint("token-minted-for-remote-dev", qubeName)
+	require.NoError(t, err)
+
+	issuer := &signingIssuer{ca: ca, qubeName: qubeName}
+	b := NewAgentBootstrapper(fixedCA{ca}, issuer, "0.0.0.0:"+port, time.Second).
+		WithBootstrapPeerPinProvider(staticPin{pin: pin})
+	logs := captureConcurrentLog(t)
+	res := b.Bootstrap(context.Background(), &models.Qube{ID: "qube-1", Name: qubeName, IPAddress: "127.0.0.1"})
+
+	assert.Equal(t, BootstrapUnreachable, res.Status, res.Reason)
+	assert.Empty(t, issuer.redeemed())
+	assert.Contains(t, logs.String(), "the guest already holds a CA identity for this qube")
+}
+
+// The CA-identity diagnosis needs a certificate from THIS console's CA for
+// THIS qube; anything else falls back to the list of likely causes.
+func TestPeerRefusalCause(t *testing.T) {
+	ca := newCA(t)
+	other := newCA(t)
+	leafFor := func(issuer *pki.CA, cn string) []*x509.Certificate {
+		bundle, err := issuer.IssueAgentCert(cn, time.Hour)
+		require.NoError(t, err)
+		pair, err := tls.X509KeyPair([]byte(bundle.CertPEM), []byte(bundle.KeyPEM))
+		require.NoError(t, err)
+		leaf, err := x509.ParseCertificate(pair.Certificate[0])
+		require.NoError(t, err)
+		return []*x509.Certificate{leaf}
+	}
+	const already = "already holds a CA identity"
+	assert.Contains(t, peerRefusalCause(ca.Cert, leafFor(ca, "agent-remote-dev"), "remote-dev"), already)
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(ca, "agent-remote-other"), "remote-dev"), already,
+		"another qube's identity is not this qube having bootstrapped")
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(other, "agent-remote-dev"), "remote-dev"), already,
+		"an identity from another CA proves nothing about this console's fleet")
+	assert.NotContains(t, peerRefusalCause(ca.Cert, leafFor(ca, "console-probe"), "remote-dev"), already)
+	assert.NotContains(t, peerRefusalCause(nil, nil, "remote-dev"), already)
+	assert.Contains(t, peerRefusalCause(nil, nil, "remote-dev"), "superseded token")
 }
 
 // captureConcurrentLog redirects the standard logger for the rest of the test
@@ -198,14 +254,63 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// End to end: the listener serves the placeholder derived from this qube's
+// own token (so the pinned handshake passes), but its BeginBootstrap answers
+// with a token minted for another qube. The console must refuse before the
+// issuer ever sees that token, and must deliver nothing.
+func TestBootstrapRefusesAStolenTokenOverThePinnedSession(t *testing.T) {
+	ca := newCA(t)
+	const qubeName, ownToken = "remote-dev", "token-minted-for-remote-dev"
+
+	dir := t.TempDir()
+	caPath := filepath.Join(dir, "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}), 0o600))
+	identity, err := agent.NewPendingIdentity(filepath.Join(dir, "agent.pem"), filepath.Join(dir, "agent-key.pem"), caPath)
+	require.NoError(t, err)
+	// The placeholder comes from the qube's own token ...
+	own, err := agent.NewBootstrapService(identity, qubeName, ownToken, nil)
+	require.NoError(t, err)
+	// ... but the bootstrap calls answer with a token stolen from another qube.
+	thief, err := agent.NewBootstrapService(identity, qubeName, "token-minted-for-remote-other", nil)
+	require.NoError(t, err)
+	local := agent.NewLocalInvoker(qubeName, nil)
+	require.NoError(t, thief.RegisterBuiltins(local))
+	served := &recordingAgentInvoker{inner: local}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	require.NoError(t, lis.Close())
+	srv := transportgrpc.NewServer(transportgrpc.ServerConfig{Listen: addr, TLS: identity.ServerTLSConfig(), CertSource: own}, served)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = srv.Serve(ctx) }()
+	waitForListener(t, addr)
+	_, port := hostPort(t, addr)
+
+	pin, err := pki.BootstrapPlaceholderSPKIFingerprint(ownToken, qubeName)
+	require.NoError(t, err)
+	issuer := &signingIssuer{ca: ca, qubeName: qubeName}
+	b := NewAgentBootstrapper(fixedCA{ca}, issuer, "0.0.0.0:"+port, 10*time.Second).
+		WithBootstrapPeerPinProvider(staticPin{pin: pin})
+	res := b.Bootstrap(context.Background(), &models.Qube{ID: "qube-1", Name: qubeName, IPAddress: "127.0.0.1"})
+
+	assert.Equal(t, BootstrapRefused, res.Status, res.Reason)
+	assert.Empty(t, issuer.redeemed(), "the stolen token was redeemed")
+	assert.Equal(t, []string{agent.ServiceBeginBootstrap}, served.served(), "CompleteBootstrap must never be sent")
+	assert.False(t, identity.HasCertificate(), "no certificate may reach the guest")
+}
+
 func TestBootstrapRefusesToDialWithoutAPeerPin(t *testing.T) {
 	for name, tc := range map[string]struct {
 		pins BootstrapPeerPinProvider
 		want string
 	}{
-		"no provider wired":         {pins: nil, want: "no bootstrap peer pin provider"},
-		"no live token":             {pins: staticPin{err: errors.New("qube \"remote-dev\" has no unredeemed, unexpired bootstrap token")}, want: "no unredeemed"},
-		"token from before pinning": {pins: staticPin{err: errors.New("predates peer pinning; re-provision it")}, want: "predates peer pinning"},
+		"no provider wired": {pins: nil, want: "no bootstrap peer pin provider"},
+		"no live token": {pins: staticPin{err: fmt.Errorf("%w: qube \"remote-dev\" has no unredeemed, unexpired bootstrap token",
+			repository.ErrNoBootstrapPin)}, want: "no unredeemed"},
+		"token from before pinning": {pins: staticPin{err: fmt.Errorf("%w: predates peer pinning; re-provision it",
+			repository.ErrNoBootstrapPin)}, want: "predates peer pinning"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			issuer := &fakeIssuer{}
@@ -225,12 +330,61 @@ func TestBootstrapRefusesToDialWithoutAPeerPin(t *testing.T) {
 }
 
 // A pin that is not a SHA-256 digest can only come from a damaged row. It must
-// stop the dial, not build a verifier that silently rejects every peer.
+// stop the dial — not build a verifier that silently rejects every peer — and
+// be reported as the console's fault, not as an unreachable VM.
 func TestBootstrapRefusesAMalformedPin(t *testing.T) {
-	b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
-		WithBootstrapPeerPinProvider(staticPin{pin: "not-a-digest"})
-	res := b.Bootstrap(context.Background(), testBootstrapQube())
+	for _, pin := range []string{"not-a-digest", "abcd", strings.Repeat("zz", 32)} {
+		issuer := &fakeIssuer{}
+		b := NewAgentBootstrapper(stubCA{}, issuer, "", 0).
+			WithBootstrapPeerPinProvider(staticPin{pin: pin})
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
 
-	assert.Equal(t, BootstrapUnreachable, res.Status)
-	assert.Contains(t, res.Reason, "cannot pin the bootstrap peer")
+		assert.Equal(t, BootstrapConsoleFailed, res.Status, pin)
+		assert.True(t, res.Status.AgentAnswered(), "a console-side fault must not be recorded against the VM")
+		assert.Contains(t, res.Reason, "stored bootstrap peer pin is damaged")
+		assert.Empty(t, issuer.gotToken)
+	}
+}
+
+// A lookup that fails for a reason other than "no pinned token" — the database
+// is locked, closed, or broken — says nothing about whether the qube can be
+// bootstrapped. It is the console's failure and is retried, not reported as
+// "this console cannot bootstrap at all".
+func TestBootstrapTreatsAPinLookupFailureAsAConsoleFault(t *testing.T) {
+	t.Run("provider error", func(t *testing.T) {
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
+			WithBootstrapPeerPinProvider(staticPin{err: errors.New("database is locked")})
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapConsoleFailed, res.Status)
+		assert.Contains(t, res.Reason, "could not load the bootstrap peer pin: database is locked")
+	})
+	t.Run("real repository on a closed database", func(t *testing.T) {
+		cfg := database.DefaultConfig()
+		cfg.DSN = filepath.Join(t.TempDir(), "closed.db")
+		db, err := database.New(cfg)
+		require.NoError(t, err)
+		tokens := repository.NewBootstrapTokenRepository(db)
+		require.NoError(t, db.Close())
+
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).WithBootstrapPeerPinProvider(tokens)
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapConsoleFailed, res.Status, res.Reason)
+		assert.Contains(t, res.Reason, "could not load the bootstrap peer pin")
+	})
+	t.Run("real repository with no token stays not_configured", func(t *testing.T) {
+		cfg := database.DefaultConfig()
+		cfg.DSN = filepath.Join(t.TempDir(), "empty.db")
+		db, err := database.New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+
+		b := NewAgentBootstrapper(stubCA{}, &fakeIssuer{}, "", 0).
+			WithBootstrapPeerPinProvider(repository.NewBootstrapTokenRepository(db))
+		res := b.Bootstrap(context.Background(), testBootstrapQube())
+
+		assert.Equal(t, BootstrapNotConfigured, res.Status, res.Reason)
+		assert.Contains(t, res.Reason, "re-provision it")
+	})
 }

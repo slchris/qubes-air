@@ -93,6 +93,14 @@ bootstrap 握手（[安全控制](security-controls.md)“Bootstrap 首次连接
 所以 **agent 包必须先于控制台、或与控制台同一次 `state.apply` 升级**。已经拿到证书的 qube 不再走
 bootstrap，不受影响。
 
+同一版本还收紧了**启动期**的授权校验（`qrexec.ValidateAgentGrants`）：`agent_allowed_services`
+里的服务名必须过传输层名字白名单且不重复，`agent_exec_allow` / `agent_filecopy_roots` 不得有重复项、
+不得含任何控制字符（含制表符、DEL）。不满足时**控制台拒绝启动**并在报错里指出字段与值。
+qubes-salt-config 出厂值（`v0.1.0` 与 `main` 的 `salt/config.jinja`：服务
+`qubesair.Ping,qubesair.UnlockData,qubesair.RekeyData`、两个路径表为空）不受影响；只有手工改过这些
+pillar 的部署需要先核对。路径表不空而服务表里没有对应的 `qubesair.Exec` / `qubesair.FileCopy` 时
+只告警（`WARNING: agent grants:`），不拒绝启动。
+
 升级那一刻**还没完成 bootstrap 的 qube**（token 最长 1 小时有效）一律 fail closed：它们的 token 在
 schema 3 之前签发、没有 pin，控制台报 `not_configured`、原因写“predates peer pinning; re-provision
 it”，并且不会拨号。处理方式是重新 provision（resume 或重建 compute）以签发带 pin 的新 token；
@@ -129,7 +137,7 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
    这三个键由 Salt 渲染进**控制台的环境**（`QUBES_AIR_AGENT_PACKAGE_*`，经 `EnvironmentFile=` 注入，
    见 `salt/qubesair/console.sls` 第 365-367 行），控制台在**生成身份文档时**把它们交给新 provision
    的 VM。所以改完必须重新 `state.apply`（否则控制台进程里还是旧值），而**既有 qube 不会自己换
-   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 142-148 行
+   agent**——它们的"生效范围"是之后新建/重建的 compute（[runbook](runbook-remotevm.md) 第 151-157 行
    的回滚指示也正是"重建 compute"）。按 §2.1，协议不约束它与控制台的先后；但 §2.4 要求 agent 包
    不晚于控制台（新 agent 包对旧控制台兼容，反之不行）。
 
@@ -218,7 +226,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 |---|---|---|
 | schema **未**升过（新旧 `SchemaVersion` 相同） | 把两组 pin 恢复到上一组值 → 重新 `state.apply`（`source_hash` 会拒绝不匹配的制品）→ 重启服务 | `/health` healthy；二进制 sha256 等于旧 pin；且 `/health` 的 `version`/`revision` 等于**旧制品** `--version` 报的值（§3.2）——这一步才证明回滚的进程真的换回去了 |
 | schema **已**升过 | **只能**从备份恢复：`qubes-air-backup restore -db … -in … -force`（[灾难恢复](disaster-recovery.md) 第 58-65 行），并确保进程持有**同一把** keyring 密钥 | `/health` healthy，且能真的提交一个 job |
-| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 142-148 行） | — |
+| 单个 compute 故障 | 先 suspend/resume，不要删 data disk（[runbook](runbook-remotevm.md) 第 151-157 行） | — |
 | agent 发布故障 | 恢复上一组 `agent_package_*` 后**重建** compute（同上）。控制台在 schema 3 及以上时，回退目标必须仍是带 token 派生占位证书的包，否则新 compute 完不成 bootstrap（§2.4） | 新 compute 上的 agent 能完成 bootstrap 与探测 |
 | 协议不匹配 | 两侧版本集合无交集：把有交集的那一侧升（或降）回去 | 握手日志出现 `relay %q connected (protocol …)` |
 
@@ -236,6 +244,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 页面能开但接口全 404/400 | 前端与二进制不同批 | 两组 pin 一起改 |
 | 升级后新 qube 一直 `unreachable`，日志 `refusing the listener … does not match the pin` | guest 装的是早于 pin 的 agent 包（§2.4） | 把 `agent_package_*` 指向新包、`state.apply`，再重建这些 compute |
 | 升级后某 qube 的 bootstrap 报 `not_configured`，原因 `predates peer pinning` | 升级时它的 token 还没兑换 | 重新 provision 该 qube（新 token 带 pin） |
+| 升级后控制台起不来，报错含 `agent_allowed_services` / `agent_exec_allow` / `agent_filecopy_roots` 与 `is not a valid qrexec service name`、`is listed twice` 或 `contains a control character` | pillar 里的授权值过不了新的启动校验（§2.4） | 按报错修正对应 pillar 值后重新 `state.apply`；出厂默认值不会触发 |
 | 升级后浏览器很快要求重新输入 token | session 默认从 12 小时降为 30 分钟（§2.5） | 在设置页把 Session Timeout 调到需要的值（最多 1440 分钟） |
 | 启动日志有 `WARNING: settings: stored session timeout` | 旧版本存下的越界值；session 已回退 30 分钟 | 在设置页保存一个 5–1440 的值 |
 

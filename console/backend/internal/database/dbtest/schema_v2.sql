@@ -8,7 +8,7 @@
 -- healthy and one unreachable qube, and notification settings that still
 -- keep their webhook URL in plaintext.
 --
--- Loaded by openV2Fixture (database_upgrade_test.go), which stamps
+-- Loaded by dbtest.WriteV2Fixture (embedded in the dbtest package), which stamps
 -- user_version = 2. Do not regenerate this from a newer build: its value is
 -- that it is frozen at v2.
 CREATE TABLE zones (

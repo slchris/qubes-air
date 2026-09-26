@@ -35,6 +35,7 @@ package service
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,9 +93,10 @@ const (
 	// already spent. The qube needs a fresh token, which means re-provisioning
 	// its user-data; no amount of retrying will help.
 	BootstrapRefused BootstrapStatus = "refused"
-	// BootstrapConsoleFailed means the agent did its part and this console
-	// could not do its own: the CA would not sign, or the registry would not
-	// record the result.
+	// BootstrapConsoleFailed means this console could not do its own part:
+	// the CA would not sign, the registry would not record the result, or the
+	// pin that authenticates first contact could not be loaded or is damaged.
+	// Either way the VM is not at fault, so it is never read as unreachable.
 	BootstrapConsoleFailed BootstrapStatus = "console_failed"
 	// BootstrapInstallFailed means the certificate was signed and registered
 	// but the agent did not install it. The token is spent, so recovery is a
@@ -242,9 +244,9 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 	// The pin comes before the dial. Without one there is nothing to tell this
 	// qube's listener from anyone else answering at its address, and "dial
 	// anyway" is exactly the unauthenticated first contact pinning removed.
-	pin, err := b.peerPin(ctx, qube)
+	pin, status, err := b.peerPin(ctx, qube)
 	if err != nil {
-		return done(BootstrapNotConfigured, "cannot authenticate first contact with qube %q: %v", qube.Name, err)
+		return done(status, "cannot authenticate first contact with qube %q: %v", qube.Name, err)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
@@ -256,19 +258,25 @@ func (b *AgentBootstrapper) Bootstrap(ctx context.Context, qube *models.Qube) Bo
 	}
 	defer sess.close()
 
-	return b.exchange(ctx, qube, sess, done)
+	return b.exchange(ctx, qube, sess, pin, done)
 }
 
-// exchange runs the protocol once the tunnel is up.
+// exchange runs the protocol once the tunnel is up. pin is the placeholder pin
+// the session was authenticated with; the token the agent surrenders must be
+// the one that derives it.
 func (b *AgentBootstrapper) exchange(
-	ctx context.Context, qube *models.Qube, sess agentCaller,
+	ctx context.Context, qube *models.Qube, sess agentCaller, pin string,
 	done func(BootstrapStatus, string, ...any) BootstrapResult,
 ) BootstrapResult {
 	out, err := sess.call(ctx, qube.Name, beginBootstrapService, nil)
 	if err != nil {
 		// An agent that already holds an identity says so rather than handing
-		// over a token. That is the expected answer on any sweep after the
-		// first, so it must not be reported as a fault.
+		// over a token, and that must not be reported as a fault. With peer
+		// pinning this answer has become rare: an agent holding an identity
+		// serves its CA-issued certificate instead of the placeholder, so it
+		// normally fails the pinned handshake before Begin and is diagnosed by
+		// logFirstPeerRefusal ("already holds a CA identity"). What still lands
+		// here is an identity installed after this session's handshake.
 		//
 		// Matched by string because the transport carries a message, not a
 		// wrapped error — but against the agent's own sentinel rather than a
@@ -296,6 +304,18 @@ func (b *AgentBootstrapper) exchange(
 		return done(BootstrapConsoleFailed,
 			"%s returned an incomplete reply (nonce=%t token=%t csr=%t)",
 			beginBootstrapService, begun.Nonce != "", begun.Token != "", begun.CSRPEM != "")
+	}
+
+	// The session proved the peer holds the key derived from THIS qube's
+	// token. The token it hands over must be that same token, checked before
+	// anything is redeemed: a guest that can serve its own placeholder but
+	// presents a token stolen from another qube would otherwise spend that
+	// qube's token and have agent-<other> signed and registered, and the CN
+	// check below would only notice after the damage.
+	if !tokenDerivesPin(begun.Token, qube.Name, pin) {
+		return done(BootstrapRefused,
+			"qube %q presented a bootstrap token that is not the one its session was pinned to; "+
+				"refused without redeeming it (another qube's token, or mixed-up user-data)", qube.Name)
 	}
 
 	// Redeem, sign and register. The CN is taken from the redeemed token, never
@@ -363,34 +383,76 @@ func (b *AgentBootstrapper) exchange(
 	return res
 }
 
-// peerPin loads the pin for this qube's pending token. Any failure — no
-// provider wired, no live token, a token from before pinning — is an error:
-// the caller must not dial.
-func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (string, error) {
+// tokenDerivesPin reports whether token, minted for qubeName, derives pin. The
+// pin is public, so a plain comparison leaks nothing.
+func tokenDerivesPin(token, qubeName, pin string) bool {
+	derived, err := pki.BootstrapPlaceholderSPKIFingerprint(token, qubeName)
+	return err == nil && pin != "" && derived == pin
+}
+
+// peerPin loads the pin for this qube's pending token. Any failure is an
+// error — the caller must not dial — classified by what fixes it:
+//
+//   - not_configured: no provider is wired, or the qube has no pinned token
+//     (none live, or one from before pinning). Retrying changes nothing until
+//     the console is fixed or the qube is re-provisioned.
+//   - console_failed: the lookup itself failed (a transient database error) or
+//     the stored pin is malformed (a damaged row). The console's side broke,
+//     not the VM's; the sweep retries on its usual backoff.
+func (b *AgentBootstrapper) peerPin(ctx context.Context, qube *models.Qube) (string, BootstrapStatus, error) {
 	if b.pins == nil {
-		return "", errors.New("no bootstrap peer pin provider is configured")
+		return "", BootstrapNotConfigured, errors.New("no bootstrap peer pin provider is configured")
 	}
-	return b.pins.PendingPlaceholderSPKIFingerprint(ctx, qube.ID, qube.Name, time.Now())
+	pin, err := b.pins.PendingPlaceholderSPKIFingerprint(ctx, qube.ID, qube.Name, time.Now())
+	switch {
+	case errors.Is(err, repository.ErrNoBootstrapPin):
+		return "", BootstrapNotConfigured, err
+	case err != nil:
+		return "", BootstrapConsoleFailed, fmt.Errorf("could not load the bootstrap peer pin: %w", err)
+	}
+	if err := pki.CheckBootstrapPin(pin); err != nil {
+		return "", BootstrapConsoleFailed, fmt.Errorf("the stored bootstrap peer pin is damaged (%w); re-provision the qube", err)
+	}
+	return pin, "", nil
 }
 
 // logFirstPeerRefusal makes a refused listener visible. The tunnel client
 // retries the handshake until the attempt times out and then reports only
 // "tunnel not connected", which reads as a VM that is down; the reason the
-// console refused the peer — a pin mismatch means an agent package older than
-// pinning, another qube's user-data, or an impostor — is what the operator
+// console refused the peer, and what that usually means, is what the operator
 // needs. Logged once per attempt, not once per retry.
-func logFirstPeerRefusal(cfg *tls.Config, addr, qubeName string) {
+func logFirstPeerRefusal(cfg *tls.Config, addr, qubeName string, caCert *x509.Certificate) {
 	verify := cfg.VerifyConnection
 	var once sync.Once
 	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
 		err := verify(cs)
 		if err != nil {
 			once.Do(func() {
-				log.Printf("bootstrap: refusing the listener at %s as qube %q's pending agent: %v", addr, qubeName, err)
+				log.Printf("bootstrap: refusing the listener at %s as qube %q's pending agent: %v; %s",
+					addr, qubeName, err, peerRefusalCause(caCert, cs.PeerCertificates, qubeName))
 			})
 		}
 		return err
 	}
+}
+
+// peerRefusalCause names the likely reason a listener failed the pinned
+// handshake. One cause is decidable from the certificate itself: a listener
+// presenting this qube's CA-issued identity is an agent that bootstrapped
+// before, while this console has no certificate registered for it.
+func peerRefusalCause(caCert *x509.Certificate, certs []*x509.Certificate, qubeName string) string {
+	if caCert != nil {
+		roots := x509.NewCertPool()
+		roots.AddCert(caCert)
+		if pki.VerifyAgentChain(roots, certs, AgentCommonName(qubeName)) == nil {
+			return "the guest already holds a CA identity for this qube, but this console has no certificate " +
+				"registered for it (a lost registry row or a restored database); it will not bootstrap again — " +
+				"re-provision it, or restore the registry row"
+		}
+	}
+	return "likely causes: an agent package older than peer pinning, user-data from a superseded token " +
+		"(the qube was re-provisioned after this guest booted, which minted a newer token), " +
+		"another qube's user-data, or an impostor at this address"
 }
 
 // dial opens a tunnel to an agent that has no certificate yet.
@@ -423,7 +485,7 @@ func (b *AgentBootstrapper) dial(ctx context.Context, qube *models.Qube, addr, p
 	if err != nil {
 		return nil, fmt.Errorf("cannot pin the bootstrap peer at %s: %w", addr, err)
 	}
-	logFirstPeerRefusal(tlsCfg, addr, qubeName)
+	logFirstPeerRefusal(tlsCfg, addr, qubeName, ca.Cert)
 
 	cli := transportgrpc.NewClient(transportgrpc.ClientConfig{
 		RemoteEndpoint: addr,

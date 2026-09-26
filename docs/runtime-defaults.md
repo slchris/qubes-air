@@ -90,7 +90,7 @@
 | UD-9f | 周期探测间隔（多久重新判定一次 agent 健康） | **60s** | `internal/config/config.go`:252（`agent_probe_interval_seconds`）、`:665`（默认 60）；兜底常量 `internal/service/agenthealth.go:19`（`DefaultAgentProbeInterval`） |
 | UD-10 | 数据盘解锁超时 | **60s** | `internal/service/agentunlock.go:49`（`DefaultDataUnlockTimeout`） |
 | UD-10b | 解锁用 relay 证书寿命 | **5 分钟** | `internal/service/agentunlock.go:34`（`unlockCertLifetime`） |
-| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:70`（`DefaultBootstrapTimeout`） |
+| UD-11 | bootstrap 单次交换超时 | **60s** | `internal/service/agentbootstrap.go:71`（`DefaultBootstrapTimeout`） |
 | UD-11b | bootstrap 重试退避 | **base 15s / max 10 分钟** | `internal/service/bootstrapsched.go:49`、`:50`（`bootstrapRetryBase`、`bootstrapRetryMax`） |
 | UD-12 | 证书续期单次超时 | **30s** | `internal/service/certrenew.go:50`（`DefaultCertRenewalTimeout`） |
 | UD-12b | 续期用 relay 证书寿命 | **1 小时** | `internal/service/certrenew.go:91`（`renewRelayCertLifetime`） |
@@ -151,9 +151,11 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 数据库没有 migrations 目录：建表语句是 Go 常量，在打开数据库时执行
 `CREATE TABLE IF NOT EXISTS`。版本号存在文件自身的 `PRAGMA user_version` 里。
-仓库里唯一的 `.sql` 文件是升级测试夹具 `console/backend/internal/database/testdata/schema_v2.sql`：
-冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表；每个改 schema 的阶段都用它证明
-“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（`database_upgrade_test.go`）。
+仓库里唯一的 `.sql` 文件是升级测试夹具 `console/backend/internal/database/dbtest/schema_v2.sql`：
+冻结的 v2 库（DDL 加一组代表性行），不参与运行时建表。它嵌在只供测试导入的 `dbtest` 包里
+（`WriteV2Fixture` 写出 v2 库、`AssertV2RowsPreserved` 核对行），各包的升级测试共用同一份，
+证明“打开 v2 库 → 迁移 → 行保留 → 再次打开无变化”（如 `internal/database/database_upgrade_test.go`、
+`internal/repository/bootstrap_pin_test.go`）。
 
 | 项 | 事实 | 位置 |
 |---|---|---|
