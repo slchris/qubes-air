@@ -394,18 +394,62 @@ func TestRuntimeMetricsCollectorServesConcurrentSweeps(t *testing.T) {
 	wg.Wait()
 }
 
-func TestRuntimeMetricsCollectorReportsABusyInstanceWithoutLoggingIt(t *testing.T) {
-	collector, logs := newTestCollector([]*models.Qube{runningMetricsQube("q1")}, proxmoxZone(), computeInfra(),
-		registryWith(t, runtimeAdapterStub{read: func(context.Context, *models.Qube) (provider.RuntimeMetrics, error) {
-			return provider.RuntimeMetrics{}, fmt.Errorf("proxmox: VM 100 remains locked (%w)", provider.ErrInstanceBusy)
+// A VM held by a provider task is reported as provider_busy. It is logged,
+// so a lock that never clears is visible server-side, but at most once per
+// qube per interval rather than on every poll.
+func TestRuntimeMetricsCollectorLogsABusyInstanceAtMostOncePerInterval(t *testing.T) {
+	busy := map[string]bool{"q1": true}
+	var busyMu sync.Mutex
+	collector, logs := newTestCollector([]*models.Qube{runningMetricsQube("q1"), runningMetricsQube("q2")}, proxmoxZone(), computeInfra(),
+		registryWith(t, runtimeAdapterStub{read: func(ctx context.Context, q *models.Qube) (provider.RuntimeMetrics, error) {
+			busyMu.Lock()
+			defer busyMu.Unlock()
+			if busy[q.ID] {
+				return provider.RuntimeMetrics{}, fmt.Errorf("proxmox: VM 100 remains locked (%w)", provider.ErrInstanceBusy)
+			}
+			return fixedMetrics(ctx, q)
 		}}))
+	collector.reuseWindow = 0
+	clock := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
+	collector.now = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return clock
+	}
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock = clock.Add(d)
+	}
+	busyLines := func() int { return strings.Count(logs.text(), "held by a provider task") }
 
 	items, err := collector.Collect(context.Background())
 	require.NoError(t, err)
-	require.Len(t, items, 1)
 	assert.Equal(t, RuntimeMetricsBusy, items[0].Reason)
 	assert.Nil(t, items[0].Metrics)
-	assert.Empty(t, logs.text(), "a backup holding the VM is expected, not a fault to log every minute")
+	require.Equal(t, 1, busyLines())
+	assert.Contains(t, logs.text(), "q1")
+	assert.Contains(t, logs.text(), "remains locked")
+
+	advance(runtimeMetricsBusyLogInterval - time.Second)
+	_, err = collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, busyLines(), "a lock seen again within the interval is not logged again")
+
+	busyMu.Lock()
+	busy["q2"] = true
+	busyMu.Unlock()
+	_, err = collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, busyLines(), "another qube's lock gets its own line")
+
+	advance(time.Second)
+	_, err = collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, busyLines(), "q1's lock is logged again once the interval has passed")
+	assert.NotContains(t, logs.text(), "monitoring: runtime metrics for qube",
+		"busy is never logged through the unlimited per-failure line")
 }
 
 // Each zone's adapter is built once per sweep and shared by its qubes: one

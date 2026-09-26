@@ -42,9 +42,14 @@ const (
 	RuntimeMetricsUnavailable         = "provider_metrics_unavailable"
 	RuntimeMetricsTimeout             = "provider_metrics_timeout"
 	// RuntimeMetricsBusy: a provider task (a backup, a migration) holds the
-	// instance. Expected and transient, so it is not logged.
+	// instance. Expected and usually transient, so it is logged at most once
+	// per qube per runtimeMetricsBusyLogInterval: often enough that a lock
+	// that never clears is visible server-side, rarely enough not to flood.
 	RuntimeMetricsBusy = "provider_busy"
 )
+
+// runtimeMetricsBusyLogInterval rate-limits the provider_busy log line per qube.
+const runtimeMetricsBusyLogInterval = 10 * time.Minute
 
 type runtimeMetricQubeLister interface {
 	List(context.Context, repository.QubeListOptions) ([]*models.Qube, error)
@@ -95,6 +100,10 @@ type RuntimeMetricsCollector struct {
 	inflight *sharedSweep
 	last     *sharedSweep
 	lastAt   time.Time
+
+	// busyMu guards busyLogged: when each busy qube was last logged.
+	busyMu     sync.Mutex
+	busyLogged map[string]time.Time
 }
 
 // NewRuntimeMetricsCollector builds a collector with the default deadlines.
@@ -111,6 +120,7 @@ func NewRuntimeMetricsCollector(
 		reuseWindow:    DefaultRuntimeMetricsReuseWindow,
 		now:            time.Now,
 		logf:           log.Printf,
+		busyLogged:     make(map[string]time.Time),
 	}
 }
 
@@ -298,15 +308,40 @@ func (c *RuntimeMetricsCollector) collectOne(ctx context.Context, adapters *swee
 		// "zone unavailable" for a timed-out lookup would mislead.
 		reason = RuntimeMetricsTimeout
 	}
-	if err != nil {
+	switch {
+	case reason == RuntimeMetricsBusy:
+		c.logBusy(qube, err)
+	case err != nil:
 		c.logf("monitoring: runtime metrics for qube %q (%s): %s: %v", qube.Name, qube.ID, reason, err)
 	}
 	item.Reason = reason
 	return item
 }
 
+// logBusy logs a busy qube at most once per runtimeMetricsBusyLogInterval, and
+// forgets qubes whose last line is older than that.
+func (c *RuntimeMetricsCollector) logBusy(qube *models.Qube, cause error) {
+	now := c.now()
+	c.busyMu.Lock()
+	last, seen := c.busyLogged[qube.ID]
+	if seen && now.Sub(last) < runtimeMetricsBusyLogInterval {
+		c.busyMu.Unlock()
+		return
+	}
+	for id, at := range c.busyLogged {
+		if now.Sub(at) >= runtimeMetricsBusyLogInterval {
+			delete(c.busyLogged, id)
+		}
+	}
+	c.busyLogged[qube.ID] = now
+	c.busyMu.Unlock()
+	c.logf("monitoring: qube %q (%s) is held by a provider task, so its runtime metrics are unavailable "+
+		"(logged at most every %s per qube): %v", qube.Name, qube.ID, runtimeMetricsBusyLogInterval, cause)
+}
+
 // observe returns the measurement, or the reason it is unavailable together
-// with the cause worth logging (nil for an expected state).
+// with its cause: nil for an unsupported provider, rate-limited in the log for
+// provider_busy, logged for everything else.
 func (c *RuntimeMetricsCollector) observe(ctx context.Context, adapters *sweepAdapters, qube *models.Qube) (provider.RuntimeMetrics, string, error) {
 	zone, err := c.zones.GetByID(ctx, qube.ZoneID)
 	if err != nil {
@@ -333,7 +368,7 @@ func (c *RuntimeMetricsCollector) observe(ctx context.Context, adapters *sweepAd
 	}
 	metrics, err := reader.RuntimeMetrics(ctx, qube, *in)
 	if errors.Is(err, provider.ErrInstanceBusy) {
-		return provider.RuntimeMetrics{}, RuntimeMetricsBusy, nil
+		return provider.RuntimeMetrics{}, RuntimeMetricsBusy, err
 	}
 	if err != nil {
 		return provider.RuntimeMetrics{}, RuntimeMetricsUnavailable, err

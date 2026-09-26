@@ -140,8 +140,9 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   标 `provider_metrics_timeout`，其余结果照常返回。收集方不等待忽略 context 的 provider 调用，
   所以响应落在 15 秒写超时之内（[UD-25](runtime-defaults.md)）。
 - 审计：读请求不进审计，与其他 GET 一致。单个 Qube 读取失败时，服务端日志记录 Qube 名称、ID、
-  原因码和错误；整次失败时记录错误原文。provider 不支持该能力、VM 被备份等 provider 任务锁定
-  （`provider_busy`）是预期状态，不记日志。
+  原因码和错误；整次失败时记录错误原文。provider 不支持该能力是预期状态，不记日志。VM 被备份等
+  provider 任务锁定（`provider_busy`）通常是暂时的，每个 Qube 每 10 分钟最多记一行，锁一直不释放时
+  服务端仍看得到（[UD-25c](runtime-defaults.md)）。
 - `POST /monitoring/alerts/:id/acknowledge` 在告警实现之前是桩：返回 501 和固定文本
   `alert acknowledgement is not implemented`，不记录任何确认；作为变更请求照常进审计。
 - 敏感响应：数据库、provider 的错误原文不进响应体。单个 Qube 只返回固定原因码；整次失败返回
