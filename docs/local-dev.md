@@ -88,3 +88,8 @@ Go lint 门禁（`lint-*`、`gosec-new`/`gosec-all`、`complexity-*`）在非 `l
 
 容器测试必须挂载整个仓库并以 `console/backend` 为工作目录，测试会读取 `remote/` 和
 `packaging/`。Exec/FileCopy 测试需要 Python 3；开发镜像已包含该依赖。
+
+两个门禁都包含 `make qrexec-test`：`scripts/test-qrexec-services.sh` 在隔离的 PATH 里用
+桩命令执行 qrexec 服务脚本，不需要 Qubes、root 或 Docker，可单独运行，也可按用例名过滤
+（例如 `scripts/test-qrexec-services.sh UnlockData`）。CI 的 `qrexec-services` job 跑同一入口。
+覆盖范围见[安全控制](security-controls.md#qrexec-服务脚本的测试)。

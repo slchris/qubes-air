@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +77,23 @@ func newRekeyFixture(t *testing.T, oldValid, newValid bool) *rekeyFixture {
 	}
 }
 
+// withoutSystemd points PATH at a directory holding only the tools the script and
+// the cryptsetup stub use. A CI runner's /usr/bin carries a real systemd-run, so
+// deleting the stub alone would not reach the script's no-systemd branch.
+func (f *rekeyFixture) withoutSystemd() {
+	f.t.Helper()
+	jail := filepath.Join(f.t.TempDir(), "jail")
+	require.NoError(f.t, os.Mkdir(jail, 0o700))
+	require.NoError(f.t, os.Symlink(filepath.Join(f.binDir, "cryptsetup"), filepath.Join(jail, "cryptsetup")))
+	for _, tool := range []string{"cat", "grep", "head", "python3", "readlink", "sed"} {
+		path, err := exec.LookPath(tool)
+		require.NoError(f.t, err)
+		require.NoError(f.t, os.Symlink(path, filepath.Join(jail, tool)))
+	}
+	require.True(f.t, strings.HasPrefix(f.env[0], "PATH="), "the fixture's first variable is PATH")
+	f.env[0] = "PATH=" + jail
+}
+
 // withEnv adds an environment override for one run (the stub reads it).
 func (f *rekeyFixture) withEnv(kv string) {
 	f.env = append(f.env, kv)
@@ -92,12 +110,25 @@ func (f *rekeyFixture) stateLine(n int) string {
 
 func (f *rekeyFixture) run(input string) rekeyReply {
 	f.t.Helper()
+	return f.runArgs(input)
+}
+
+// runArgs runs the script with qrexec service arguments, as the agent does for
+// a "qubesair.RekeyData+<arg>" request.
+func (f *rekeyFixture) runArgs(input string, args ...string) rekeyReply {
+	f.t.Helper()
+	return f.runStdin(strings.NewReader(input), args...)
+}
+
+// runStdin runs the script with any stdin, such as a writer that stalls.
+func (f *rekeyFixture) runStdin(stdin io.Reader, args ...string) rekeyReply {
+	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, f.script)
+	cmd := exec.CommandContext(ctx, f.script, args...)
 	cmd.Env = f.env
-	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdin = stdin
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	err := cmd.Run()
@@ -184,11 +215,13 @@ exit 1
 `
 
 // systemdRunStub drops the unit options and executes the service directly, so
-// the test exercises the same inner half without a running systemd.
+// the test exercises the same inner half without a running systemd. --setenv is
+// honored: it is how the outer half hands the inner half its marker.
 const systemdRunStub = `#!/bin/bash
 while [ $# -gt 0 ]; do
   case "$1" in
     --pipe|--wait|--collect|--quiet) shift ;;
+    --setenv=*) export "${1#--setenv=}"; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -281,6 +314,127 @@ func TestRekeyDataReportsRemoveFailureAfterFallbackAdd(t *testing.T) {
 	require.False(t, reply.OldKeyRemoved)
 	require.Equal(t, "remove_failed", reply.Reason)
 	require.Equal(t, "1", f.stateLine(4), "the new key must remain usable")
+}
+
+// With no systemd-run on PATH the outer half enters the inner half directly, and
+// it can only do so by setting the marker itself on that call.
+func TestRekeyDataFallbackWithoutSystemd(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withoutSystemd()
+	reply := f.run(f.request())
+
+	require.True(t, reply.Rekeyed)
+	require.True(t, reply.OldKeyRemoved)
+	require.Equal(t, "0", f.stateLine(2), "the legacy keyslot must be gone")
+	require.Equal(t, "1", f.stateLine(4), "the new key must open the container")
+}
+
+// The console never sends a service argument. "qubesair.RekeyData+__rekey" used to
+// select the privileged half directly, skipping the outer validation; with the
+// same key as old and new it then removed the only keyslot.
+func TestRekeyDataRefusesServiceArguments(t *testing.T) {
+	for _, arg := range []string{"__rekey", "anything"} {
+		t.Run(arg, func(t *testing.T) {
+			f := newRekeyFixture(t, true, false)
+			reply := f.runArgs(f.oldKey+"\n"+f.oldKey+"\n", arg)
+
+			require.False(t, reply.Rekeyed)
+			require.Equal(t, "bad_argument", reply.Reason)
+			require.Equal(t, "1", f.stateLine(2), "the only keyslot must survive")
+		})
+	}
+}
+
+// The 8192-byte cap counts raw stdin bytes. A command substitution used to strip
+// trailing newlines before the count and bash drops NUL bytes, so an oversized
+// or NUL-carrying request could shrink under the cap and be used altered.
+func TestRekeyDataCapCountsRawBytes(t *testing.T) {
+	request := `{"old":"` + testOldKey + `","new":"` + testNewKey + `"}`
+	cases := []struct{ name, input, reason string }{
+		{"newline padding past the cap", request + strings.Repeat("\n", 8200) + "x", "oversize"},
+		{"newlines alone past the cap", request + strings.Repeat("\n", 8192), "oversize"},
+		{"NUL inside the old key", `{"old":"` + testOldKey + "\x00" + `","new":"` + testNewKey + `"}`, "malformed"},
+		{"NUL after the request", request + "\x00", "malformed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRekeyFixture(t, true, false)
+			reply := f.run(tc.input)
+			require.False(t, reply.Rekeyed)
+			require.Equal(t, tc.reason, reply.Reason)
+			require.Equal(t, "1", f.stateLine(2), "a rejected request must not touch the container")
+		})
+	}
+}
+
+// The cap counts bytes even under a UTF-8 locale: the pad is 2800 characters of
+// U+4F60 but 8400 bytes. A character count would let the request through.
+func TestRekeyDataCapCountsBytesUnderUTF8Locale(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withEnv("LC_ALL=C.UTF-8")
+	reply := f.run(`{"old":"` + f.oldKey + `","new":"` + f.newKey + `","pad":"` +
+		strings.Repeat("\u4f60", 2800) + `"}`)
+
+	require.False(t, reply.Rekeyed)
+	require.Equal(t, "oversize", reply.Reason)
+	require.Equal(t, "1", f.stateLine(2), "a rejected request must not touch the container")
+}
+
+// stalledRequest delivers the first 20 bytes, pauses 2 s, then the rest.
+func stalledRequest(request string) io.Reader {
+	r, w := io.Pipe()
+	go func() {
+		_, _ = w.Write([]byte(request[:20]))
+		time.Sleep(2 * time.Second)
+		_, _ = w.Write([]byte(request[20:]))
+		_ = w.Close()
+	}()
+	return r
+}
+
+// TMOUT is bash's default timeout for read. A caller-side TMOUT must not end the
+// read of a slowly arriving request early: the whole request is used.
+func TestRekeyDataReadIsNotCutShortByTMOUT(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withEnv("TMOUT=1")
+	reply := f.runStdin(stalledRequest(f.request()))
+
+	require.True(t, reply.Rekeyed, "reply=%+v", reply)
+	require.True(t, reply.OldKeyRemoved)
+	require.Equal(t, "0", f.stateLine(2))
+	require.Equal(t, "1", f.stateLine(4))
+}
+
+// With the TMOUT reset taken out of a copy the read does time out. bash 5 returns
+// >128 and keeps the partial input, which the status check must refuse; bash 3.2
+// returns 1 and discards it, which the JSON parser refuses. Either way nothing
+// touches the container.
+func TestRekeyDataRefusesATimedOutRead(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	script, err := os.ReadFile(f.script)
+	require.NoError(t, err)
+	require.True(t, strings.Contains(string(script), "\nunset TMOUT\n"), "the script no longer resets TMOUT; update this test")
+	require.NoError(t, os.WriteFile(f.script, []byte(strings.Replace(string(script), "\nunset TMOUT\n", "\n:\n", 1)), 0o700))
+	f.withEnv("TMOUT=1")
+	reply := f.runStdin(stalledRequest(f.request()))
+
+	require.False(t, reply.Rekeyed)
+	require.Equal(t, "malformed", reply.Reason)
+	require.Equal(t, "1", f.stateLine(2), "a refused request must not touch the container")
+	major, err := exec.Command("/bin/bash", "-c", `printf %s "${BASH_VERSINFO[0]}"`).Output()
+	require.NoError(t, err)
+	if string(major) >= "4" {
+		require.Equal(t, "could not read the request", reply.Detail)
+	}
+}
+
+func TestRekeyDataAcceptsRequestAtTheCap(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	request := f.request()
+	reply := f.run(request + strings.Repeat("\n", 8192-len(request)))
+
+	require.True(t, reply.Rekeyed)
+	require.True(t, reply.OldKeyRemoved)
 }
 
 func TestRekeyDataRejectsMalformedRequests(t *testing.T) {

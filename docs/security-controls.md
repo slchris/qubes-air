@@ -176,10 +176,38 @@ DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 
 - 旧 keyslot 未能移除时报告 `old_key_removed:false`，Console 写入迁移标记，之后每次解锁
   都重试删除；在删除成功前该盘仍可被 master 打开。
 - 服务与 UnlockData 一样必须在 `QUBESAIR_ALLOW` 中显式启用，并新增 Python 3 解析依赖。
+- 请求按原始字节计数，连同末尾换行最多 8192 字节，超出报 `oversize`，含 NUL 报 `malformed`；
+  不会先去掉换行或 NUL 再计数，因而超量请求不会被截短后照常使用。
+- 两个服务都拒绝 `+argument`（RekeyData 报 `bad_argument`），特权半段还要求外层经
+  `systemd-run --setenv` 传入的标记（`QUBESAIR_REKEY_INNER` / `QUBESAIR_UNLOCK_INNER`），
+  调用方无法设置它。此前 `qubesair.RekeyData+__rekey` 会跳过外层全部校验，持有有效密钥的
+  调用方把它同时作为 old 和 new 就会删掉唯一的 keyslot；`qubesair.UnlockData+__unlock` 会
+  跳过空口令检查和 systemd-run。
 
 升级要求：加密 Qube 的 agent 在下次解锁前必须允许 `qubesair.RekeyData`，否则迁移失败、
 数据保持加密并在下次 resume 重试。迁移完成后 `qubes-air-luks-master` 只是只读的迁移材料，
 可核验无未迁移盘后删除；master 丢失会使未迁移盘无法解锁，也不会自动重建。
+
+## qrexec 服务脚本的测试
+
+AGENTS.md §6 要求每个 shell/qrexec 服务覆盖空输入、非法 service/path/argument、超量输入输出
+和非零退出。服务脚本按所在套件分工，`scripts/test-qrexec-services.sh` 的最后一个用例检查
+`remote/qubes-rpc/`、`console/qrexec/`、`relay/transport/` 下的每个文件恰好归属一个套件：
+
+| 服务 | 测试 |
+|---|---|
+| `qubesair.GrpcProxy`、`qubesair.ConnectTCP`、`qubesair.IssueRelayCert`、`qubesair.RemoteEndpoints`、`qubesair.UnlockData`、`qubes.GetAppmenus`、`qubes.StartApp` | `make qrexec-test`（`scripts/test-qrexec-services.sh`） |
+| `qubesair.Exec`、`qubesair.FileCopy`、`qubesair.Ping`、`qubesair.RekeyData` | `console/backend/internal/agent/*_service_test.go`、`invoker_test.go` |
+| `qubesair.SSHProxy` | **未覆盖**：它对 target 和 service 不做字符白名单（只靠 qrexec 自身的参数字符限制），service 经 ssh 在远端由 shell 解析；删除还是加固尚未决定 |
+
+shell 套件在 `env -i` 与只含桩命令和少量无害工具的 PATH 下执行服务副本，宿主机上真实的
+cryptsetup、mount、systemd-run、qubesdb-read 不可达。桩命令记录每次调用的 argv、环境和 stdin，
+所以用例能断言被拒绝的请求没有执行任何命令、口令不出现在 argv 里、3 MiB 输入输出逐字节透传。
+服务里写死的绝对路径（`/usr/local/bin` 辅助程序、`/dev` 下的数据盘、`/data`）只在测试副本里
+改写到用例目录；改写没有命中就中止，不会退回真实系统路径。
+
+包装脚本不读 stdin 时，输入上限由它调用的程序负责：`relay-call`、`issue-relay-cert` 目前用
+`io.ReadAll` 读取 stdin，没有自己的上限。
 
 ## Proxmox 管理连接
 

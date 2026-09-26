@@ -8,8 +8,9 @@
 # qube at all. The keys never leave RAM and are never written to disk.
 #
 # Contract:
-#   stdin  : one JSON object {"old":"<base64>","new":"<base64>"}. Both keys arrive
-#            over the agent's verified mTLS channel.
+#   stdin  : one JSON object {"old":"<base64>","new":"<base64>"}, at most 8192 bytes
+#            in total (trailing whitespace included; a NUL byte is refused). Both
+#            keys arrive over the agent's verified mTLS channel.
 #   stdout : one JSON line {"rekeyed":bool,"old_key_removed":bool,"reason":"...","detail":"..."}.
 #            reason is machine-readable ("already", "change_failed", "remove_failed",
 #            "no_key", "not_luks", "no_disk", "malformed", ...). ALWAYS exit 0 so
@@ -25,10 +26,20 @@
 #     container, so a retry after a crash or a lost reply is safe.
 #   - Keys never appear in argv or on disk: stdin -> shell variable -> process
 #     substitution, with the privileged half under systemd-run.
+#   - Only the outer half enters the privileged half. The console sends no service
+#     argument, so any argument is refused ("bad_argument"); the inner half also
+#     requires QUBESAIR_REKEY_INNER=1, which the outer half sets via systemd-run
+#     --setenv and which neither the agent nor qrexec lets a caller set. Without
+#     this, "qubesair.RekeyData+__rekey" skipped every check below, and old == new
+#     removed the only keyslot.
 #
 # Requires python3, which the agent package already declares for Exec/FileCopy.
 # =====================================================================================
 set +e
+# Byte semantics for read -n and ${#payload} below, whatever locale the caller has.
+export LC_ALL=C
+# TMOUT is read's default timeout; a timeout must not end the request early.
+unset TMOUT
 
 # Re-exec target for the privileged half. Derived from $0 so the absolute
 # installed path (/etc/qubes-rpc/qubesair.RekeyData) and the test copy behave
@@ -50,7 +61,7 @@ emit() {
 }
 
 # ---- privileged inner half: old and new keys as two lines on stdin ----
-if [ "${1:-}" = "__rekey" ]; then
+if [ "${1:-}" = "__rekey" ] && [ "${QUBESAIR_REKEY_INNER:-}" = "1" ]; then
     IFS= read -r old
     IFS= read -r new
 
@@ -123,14 +134,33 @@ if [ "${1:-}" = "__rekey" ]; then
 fi
 
 # ---- outer half: sandboxed. Validate the request, re-exec the inner. ----
+if [ "$#" -gt 0 ]; then
+    emit false false bad_argument "service arguments are not supported"
+    exit 0
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
     emit false false no_python "python3 is required to parse the rekey request"
     exit 0
 fi
 
-payload="$(head -c $((MAX_REQUEST_BYTES + 1)) 2>/dev/null)"
+# Read at most MAX_REQUEST_BYTES + 1 raw bytes. Unlike a command substitution, read
+# keeps trailing newlines, so they count against the cap. Status 0 means the byte
+# limit or a NUL (which no JSON request contains and a shell variable could not
+# carry), 1 means end of input; anything else (a timeout, a read error) may have
+# left a partial request and is refused.
+IFS= read -r -d '' -n $((MAX_REQUEST_BYTES + 1)) payload
+read_status=$?
+if [ "$read_status" -gt 1 ]; then
+    emit false false malformed "could not read the request"
+    exit 0
+fi
 if [ "${#payload}" -gt "$MAX_REQUEST_BYTES" ]; then
     emit false false oversize "request exceeds ${MAX_REQUEST_BYTES} bytes"
+    exit 0
+fi
+if [ "$read_status" -eq 0 ]; then
+    emit false false malformed 'request must be a JSON object with old and new base64 string fields'
     exit 0
 fi
 
@@ -165,10 +195,11 @@ if [ "$old" = "$new" ]; then
 fi
 
 if command -v systemd-run >/dev/null 2>&1; then
-    printf '%s\n%s\n' "$old" "$new" | systemd-run --pipe --wait --collect --quiet -- "$SELF" __rekey 2>/dev/null
+    printf '%s\n%s\n' "$old" "$new" | systemd-run --pipe --wait --collect --quiet \
+        --setenv=QUBESAIR_REKEY_INNER=1 -- "$SELF" __rekey 2>/dev/null
 else
     # No systemd (rare): run directly. cryptsetup may hit the sandbox, but a
     # clear failure JSON beats silently doing nothing.
-    printf '%s\n%s\n' "$old" "$new" | "$SELF" __rekey
+    printf '%s\n%s\n' "$old" "$new" | QUBESAIR_REKEY_INNER=1 "$SELF" __rekey
 fi
 exit 0

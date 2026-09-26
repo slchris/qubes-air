@@ -18,6 +18,8 @@
 # =====================================================================
 
 set -euo pipefail
+# 下面的正则与 ${#} 按字节/ASCII 解释, 不随调用方的 locale 变化, 与 agent (Go, 按字节) 一致。
+export LC_ALL=C
 
 log() { echo "qubesair.GrpcProxy: $*" >&2; }
 
@@ -52,6 +54,14 @@ if [[ ! "$target" =~ ^remote-[a-zA-Z0-9._-]+$ ]]; then
 fi
 if [[ ! "$service" =~ ^[a-zA-Z][a-zA-Z0-9._+-]*$ ]]; then
     log "拒绝: 非法服务名 '$service'"
+    exit 126
+fi
+# 服务参数按 agent 的 validServiceName (internal/agent/invoker.go) 校验: 只允许
+# [A-Za-z0-9._+-]、不含 ".."、服务名连参数最多 128 字节; 首字母须为字母是上面服务名
+# 检查本来的要求, 不是 agent 的规则。agent 本来也会拒绝; 在这里先拒绝, 非法参数就
+# 不会进入 relay-call 的 argv, 也不会为它建立一次到远端的连接。
+if [[ ! "$svcarg" =~ ^[a-zA-Z][a-zA-Z0-9._+-]*$ || "$svcarg" == *..* || ${#svcarg} -gt 128 ]]; then
+    log "拒绝: 非法服务参数 '$svcarg'"
     exit 126
 fi
 
