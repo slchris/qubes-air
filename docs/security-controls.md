@@ -191,11 +191,93 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 - 本改动之前经 API 建的、名称在保留范围内或类型为 `pki` 的运维行，现在从 API 中消失。它们仍在
   库里，被 zone 引用时仍可使用。其中能对上控制台密钥名称的行会让对应查找失败关闭（见上），不会
   被当成真正的密钥。唯一识别不了的是：在控制台写入自己那一行之前，就以完全相同的名称和 `pki`
-  类型存进去的一行。这时库里只有这一行，控制台会把它当作自己的。升级前需要只读核查，见
-  [缺口清单](production-readiness-gaps.md) G-D8。
+  类型存进去的一行。这时库里只有这一行，控制台会把它当作自己的。升级前按下文“升级前核查”执行。
 - 更换 CA，以及在确认没有未迁移盘后删除 `qubes-air-luks-master`，都不再有 API 路径，只能在控制台
   停止时离线操作数据库；目前没有专用工具。
 - zone 的 `credential_id` 不校验是否指向控制台行。调用方要先知道该行的 UUID，而 API 已不再给出。
+
+### 升级前核查：找出不是控制台写的行
+
+适用于从本修复之前的版本升级。修复之前，control scope 的 token 能经 API 在控制台的命名空间里
+建行、改名。下面的查询只读，在控制台所在 qube 上对它的库执行（默认
+`/rw/config/qubesair/qubes-air.db`，即[升级与回滚](upgrade-rollback.md) §3 备份命令的 `-db`）。
+先把 SQL 存成文件，再运行
+`sqlite3 -readonly -header -column /rw/config/qubesair/qubes-air.db < console-row-check.sql`：
+
+<!-- console-row-check: TestConsoleRowCheckQueryFlagsPlantedRows 运行下面这段 SQL，改动时同步 -->
+```sql
+WITH c AS (
+  SELECT id, name, type, created_at,
+         lower(trim(name, ' ' || char(9, 10, 11, 12, 13))) AS folded
+  FROM credentials
+  WHERE lower(trim(name, ' ' || char(9, 10, 11, 12, 13))) LIKE 'qubes-air-%'
+     OR lower(trim(type, ' ' || char(9, 10, 11, 12, 13))) = 'pki'
+     OR length(name) <> length(CAST(name AS BLOB))
+)
+SELECT id, quote(name) AS name, quote(type) AS type, created_at,
+       trim(
+         CASE WHEN type IS NOT 'pki'
+                OR NOT (name IN ('qubes-air-ca-cert', 'qubes-air-ca-key', 'qubes-air-luks-master')
+                        OR (substr(name, 1, 19) = 'qubes-air-luks-key-'
+                            AND substr(name, 20) IN (SELECT id FROM qubes))
+                        OR (substr(name, 1, 27) = 'qubes-air-luks-legacy-slot-'
+                            AND substr(name, 28) IN (SELECT id FROM qubes)))
+              THEN 'NOT-CANONICAL ' ELSE '' END
+         || CASE WHEN (SELECT count(*) FROM c AS d WHERE d.folded = c.folded) > 1
+              THEN 'DUPLICATE ' ELSE '' END
+         || CASE WHEN length(name) <> length(CAST(name AS BLOB))
+              THEN 'NON-ASCII' ELSE '' END) AS flags
+FROM c
+ORDER BY folded, created_at;
+```
+
+查询列出名称（去掉首尾空白、按 ASCII 转小写后）以 `qubes-air-` 开头、类型为 `pki`（同样处理）、
+或名称含非 ASCII 字符的每一行。`flags` 为空的行正是控制台自己会写的样子；其余按标记处理：
+
+- `NOT-CANONICAL`：名称与规范写法不逐字节相同，或类型不恰好是 `pki`。规范写法只有
+  `qubes-air-ca-cert`、`qubes-air-ca-key`、`qubes-air-luks-master`、`qubes-air-luks-key-<现存 Qube 的 id>`
+  和 `qubes-air-luks-legacy-slot-<现存 Qube 的 id>`。控制台从不写别的名称或类型，所以这样的行
+  不是它写的。DEK 或迁移标记指向 `qubes` 表里已不存在的 Qube 时也会带这个标记：可能是遗留，
+  也可能是预先放进去的，需要按下文的审计和日志判断。
+- `DUPLICATE`：同一个折叠后名称下不止一行。真正的那一行也会带上这个标记，因为它和冒充者在
+  同一组里；按 `created_at`、审计和日志判断哪一行是控制台写的。
+- `NON-ASCII`：名称含非 ASCII 字符。控制台的名称全是 ASCII；`ſ`（U+017F）、`K`（U+212A）
+  这类字符按大小写折叠会对上控制台的名称，而 SQLite 的 `lower()` 只处理 ASCII，所以这类行只能
+  靠这个标记找出来。运维方自己用中文等非 ASCII 字符命名的凭据也会列出来（同时带
+  `NOT-CANONICAL`）：名称如果不是把 `qubes-air-…` 换了几个形近字母的写法，就是运维行，可以不管。
+
+`TestConsoleRowCheckQueryFlagsPlantedRows`（`internal/repository`）从本文件读出这段 SQL，
+在一个放了大小写变体、`ſ` 和 `K` 变体、同名重复、错误类型、填充空白以及指向不存在 Qube 的
+DEK 的临时库上运行，逐行核对标记。
+
+查询发现不了一种行：在控制台写入自己那一行**之前**，就以完全相同的名称和 `pki` 类型存进去的
+单独一行（例如在某个 Qube 的 DEK 生成前放进 `qubes-air-luks-key-<id>`，或在控制台第一次创建 CA
+前放进 CA 两行）。库里只有这一行，它与控制台写的没有区别，控制台也会照常使用它。只能从库外
+找线索：
+
+- 审计：`route` 为 `/api/v1/credentials`、`method` 为 `POST`、`status` 为 201，或 `route` 为
+  `/api/v1/credentials/:id`、`method` 为 `PUT`、`status` 为 200 的行。审计行不含名称，要按时间
+  与 `object` 和库里的 `created_at`、`id` 对照。
+- 控制台日志：每个真正由控制台生成的 DEK 都有一行 `pki: minted a per-qube data key for <qube id>`，
+  CA 有一行 `pki: created a new agent CA`。有 DEK 行却找不到对应的 minted 日志，或 CA 行找不到
+  created 日志，就要当作可疑。
+
+这两类记录都只有在部署方保留了 journal 或审计日志时才存在（见
+[生产部署安全要求](deployment-requirements.md) 第 6 条）。
+
+发现可疑行时：
+
+1. 停止控制台：`systemctl stop qubes-air-console`。
+2. 备份：按[升级与回滚](upgrade-rollback.md) §3 第 1 步运行 `qubes-air-backup create`。
+3. 离线删除不是控制台写的行，只按 `id` 删：
+   `sqlite3 /rw/config/qubesair/qubes-air.db "DELETE FROM credentials WHERE id IN ('<id>', ...);"`，
+   然后重跑上面的查询，确认 `flags` 全部为空。
+4. 冒充的 CA 行如果曾经被使用过（重启后控制台用它签发过证书），就按 CA 泄露处理：按
+   [灾难恢复](disaster-recovery.md)“CA 灾难恢复”更换 CA，所有 agent 重新 bootstrap。某个 Qube
+   的 DEK 如果是预先放进去的，这块盘就是用调用方已知的密钥格式化的，应当视为已泄露，重新
+   provision，不能只删这一行。
+
+不要删掉真正的那一行：删 DEK 会让对应的盘不可恢复，只删 CA 的一半会让签发停止。
 
 ## Exec：JSON 参数列表
 
