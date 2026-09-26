@@ -405,6 +405,47 @@ func TestDestroyStorage_DeletesHolder(t *testing.T) {
 	assert.True(t, rec.has("DELETE", "/api2/json/nodes/infra-node1/qemu/105"))
 }
 
+// A VM a provider task (a backup) holds must not be stopped or deleted under
+// it: the destructive operations report ErrInstanceBusy after the ownership
+// check and send nothing that changes the VM.
+func TestDestructiveOperationsRefuseALockedVMAsBusy(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Adapter) error
+		vmid string
+		role string
+	}{
+		{name: "stop compute", vmid: "106", role: "compute", run: func(ad *Adapter) error {
+			return ad.StopCompute(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+		}},
+		{name: "destroy storage", vmid: "105", role: "storage", run: func(ad *Adapter) error {
+			return ad.DestroyStorage(testCheckpointContext(), testQube(), provider.Infra{Node: "infra-node1", StorageVMID: 105})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mutations atomic.Int32
+			ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/qemu/"+tt.vmid+"/status/current"):
+					writeData(w, map[string]any{"status": vmStatusRunning})
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/qemu/"+tt.vmid+"/config"):
+					writeData(w, map[string]string{
+						"description": ownerMarker(testQube(), tt.role), "lock": "backup", "scsi0": "ceph-pve:vm-105-disk-0",
+					})
+				default:
+					mutations.Add(1)
+					http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusTeapot)
+				}
+			}, Options{})
+
+			err := tt.run(ad)
+			require.ErrorIs(t, err, provider.ErrInstanceBusy)
+			assert.Zero(t, mutations.Load(), "no stop, delete or other change may be sent to a locked VM")
+		})
+	}
+}
+
 func TestDescribe_RunningWithAgentIP(t *testing.T) {
 	ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
