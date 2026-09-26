@@ -49,7 +49,7 @@ func setupPurgeService(t *testing.T, fake *orchestrator.FakeExecutor, dataKeys D
 	qubeRepo := repository.NewQubeRepository(db)
 	infraRepo := repository.NewQubeInfraRepository(db)
 
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithExecutor(fake), WithInfraStore(infraRepo), WithDataKeyStore(dataKeys))
 
 	return zoneSvc, qubeSvc, infraRepo, func() {

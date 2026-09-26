@@ -29,7 +29,7 @@ func setupQubeTestServices(t *testing.T) (ZoneService, QubeService, func()) {
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo)
 
 	cleanup := func() {
@@ -346,7 +346,7 @@ func TestCreateAppliesEncryptDataFleetDefault(t *testing.T) {
 
 			zoneRepo := repository.NewZoneRepository(db)
 			qubeRepo := repository.NewQubeRepository(db)
-			zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+			zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 			qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithEncryptDataDefault(tc.fleet))
 
 			ctx := context.Background()
@@ -398,7 +398,7 @@ func TestQubeService_SuspendClearsStaleIP(t *testing.T) {
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo)
 
 	ctx := context.Background()

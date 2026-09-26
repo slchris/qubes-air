@@ -291,10 +291,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// shared: consumed by QubeService.CheckReachable and held on Dependencies.
 	xport := buildTransport(context.Background(), cfg.Transport)
 
-	// Zone and Qube repositories and services
+	// Zone and Qube repositories. The zone service is built once the provider
+	// registry exists, below.
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
 
 	// The keyring is validated in cfg.Validate() at load time, so a
 	// misconfigured key fails startup rather than silently falling back to the
@@ -332,6 +332,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	if err := registerProxmoxAdapter(providerRegistry, zoneRepo, credentialRepo, certIssuer, cfg.Orchestrator); err != nil {
 		return nil, err
 	}
+	// Zone creation asks the same registry the executor dispatches through, so
+	// a type with no adapter is refused when the zone is created instead of at
+	// its first provision job.
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, providerRegistry)
 	exec := buildExecutor(cfg.Orchestrator, providerRegistry,
 		service.NewNativeQubeZoneResolver(qubeRepo, zoneRepo), qubeInfraRepo)
 

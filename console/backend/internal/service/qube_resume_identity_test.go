@@ -56,7 +56,7 @@ func newResumeFixture(t *testing.T) *resumeFixture {
 		WithBootstrapTokens(repository.NewBootstrapTokenRepository(db), 0)
 
 	exec := orchestrator.NewFakeExecutor()
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithExecutor(exec), WithCertIssuer(issuer))
 
 	ctx := context.Background()

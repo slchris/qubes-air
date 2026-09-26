@@ -7,7 +7,12 @@
 
 - 编排关闭时，`NoopExecutor` 只更新数据库状态，供本地开发使用。
 - 编排开启时，`NativeExecutor` 按 zone 类型取得适配器；当前只注册 Proxmox。
-- zone 无已注册适配器时明确失败。GCP/AWS 尚不可用于当前原生置备路径。
+- 创建 zone 时用执行器所用的同一个 registry 校验类型：`gcp`、`aws`、`azure` 等没有已注册
+  适配器的类型返回 422（`provider not implemented`），不写入数据库；拼错的类型仍返回 400。
+  zone 的类型在创建后不能修改，更新请求中的 `type` 字段会被忽略。
+- 在该校验之前已写入的无适配器 zone 仍可列出、读取、改名和删除，对它们发起的置备 job 仍以
+  `ErrNoAdapter` 明确失败。Web UI 把这些 provider 标为 "not implemented" 且不可选，
+  列表见 `console/frontend/src/lib/providers.ts`。
 - provider 使用原生 API，当前仓库不再提供 Terraform/state 部署入口。
 - Qubes 侧部署以 [qubes-salt-config](https://github.com/slchris/qubes-salt-config) 为准；
   本文不保存现场地址、VM 编号或临时构建 pin。
@@ -21,7 +26,7 @@ flowchart TB
   RUN --> EX["NativeExecutor"]
   EX --> REG{"按 zone.Type 选择适配器"}
   REG --> PVE["Proxmox REST + SSH"]
-  REG -. "未注册，操作失败" .-> OTHER["GCP / AWS"]
+  REG -. "未注册：创建 zone 返回 422，存量 zone 的 job 失败" .-> OTHER["GCP / AWS / Azure"]
   EX --> DB[("SQLite qube_infra")]
   PVE --> VM["Compute VM"]
   PVE --> DISK["Storage holder / 持久数据盘"]
@@ -31,7 +36,8 @@ flowchart TB
 
 | 位置 | 职责 |
 |---|---|
-| `console/backend/cmd/server/main.go` | 构造执行器，按 zone 解析凭据并注册 Proxmox |
+| `console/backend/cmd/server/main.go` | 构造执行器，按 zone 解析凭据并注册 Proxmox；把同一 registry 交给 zone 服务 |
+| `console/backend/internal/service/zone_service.go` | 创建 zone 时拒绝没有已注册适配器的类型 |
 | `console/backend/internal/provider/provider.go` | Adapter、Infra、Observed 与 registry 契约 |
 | `console/backend/internal/provider/proxmox/` | PVE REST 客户端、生命周期、snippet 上传与 IP 分配 |
 | `console/backend/internal/orchestrator/native.go` | 编排适配器步骤，保存资源身份，等待 agent 可达 |

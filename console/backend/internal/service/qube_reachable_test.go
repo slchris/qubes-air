@@ -31,7 +31,7 @@ func setupWithTransport(t *testing.T, xport transport.Transport) (QubeService, s
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithTransport(xport))
 
 	ctx := context.Background()
@@ -131,7 +131,7 @@ func setupReachableWithRepo(t *testing.T, xport transport.Transport) (QubeServic
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithTransport(xport))
 
 	zone := createConnectedZone(t, zoneSvc)
@@ -269,7 +269,7 @@ func TestCheckReachable_PrefersThePerQubeProber(t *testing.T) {
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	prober := NewAgentProber(staticCA{ca: ca}, nil, "0.0.0.0:"+port, 10*time.Second)
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithTransport(fake), WithAgentProber(prober))
 

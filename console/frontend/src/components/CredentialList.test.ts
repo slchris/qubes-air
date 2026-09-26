@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/svelte'
+import { render, screen, within } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 
 import CredentialList from './CredentialList.svelte'
@@ -194,5 +194,70 @@ describe('CredentialList create', () => {
 
     expect(await screen.findByText(/credential name already exists/i)).toBeInTheDocument()
     expect(screen.getByRole('dialog', { name: /add credential/i })).toBeInTheDocument()
+  })
+})
+
+describe('CredentialList provider types', () => {
+  function typeOption(value: string): HTMLOptionElement {
+    const select = screen.getByLabelText(/^type$/i) as HTMLSelectElement
+    const option = Array.from(select.options).find(o => o.value === value)
+    if (!option) throw new Error(`no ${value} option`)
+    return option
+  }
+
+  async function openAdd(): Promise<void> {
+    render(CredentialList)
+    await screen.findByText('pve-root')
+    await userEvent.click(screen.getByRole('button', { name: /\+ add credential/i }))
+  }
+
+  it('starts a new credential on Proxmox, not on a provider with no adapter', async () => {
+    // It used to start on AWS: a credential saved without touching the picker
+    // was one no zone could use.
+    await openAdd()
+
+    expect((screen.getByLabelText(/^type$/i) as HTMLSelectElement).value).toBe('proxmox')
+
+    await userEvent.type(screen.getByLabelText(/^name$/i), 'prod-pve')
+    await userEvent.type(screen.getByLabelText(/^secret$/i), 'super-secret')
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }))
+
+    const create = apiFetch.mock.calls.find(([, init]) => init?.method === 'POST')
+    expect(JSON.parse(String(create?.[1]?.body)).type).toBe('proxmox')
+  })
+
+  it('offers unimplemented providers only as disabled, labelled options', async () => {
+    await openAdd()
+
+    for (const [value, label] of [['gcp', 'Google Cloud'], ['aws', 'AWS'], ['azure', 'Azure']]) {
+      expect(typeOption(value).disabled).toBe(true)
+      expect(typeOption(value).textContent).toBe(`${label} (not implemented)`)
+    }
+    // Not providers, so neither implemented nor unimplemented: still usable.
+    for (const value of ['proxmox', 'ssh', 'api_key', 'other']) {
+      expect(typeOption(value).disabled).toBe(false)
+    }
+
+    // Negative path: the disabled option cannot be chosen.
+    await userEvent.selectOptions(screen.getByLabelText(/^type$/i), 'aws')
+    expect((screen.getByLabelText(/^type$/i) as HTMLSelectElement).value).toBe('proxmox')
+  })
+
+  it('marks a stored credential of an unimplemented provider', async () => {
+    apiFetch.mockResolvedValue(credentialsResponse(
+      credentialFixture(),
+      credentialFixture({ id: 'c2', name: 'old-aws', type: 'aws', description: '' }),
+      credentialFixture({ id: 'c3', name: 'deploy-key', type: 'ssh', description: '' }),
+    ))
+
+    render(CredentialList)
+
+    const aws = (await screen.findByText('old-aws')).closest('.card') as HTMLElement
+    expect(within(aws).getByText('AWS')).toBeInTheDocument()
+    expect(within(aws).getByText('not implemented')).toBeInTheDocument()
+    for (const name of ['pve-root', 'deploy-key']) {
+      const card = screen.getByText(name).closest('.card') as HTMLElement
+      expect(within(card).queryByText('not implemented')).not.toBeInTheDocument()
+    }
   })
 })

@@ -37,7 +37,9 @@ const (
 	ZoneStatusDisconnected = "disconnected"
 )
 
-// IsValid checks if the zone type is valid.
+// IsValid checks if the zone type is one the model knows. It says nothing
+// about whether this console can provision into it: that is decided by the
+// provider registry, and only a registered type may be used for a new zone.
 func (t ZoneType) IsValid() bool {
 	switch t {
 	case ZoneTypeProxmox, ZoneTypeGCP, ZoneTypeAWS, ZoneTypeAzure:
@@ -143,6 +145,10 @@ type ZoneCreateRequest struct {
 }
 
 // ZoneUpdateRequest represents a request to update a zone.
+//
+// Type is deliberately absent: a zone's provider is fixed when it is created,
+// which is where the service checks that an adapter serves it. A "type" key in
+// an update body is ignored.
 type ZoneUpdateRequest struct {
 	Name   *string     `json:"name,omitempty"`
 	Config *ZoneConfig `json:"config,omitempty"`

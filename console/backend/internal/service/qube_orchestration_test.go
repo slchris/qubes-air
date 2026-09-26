@@ -33,7 +33,7 @@ func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor, extr
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
 
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	opts := append([]QubeServiceOption{WithExecutor(exec)}, extra...)
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, opts...)
 

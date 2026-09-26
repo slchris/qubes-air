@@ -38,7 +38,7 @@ func setupAgentHealthRouter(t *testing.T) (*gin.Engine, service.ZoneService, ser
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo)
 
 	router := gin.New()

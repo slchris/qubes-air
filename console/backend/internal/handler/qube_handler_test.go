@@ -38,7 +38,7 @@ func setupQubeTestRouter(t *testing.T) (*gin.Engine, service.ZoneService, servic
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo)
 
 	qubeHandler := NewQubeHandler(qubeSvc)
@@ -298,7 +298,7 @@ func setupQubeAppsTestRouter(t *testing.T, xport transport.Transport) (*gin.Engi
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, service.WithTransport(xport))
 
 	qubeHandler := NewQubeHandler(qubeSvc)
@@ -486,7 +486,7 @@ func appTestService(t *testing.T, xport transport.Transport) (service.QubeServic
 
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := service.NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := service.NewQubeService(qubeRepo, zoneRepo, service.WithTransport(xport))
 
 	zone := createTestZoneForHandler(t, zoneSvc)

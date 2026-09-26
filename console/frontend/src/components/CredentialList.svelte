@@ -3,6 +3,10 @@
 -->
 <script lang="ts">
   import { apiFetch } from '../lib/api';
+  import {
+    DEFAULT_ZONE_PROVIDER, NOT_IMPLEMENTED, ZONE_PROVIDERS,
+    isUnimplementedProvider, providerOptionLabel,
+  } from '../lib/providers';
 
   interface Credential {
     id: string;
@@ -25,19 +29,25 @@
   let error = $state<string | null>(null);
   let showModal = $state(false);
   let editingId = $state<string | null>(null);
-  let formData = $state<FormData>({ name: '', type: 'aws', description: '', secret: '' });
+  // A new credential starts on the one provider the console can provision
+  // into. It used to start on AWS, which has no adapter: a credential created
+  // without touching the picker was one no zone could ever use.
+  let formData = $state<FormData>({ name: '', type: DEFAULT_ZONE_PROVIDER, description: '', secret: '' });
   let formError = $state<string | null>(null);
 
-  const credentialTypes = [
-    // Proxmox first: it is the provider this deployment actually uses, and its
-    // absence was why a PVE credential could not be created from the UI at all.
-    { value: 'proxmox', label: 'Proxmox' },
-    { value: 'aws', label: 'AWS' },
-    { value: 'gcp', label: 'Google Cloud' },
-    { value: 'azure', label: 'Azure' },
-    { value: 'ssh', label: 'SSH Key' },
-    { value: 'api_key', label: 'API Key' },
-    { value: 'other', label: 'Other' }
+  interface CredentialType { value: string; label: string; option: string; disabled: boolean }
+
+  const credentialTypes: CredentialType[] = [
+    // Provider credentials come from the shared provider list, so a provider
+    // with no adapter is offered here exactly as in the zone form: visible, and
+    // not selectable. The card label stays plain; the card says "not
+    // implemented" separately for credentials stored before this.
+    ...ZONE_PROVIDERS.map(p => ({
+      value: p.value, label: p.label, option: providerOptionLabel(p), disabled: !p.implemented,
+    })),
+    { value: 'ssh', label: 'SSH Key', option: 'SSH Key', disabled: false },
+    { value: 'api_key', label: 'API Key', option: 'API Key', disabled: false },
+    { value: 'other', label: 'Other', option: 'Other', disabled: false },
   ];
 
   async function loadCredentials() {
@@ -62,7 +72,7 @@
 
   function openAddModal() {
     editingId = null;
-    formData = { name: '', type: 'aws', description: '', secret: '' };
+    formData = { name: '', type: DEFAULT_ZONE_PROVIDER, description: '', secret: '' };
     formError = null;
     showModal = true;
   }
@@ -181,7 +191,10 @@
       {#each credentials as cred}
         <div class="card">
           <div class="card-header">
-            <span class="card-type">{getTypeLabel(cred.type)}</span>
+            <span class="card-kind">
+              <span class="card-type">{getTypeLabel(cred.type)}</span>
+              {#if isUnimplementedProvider(cred.type)}<span class="unimpl">{NOT_IMPLEMENTED}</span>{/if}
+            </span>
             <span class="card-actions">
               <button class="btn-icon" title="Edit" onclick={() => openEditModal(cred)}>✎</button>
               <button class="btn-icon btn-danger" title="Delete" onclick={() => handleDelete(cred.id, cred.name)}>✕</button>
@@ -214,14 +227,14 @@
         {/if}
         <div class="form-group">
           <label for="name">Name</label>
-          <input type="text" id="name" bind:value={formData.name} placeholder="Production AWS" />
+          <input type="text" id="name" bind:value={formData.name} placeholder="Production Proxmox" />
         </div>
         {#if !editingId}
           <div class="form-group">
             <label for="type">Type</label>
             <select id="type" bind:value={formData.type}>
-              {#each credentialTypes as t}
-                <option value={t.value}>{t.label}</option>
+              {#each credentialTypes as t (t.value)}
+                <option value={t.value} disabled={t.disabled}>{t.option}</option>
               {/each}
             </select>
           </div>
@@ -319,6 +332,20 @@
     border-radius: var(--global-border-radius-xsmall);
     text-transform: uppercase;
     letter-spacing: 0;
+  }
+
+  .card-kind {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .unimpl {
+    font: var(--subhead);
+    color: var(--systemSecondary);
+    padding: 1px 6px;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: 999px;
   }
 
   .card-actions {

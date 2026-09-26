@@ -194,7 +194,7 @@ func newPurgeFixture(t *testing.T, queueSize int) *purgeFixture {
 	}
 	issuer := NewCertIssuer(newMemCredStore(), certs, t.TempDir(), "0.0.0.0:8443", testAgentPackage())
 
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	// The qube is brought to "suspended" without a queue: this fixture is about
 	// what Purge does, not about how a qube is parked.
 	setupSvc := NewQubeService(qubeRepo, zoneRepo, WithExecutor(exec))

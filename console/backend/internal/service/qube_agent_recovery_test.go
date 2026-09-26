@@ -35,7 +35,7 @@ func probeEnv(t *testing.T, xport transport.Transport) (QubeService, *models.Qub
 	ctx := context.Background()
 	zoneRepo := repository.NewZoneRepository(db)
 	qubeRepo := repository.NewQubeRepository(db)
-	zoneSvc := NewZoneService(zoneRepo, qubeRepo)
+	zoneSvc := NewZoneService(zoneRepo, qubeRepo, proxmoxOnlyAdapters(t))
 	qubeSvc := NewQubeService(qubeRepo, zoneRepo, WithTransport(xport))
 
 	zone := createConnectedZone(t, zoneSvc)
