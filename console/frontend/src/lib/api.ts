@@ -401,11 +401,11 @@ export interface JobLogChunk {
 }
 
 /**
- * Reads a job's terraform output from `offset` onwards.
+ * Reads a job's operation output from `offset` onwards.
  *
- * Poll it with the offset the previous call returned to tail a running apply;
+ * Poll it with the offset the previous call returned to tail a running job;
  * `running` tells you whether to poll again. This exists because a provision
- * runs for 15-25 minutes and, without it, the UI could show nothing for the
+ * runs for many minutes and, without it, the UI could show nothing for the
  * whole time and then only the final error.
  */
 export async function getJobLog(id: string, offset = 0): Promise<JobLogChunk> {
@@ -413,16 +413,19 @@ export async function getJobLog(id: string, offset = 0): Promise<JobLogChunk> {
 }
 
 /**
- * Streams a job's terraform output as it is written, one chunk per callback.
+ * Streams a job's operation output as it is written, one chunk per callback.
  *
- * Uses fetch (not the browser EventSource) on purpose: EventSource cannot set
- * the Authorization header, and this API is Bearer-authenticated. apiFetch
- * attaches the token; the body is read incrementally as a text/event-stream.
+ * Uses fetch (not the browser EventSource) on purpose: EventSource reconnects
+ * by itself to the URL it was opened with — the original offset — and would
+ * replay output the panel already shows, whereas the caller here resumes from
+ * the last offset it saw and decides itself when to fall back to polling.
+ * apiFetch sends the session cookie and raises the login gate on a 401; the
+ * body is read incrementally as a text/event-stream.
  *
  * The stream ENDS on its own — the server caps how long it holds a connection,
  * because the console is reached over a qrexec TCP forward where a connection
- * held open for a 20-minute apply is a connection to lose. That is not a
- * failure: the last chunk carries the offset the caller resumes from, whether
+ * held open for the whole of a long job is a connection to lose. That is not
+ * a failure: the last chunk carries the offset the caller resumes from, whether
  * by reconnecting the stream or falling back to getJobLog polling. `signal`
  * lets the caller abort when the component unmounts or the job is replaced.
  */
@@ -469,7 +472,7 @@ export async function streamJobLog(
  * Lists recent jobs, newest first. Pass qubeId to scope to one qube.
  *
  * This is the audit view: every infrastructure change the console made,
- * including the failures and terraform's own error text.
+ * including the failures and their error text.
  */
 export async function listJobs(qubeId?: string, limit?: number): Promise<JobListResponse> {
   const params = new URLSearchParams();
