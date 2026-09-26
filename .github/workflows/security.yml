@@ -24,7 +24,8 @@ jobs:
   # Go 安全扫描 (gosec)
   gosec:
     name: GoSec Security Scan
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -57,7 +58,8 @@ jobs:
   # Trivy 容器/依赖扫描
   trivy:
     name: Trivy Vulnerability Scan
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -82,7 +84,8 @@ jobs:
   # 密钥泄露检测
   secrets-scan:
     name: Secret Scanning
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code

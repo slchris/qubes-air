@@ -26,7 +26,8 @@ jobs:
   # Go 依赖检查
   go-dependencies:
     name: Go Dependencies
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/backend
@@ -55,7 +56,8 @@ jobs:
   # Node.js 依赖检查
   npm-dependencies:
     name: NPM Dependencies
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: console/frontend
@@ -90,7 +92,8 @@ jobs:
   # Dependabot 配置验证
   dependabot-config:
     name: Validate Dependabot Config
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
@@ -102,7 +105,8 @@ jobs:
   # 许可证合规检查
   license-check:
     name: License Compliance
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code

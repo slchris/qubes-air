@@ -18,7 +18,8 @@ on:
 jobs:
   docs:
     name: Docs and CI Gates
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout code
