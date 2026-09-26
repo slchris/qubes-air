@@ -264,6 +264,30 @@ describe('JobLog live stream', () => {
     expect(server.jobReads).toHaveLength(0)
   })
 
+  it('drops a late job-record answer for a job that is no longer shown', async () => {
+    // j1 finished with an empty log, so finish() asks for the job record; that
+    // answer arrives only after the panel has moved on to j2.
+    const late = deferred<Response>()
+    server.pollReply = (jobId) =>
+      jobId === 'j1' ? json(200, { offset: 0, data: '', running: false, state: 'failed' }) : json(500, {})
+    server.jobReply = (jobId) => (jobId === 'j1' ? late.promise : json(500, {}))
+    const { container, rerender } = mount('j1', false)
+    await flush()
+    expect(server.jobReads).toEqual(['j1'])
+
+    await rerender({ jobId: 'j2', active: true })
+    await flush()
+    server.streams[0].send({ offset: 4, data: 'new\n', running: true })
+    await flush()
+
+    late.resolve(json(200, { id: 'j1', state: 'failed', error: 'old failure' }))
+    await flush()
+
+    expect(logText(container)).toBe('new\n')
+    expect(screen.queryByText(/old failure/)).not.toBeInTheDocument()
+    expect(container.querySelector('.joblog')).not.toHaveClass('failed')
+  })
+
   it('aborts the stream on unmount and does not reconnect', async () => {
     const { unmount } = mount('j1', true)
     await flush()
