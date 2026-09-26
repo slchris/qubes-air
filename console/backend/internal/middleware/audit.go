@@ -66,6 +66,9 @@ func markAuthDisabled(c *gin.Context) {
 // authentication, so the recorder caps it (audit.MaxObjectBytes) to keep one
 // unauthenticated request from writing an arbitrarily long line.
 //
+// A handler panic unwinds past Audit to the engine's Recovery, so that request
+// leaves no audit line; Recovery logs the panic itself.
+//
 // The request ID is generated here and never taken from the client: a caller
 // that could choose it could make its request collide with another's line.
 func Audit(rec *audit.Recorder) gin.HandlerFunc {

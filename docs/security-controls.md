@@ -90,10 +90,13 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 才读取身份，所以认证层解析出的主体仍能归属到记录上，而被任何一层拒绝的请求也都会留下记录。
 
 - 每个变更请求（GET/HEAD/OPTIONS 以外的方法，命中已注册路由）恰好写一行 JSON 到 stderr，
-  无论成功还是被拒绝。
+  无论成功还是被拒绝。唯一的例外是 handler panic：panic 越过审计中间件，由最外层的 gin
+  Recovery 返回 500 并自行记录 panic，这个请求没有审计行。
 - `outcome: denied`：认证失败（缺少、格式错误或未知的 Bearer，未知或过期的 session，登录
   token 错误）返回 401；只读 scope 发起变更请求返回 403；zone 判定拒绝返回 403 或 404。
-  zone 判定对调用方回 404 以免泄露对象是否存在，审计里仍记为 `denied`。
+  zone 判定对调用方回 404 以免泄露对象是否存在，审计里仍记为 `denied`。zone token 创建 Qube 时
+  请求体读不出、无法解析或超过上限，按失败关闭返回 403，同样记为 `denied`；所属关系查询出错
+  返回 500，记为 `error`。
 - 限流拒绝（429）记为 `client_error`，不记为 `denied`：节流不是授权判定，把它混进 `denied`
   会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
 - 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、

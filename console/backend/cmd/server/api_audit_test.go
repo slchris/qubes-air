@@ -67,6 +67,7 @@ func auditedAPI(t *testing.T, tune func(*config.Config)) (*gin.Engine, *bytes.Bu
 
 	v1.POST("/session", func(c *gin.Context) { c.Status(http.StatusUnauthorized) })
 	v1.GET("/qubes", func(c *gin.Context) { c.Status(http.StatusOK) })
+	v1.POST("/qubes", func(c *gin.Context) { c.Status(http.StatusCreated) })
 	v1.POST("/qubes/:id/start", func(c *gin.Context) { c.Status(http.StatusAccepted) })
 	v1.POST("/zones", func(c *gin.Context) { c.Status(http.StatusCreated) })
 	return r, &buf, sessions
@@ -298,21 +299,24 @@ func TestAPIAuditRecordsReadOnlyScopeDenial(t *testing.T) {
 
 // TestAPIAuditRecordsZoneDenial keeps the zone refusals audited with the
 // subject and scope that caused them. A foreign or missing object is answered
-// 404 so the caller learns nothing, and is still recorded as denied.
+// 404 so the caller learns nothing, and is still recorded as denied; a create
+// body the zone check cannot parse fails closed and is recorded the same way.
 func TestAPIAuditRecordsZoneDenial(t *testing.T) {
 	cases := []struct {
-		name, path, route, object string
-		status                    int
+		name, path, body, route, object string
+		status                          int
 	}{
 		{name: "foreign qube", path: "/api/v1/qubes/q-b/start", route: startRoute, object: "q-b", status: http.StatusNotFound},
 		{name: "missing qube", path: "/api/v1/qubes/q-zz/start", route: startRoute, object: "q-zz", status: http.StatusNotFound},
 		{name: "fleet operation", path: "/api/v1/zones", route: "/api/v1/zones", status: http.StatusForbidden},
+		{name: "create with foreign zone", path: "/api/v1/qubes", body: `{"zone_id":"zone-b"}`, route: "/api/v1/qubes", status: http.StatusForbidden},
+		{name: "create with unparsable body", path: "/api/v1/qubes", body: `{"zone_id":`, route: "/api/v1/qubes", status: http.StatusForbidden},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, buf, _ := auditedAPI(t, nil)
 
-			w := apiRequest(r, http.MethodPost, tc.path, "", bearer(zoneTokenValue))
+			w := apiRequest(r, http.MethodPost, tc.path, tc.body, bearer(zoneTokenValue))
 
 			require.Equal(t, tc.status, w.Code)
 			assertAuditFields(t, onlyAuditLine(t, buf), w, map[string]any{
