@@ -1290,12 +1290,13 @@ exec env -i "PATH=$PATH" ${envs[@]+"${envs[@]}"} "$@"
 EOF
 
 unlock_run() {
-    run_svc QREXEC_REMOTE_DOMAIN=console QREXEC_SERVICE_FULL_NAME=qubesair.UnlockData -- "$SVC"
+    run_svc QREXEC_REMOTE_DOMAIN=console QREXEC_SERVICE_FULL_NAME=qubesair.UnlockData -- "$SVC" "$@"
 }
 
-# The line that starts the privileged half.
+# The line that starts the privileged half. The systemd-run stub drops the
+# caller's environment, so the marker only arrives through --setenv.
 unlock_inner_call() {
-    printf 'systemd-run [--pipe] [--wait] [--collect] [--quiet] [--] [%s] [__unlock]' "$SVC"
+    printf 'systemd-run [--pipe] [--wait] [--collect] [--quiet] [--setenv=QUBESAIR_UNLOCK_INNER=1] [--] [%s] [__unlock]' "$SVC"
 }
 
 # Nothing the service ran may carry the passphrase in argv, and every key file
@@ -1323,6 +1324,25 @@ t_unlockdata_empty_passphrase() {
         expect_stdout '{"unlocked":false,"detail":"empty passphrase"}'
         expect_no_calls
         case_end
+    done
+}
+
+# The console never sends an argument. "__unlock" used to select the privileged
+# half directly, skipping the empty-passphrase check and systemd-run.
+t_unlockdata_refuses_service_argument() {
+    local arg input
+    for arg in __unlock foo '../../etc/passwd'; do
+        for input in '' "$KEY"; do
+            case_begin "UnlockData: service argument '$arg' is refused (stdin $(printf '%q' "${input:0:8}"))" || continue
+            unlock_setup
+            put "$C/stdin" "$input"
+            unlock_run "$arg"
+            expect_rc 0
+            expect_stdout '{"unlocked":false,"detail":"service arguments are not supported"}'
+            expect_no_calls
+            [ ! -e "$C/disk/luks-key" ] || fail "the disk was formatted"
+            case_end
+        done
     done
 }
 

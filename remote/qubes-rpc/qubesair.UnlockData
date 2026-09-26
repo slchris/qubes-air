@@ -22,6 +22,10 @@
 #   - Runs the privileged part under systemd-run: the agent unit's sandbox
 #     (ProtectSystem=full, PrivateTmp, restricted caps) is inherited by children and
 #     would break cryptsetup/mount. systemd-run re-enters PID 1's namespace as root.
+#   - Only the outer half enters the privileged half. The console sends no service
+#     argument, so any argument is refused; the inner half additionally requires
+#     QUBESAIR_UNLOCK_INNER=1, which the outer half sets via systemd-run --setenv
+#     and which neither the agent nor qrexec lets a caller set.
 #
 # NOTE (hardening TODO): the agent accepts any CA-signed client cert, so possession of
 # the correct derived key is what actually authorizes an unlock (a wrong key just fails
@@ -34,7 +38,7 @@ set +e
 SELF="/etc/qubes-rpc/qubesair.UnlockData"
 
 # ---- privileged inner half: runs under systemd-run, key on its stdin ----
-if [ "${1:-}" = "__unlock" ]; then
+if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
     key="$(cat)"
 
     dev=""
@@ -105,6 +109,12 @@ if [ "${1:-}" = "__unlock" ]; then
 fi
 
 # ---- outer half: sandboxed. Read key, re-exec the inner under systemd-run. ----
+# "qubesair.UnlockData+__unlock" must not reach the inner half past the checks below.
+if [ "$#" -gt 0 ]; then
+    printf '{"unlocked":false,"detail":"service arguments are not supported"}\n'
+    exit 0
+fi
+
 key="$(cat)"
 if [ -z "$key" ]; then
     printf '{"unlocked":false,"detail":"empty passphrase"}\n'
@@ -112,10 +122,11 @@ if [ -z "$key" ]; then
 fi
 
 if command -v systemd-run >/dev/null 2>&1; then
-    printf %s "$key" | systemd-run --pipe --wait --collect --quiet -- "$SELF" __unlock 2>/dev/null
+    printf %s "$key" | systemd-run --pipe --wait --collect --quiet \
+        --setenv=QUBESAIR_UNLOCK_INNER=1 -- "$SELF" __unlock 2>/dev/null
 else
     # No systemd (rare): run directly. cryptsetup/mount may hit the sandbox, but a
     # clear failure JSON beats silently doing nothing.
-    printf %s "$key" | "$SELF" __unlock
+    printf %s "$key" | QUBESAIR_UNLOCK_INNER=1 "$SELF" __unlock
 fi
 exit 0

@@ -25,6 +25,12 @@
 #     container, so a retry after a crash or a lost reply is safe.
 #   - Keys never appear in argv or on disk: stdin -> shell variable -> process
 #     substitution, with the privileged half under systemd-run.
+#   - Only the outer half enters the privileged half. The console sends no service
+#     argument, so any argument is refused ("bad_argument"); the inner half also
+#     requires QUBESAIR_REKEY_INNER=1, which the outer half sets via systemd-run
+#     --setenv and which neither the agent nor qrexec lets a caller set. Without
+#     this, "qubesair.RekeyData+__rekey" skipped every check below, and old == new
+#     removed the only keyslot.
 #
 # Requires python3, which the agent package already declares for Exec/FileCopy.
 # =====================================================================================
@@ -50,7 +56,7 @@ emit() {
 }
 
 # ---- privileged inner half: old and new keys as two lines on stdin ----
-if [ "${1:-}" = "__rekey" ]; then
+if [ "${1:-}" = "__rekey" ] && [ "${QUBESAIR_REKEY_INNER:-}" = "1" ]; then
     IFS= read -r old
     IFS= read -r new
 
@@ -123,6 +129,11 @@ if [ "${1:-}" = "__rekey" ]; then
 fi
 
 # ---- outer half: sandboxed. Validate the request, re-exec the inner. ----
+if [ "$#" -gt 0 ]; then
+    emit false false bad_argument "service arguments are not supported"
+    exit 0
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
     emit false false no_python "python3 is required to parse the rekey request"
     exit 0
@@ -165,10 +176,11 @@ if [ "$old" = "$new" ]; then
 fi
 
 if command -v systemd-run >/dev/null 2>&1; then
-    printf '%s\n%s\n' "$old" "$new" | systemd-run --pipe --wait --collect --quiet -- "$SELF" __rekey 2>/dev/null
+    printf '%s\n%s\n' "$old" "$new" | systemd-run --pipe --wait --collect --quiet \
+        --setenv=QUBESAIR_REKEY_INNER=1 -- "$SELF" __rekey 2>/dev/null
 else
     # No systemd (rare): run directly. cryptsetup may hit the sandbox, but a
     # clear failure JSON beats silently doing nothing.
-    printf '%s\n%s\n' "$old" "$new" | "$SELF" __rekey
+    printf '%s\n%s\n' "$old" "$new" | QUBESAIR_REKEY_INNER=1 "$SELF" __rekey
 fi
 exit 0

@@ -130,6 +130,11 @@ DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 
 - 旧 keyslot 未能移除时报告 `old_key_removed:false`，Console 写入迁移标记，之后每次解锁
   都重试删除；在删除成功前该盘仍可被 master 打开。
 - 服务与 UnlockData 一样必须在 `QUBESAIR_ALLOW` 中显式启用，并新增 Python 3 解析依赖。
+- 两个服务都拒绝 `+argument`（RekeyData 报 `bad_argument`），特权半段还要求外层经
+  `systemd-run --setenv` 传入的标记（`QUBESAIR_REKEY_INNER` / `QUBESAIR_UNLOCK_INNER`），
+  调用方无法设置它。此前 `qubesair.RekeyData+__rekey` 会跳过外层全部校验，持有有效密钥的
+  调用方把它同时作为 old 和 new 就会删掉唯一的 keyslot；`qubesair.UnlockData+__unlock` 会
+  跳过空口令检查和 systemd-run。
 
 升级要求：加密 Qube 的 agent 在下次解锁前必须允许 `qubesair.RekeyData`，否则迁移失败、
 数据保持加密并在下次 resume 重试。迁移完成后 `qubes-air-luks-master` 只是只读的迁移材料，

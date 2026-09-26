@@ -76,6 +76,23 @@ func newRekeyFixture(t *testing.T, oldValid, newValid bool) *rekeyFixture {
 	}
 }
 
+// withoutSystemd points PATH at a directory holding only the tools the script and
+// the cryptsetup stub use. A CI runner's /usr/bin carries a real systemd-run, so
+// deleting the stub alone would not reach the script's no-systemd branch.
+func (f *rekeyFixture) withoutSystemd() {
+	f.t.Helper()
+	jail := filepath.Join(f.t.TempDir(), "jail")
+	require.NoError(f.t, os.Mkdir(jail, 0o700))
+	require.NoError(f.t, os.Symlink(filepath.Join(f.binDir, "cryptsetup"), filepath.Join(jail, "cryptsetup")))
+	for _, tool := range []string{"cat", "grep", "head", "python3", "readlink", "sed"} {
+		path, err := exec.LookPath(tool)
+		require.NoError(f.t, err)
+		require.NoError(f.t, os.Symlink(path, filepath.Join(jail, tool)))
+	}
+	require.True(f.t, strings.HasPrefix(f.env[0], "PATH="), "the fixture's first variable is PATH")
+	f.env[0] = "PATH=" + jail
+}
+
 // withEnv adds an environment override for one run (the stub reads it).
 func (f *rekeyFixture) withEnv(kv string) {
 	f.env = append(f.env, kv)
@@ -92,10 +109,17 @@ func (f *rekeyFixture) stateLine(n int) string {
 
 func (f *rekeyFixture) run(input string) rekeyReply {
 	f.t.Helper()
+	return f.runArgs(input)
+}
+
+// runArgs runs the script with qrexec service arguments, as the agent does for
+// a "qubesair.RekeyData+<arg>" request.
+func (f *rekeyFixture) runArgs(input string, args ...string) rekeyReply {
+	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, f.script)
+	cmd := exec.CommandContext(ctx, f.script, args...)
 	cmd.Env = f.env
 	cmd.Stdin = strings.NewReader(input)
 	var out, stderr bytes.Buffer
@@ -184,11 +208,13 @@ exit 1
 `
 
 // systemdRunStub drops the unit options and executes the service directly, so
-// the test exercises the same inner half without a running systemd.
+// the test exercises the same inner half without a running systemd. --setenv is
+// honored: it is how the outer half hands the inner half its marker.
 const systemdRunStub = `#!/bin/bash
 while [ $# -gt 0 ]; do
   case "$1" in
     --pipe|--wait|--collect|--quiet) shift ;;
+    --setenv=*) export "${1#--setenv=}"; shift ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -281,6 +307,35 @@ func TestRekeyDataReportsRemoveFailureAfterFallbackAdd(t *testing.T) {
 	require.False(t, reply.OldKeyRemoved)
 	require.Equal(t, "remove_failed", reply.Reason)
 	require.Equal(t, "1", f.stateLine(4), "the new key must remain usable")
+}
+
+// With no systemd-run on PATH the outer half enters the inner half directly, and
+// it can only do so by setting the marker itself on that call.
+func TestRekeyDataFallbackWithoutSystemd(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withoutSystemd()
+	reply := f.run(f.request())
+
+	require.True(t, reply.Rekeyed)
+	require.True(t, reply.OldKeyRemoved)
+	require.Equal(t, "0", f.stateLine(2), "the legacy keyslot must be gone")
+	require.Equal(t, "1", f.stateLine(4), "the new key must open the container")
+}
+
+// The console never sends a service argument. "qubesair.RekeyData+__rekey" used to
+// select the privileged half directly, skipping the outer validation; with the
+// same key as old and new it then removed the only keyslot.
+func TestRekeyDataRefusesServiceArguments(t *testing.T) {
+	for _, arg := range []string{"__rekey", "anything"} {
+		t.Run(arg, func(t *testing.T) {
+			f := newRekeyFixture(t, true, false)
+			reply := f.runArgs(f.oldKey+"\n"+f.oldKey+"\n", arg)
+
+			require.False(t, reply.Rekeyed)
+			require.Equal(t, "bad_argument", reply.Reason)
+			require.Equal(t, "1", f.stateLine(2), "the only keyslot must survive")
+		})
+	}
 }
 
 func TestRekeyDataRejectsMalformedRequests(t *testing.T) {
