@@ -7,7 +7,7 @@
 	lint-new lint-whole-module gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
-	agent-deb-test
+	yaml-lint agent-deb-test
 
 # 默认目标
 help:
@@ -19,7 +19,7 @@ help:
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
-	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/文档"
+	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/YAML/文档"
 	@echo "  audit          里程碑完整审计: 对全部存量代码执行所有门禁"
 	@echo "  clean          Clean build artifacts"
 	@echo ""
@@ -117,16 +117,19 @@ GOVULNCHECK ?= govulncheck
 
 pre-commit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
 	lint-new lint-whole-module gosec-new gosec-ci-new complexity-new \
-	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
+	vuln-check frontend-check frontend-audit-new shellcheck-new yaml-lint docs-check
 
 audit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
 	lint-all gosec-all gosec-ci complexity-all \
-	vuln-check frontend-check frontend-audit shellcheck-all docs-check
+	vuln-check frontend-check frontend-audit shellcheck-all yaml-lint docs-check
 
 check-tools:
 	@for tool in git go node npm python3 $(GOLANGCI_LINT) $(SHELLCHECK) $(GOVULNCHECK); do \
 		command -v "$$tool" >/dev/null 2>&1 || { echo "缺少开发门禁工具: $$tool" >&2; exit 1; }; \
 	done
+	@python3 -m yamllint --version >/dev/null 2>&1 || { \
+		echo "缺少开发门禁工具: yamllint（python3 -m pip install --user yamllint==1.35.1）" >&2; exit 1; \
+	}
 
 diff-check:
 	git diff --check $(BASE_REV) --
@@ -252,6 +255,20 @@ shellcheck-new:
 		done \
 	)"; \
 	if [ -n "$$files" ]; then $(SHELLCHECK) $$files; else echo "ShellCheck: no changed shell files"; fi
+
+# 检查全部被跟踪、且没有被 .yamllint.yml 的 ignore 排除的 YAML。排除范围只由这份配置决定，这里
+# 不另列目录：写死的目录清单会和配置的 ignore 分叉，最后变成"一个文件也没检查却是绿的"。
+# 所以实际检查的文件数为 0 时同样按失败处理。
+yaml-lint:
+	@files="$$(git ls-files '*.yml' '*.yaml')"; \
+	[ -n "$$files" ] || { echo "yamllint: 仓库里没有被跟踪的 YAML 文件" >&2; exit 1; }; \
+	listed="$$(python3 -m yamllint --list-files -c .yamllint.yml $$files)" || { \
+		echo "yamllint: 无法列出待检查的文件" >&2; exit 1; \
+	}; \
+	checked="$$(printf '%s' "$$listed" | grep -c .)"; \
+	[ "$$checked" -gt 0 ] || { echo "yamllint: .yamllint.yml 忽略了全部被跟踪的 YAML，没有检查任何文件" >&2; exit 1; }; \
+	python3 -m yamllint --strict -c .yamllint.yml $$files || exit 1; \
+	echo "yamllint: $$checked 个文件通过 --strict ($$(python3 -m yamllint --version))"
 
 docs-check:
 	node scripts/check-doc-links.mjs

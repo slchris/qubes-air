@@ -73,7 +73,8 @@ SHA256 → 应用 `qubesair.console`。见 [`salt/qubesair/README.md`](https://g
 
 ## 本地质量门禁
 
-需将 Go 1.26、golangci-lint、govulncheck、Node/npm、Python 3 与 ShellCheck 加入 PATH。
+需将 Go 1.26、golangci-lint、govulncheck、Node/npm、Python 3 与 ShellCheck 加入 PATH，
+并给 Python 3 装上 yamllint 模块（`python3 -m pip install --user yamllint==1.35.1`）。
 本轮验证使用 Go 1.26.8、golangci-lint 2.12.2、govulncheck 1.1.4。
 
 ```bash

@@ -52,6 +52,7 @@ linux 专属文件否则不会被 lint）。仍看不见的是 `nolintlint` 报�
 | Go 格式 | `gofmt`、`goimports` 由 `golangci-lint` formatter 检查 |
 | 前端 | `npm ci && npm run check && npm run build`；必须 0 error、0 warning；依赖变化运行 `npm audit --audit-level=high` |
 | Shell | 所有本阶段新增或修改的 shell/shebang 文件必须通过 ShellCheck |
+| YAML | 全部被跟踪的 YAML 通过 `yamllint --strict`；排除项只写在 `.yamllint.yml` |
 | 文档 | 本地 Markdown 链接必须存在；架构/流程图使用 Mermaid；命令和路径必须可验证 |
 
 ## 4. Lint 和复杂度例外
