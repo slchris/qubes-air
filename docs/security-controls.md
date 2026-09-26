@@ -14,6 +14,13 @@ Relay/Console 角色。角色校验不依赖 CertRegistry 是否存在。Console
 `console-bootstrap` 的 console 角色证书执行；其它 CA 签发的 Relay/Console 证书（探测、续期、
 relay-call）在进入 invoker 前被拒。
 
+桌面端口 `qubesair.StreamTCP+10005`（`transport/grpc` 的 `DesktopStreamPort`，Xpra 监听端口）同样
+按身份开放：Relay 角色照旧可以打开（操作者自己的 GUI 通道，由本地 dom0 policy 把关）；console
+角色只接受 CN 为 `console-desktop` 的证书，也就是 Console 为一次已批准的 MCP 取帧临时签发的那张，
+探测、续期、解锁与 bootstrap 证书在拨号之前就被拒（`authorizeStreamCaller`）。其它 GUI 端口
+（5900–5910、10000–10010 中的其余端口）规则不变。这条检查只在按本版本构建的 agent 上生效，
+升级顺序见[升级与回滚](upgrade-rollback.md) §2.6。
+
 实际 agent 启动入口必须配置 `--revocation-url`；打包 unit 从
 `QUBESAIR_REVOCATION_URL` 传入。Console 用以下配置把地址写进 cloud-init：
 
