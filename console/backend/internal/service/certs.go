@@ -343,10 +343,15 @@ func (c *CertIssuer) loadOrCreateCA(ctx context.Context) (*pki.CA, error) {
 		return c.ca, nil
 	}
 
-	certPEM, certErr := c.findCredential(ctx, caCertCredentialName)
-	keyPEM, keyErr := c.findCredential(ctx, caKeyCredentialName)
+	certPEM, certErr := lookupCredential(ctx, c.creds, caCertCredentialName)
+	keyPEM, keyErr := lookupCredential(ctx, c.creds, caKeyCredentialName)
 
 	switch {
+	case !absentOrNil(certErr) || !absentOrNil(keyErr):
+		// A storage failure, or a half answered by rows the console did not
+		// write. Either way nothing may be minted or loaded until it is fixed.
+		return nil, fmt.Errorf("load CA: %w", errors.Join(certErr, keyErr))
+
 	case certErr == nil && keyErr == nil:
 		ca, err := pki.ParseCA(certPEM, keyPEM)
 		if err != nil {
@@ -402,21 +407,4 @@ func (c *CertIssuer) createCA(ctx context.Context) (*pki.CA, error) {
 	log.Printf("pki: created a new agent CA (valid until %s)", ca.Cert.NotAfter.Format(time.RFC3339))
 	c.ca = ca
 	return ca, nil
-}
-
-// errCredentialNotFound distinguishes "absent" from "broken" when loading.
-var errCredentialNotFound = errors.New("credential not found")
-
-// findCredential looks a credential up by name and returns its secret.
-func (c *CertIssuer) findCredential(ctx context.Context, name string) (string, error) {
-	list, err := c.creds.List(ctx)
-	if err != nil {
-		return "", fmt.Errorf("list credentials: %w", err)
-	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, name) {
-			return c.creds.GetSecret(ctx, cred.ID)
-		}
-	}
-	return "", errCredentialNotFound
 }

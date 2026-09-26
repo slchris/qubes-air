@@ -1,6 +1,8 @@
 package models
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -38,12 +40,12 @@ const (
 // IsConsoleCredential reports whether a credential row with this name and type
 // belongs to the console rather than to the operator.
 //
-// It matches at least as loosely as the console's own lookups, which compare
-// names with strings.EqualFold. The prefix is compared rune by rune under
-// Unicode simple case folding, so "QUBES-AIR-CA-KEY", or a spelling that uses
-// a fold-equivalent rune such as U+017F (long s, which folds to "s"), is as
-// reserved as the lower-case form. Surrounding white space is ignored for the
-// same reason: a near-copy of a reserved name must not get through.
+// Every name MatchesConsoleName accepts for a console name is classified here:
+// both ignore surrounding white space and compare under Unicode simple case
+// folding, this one rune by rune over the prefix. So "QUBES-AIR-CA-KEY", or a
+// spelling that uses a fold-equivalent rune such as U+017F (long s, which
+// folds to "s") or U+212A (Kelvin sign, which folds to "k"), is as reserved as
+// the lower-case form.
 func IsConsoleCredential(name, typ string) bool {
 	return strings.EqualFold(strings.TrimSpace(typ), ConsoleRowType) ||
 		hasFoldPrefix(strings.TrimSpace(name), ConsoleRowNamePrefix)
@@ -61,4 +63,73 @@ func hasFoldPrefix(s, prefix string) bool {
 		s = s[size:]
 	}
 	return true
+}
+
+// Errors from SelectConsoleRow.
+var (
+	// ErrConsoleRowNotFound means no row answers to the console name.
+	ErrConsoleRowNotFound = errors.New("console credential not found")
+	// ErrConsoleRowConflict means rows answer to the console name that the
+	// console did not write. It never comes with secret material.
+	ErrConsoleRowConflict = errors.New("console credential is ambiguous")
+)
+
+// maxConflictRowsNamed bounds how many conflicting rows an error names, so a
+// table stuffed with look-alike rows cannot turn one lookup into a huge log
+// line.
+const maxConflictRowsNamed = 8
+
+// MatchesConsoleName reports whether a stored row name answers to the console
+// name want. It is the one comparison every console lookup and deletion uses:
+// surrounding white space is ignored and letters are compared under Unicode
+// simple case folding (strings.EqualFold).
+func MatchesConsoleName(stored, want string) bool {
+	return strings.EqualFold(strings.TrimSpace(stored), want)
+}
+
+// SelectConsoleRow returns the one row the console stored under name.
+//
+// The console writes exactly one row per name, spelled exactly as name and
+// typed ConsoleRowType. Any other row that answers to the name was written by
+// someone else, which the credentials API allowed until it reserved the
+// namespace. Taking the newest match, as the lookups used to, let such a row
+// stand in for the CA or a data key. So this fails closed instead of guessing
+// which row is genuine:
+//
+//   - no row answers to name: ErrConsoleRowNotFound;
+//   - more than one row answers, or the one that does is not spelled exactly
+//     as name or not typed exactly ConsoleRowType: ErrConsoleRowConflict,
+//     naming the rows by ID so an operator can remove the ones the console
+//     did not write.
+func SelectConsoleRow(rows []Credential, name string) (Credential, error) {
+	var matches []Credential
+	for _, row := range rows {
+		if MatchesConsoleName(row.Name, name) {
+			matches = append(matches, row)
+		}
+	}
+	switch {
+	case len(matches) == 0:
+		return Credential{}, fmt.Errorf("%w: %q", ErrConsoleRowNotFound, name)
+	case len(matches) == 1 && matches[0].Name == name && matches[0].Type == ConsoleRowType:
+		return matches[0], nil
+	}
+	return Credential{}, fmt.Errorf("%w: %d row(s) answer to %q [%s]; the console writes exactly one, "+
+		"named %q with type %q, so it uses none of them. Stop the console, back up the database and "+
+		"delete the rows it did not write (see docs/security-controls.md)",
+		ErrConsoleRowConflict, len(matches), name, describeRows(matches), name, ConsoleRowType)
+}
+
+// describeRows names rows by ID, name and type — never by secret. Names and
+// types are quoted, so a control character in one cannot forge a log line.
+func describeRows(rows []Credential) string {
+	parts := make([]string, 0, min(len(rows), maxConflictRowsNamed)+1)
+	for i, row := range rows {
+		if i == maxConflictRowsNamed {
+			parts = append(parts, fmt.Sprintf("and %d more", len(rows)-i))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("id=%s name=%q type=%q", row.ID, row.Name, row.Type))
+	}
+	return strings.Join(parts, "; ")
 }

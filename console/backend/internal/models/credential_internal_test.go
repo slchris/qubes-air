@@ -1,11 +1,13 @@
 package models
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsConsoleCredential(t *testing.T) {
@@ -80,4 +82,72 @@ func foldOrbit(r rune) []rune {
 		orbit = append(orbit, f)
 	}
 	return orbit
+}
+
+func TestMatchesConsoleName(t *testing.T) {
+	const want = "qubes-air-ca-key"
+	for _, stored := range []string{
+		want, "QUBES-AIR-CA-KEY", "qube\u017f-air-ca-key", "qubes-air-ca-\u212aey", " qubes-air-ca-key\t",
+	} {
+		assert.True(t, MatchesConsoleName(stored, want), "%q", stored)
+		assert.True(t, IsConsoleCredential(stored, "other"), "%q answers to a console name, so it must be a console row", stored)
+	}
+	for _, stored := range []string{
+		"qubes-air-ca-key2", "qubes-air-ca-ke", "qubes-a\u0130r-ca-key", "my-qubes-air-ca-key", "",
+	} {
+		assert.False(t, MatchesConsoleName(stored, want), "%q", stored)
+	}
+}
+
+func TestSelectConsoleRow(t *testing.T) {
+	const name = "qubes-air-ca-key"
+	genuine := Credential{ID: "id-genuine", Name: name, Type: ConsoleRowType}
+	operator := Credential{ID: "id-operator", Name: "pve-prod", Type: "proxmox"}
+
+	got, err := SelectConsoleRow([]Credential{operator, genuine}, name)
+	require.NoError(t, err)
+	assert.Equal(t, genuine, got)
+
+	_, err = SelectConsoleRow([]Credential{operator}, name)
+	assert.ErrorIs(t, err, ErrConsoleRowNotFound)
+	assert.NotErrorIs(t, err, ErrConsoleRowConflict)
+
+	for label, rows := range map[string][]Credential{
+		"duplicate":                 {genuine, {ID: "id-dup", Name: name, Type: ConsoleRowType}},
+		"case variant":              {{ID: "id-case", Name: "QUBES-AIR-CA-KEY", Type: ConsoleRowType}},
+		"long s variant":            {{ID: "id-long-s", Name: "qube\u017f-air-ca-key", Type: ConsoleRowType}},
+		"Kelvin variant":            {{ID: "id-kelvin", Name: "qubes-air-ca-\u212aey", Type: ConsoleRowType}},
+		"padded":                    {{ID: "id-pad", Name: name + " ", Type: ConsoleRowType}},
+		"wrong type":                {{ID: "id-type", Name: name, Type: "other"}},
+		"type differs only by case": {{ID: "id-pki", Name: name, Type: "PKI"}},
+	} {
+		t.Run(label, func(t *testing.T) {
+			_, err := SelectConsoleRow(append([]Credential{operator}, rows...), name)
+			require.ErrorIs(t, err, ErrConsoleRowConflict)
+			assert.NotErrorIs(t, err, ErrConsoleRowNotFound)
+			for _, row := range rows {
+				assert.Contains(t, err.Error(), row.ID)
+			}
+			assert.NotContains(t, err.Error(), operator.ID, "only rows answering to the name are named")
+		})
+	}
+}
+
+// TestSelectConsoleRowBoundsTheError — a store stuffed with look-alikes must
+// not turn one refusal into an unbounded log line, and a control character in
+// a planted name must not forge a second line.
+func TestSelectConsoleRowBoundsTheError(t *testing.T) {
+	const name = "qubes-air-ca-key"
+	rows := make([]Credential, 0, 100)
+	for i := range 100 {
+		rows = append(rows, Credential{ID: fmt.Sprintf("id-%03d", i), Name: "QUBES-AIR-CA-KEY", Type: ConsoleRowType})
+	}
+	// Trailing white space still answers to the name, and is quoted when named.
+	rows[0].Name = name + "\n"
+	_, err := SelectConsoleRow(rows, name)
+	require.ErrorIs(t, err, ErrConsoleRowConflict)
+	assert.Contains(t, err.Error(), "100 row(s)")
+	assert.Contains(t, err.Error(), "and 92 more")
+	assert.NotContains(t, err.Error(), "id-050", "only the first rows are named")
+	assert.NotContains(t, err.Error(), "\n", "names are quoted, so no raw newline reaches a log line")
 }

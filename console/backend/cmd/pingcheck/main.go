@@ -20,6 +20,7 @@ import (
 
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/keyring"
+	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	transportgrpc "github.com/slchris/qubes-air/console/internal/transport/grpc"
@@ -123,18 +124,17 @@ func reportVerifiedAgent(cfg *tls.Config, w io.Writer) {
 	}
 }
 
+// secretNamed reads the console's own row through the same fail-closed
+// selection the console uses: a missing row, or rows under the name that the
+// console did not write, stop the tool instead of handing it a look-alike.
 func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
 	list, err := r.List(ctx)
 	must(err)
-	for _, c := range list {
-		if c.Name == name {
-			s, err := r.GetSecret(ctx, c.ID)
-			must(err)
-			return s
-		}
-	}
-	log.Fatalf("  ✗ 凭证库里没有 %q", name)
-	return ""
+	row, err := models.SelectConsoleRow(list, name)
+	must(err)
+	s, err := r.GetSecret(ctx, row.ID)
+	must(err)
+	return s
 }
 
 func must(err error) {

@@ -197,6 +197,7 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 控制台报 schema 更新而拒绝启动 | 回滚错了方向（二进制旧、库新） | 按 §4 第二行处理：恢复备份，或把二进制升回 |
 | 远端 qube 连不上 | agent 版本/协议不在 console 的集合里 | 看握手日志的 `rejecting relay …`（带支持版本清单） |
 | 页面能开但接口全 404/400 | 前端与二进制不同批 | 两组 pin 一起改 |
+| provision、解锁、证书签发或续期失败，journal 里有 `SECURITY: pki: console credential is ambiguous` | `credentials` 表里有控制台没写过、却对得上它某个密钥名称的行（多出一行同名行、大小写或字符变体、类型不是 `pki`）。控制台从这一版起拒绝使用这类名称，而不是取最新的一行 | 错误里列出了涉及行的 ID。停止控制台，先备份，再按[安全控制](security-controls.md)“Console API 凭据”的核查步骤判断哪一行不是控制台写的，离线删除它。不要为了让服务跑起来而删掉真正的那一行：删 DEK 会让该盘不可恢复，删一半 CA 会让签发停止 |
 
 ## 6. 尚未闭合
 

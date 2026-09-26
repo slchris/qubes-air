@@ -10,11 +10,11 @@ import (
 // RevocationDocument reads existing CA material; a public read never creates
 // or rotates a CA. Signed content contains only revoked certificate hashes.
 func (c *CertIssuer) RevocationDocument(ctx context.Context) ([]byte, error) {
-	cert, err := c.findCredential(ctx, caCertCredentialName)
+	cert, err := lookupCredential(ctx, c.creds, caCertCredentialName)
 	if err != nil {
 		return nil, err
 	}
-	key, err := c.findCredential(ctx, caKeyCredentialName)
+	key, err := lookupCredential(ctx, c.creds, caKeyCredentialName)
 	if err != nil {
 		return nil, err
 	}

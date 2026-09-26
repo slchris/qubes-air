@@ -353,18 +353,17 @@ func dialAndStream(ctx context.Context, pair tls.Certificate, pool *x509.CertPoo
 	}
 }
 
+// secretNamed reads the console's own row through the same fail-closed
+// selection the console uses: a missing row, or rows under the name that the
+// console did not write, stop the tool instead of handing it a look-alike.
 func secretNamed(ctx context.Context, r *repository.CredentialRepository, name string) string {
 	list, err := r.List(ctx)
 	must(err)
-	for _, c := range list {
-		if c.Name == name {
-			s, err := r.GetSecret(ctx, c.ID)
-			must(err)
-			return s
-		}
-	}
-	log.Fatalf("credential %q not found", name)
-	return ""
+	row, err := models.SelectConsoleRow(list, name)
+	must(err)
+	s, err := r.GetSecret(ctx, row.ID)
+	must(err)
+	return s
 }
 
 func must(err error) {

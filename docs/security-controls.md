@@ -157,9 +157,20 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   通用的 500（`{"error":"Internal Server Error"}`），细节只写服务端日志。
 - `credentials` 仍是 fleet 端点：zone token 访问任何凭据路由（包括控制台行的 ID）一律 403；
   只读 token 的变更请求返回 403。两者的变更请求都记为 `denied`。
-- 控制台自己的路径不经过这个视图，行为不变：CA 的加载与首次创建、DEK 的生成与读取、迁移
-  标记、purge 的 crypto-shred（`DataKeyManager.DeleteDataKey`）都直接使用 repository；zone
-  按 `credential_id` 读取 secret 也一样。
+- 控制台自己的路径不经过这个视图：CA 的加载与首次创建、DEK 的生成与读取、迁移标记、purge 的
+  crypto-shred（`DataKeyManager.DeleteDataKey`）都直接使用 repository；zone 按 `credential_id`
+  读取 secret 也一样。
+
+控制台读取自己的密钥时也不再“取最新的同名行”。CA 证书与私钥、DEK、legacy master 的查找，以及
+`issue-relay-cert`、`relay-call`、`pingcheck` 三个工具读 CA，都走同一个选择函数
+`models.SelectConsoleRow`：名称按 `models.MatchesConsoleName`（忽略首尾空白、Unicode 简单大小写
+折叠）比较。控制台对每个名称只写一行，名称逐字节等于规范写法、类型恰好是 `pki`。所以只要有第二行
+能对上这个名称，或者唯一对上的那一行拼写或类型不对，查找就失败关闭：不读取任何密钥，返回并记录
+一条带 `SECURITY: pki:` 前缀的错误，列出涉及行的 ID、名称和类型（不含密钥），最多列 8 行。
+
+运维影响：库里存在这样的行时，控制台拒绝加载 CA，也不会在它旁边新建 CA；对应 Qube 的 DEK 既不
+读取也不新建。于是签发、续期、吊销状态文档、provision 和数据盘解锁都会失败，直到控制台停止时把
+不是它写的那些行离线删除为止，见[升级与回滚](upgrade-rollback.md)的失败模式速查。
 
 测试覆盖：`internal/models/credential_internal_test.go` 覆盖大小写折叠、空白和类型的正反例；
 `internal/service/credential_service_test.go` 在真实加密库上覆盖列表过滤、控制台行 ID 的读/改/删
@@ -174,8 +185,9 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 边界：
 
 - 本改动之前经 API 建的、名称在保留范围内或类型为 `pki` 的运维行，现在从 API 中消失。它们仍在
-  库里，被 zone 引用时仍可使用。如果其中某行与控制台密钥同名（大小写折叠后），控制台按名称
-  查找时可能先找到它而不是真正的密钥，因为此前的 API 允许创建这种行。升级前需要只读核查，见
+  库里，被 zone 引用时仍可使用。其中能对上控制台密钥名称的行会让对应查找失败关闭（见上），不会
+  被当成真正的密钥。唯一识别不了的是：在控制台写入自己那一行之前，就以完全相同的名称和 `pki`
+  类型存进去的一行。这时库里只有这一行，控制台会把它当作自己的。升级前需要只读核查，见
   [缺口清单](production-readiness-gaps.md) G-D8。
 - 更换 CA，以及在确认没有未迁移盘后删除 `qubes-air-luks-master`，都不再有 API 路径，只能在控制台
   停止时离线操作数据库；目前没有专用工具。

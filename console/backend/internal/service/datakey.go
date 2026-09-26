@@ -200,19 +200,14 @@ func (m *DataKeyManager) ClearMigrationPending(ctx context.Context, qubeID strin
 	return nil
 }
 
-// storedKey returns a qube's own data key, or "" when it has none.
+// storedKey returns a qube's own data key, or "" when it has none. Rows under
+// the key's name that the console did not write are an error, never a key.
 func (m *DataKeyManager) storedKey(ctx context.Context, qubeID string) (string, error) {
-	name := dataKeyCredentialPrefix + qubeID
-	list, err := m.creds.List(ctx)
-	if err != nil {
-		return "", fmt.Errorf("list credentials: %w", err)
+	key, err := lookupCredential(ctx, m.creds, dataKeyCredentialPrefix+qubeID)
+	if errors.Is(err, errCredentialNotFound) {
+		return "", nil
 	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, name) {
-			return m.creds.GetSecret(ctx, cred.ID)
-		}
-	}
-	return "", nil
+	return key, err
 }
 
 // loadMaster reads the legacy master secret, caching it for the process. It
@@ -236,18 +231,34 @@ func (m *DataKeyManager) loadMaster(ctx context.Context) (string, error) {
 	return existing, nil
 }
 
-// lookupCredential finds a credential's secret by name, returning
-// errCredentialNotFound when absent. Shared with CertIssuer's own lookup so the
-// "absent vs broken" distinction is made the same way everywhere.
+// errCredentialNotFound distinguishes "absent" from "broken" when loading.
+var errCredentialNotFound = models.ErrConsoleRowNotFound
+
+// absentOrNil reports whether a lookup found the secret or found nothing, as
+// opposed to failing.
+func absentOrNil(err error) bool {
+	return err == nil || errors.Is(err, errCredentialNotFound)
+}
+
+// lookupCredential returns the secret of the console's own row named name.
+//
+// It is the one lookup behind the CA, the data keys and the legacy master, so
+// "absent", "broken" and "ambiguous" are decided the same way everywhere:
+// errCredentialNotFound when no row answers to the name, and a
+// models.ErrConsoleRowConflict error — logged, naming the rows by ID, and with
+// no secret read — when rows the console did not write answer to it (see
+// models.SelectConsoleRow).
 func lookupCredential(ctx context.Context, creds CredentialStore, name string) (string, error) {
 	list, err := creds.List(ctx)
 	if err != nil {
 		return "", fmt.Errorf("list credentials: %w", err)
 	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, name) {
-			return creds.GetSecret(ctx, cred.ID)
+	row, err := models.SelectConsoleRow(list, name)
+	if err != nil {
+		if errors.Is(err, models.ErrConsoleRowConflict) {
+			log.Printf("SECURITY: pki: %v", err)
 		}
+		return "", err
 	}
-	return "", errCredentialNotFound
+	return creds.GetSecret(ctx, row.ID)
 }
