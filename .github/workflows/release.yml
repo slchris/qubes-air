@@ -195,4 +195,6 @@ jobs:
 
             Download URLs have the form:
 
-                https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/<file>
+            ```
+            https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/<file>
+            ```

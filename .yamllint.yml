@@ -6,30 +6,33 @@ rules:
   line-length:
     max: 120
     level: warning
-  
+
   indentation:
     spaces: 2
     indent-sequences: true
-  
+
   truthy:
     allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
     check-keys: false
-  
+
   comments:
     require-starting-space: true
     min-spaces-from-content: 1
-  
+
   document-start: disable
-  
+
   braces:
     min-spaces-inside: 0
     max-spaces-inside: 1
-  
+
   brackets:
     min-spaces-inside: 0
     max-spaces-inside: 0
 
+# .github/ is linted on purpose. It used to be ignored here while CI pointed
+# yamllint at salt/ (no *.yml files) and .github/workflows/, so the YAML Lint
+# job checked zero files and still passed. lint.yml now fails unless
+# `yamllint --list-files .` selects exactly the tracked *.yml/*.yaml files.
 ignore: |
-  .github/
   node_modules/
   vendor/

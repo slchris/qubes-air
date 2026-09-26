@@ -122,15 +122,47 @@ jobs:
     name: YAML Lint
     # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
     runs-on: ubuntu-24.04
+    # Installs and runs a PyPI package; the token only needs to read the repo.
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Run yamllint
-        uses: ibiqlik/action-yamllint@v3
+      # A pinned yamllint instead of ibiqlik/action-yamllint, which ran whatever
+      # yamllint the runner image happened to ship.
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          file_or_dir: |
-            salt/
-            .github/workflows/
-          config_file: .yamllint.yml
+          python-version: '3.12'
+
+      - name: Install yamllint
+        run: python -m pip install yamllint==1.35.1
+
+      # This job once passed while linting zero files (.yamllint.yml ignored
+      # .github/ and salt/ has no *.yml), and a green lint of nothing looks
+      # exactly like a clean one. So the files yamllint selects must be exactly
+      # the tracked *.yml/*.yaml files: an ignore entry or a yaml-files setting
+      # that drops a tracked file fails here instead of shrinking the lint.
+      - name: Check yamllint selects every tracked YAML file
+        run: |
+          set -euo pipefail
+          selected="$RUNNER_TEMP/yamllint-selected"
+          tracked="$RUNNER_TEMP/yaml-tracked"
+          yamllint -c .yamllint.yml --list-files . | sed 's|^\./||' | LC_ALL=C sort > "$selected"
+          git -c core.quotepath=off ls-files -- '*.yml' '*.yaml' | LC_ALL=C sort > "$tracked"
+          printf 'yamllint selects %d files (%d tracked):\n' "$(wc -l < "$selected")" "$(wc -l < "$tracked")"
+          sed 's/^/  /' "$selected"
+          if ! diff -u "$tracked" "$selected"; then
+            echo "yamllint's files differ from the tracked YAML files (-: tracked only, +: selected only)." >&2
+            echo "Check the ignore list and yaml-files in .yamllint.yml." >&2
+            exit 1
+          fi
+          if [ ! -s "$tracked" ]; then
+            echo "no tracked YAML files found; the file selection above is broken" >&2
+            exit 1
+          fi
+
+      - name: Run yamllint
+        run: yamllint --strict -c .yamllint.yml .

@@ -124,7 +124,8 @@ qubes-air/
 `gocyclo/funlen/dupl/errcheck/gosec/noctx/gocritic/goconst/unparam` 有窄例外（`.golangci.yml` exclusions）。
 
 **门禁环境缺口**：
-- `yamllint` 本机缺失 → CI 的 `lint.yml` `yaml-lint` job 本地不可复现。
+- `yamllint` 本机缺失，也还不在 `make` 门禁里。CI 的 `lint.yml` `yaml-lint` job 装固定版本 `yamllint==1.35.1`、
+  对仓库全部 `*.yml`/`*.yaml`（不含 Salt `.sls`）跑 `--strict`；本地复现：`python3 -m pip install yamllint==1.35.1 && yamllint --strict -c .yamllint.yml .`。
 - 本机无 `pwsh` → kixpower 的 `skills/kixpower/**/*.ps1`（hooks / verification-fidelity-check）
   一律不可执行，等价检查改由 shell/grep/read 承担（见 `docs/sprint-1/drift-check.md` §4）。
 
