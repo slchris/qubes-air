@@ -26,7 +26,7 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 | 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 断线重连、调用取消、退避边界与重连时重取证书已有自动化回归（`internal/transport/grpc/reliability_test.go`），qrexec 调用超时由 `internal/qrexec/client_test.go` 的 `TestCallAppliesConfiguredTimeout` 覆盖；真机断线与 Console 进程重启未覆盖 |
 | 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 有实现与单测，尚无离机恢复演练及 RTO 记录 |
 | 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 2026-09-26 直推的 `a011ce8` 上 Go Lint 失败；修复 `2d409fd` 与本次状态更正一起合入，以合入后 `main` 上首轮 CI 全绿为准（G-A1）；门禁不替代真机回归 |
-| 前端测试 | vitest 组件与 API 测试接入 Makefile 和 CI（10 个测试文件） | `JobLog`、`JobsView`、`BillingView`、`Sidebar` 4 个组件无测试；没有 E2E |
+| 前端测试 | vitest 组件与 API 测试接入 Makefile 和 CI（13 个测试文件） | `JobLog`、`JobsView`、`BillingView` 3 个组件无测试；没有 E2E |
 
 实现入口：`internal/provider`、`internal/orchestrator/native.go`、`internal/service/reconcile.go`、
 `internal/service/qube_service.go`、`internal/service/datakey.go`、`internal/middleware`、
