@@ -26,7 +26,7 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 | 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 仍需断线、取消、超时和重启场景的自动化回归 |
 | 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 有实现与单测，尚无离机恢复演练及 RTO 记录 |
 | 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 本轮 pre-commit/audit 已通过；不替代提交后真机回归 |
-| 前端测试 | vitest 会话/API 单测接入 Makefile 和 CI | 尚缺组件/E2E 关键流程测试 |
+| 前端测试 | vitest 组件/会话/API 单测接入 Makefile 和 CI；Playwright 以模拟 API 覆盖登录→创建→挂起→purge 主路径（`make frontend-e2e`、Build CI） | E2E 不连真实 console/agent/集群；真实首次 bootstrap、应用启动与取消场景仍靠 QA-02 |
 
 实现入口：`internal/provider`、`internal/orchestrator/native.go`、`internal/service/reconcile.go`、
 `internal/service/qube_service.go`、`internal/service/datakey.go`、`internal/middleware`、
