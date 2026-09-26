@@ -192,7 +192,9 @@ gosec-ci:
 # 增量版: 只扫本次改动的包, 好让 `make pre-commit` 与 CI 对 gosec 的结论也一致。
 # 独立 gosec 没有 golangci-lint 的 --new-from-rev, 所以从 BASE_REV 自己算变更包;
 # 没有变更包就跳过 —— 不退回全量扫描, 否则每次提交都要付全仓代价 (那是 `make audit` 的事)。
-GOSEC_CI_PKGS = $(shell git diff --name-only $(BASE_REV) -- console/backend \
+# --diff-filter=ACMR: 删除的文件不算。整个包被删掉时它的目录已不存在, 把它交给 gosec 只会
+# 让 gosec 因找不到包而失败; 删除本身也不会引入新的 gosec 问题。
+GOSEC_CI_PKGS = $(shell git diff --name-only --diff-filter=ACMR $(BASE_REV) -- console/backend \
 	| sed -n 's|^console/backend/\(.*\)/[^/]*\.go$$|./\1/...|p' | sort -u | tr '\n' ' ')
 
 gosec-ci-new:
