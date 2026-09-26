@@ -140,3 +140,22 @@ describe('SettingsView security settings', () => {
     expect(screen.queryByText(/settings saved successfully/i)).not.toBeInTheDocument()
   })
 })
+
+// Server settings are a fleet endpoint the server refuses a zone-scoped
+// session. The view must not ask for them, and must keep the sign-out control.
+describe('SettingsView for a zone-scoped session', () => {
+  it('keeps the session controls and explains why server settings are absent', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    logout.mockResolvedValue(undefined)
+    render(SettingsView, { props: { zoneScoped: true, zones: ['zone-a'] } })
+
+    expect(await screen.findByText(/limited to/i)).toHaveTextContent(/zone zone-a/)
+    expect(screen.queryByRole('button', { name: /save settings/i })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/session timeout/i)).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: /sign out/i }))
+    expect(logout).toHaveBeenCalledTimes(1)
+  })
+})

@@ -24,6 +24,7 @@ import type {
   HealthResponse,
   StatusResponse,
   ApiError,
+  SessionScope,
 } from './types';
 
 /**
@@ -216,7 +217,22 @@ export async function login(token: string): Promise<void> {
     auth.markRejected();
     throw new ApiException(response.status, 'UNAUTHORIZED', 'The API token was rejected');
   }
-  auth.tokenChanged();
+  // The answer names the zones the token (and so the session) is limited to.
+  const session = await response.json() as SessionScope;
+  auth.setSession(session.zones);
+}
+
+/**
+ * Asks the server which scope the current session has, after a reload or on
+ * first load, when the page holds only an HttpOnly cookie it cannot inspect.
+ *
+ * A 401 raises the gate (handleResponse); any other failure is thrown for the
+ * caller to offer a retry, and leaves the app uninitialised rather than
+ * guessing a scope.
+ */
+export async function refreshSessionScope(): Promise<void> {
+  const session = await get<SessionScope>('/session');
+  auth.setSession(session.zones);
 }
 
 /** Ends the browser session (logout). */

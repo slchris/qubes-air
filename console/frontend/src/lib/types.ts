@@ -246,6 +246,15 @@ export interface QubeListResponse {
   total: number;
 }
 
+// The scope the server resolved for the current credential: the login answer
+// (POST /session) and GET /session both carry it. Labels only — never the
+// token or the session ID. Empty `zones` means fleet-wide.
+export interface SessionScope {
+  subject: string;
+  scope: string;
+  zones?: string[] | null;
+}
+
 // Error response from API
 export interface ApiError {
   // The HTTP status text ("Bad Request"), not the reason. The reason is in

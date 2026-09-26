@@ -7,6 +7,7 @@
   - 高对比度配色
 -->
 <script lang="ts">
+  import { onMount } from 'svelte'
   import Header from './components/Header.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import QubeList from './components/QubeList.svelte'
@@ -19,6 +20,26 @@
   import JobsView from './components/JobsView.svelte'
   import LoginGate from './components/LoginGate.svelte'
   import { auth } from './lib/auth.svelte'
+  import { refreshSessionScope } from './lib/api'
+
+  // The shell waits for the server to say which zones this session may address
+  // (or to refuse it with 401, which raises the gate). A failure that is not a
+  // refusal — the console unreachable, a 5xx — offers a retry rather than
+  // guessing a scope.
+  let sessionCheckFailed = $state(false)
+
+  async function checkSessionScope(): Promise<void> {
+    sessionCheckFailed = false
+    try {
+      await refreshSessionScope()
+    } catch {
+      sessionCheckFailed = true
+    }
+  }
+
+  onMount(() => {
+    void checkSessionScope()
+  })
   
   // 从 URL hash 获取当前视图，支持页面刷新保持状态
   function getViewFromHash(): string {
@@ -33,6 +54,9 @@
 
   let currentView = $state(getViewFromHash());
   let sidebarOpen = $state(false);
+  // A zone-scoped session that lands on a fleet-only view (a bookmark, a hash
+  // typed by hand) sees the dashboard instead of a page of 403s.
+  const displayedView = $derived(auth.canOpen(currentView) ? currentView : 'dashboard');
 
   // 监听 hash 变化
   $effect(() => {
@@ -44,17 +68,35 @@
   });
 
   function handleViewChange(view: string): void {
+    if (!auth.canOpen(view)) return;
     currentView = view;
     window.location.hash = view;
     sidebarOpen = false; // 移动端选择后关闭侧边栏
   }
+
+  // Keep the address bar honest once the scope is known: the hash names the
+  // view actually shown.
+  $effect(() => {
+    if (auth.initialized && displayedView !== currentView) {
+      handleViewChange(displayedView);
+    }
+  });
 
   function toggleSidebar(): void {
     sidebarOpen = !sidebarOpen;
   }
 </script>
 
-{#if auth.required}
+{#if !auth.initialized}
+  <div class="session-loading" role={sessionCheckFailed ? 'alert' : 'status'}>
+    {#if sessionCheckFailed}
+      <span>Could not verify this session's permissions.</span>
+      <button type="button" onclick={() => void checkSessionScope()}>Retry</button>
+    {:else}
+      Checking session permissions…
+    {/if}
+  </div>
+{:else if auth.required}
   <!--
     The gate replaces the whole shell rather than sitting inside it. Rendering
     the sidebar and views behind it would mount every view, fire every request,
@@ -76,25 +118,25 @@
       ></button>
     {/if}
     
-    <Sidebar {currentView} onViewChange={handleViewChange} isOpen={sidebarOpen} />
+    <Sidebar currentView={displayedView} onViewChange={handleViewChange} isOpen={sidebarOpen} zoneScoped={auth.zoneScoped} />
     
     <main class="content">
-      {#if currentView === 'dashboard'}
-        <Dashboard onViewChange={handleViewChange} />
-      {:else if currentView === 'qubes'}
+      {#if displayedView === 'dashboard'}
+        <Dashboard onViewChange={handleViewChange} zoneScoped={auth.zoneScoped} />
+      {:else if displayedView === 'qubes'}
         <QubeList />
-      {:else if currentView === 'jobs'}
+      {:else if displayedView === 'jobs'}
         <JobsView />
-      {:else if currentView === 'zones'}
+      {:else if displayedView === 'zones'}
         <ZonesView />
-      {:else if currentView === 'credentials'}
+      {:else if displayedView === 'credentials'}
         <CredentialList />
-      {:else if currentView === 'billing'}
+      {:else if displayedView === 'billing'}
         <BillingView />
-      {:else if currentView === 'monitoring'}
+      {:else if displayedView === 'monitoring'}
         <MonitoringView />
-      {:else if currentView === 'settings'}
-        <SettingsView />
+      {:else if displayedView === 'settings'}
+        <SettingsView zoneScoped={auth.zoneScoped} zones={auth.zones} />
       {:else}
         <div class="placeholder">
           <h2>Qubes Air Console</h2>
@@ -118,6 +160,17 @@
     height: 100dvh;
     background: var(--pageBg);
     color: var(--systemPrimary);
+  }
+
+  .session-loading {
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 0.75rem;
+    background: var(--pageBg);
+    color: var(--systemSecondary);
+    font: var(--body);
   }
 
   .main {

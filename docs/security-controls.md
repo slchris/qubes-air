@@ -82,6 +82,9 @@ auth:
 - `GET /session` 对任何已认证 scope 开放，只返回凭据解析出的 `subject`、`scope` 与 `zones`
   （fleet-wide 为空数组），带 `Cache-Control: no-store`（登录 `POST /session` 同样），不回显 token、session ID 或 cookie；
   未认证 401。它只报告、不授予任何权限，供 UI 判断哪些视图会被拒绝；GET 按设计不写审计。
+- UI 侧可见性降级（显示层，判定仍在服务端）：确认 scope 之前不渲染控制台外壳；zone-scoped
+  session 的 jobs/credentials/billing/monitoring 导航置灰，落到这些视图时回到 dashboard，
+  dashboard 不请求也不显示 job 汇总，settings 只保留登录/登出。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
 扩大或缩小 token 的授权。`zones` 只接受精确 ID，`"*"` 会被配置校验拒绝。

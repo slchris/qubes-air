@@ -72,7 +72,8 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   `GET /qubes` 在查询层过滤；审计记录 `subject` 与 `zone_scope`。判定与配置见
   [安全控制](security-controls.md#console-api-对象级授权)，自动化覆盖中间件允许/拒绝/
   失败关闭、repository 过滤、session 继承与配置校验。边界：不是完整多租户，fleet 端点
-  不做按 zone 过滤；未做 UI 侧可见性降级。
+  不做按 zone 过滤。UI 侧可见性降级已做：`GET /session` 报告 zones，zone-scoped session
+  置灰 fleet-only 视图并回到 dashboard（仅显示层，服务端判定不变）。
 - [ ] **UI-01：设置接入。** 分别实现 session timeout、2FA、邮件、webhook 并提供端到端证据；
   未实现项目继续显示“未接入”，不可仅保存配置便勾选完成。已接入 session timeout：5–1440 分钟，
   保存即生效，已签发 session 只缩短不延长；旧库里的越界值在启动时告警并回退 30 分钟

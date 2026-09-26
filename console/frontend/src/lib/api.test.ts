@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiException, apiFetch, getApiBaseUrl, listQubes, login, logout, responseError } from './api'
+import {
+  ApiException,
+  apiFetch,
+  getApiBaseUrl,
+  listQubes,
+  login,
+  logout,
+  refreshSessionScope,
+  responseError,
+} from './api'
 import { auth } from './auth.svelte'
 
 // The API layer exchanges the long-lived token for a session cookie and then
@@ -19,6 +28,8 @@ let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   auth.rejected = false
+  auth.initialized = false
+  auth.zones = []
   fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -47,6 +58,17 @@ describe('login', () => {
     expect(init.credentials).toBe('include')
     expect(JSON.parse(init.body)).toEqual({ token: 'secret-token' })
     expect(auth.required).toBe(false)
+    expect(auth.initialized).toBe(true)
+    expect(auth.zoneScoped).toBe(false)
+  })
+
+  it('keeps the zone restriction the login answer carries', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { subject: 'zone-operator', scope: 'control', zones: ['z1'] }))
+
+    await login('zone-token')
+
+    expect(auth.zones).toEqual(['z1'])
+    expect(auth.zoneScoped).toBe(true)
   })
 
   it('marks the gate rejected and throws when the token is refused', async () => {
@@ -55,6 +77,48 @@ describe('login', () => {
     await expect(login('wrong')).rejects.toThrow()
     expect(auth.required).toBe(true)
     expect(auth.wasRejected).toBe(true)
+  })
+})
+
+describe('refreshSessionScope', () => {
+  it('reads the current scope with the session cookie and records its zones', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { subject: 'zone-operator', scope: 'read-only', zones: ['z1'] }))
+
+    await refreshSessionScope()
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/session')
+    expect(init.method).toBe('GET')
+    expect(init.credentials).toBe('include')
+    expect(init.body).toBeUndefined()
+    expect(auth.initialized).toBe(true)
+    expect(auth.zones).toEqual(['z1'])
+    expect(auth.zoneScoped).toBe(true)
+  })
+
+  it('treats a fleet-wide answer as unrestricted', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { subject: 'api_token', scope: 'control', zones: [] }))
+
+    await refreshSessionScope()
+
+    expect(auth.zoneScoped).toBe(false)
+    expect(auth.required).toBe(false)
+  })
+
+  it('raises the gate when there is no live session', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(401, { error: 'Unauthorized', code: 401 }))
+
+    await expect(refreshSessionScope()).rejects.toThrow()
+    expect(auth.initialized).toBe(true)
+    expect(auth.required).toBe(true)
+  })
+
+  it('does not guess a scope when the server cannot answer', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(503, { error: 'Service Unavailable', message: 'database is locked' }))
+
+    await expect(refreshSessionScope()).rejects.toThrow('database is locked')
+    expect(auth.initialized).toBe(false)
+    expect(auth.required).toBe(false)
   })
 })
 

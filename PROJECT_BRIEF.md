@@ -69,7 +69,7 @@ Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的�
 | AD-3 | provider 生命周期拆成 `suspend`（销毁计算）+ `resume`（从模板重建并挂回同一数据盘） | `docs/architecture.md` §存算分离 | 数据盘是持久边界，计算是短生命周期 |
 | AD-4 | agent 身份强制 CA 签名撤销状态；刷新失败拒绝授权 | `docs/security-controls.md`；`internal/agent/*` | 撤销状态源可达性是**新增部署要求** |
 | AD-5 | 数据盘用独立随机 DEK；legacy master 只读、只用于迁移、**永不自动创建** | `internal/service/datakey.go`:19-24,72-81 | 缺 master 时迁移失败并报错，不得静默派生 |
-| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:147-150；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
+| AD-6 | Exec 用有界 JSON argv + 直接 `execve`，无 shell；FileCopy 用目录描述符 + `O_NOFOLLOW` | `docs/security-controls.md`:150-153；`internal/agent/invoker.go` | 禁止回退到 shell 文本入口 |
 | AD-7 | 请求取消后的失败状态写入有独立 5 秒期限 | `docs/reliability-design.md`:14-15 | 取消不是"不落状态"的理由 |
 | AD-8 | Console 不进入数据面：只发布端点与签证书 | `docs/architecture.md` §数据面 | console 不进 RemoteVM 调用链路 |
 | AD-9 | Qubes 侧部署的唯一权威来源是外部仓库 `qubes-salt-config` | `AGENTS.md`:12 | 本仓库不复制平行部署入口 |
@@ -152,9 +152,9 @@ qubes-air/
 | OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md`:46-49 | 需第二台机器与真实 keyring |
 | NET-01 静态 IP 池 | `docs/TODO.md`:51-52 | 已撤销；当前 Proxmox 只支持 DHCP 分配 |
 | GUI-01 无缝桌面闭环 | `docs/TODO.md`:61-62 | 需 Xpra + 真机 GUI |
-| UI-01 设置接入（2FA / 邮件 / webhook；session timeout 已接入） | `docs/TODO.md`:76-80 | 产品功能，非本轮质量主题 |
-| OBS-01 真实监控、告警与账单 | `docs/TODO.md`:75-76 | 依赖外部数据源 |
-| CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md`:77-78 | 未通过同等验收前不得宣称可用 |
+| UI-01 设置接入（2FA / 邮件 / webhook；session timeout 已接入） | `docs/TODO.md`:77-81 | 产品功能，非本轮质量主题 |
+| OBS-01 真实监控、告警与账单 | `docs/TODO.md`:82-83 | 依赖外部数据源 |
+| CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md`:84-85 | 未通过同等验收前不得宣称可用 |
 | QA-02 剩余：真实首次 bootstrap、应用启动 E2E、取消场景 | `docs/TODO.md`:66 | 部分可本机做，Sprint 1 已取"取消场景"进 T2 |
 
 ## 9. 风险登记（已有代码特化）
@@ -216,9 +216,9 @@ qubes-air/
 | NET-01 | 已撤销静态 IP 池，不再作为待验收能力 | `docs/TODO.md`:51-52 |
 | QA-01 Proxmox 真机回归 | 真机主路径已过，剩余 4 项 | `docs/TODO.md`:53-57；`docs/reviews/2026-09-22-qa01-proxmox.md` |
 | **Sprint 1：质量体检 + 未门禁测试补齐** | **planning** | 本 Brief §7 |
-| P2 产品与扩展（GUI/UI/OBS/MCP/CLOUD/PUB） | 未开始 | `docs/TODO.md`:59-84 |
+| P2 产品与扩展（GUI/UI/OBS/MCP/CLOUD/PUB） | 未开始 | `docs/TODO.md`:62-91 |
 
-推荐推进顺序（沿用 `docs/TODO.md`:86-90）：本 Sprint 质量收口 → OPS-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
+推荐推进顺序（沿用 `docs/TODO.md`:93-97）：本 Sprint 质量收口 → OPS-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
 
 ## 12. 关键约束与红线
 
