@@ -2,12 +2,16 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/slchris/qubes-air/console/internal/desktopaccess"
 )
 
 // ErrInvalidParams marks a tools/call whose arguments are missing or fail the
@@ -107,11 +111,7 @@ func doRequest(cl *Client, ctx context.Context, method, path string, query url.V
 		return resultError("console API request failed: %v", err), nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		payload := strings.TrimSpace(string(resp.Body))
-		if payload == "" {
-			return resultError("upstream returned HTTP %d", resp.StatusCode), nil
-		}
-		return resultError("upstream returned HTTP %d: %s", resp.StatusCode, payload), nil
+		return upstreamError(resp), nil
 	}
 	return &CallToolResult{Content: textBlocks(string(resp.Body))}, nil
 }
@@ -305,10 +305,10 @@ func controlTools(cl *Client) []*Tool {
 // --enable-computer-use is set. desktop_apps_list / desktop_app_launch are
 // REAL actions backed by the Console API (GET /qubes/{id}/appmenus and
 // POST /qubes/{id}/apps/{app}/launch), which drive the qubes.StartApp qrexec
-// service on the target qube. desktop_frame_get / desktop_input_send remain
-// Phase-2 stubs that refuse loudly: delivering pixels and input needs an RFB or
-// Xpra session client this console process does not yet implement, and a silent
-// no-op would be worse than an explicit refusal.
+// service on the target qube. desktop_frame_get asks a person at the Console
+// to approve each frame and returns one PNG (see desktopFrameTool).
+// desktop_input_send stays a stub that refuses loudly: no Console endpoint
+// accepts input, and a silent no-op would be worse than an explicit refusal.
 func computerUseTools(cl *Client) []*Tool {
 	// desktop_apps_list is a normal readGET: the appmenus endpoint is keyed by
 	// the qube id alone, and the menu text travels straight back as the result.
@@ -348,20 +348,6 @@ func computerUseTools(cl *Client) []*Tool {
 		},
 	}
 
-	frameStub := &Tool{
-		Name:        "desktop_frame_get",
-		Description: "(not implemented) Capture one frame of the desktop session.",
-		InputSchema: objSchema(map[string]any{
-			"id": strProp("The qube id (UUID)."),
-		}, "id"),
-		Scope:  ScopeControl,
-		Method: "N/A",
-		Path:   "",
-		Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-			return resultError("desktop_frame_get is not implemented: frame capture needs an RFB/Xpra session client this process does not ship yet"), nil
-		},
-	}
-
 	inputStub := &Tool{
 		Name:        "desktop_input_send",
 		Description: "(not implemented) Inject input events into the desktop session.",
@@ -373,9 +359,93 @@ func computerUseTools(cl *Client) []*Tool {
 		Method: "N/A",
 		Path:   "",
 		Handler: func(context.Context, map[string]any) (*CallToolResult, error) {
-			return resultError("desktop_input_send is not implemented: input injection needs an RFB/Xpra session client this process does not ship yet"), nil
+			return resultError("desktop_input_send is not implemented: the Console has no input endpoint, and grants for input are refused"), nil
 		},
 	}
 
-	return []*Tool{appsList, launch, frameStub, inputStub}
+	return []*Tool{appsList, launch, desktopFrameTool(cl), inputStub}
+}
+
+// DesktopFrameCallTimeout bounds each of desktop_frame_get's two Console
+// calls. The approval call waits up to desktopaccess.ApprovalTTL for a person
+// to decide and the frame call up to the grant's lifetime; the Console gives
+// each its own write deadline of that plus 5 s, and this is longer still, so
+// the tool reports the Console's answer rather than cutting it off. Every
+// other tool keeps DefaultAPITimeout.
+const DesktopFrameCallTimeout = desktopaccess.ApprovalTTL + 15*time.Second
+
+// desktopFrameTool asks the Console for a one-frame grant, which a person must
+// approve in the Console UI, and spends it on one PNG of the qube's desktop.
+// The grant lives only in this handler's locals between the two calls.
+func desktopFrameTool(cl *Client) *Tool {
+	const grantPath = "/api/v1/qubes/{id}/desktop-access"
+	const framePath = "/api/v1/qubes/{id}/desktop-frame"
+	return &Tool{
+		Name: "desktop_frame_get",
+		Description: "Capture one PNG frame of a qube's desktop. A person at the Qubes Air Console must allow each " +
+			"request; the call waits up to 30 seconds for that decision (POST /api/v1/qubes/{id}/desktop-access, then " +
+			"POST /api/v1/qubes/{id}/desktop-frame).",
+		InputSchema: objSchema(map[string]any{"id": strProp("The qube id (UUID).")}, "id"),
+		Scope:       ScopeControl, Method: http.MethodPost, Path: framePath, PathArg: "id",
+		Handler: func(ctx context.Context, args map[string]any) (*CallToolResult, error) {
+			id, err := pathID(args, "id")
+			if err != nil {
+				return nil, err
+			}
+			grant, failed := requestDesktopGrant(ctx, cl, strings.ReplaceAll(grantPath, "{id}", id))
+			if failed != nil {
+				return failed, nil
+			}
+			return fetchDesktopFrame(ctx, cl, strings.ReplaceAll(framePath, "{id}", id), grant), nil
+		},
+	}
+}
+
+// requestDesktopGrant waits for the operator's decision and returns the grant,
+// or the failed result to hand back instead.
+func requestDesktopGrant(ctx context.Context, cl *Client, path string) (string, *CallToolResult) {
+	resp, err := cl.DoWithin(ctx, DesktopFrameCallTimeout, http.MethodPost, path,
+		map[string]string{"operation": string(desktopaccess.OperationFrame)})
+	if err != nil {
+		return "", resultError("desktop access request failed: %v", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", upstreamError(resp)
+	}
+	var body struct {
+		Grant string `json:"grant"`
+	}
+	if err := json.Unmarshal(resp.Body, &body); err != nil || body.Grant == "" {
+		return "", resultError("desktop access response did not contain a grant")
+	}
+	return body.Grant, nil
+}
+
+// fetchDesktopFrame spends grant on one frame and returns it as an image.
+func fetchDesktopFrame(ctx context.Context, cl *Client, path, grant string) *CallToolResult {
+	resp, err := cl.DoWithin(ctx, DesktopFrameCallTimeout, http.MethodPost, path, map[string]string{"grant": grant})
+	if err != nil {
+		return resultError("desktop frame request failed: %v", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return upstreamError(resp)
+	}
+	if resp.Header.Get("Content-Type") != mimePNG {
+		return resultError("desktop frame response was not a PNG")
+	}
+	image, err := PNGContent(resp.Body)
+	if err != nil {
+		return resultError("desktop frame response was rejected: %v", err)
+	}
+	return &CallToolResult{Content: []ContentItem{image}}
+}
+
+// upstreamError passes a Console refusal through with its status and body,
+// the same way doRequest does.
+func upstreamError(resp *APIResponse) *CallToolResult {
+	payload := strings.TrimSpace(string(resp.Body))
+	if payload == "" {
+		return resultError("upstream returned HTTP %d", resp.StatusCode)
+	}
+	return resultError("upstream returned HTTP %d: %s", resp.StatusCode, payload)
 }

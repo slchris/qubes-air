@@ -143,7 +143,7 @@ func expectedEndpoints() []endpointMap {
 		{"alert_acknowledge", "POST", "/api/v1/monitoring/alerts/{id}/acknowledge", "id"},
 		{"desktop_apps_list", "GET", "/api/v1/qubes/{id}/appmenus", "id"},
 		{"desktop_app_launch", "POST", "/api/v1/qubes/{id}/apps/{app}/launch", "id"},
-		{"desktop_frame_get", "N/A", "", ""},
+		{"desktop_frame_get", "POST", "/api/v1/qubes/{id}/desktop-frame", "id"},
 		{"desktop_input_send", "N/A", "", ""},
 	}
 }

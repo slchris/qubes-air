@@ -426,15 +426,12 @@ func TestToolsCall_DesktopAppLaunch_UpstreamError(t *testing.T) {
 	}
 }
 
-func TestToolsCall_ComputerUseStubsRefuseLoudly(t *testing.T) {
+func TestToolsCall_ComputerUseInputStubRefusesLoudly(t *testing.T) {
 	f := newFixture(t, ScopeControl, true)
-
-	for _, name := range []string{"desktop_frame_get", "desktop_input_send"} {
-		resp := f.call(t, name, `{"id":"qube-1"}`)
-		text := resultText(t, resp)
-		if !isErrorResult(resp) || !strings.Contains(text, "not implemented") {
-			t.Fatalf("%s: text=%q isError=%v", name, text, isErrorResult(resp))
-		}
+	resp := f.call(t, "desktop_input_send", `{"id":"qube-1","events":[]}`)
+	text := resultText(t, resp)
+	if !isErrorResult(resp) || !strings.Contains(text, "not implemented") {
+		t.Fatalf("text=%q isError=%v", text, isErrorResult(resp))
 	}
 }
 

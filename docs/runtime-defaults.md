@@ -130,9 +130,10 @@
 | UD-13 | Console API 调用超时 | **15s** | `internal/mcp/client.go:19`（`DefaultAPITimeout`） |
 | UD-13b | 上游响应体上限 | **8 MiB** | `internal/mcp/client.go:22`（`DefaultMaxResponseBody`） |
 | UD-13c | 单条 JSON 消息上限 | **4 MiB** | `internal/mcp/protocol.go:40`（`DefaultMaxMessageSize`） |
+| UD-13d | desktop_frame_get 每次 Console 调用的超时 | **45s**（UD-26 审批窗口 + 15s，长于 Console 为这两个路由设的 35s 写截止时间）；只用于这一个工具，其他调用仍是 UD-13 | `internal/mcp/tools.go:375`（`DesktopFrameCallTimeout`）、`internal/mcp/client.go:123`（`DoWithin`） |
 
 > 已知有文档描述该取值但未给常量名或行号的：
-> 请求体上限 1 MiB 见 `docs/mcp-design.md:32`（"API 的 BodyLimit 默认 1 MiB"）；
+> 请求体上限 1 MiB 见 `docs/mcp-design.md:33`（"API 的 BodyLimit 默认 1 MiB"）；
 > 会话 TTL 30 分钟见 `docs/roadmap-to-production.md`〈当前代码已落地〉表的"请求与认证"行（"session TTL 默认 30 分钟"）。
 > 本节的价值是把**常量名与行号**钉住，便于从文档反查代码。
 

@@ -37,7 +37,7 @@ func run() int {
 
 	apiURL := flag.String("api-url", "http://127.0.0.1:8080", "Console API base URL (must reach only over loopback for production use)")
 	scopeFlag := flag.String("scope", string(mcp.ScopeReadOnly), "tool scope: read-only or control")
-	enableComputerUse := flag.Bool("enable-computer-use", false, "register the computer-use tools: apps list and launch are live Console API actions; frame capture and input injection remain not implemented")
+	enableComputerUse := flag.Bool("enable-computer-use", false, "register the computer-use tools: apps list and launch are live Console API actions; desktop_frame_get returns one frame after a Console operator approves it; input injection is not implemented")
 	allowNonLoopback := flag.Bool("allow-non-loopback", false, "permit a non-loopback --api-url; it must then be https, or the bearer token travels in cleartext")
 	flag.Parse()
 
