@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,6 +87,110 @@ func TestSessionStoreCarriesZoneScope(t *testing.T) {
 	got, ok := s.Get(sess.ID)
 	require.True(t, ok)
 	assert.Equal(t, []string{"z1"}, got.Zones, "the session must not share the caller's slice")
+}
+
+// TestSessionStoreDefaultTTLIsThirtyMinutes pins the lifetime a console uses
+// before an operator saves one: a store built with no TTL issues 30-minute
+// sessions, not the 12 hours earlier releases handed out.
+func TestSessionStoreDefaultTTLIsThirtyMinutes(t *testing.T) {
+	for _, ttl := range []time.Duration{0, -time.Minute} {
+		s := NewSessionStore(ttl)
+		sess, err := s.Create("t", ScopeControl, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Minute, sess.Expires.Sub(sess.Created), "ttl %v", ttl)
+	}
+	assert.Equal(t, 30*time.Minute, DefaultSessionTTL)
+}
+
+// TestSessionStoreSetTTLShortensButNeverExtends — lowering the setting pulls an
+// issued session's deadline in; raising it again must not hand that session
+// back the time it lost, while new sessions get the new lifetime.
+func TestSessionStoreSetTTLShortensButNeverExtends(t *testing.T) {
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	s := NewSessionStore(30 * time.Minute)
+	s.now = func() time.Time { return base }
+	existing, err := s.Create("t", ScopeControl, nil)
+	require.NoError(t, err)
+
+	s.SetTTL(5 * time.Minute)
+	shortened, ok := s.Get(existing.ID)
+	require.True(t, ok)
+	assert.Equal(t, base.Add(5*time.Minute), shortened.Expires)
+
+	s.SetTTL(time.Hour)
+	unchanged, ok := s.Get(existing.ID)
+	require.True(t, ok)
+	assert.Equal(t, shortened.Expires, unchanged.Expires, "raising the setting must not extend an issued session")
+
+	fresh, err := s.Create("t", ScopeControl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, time.Hour, fresh.Expires.Sub(fresh.Created))
+}
+
+// TestSessionStoreSetTTLExpiresSessionsPastTheNewDeadline — a session older than
+// the new lifetime stops authenticating at once rather than at its old deadline.
+func TestSessionStoreSetTTLExpiresSessionsPastTheNewDeadline(t *testing.T) {
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	s := NewSessionStore(time.Hour)
+	s.now = func() time.Time { return base }
+	old, err := s.Create("t", ScopeControl, nil)
+	require.NoError(t, err)
+
+	s.now = func() time.Time { return base.Add(10 * time.Minute) }
+	s.SetTTL(5 * time.Minute)
+	_, ok := s.Get(old.ID)
+	assert.False(t, ok, "a session older than the new lifetime must not authenticate")
+}
+
+// TestSessionStoreSetTTLIgnoresNonPositive — a zero or negative lifetime would
+// expire every session on the spot or mint already-dead ones; it is ignored.
+func TestSessionStoreSetTTLIgnoresNonPositive(t *testing.T) {
+	base := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	s := NewSessionStore(time.Hour)
+	s.now = func() time.Time { return base }
+	existing, err := s.Create("t", ScopeControl, nil)
+	require.NoError(t, err)
+
+	for _, ttl := range []time.Duration{0, -time.Minute} {
+		s.SetTTL(ttl)
+	}
+	got, ok := s.Get(existing.ID)
+	require.True(t, ok)
+	assert.Equal(t, base.Add(time.Hour), got.Expires)
+	fresh, err := s.Create("t", ScopeControl, nil)
+	require.NoError(t, err)
+	assert.Equal(t, time.Hour, fresh.Expires.Sub(fresh.Created))
+}
+
+// TestSessionStoreSetTTLConcurrentWithCreate runs SetTTL against Create and Get.
+// Create used to read the lifetime before taking the lock; under -race this
+// test is what catches that coming back.
+func TestSessionStoreSetTTLConcurrentWithCreate(t *testing.T) {
+	s := NewSessionStore(30 * time.Minute)
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			ttl := 5 * time.Minute
+			if i%2 == 0 {
+				ttl = time.Hour
+			}
+			s.SetTTL(ttl)
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			sess, err := s.Create("t", ScopeControl, nil)
+			if err != nil {
+				t.Errorf("create concurrent session %d: %v", i, err)
+				return
+			}
+			if _, ok := s.Get(sess.ID); !ok {
+				t.Errorf("session %d did not authenticate right after it was created", i)
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 // sessionMarkerRouter answers whether the request reached the handler marked as

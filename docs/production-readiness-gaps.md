@@ -112,7 +112,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 |---|---|---|---|---|
 | G-A1 | 本地 `main` 领先 `origin/main` **20 个 commit**，`kixpower/sprint-1` 再领先 3 个；这批 commit（含 P0 安全加固、REL/DATA-01、QA-01 修复）从未被 CI 覆盖 | `git rev-list --left-right --count origin/main...main` → `0 20`；`git log --oneline origin/main..main` | **A-阻塞** | push 后 7 个 workflow 在目标 SHA 全绿；`docs/qa/qa-signoff-1.md` 的 `ci_pending` 转 PASS（该签署记录未纳入版本库，故只写路径不建链接） |
 | G-A2 | 工作停在 `kixpower/sprint-1`，未合并回 `main`（`main` 是 20 commit 的另一个头） | `git merge-base --is-ancestor kixpower/sprint-1 main` → 否 | **A-阻塞** | sprint 分支合入 `main` 且合并后 CI 绿 |
-| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:1093`（`apiMiddleware` 里的 `middleware.BodyLimit(...)`）；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
+| G-A3 | 过时分支未清理：`fix/security-audit` 的 1 MiB body cap 已被 `main` 的 `bodylimit` 中间件取代；`feat/mcp-server`（`fe827e4`）与 `origin/main`（`3b573c0`）**内容 tree 相同但 commit 不同**（同一条 message，不同 SHA），两者都已落后于本地 `main` | `git ls-tree -r main --name-only \| grep bodylimit` → `console/backend/internal/middleware/bodylimit.go`；`middleware/bodylimit.go:11-25`、`cmd/server/main.go:1117`（`apiMiddleware` 里的 `middleware.BodyLimit(...)`）；`git rev-parse 'feat/mcp-server^{tree}' 'origin/main^{tree}'` 同值 | 技术债 | 两个分支删除或明确标注废弃 |
 | G-A4 | 从未发布过任何版本：无 tag、无 release | `git tag -l` 为空 | A-需要（B-阻塞） | 至少一次 `v*` tag 走通 [release.yml](../.github/workflows/release.yml) 并产出 `SHA256SUMS` |
 
 ### 2.B 真机验收（A 档最大的一块）
@@ -140,11 +140,11 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 238-249 行；[security-controls](security-controls.md) 第 86 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
+| G-D1 | 单操作者模型：登录=粘贴 API token，无用户账户、无 2FA（UI 已如实标注"不可用"） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 245-257 行；[security-controls](security-controls.md) 第 86 行"不是完整多租户" | A-需要 / **B-阻塞** | 用户模型 + 2FA + 权限分层，含失败路径测试 |
 | G-D2 | console 默认可以明文 HTTP 对外服务（TLS 是可选配置 `IsTLSEnabled`），session cookie 因此不能带 `Secure`；部署文档只要求"受限 CORS"，未把 TLS 或"仅 loopback"写成硬要求 | `cmd/server/main.go`:1256-1270（HTTP/HTTPS 二选一）；`handler/session_handler.go`:117-120（`secure` 由调用方决定） | **A-阻塞** | 生产部署要求成文（TLS 或仅本机监听），并在部署 checklist 中可核对 |
 | G-D3 | 审计只有 `io.Writer` 记录器，无持久化、轮转、归档与留存期 | `internal/audit/audit.go`:89 `NewRecorder(w io.Writer)` | A-需要 / B-阻塞 | 审计落地（文件/DB）+ 轮转 + 留存策略 |
 | G-D4 | 无外部安全审计/渗透测试；现有结论来自自查与 P0 加固记录 | [P0 安全记录](reviews/2026-09-20-p0-security.md) 范围自述 | B-阻塞 | 一次独立审计或明确声明"未审计" |
-| G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:39-52 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
+| G-D5 | session 存内存 map，console 重启即全员登出 | `internal/middleware/session.go`:42-55 | A-需要（写进运维预期即可，不一定要改） | 文档明确该行为，或改为持久 session |
 | G-D6 | **真实基础设施地址已存在于公开历史**：仓库是 public，`10.31.0.x`（内网段、artifact store、节点名、QA-01 记录里的具体主机与吊销端点）出现在 8 个已公开文件与本次待推的 5 个新文件中，违反 `AGENTS.md` §5「不得提交真实基础设施地址」 | `git grep -lE "10\.31\.0\.[0-9]+" origin/main` → 8 个文件（含 `internal/config/config.go`、`.github/workflows/release.yml`）；待推范围新增 `docs/reviews/2026-09-22-qa01-proxmox.md` 等 5 个 | A-需要（已决策） | 2026-09-22 决定**接受**：增量暴露仅几个临时租约 IP，而改写 23 个 commit 会作废 `l2_verified_sha`/`qa_verified_sha` 整条信任链。后续新文档不得再写真实地址；是否做一次性历史清理由发布决策定 |
 | G-D7 | 携带**一次性 bootstrap token**（与公开 CA，无私钥）的 cloud-init snippet 有两条投递路径，文件权限各不相同；`AGENTS.md` §5 把一次性 token 按 secret 处理。①**SSH 上传**（默认，也是唯一跑过真机的路径）原来是裸 `cat > /var/lib/vz/snippets/<name>`，权限由 SSH 登录的 umask 决定（Debian 默认 022 即 `0644`；这是推断，没有在集群上实际看过）；②**共享存储**（配置了 `agent_snippet_datastore`）：目录 `0755`、文件 `0644`，机密性完全取决于谁能挂载这个 share | ①`internal/provider/proxmox/ssh.go` 的 `newSnippetWrite`；②`internal/service/cloudinit.go` 的 `WriteSharedAgentUserData`（`MkdirAll` 0755）与 `writeSnippetAtomic`（`Chmod` 0644），gosec G301/G302 以"读者是节点侧另一用户"为由抑制 | A-需要 | ①**代码已改，等待真机复核**：远端命令固定为 `umask 077`、`set -C`（noclobber）、先删除再写临时文件、`mv -f` 覆盖目标；失败时删除临时文件，删不掉时以退出码 3 单独报告。`ssh_test.go` 在 bash 与 dash 下、在真实文件系统上验证结果为 `0600`（包括覆盖旧的 `0644` 文件），在删除与写入之间被放上的普通文件或符号链接会让写入失败而不是收到 token，并覆盖失败清理与报告；token 不进命令行，也不进错误信息（即使节点把它回显到 stderr）。noclobber 挡不住放在临时路径上的 FIFO 或设备，所以这条路径以"snippets 目录只有 SSH 登录名可写、没有默认 ACL"为前提，这是推断。SSH 路径的读者是节点上以 root 运行的 qemu-server，这同样是推断。两者都需要按[验收清单](acceptance-real-machine.md)步骤 9 复核：`stat` 显示 `600`，`ls -ld` 显示目录只有属主可写且没有 ACL，qube 正常启动，agent 状态为 healthy，满足后才算闭合。改动前上传的旧文件要到该 qube 下次 resume 或重新 provision 时才会被替换；其中的 token 自签发起最多 1 小时内就会被兑换或过期。②**需要部署方决策**，本分支没有改动：能否收紧取决于 share 类型和 root squash 等导出设置，也就是节点以什么身份读取文件。在此之前保留 M1-7 的部署硬要求（share 只导出给 PVE 节点），并按已知暴露面登记。两条路径共同的残留：token 还会随 PVE 生成的 cloud-init 盘进入 VM，文件权限管不到这份副本，只能靠单次兑换加 1 小时 TTL 兜底（`certs_token_exposure_test.go`）。首次启动后删除 snippet 这一项没有做：需要先在真机确认 qemu-server 是否每次启动都重读 `cicustom`。适配器的 adopt 路径会直接启动已有 VM 而不重新上传，共享存储模式又把 share 当作身份卷的唯一来源，所以提前删除可能让后续启动失败，或让对账误判身份缺失 |
 
@@ -152,7 +152,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-E1 | UI-01：设置页的 session timeout / 2FA / 邮件 / webhook 存了不生效 | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 213、238-240 行 | B-阻塞 | 每项接入并给出端到端证据；未接入项继续显示"未实现" |
+| G-E1 | UI-01：设置页的 2FA / 邮件 / webhook 存了不生效（**session timeout 已接入**：5–1440 分钟、保存即生效、已签发的只缩短不延长，启动读取存量值、越界告警并回退 30 分钟；邮件与 2FA 已禁用且服务端拒存） | [SettingsView.svelte](../console/frontend/src/components/SettingsView.svelte) 第 215-218、245-257 行；session timeout 的端到端证据：`cmd/server/session_timeout_test.go`（启动→登录→保存→再登录） | B-阻塞 | 每项接入并给出端到端证据；未接入项继续显示"未实现" |
 | G-E2 | OBS-01：监控与账单是 placeholder（CPU/磁盘恒 0；无成本数据源） | `internal/handler/monitoring_handler.go`:53,55；`internal/handler/billing_handler.go`:11,51,56 | B-阻塞 | 接真实数据源；过期/缺失不得伪装为正常值；移除 placeholder |
 | G-E3 | GUI-01：无缝桌面（appmenu、单击启动、多窗口、断线恢复）未闭环 | [TODO](TODO.md) 第 61-62 行 | B-阻塞 | 桌面闭环验收，含 Xpra 与 RemoteVM 权限边界 |
 | G-E4 | 前端无 E2E 框架（无 playwright/cypress），QA-02 剩余"真实首次 bootstrap、应用启动 E2E、取消场景"只能手工 | `console/frontend/package.json` 无 E2E 依赖；[sprint-1 进展](sprint-1/progress.md) 第 343-347 行 | B-阻塞 | E2E 覆盖登录→创建→provision→purge 主路径 |
@@ -258,7 +258,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 ### M3 — B 档（对外发布）
 
 - [ ] **M3-1** 用户模型 + 2FA + 权限分层 —— G-D1
-- [ ] **M3-2** UI-01 设置四项真正生效 —— G-E1
+- [ ] **M3-2** UI-01 设置四项真正生效 —— G-E1（session timeout 已接入；剩 2FA、邮件、webhook）
 - [ ] **M3-3** OBS-01 监控/告警/账单接真实数据源 —— G-E2
 - [ ] **M3-4** GUI-01 无缝桌面闭环（含 Xpra 权限边界）—— G-E3
 - [ ] **M3-5** MCP-01 桌面帧与输入；MCP-02 HTTP transport 决策 —— G-E5

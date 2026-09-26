@@ -75,6 +75,16 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 
 前端与二进制必须**同批**升级：前端只讲 `/api/v1`，两者来自同一次 release。
 
+### 2.4 浏览器会话时长（本版本起）
+
+- 浏览器 session 默认 **30 分钟**（此前固定 12 小时），设置页的 Session Timeout（5–1440 分钟）
+  开始真正生效。升级后操作者会比以前更早被要求重新输入 token；需要更长时在设置页调大，
+  保存即对新 session 生效，已签发的 session 不会被延长。
+- 旧版本的设置页不校验这个值，库里可能存着越界的数。控制台**不会因此拒绝启动**：启动日志
+  打一条 `WARNING: settings: stored session timeout: invalid session timeout: …`，session 回退
+  30 分钟，设置页也显示 30；在设置页保存一个 5–1440 的值即消除告警。
+- 重启仍会清空所有 session（session 只存在内存里）。
+
 ## 3. 升级顺序
 
 1. **先备份**（schema 升级前必做，不是可选项）：
@@ -197,6 +207,8 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 控制台报 schema 更新而拒绝启动 | 回滚错了方向（二进制旧、库新） | 按 §4 第二行处理：恢复备份，或把二进制升回 |
 | 远端 qube 连不上 | agent 版本/协议不在 console 的集合里 | 看握手日志的 `rejecting relay …`（带支持版本清单） |
 | 页面能开但接口全 404/400 | 前端与二进制不同批 | 两组 pin 一起改 |
+| 升级后浏览器很快要求重新输入 token | session 默认从 12 小时降为 30 分钟（§2.4） | 在设置页把 Session Timeout 调到需要的值（最多 1440 分钟） |
+| 启动日志有 `WARNING: settings: stored session timeout` | 旧版本存下的越界值；session 已回退 30 分钟 | 在设置页保存一个 5–1440 的值 |
 
 ## 6. 尚未闭合
 

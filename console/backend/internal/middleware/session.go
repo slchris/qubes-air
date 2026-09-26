@@ -14,8 +14,11 @@ import (
 const SessionCookieName = "qubesair_session"
 
 // DefaultSessionTTL bounds how long a browser session lasts before the operator
-// must re-exchange the token.
-const DefaultSessionTTL = 12 * time.Hour
+// must re-exchange the token. It is the lifetime used until an operator saves
+// another one in Settings (see SetTTL): a session cookie is a bearer credential
+// in its own right, so a browser left signed in should not stay useful for a
+// working day.
+const DefaultSessionTTL = 30 * time.Minute
 
 // Session is one issued browser session.
 type Session struct {
@@ -52,6 +55,25 @@ func NewSessionStore(ttl time.Duration) *SessionStore {
 	return &SessionStore{sessions: map[string]Session{}, ttl: ttl, now: time.Now}
 }
 
+// SetTTL changes the lifetime of sessions issued from now on. Sessions already
+// issued are shortened to the new deadline when it is earlier than theirs, and
+// never extended: raising the setting must not silently prolong a credential
+// that is already out in a browser. A non-positive ttl is ignored.
+func (s *SessionStore) SetTTL(ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ttl = ttl
+	for id, sess := range s.sessions {
+		if expires := sess.Created.Add(ttl); expires.Before(sess.Expires) {
+			sess.Expires = expires
+			s.sessions[id] = sess
+		}
+	}
+}
+
 // Create mints a session for subject/scope/zones and returns it. The zones are
 // copied: the session must not share the caller's slice.
 func (s *SessionStore) Create(subject string, scope Scope, zones []string) (Session, error) {
@@ -59,6 +81,10 @@ func (s *SessionStore) Create(subject string, scope Scope, zones []string) (Sess
 	if err != nil {
 		return Session{}, err
 	}
+
+	// The lifetime is read under the lock: SetTTL may change it concurrently.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := s.now().UTC()
 	sess := Session{
 		ID:      id,
@@ -68,9 +94,6 @@ func (s *SessionStore) Create(subject string, scope Scope, zones []string) (Sess
 		Created: now,
 		Expires: now.Add(s.ttl),
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.gcLocked(now)
 	s.sessions[id] = sess
 	return sess, nil

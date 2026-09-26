@@ -2,7 +2,7 @@
   Qubes Air Console - Settings View Component
 -->
 <script lang="ts">
-  import { getApiBaseUrl, apiFetch, login, logout } from '../lib/api';
+  import { getApiBaseUrl, apiFetch, login, logout, responseError } from '../lib/api';
 
   interface Settings {
     general: {
@@ -28,7 +28,7 @@
       theme: 'system',
     },
     notifications: {
-      email: true,
+      email: false,
       webhook: false,
       webhookUrl: '',
     },
@@ -55,11 +55,12 @@
         settings.general.timezone = data.settings.general?.timezone || 'UTC';
         settings.general.language = data.settings.general?.language || 'en';
         settings.general.theme = data.settings.general?.theme || 'system';
-        settings.notifications.email = data.settings.notifications?.email ?? true;
+        // Email delivery is not implemented; the server refuses to store it on.
+        settings.notifications.email = false;
         settings.notifications.webhook = data.settings.notifications?.webhook ?? false;
         settings.notifications.webhookUrl = data.settings.notifications?.webhookUrl || '';
         settings.security.sessionTimeout = data.settings.security?.sessionTimeout || 30;
-        settings.security.twoFactorEnabled = data.settings.security?.twoFactorEnabled ?? false;
+        settings.security.twoFactorEnabled = false;
       }
     } catch (e) {
       error = e instanceof Error ? e.message : 'Unknown error';
@@ -107,7 +108,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
       });
-      if (!response.ok) throw new Error('Failed to save settings');
+      // The server names what it refused (for example a timeout outside
+      // 5-1440 minutes); a generic "failed" would leave nothing to fix.
+      if (!response.ok) throw await responseError(response);
       success = 'Settings saved successfully';
       setTimeout(() => success = null, 3000);
     } catch (e) {
@@ -210,13 +213,13 @@
       <section class="section">
         <h3>Notifications</h3>
         <p class="not-wired">
-          Not implemented: these preferences are stored but no email or webhook
-          is sent.
+          Not implemented: no email or webhook is sent. Email cannot be turned
+          on; the webhook preference is stored but not used.
         </p>
         
         <div class="field checkbox">
-          <input type="checkbox" id="email-notify" bind:checked={settings.notifications.email} />
-          <label for="email-notify">Email Notifications</label>
+          <input type="checkbox" id="email-notify" bind:checked={settings.notifications.email} disabled />
+          <label for="email-notify">Email Notifications (not available)</label>
         </div>
 
         <div class="field checkbox">
@@ -234,19 +237,23 @@
 
       <section class="section">
         <h3>Security</h3>
-        <p class="not-wired">
-          Not implemented: session lifetime is set by the server's session store,
-          not this value, and two-factor authentication is not available.
+        <p class="hint section-note">
+          Session timeout sets how long a browser session lasts, 5 to 1440
+          minutes. Saving a shorter value also ends every session already older
+          than it, this one included; a longer value applies to new sessions only.
         </p>
-        
+        <p class="not-wired">
+          Not implemented: two-factor authentication is not available.
+        </p>
+
         <div class="field">
           <label for="session-timeout">Session Timeout (minutes)</label>
-          <input type="number" id="session-timeout" bind:value={settings.security.sessionTimeout} min="5" max="1440" />
+          <input type="number" id="session-timeout" bind:value={settings.security.sessionTimeout} min="5" max="1440" step="1" required />
         </div>
 
         <div class="field checkbox">
-          <input type="checkbox" id="two-factor" bind:checked={settings.security.twoFactorEnabled} />
-          <label for="two-factor">Two-Factor Authentication</label>
+          <input type="checkbox" id="two-factor" bind:checked={settings.security.twoFactorEnabled} disabled />
+          <label for="two-factor">Two-Factor Authentication (not available)</label>
         </div>
       </section>
 
@@ -409,6 +416,9 @@
     font: var(--subhead);
     color: var(--text-muted, var(--systemSecondary));
     line-height: 1.5;
+  }
+  .hint.section-note {
+    margin: 0 0 0.75rem;
   }
   .not-wired {
     margin: 0 0 0.75rem;

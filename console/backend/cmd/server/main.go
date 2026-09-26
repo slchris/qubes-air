@@ -386,11 +386,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	credentialSvc := service.NewCredentialService(credentialRepo)
 
-	// Settings repository and service
-	settingsRepo := repository.NewSettingsRepository(db)
-	settingsSvc := service.NewSettingsService(settingsRepo)
-
-	sessionStore := middleware.NewSessionStore(0)
+	settingsSvc, sessionStore := newSettingsAndSessions(context.Background(), db)
 	return &Dependencies{
 		qubeRepo:          qubeRepo,
 		jobRepo:           jobRepo,
@@ -401,7 +397,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		credentialHandler: handler.NewCredentialHandler(credentialSvc),
 		billingHandler:    handler.NewBillingHandler(),
 		monitoringHandler: handler.NewMonitoringHandler(),
-		settingsHandler:   handler.NewSettingsHandler(settingsSvc),
+		settingsHandler:   handler.NewSettingsHandler(settingsSvc, sessionStore),
 		revocations:       certIssuer,
 		sessionHandler:    handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
 		sessions:          sessionStore,
@@ -413,6 +409,34 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		agents:            agents,
 		certRenewals:      certRenewals,
 	}, nil
+}
+
+// newSettingsAndSessions builds the settings service and the browser session
+// store whose lifetime it holds. The store is shared with ScopedAuth (cookie
+// authentication), the session handler (login) and the settings handler (which
+// applies a newly saved timeout without a restart).
+func newSettingsAndSessions(ctx context.Context, db *database.DB) (*service.SettingsService, *middleware.SessionStore) {
+	settingsSvc := service.NewSettingsService(repository.NewSettingsRepository(db))
+	return settingsSvc, newConfiguredSessionStore(ctx, settingsSvc)
+}
+
+// newConfiguredSessionStore builds the session store with the timeout an
+// operator saved in Settings.
+//
+// It never stops the console from starting. Releases before the 5-1440 minute
+// range was enforced stored whatever integer the settings page sent, so an
+// upgraded console can read one that is out of range (or a row that does not
+// parse); refusing to boot over a preference would be an outage the UI cannot
+// fix. Sessions use the default lifetime instead, the warning says so, and the
+// settings page shows that default until an operator saves a valid value.
+func newConfiguredSessionStore(ctx context.Context, settings *service.SettingsService) *middleware.SessionStore {
+	ttl, err := settings.SessionTTL(ctx)
+	if err != nil {
+		log.Printf("WARNING: settings: %v; browser sessions last the default %s until a timeout of %d-%d minutes is saved in Settings",
+			err, middleware.DefaultSessionTTL, service.MinSessionTimeoutMinutes, service.MaxSessionTimeoutMinutes)
+		return middleware.NewSessionStore(middleware.DefaultSessionTTL)
+	}
+	return middleware.NewSessionStore(ttl)
 }
 
 // newCertIssuer wires agent-identity issuance around the console CA, which

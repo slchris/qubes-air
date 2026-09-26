@@ -152,7 +152,7 @@ qubes-air/
 | OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md`:46-49 | 需第二台机器与真实 keyring |
 | NET-01 静态 IP 池 | `docs/TODO.md`:51-52 | 已撤销；当前 Proxmox 只支持 DHCP 分配 |
 | GUI-01 无缝桌面闭环 | `docs/TODO.md`:61-62 | 需 Xpra + 真机 GUI |
-| UI-01 设置接入（session timeout / 2FA / 邮件 / webhook） | `docs/TODO.md`:73-74 | 产品功能，非本轮质量主题 |
+| UI-01 设置接入（2FA / 邮件 / webhook；session timeout 已接入） | `docs/TODO.md`:76-80 | 产品功能，非本轮质量主题 |
 | OBS-01 真实监控、告警与账单 | `docs/TODO.md`:75-76 | 依赖外部数据源 |
 | CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md`:77-78 | 未通过同等验收前不得宣称可用 |
 | QA-02 剩余：真实首次 bootstrap、应用启动 E2E、取消场景 | `docs/TODO.md`:66 | 部分可本机做，Sprint 1 已取"取消场景"进 T2 |

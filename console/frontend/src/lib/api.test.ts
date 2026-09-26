@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { apiFetch, getApiBaseUrl, listQubes, login, logout } from './api'
+import { ApiException, apiFetch, getApiBaseUrl, listQubes, login, logout, responseError } from './api'
 import { auth } from './auth.svelte'
 
 // The API layer exchanges the long-lived token for a session cookie and then
@@ -108,5 +108,26 @@ describe('refusals', () => {
     fetchMock.mockResolvedValue(jsonResponse(500, { error: 'Internal Server Error' }))
 
     await expect(listQubes()).rejects.toThrow('Internal Server Error')
+  })
+})
+
+describe('responseError', () => {
+  // For raw apiFetch callers: the refusal must carry the server's reason, read
+  // the same way the typed calls read it.
+  it('reads the reason from message and keeps the status', async () => {
+    const err = await responseError(
+      jsonResponse(400, { error: 'Bad Request', message: 'invalid session timeout: 1 minutes is outside 5-1440', code: 400 })
+    )
+
+    expect(err).toBeInstanceOf(ApiException)
+    expect(err.status).toBe(400)
+    expect(err.message).toBe('invalid session timeout: 1 minutes is outside 5-1440')
+  })
+
+  it('falls back to the status text for a body that is not JSON', async () => {
+    const err = await responseError(new Response('upstream exploded', { status: 502, statusText: 'Bad Gateway' }))
+
+    expect(err.status).toBe(502)
+    expect(err.message).toBe('Bad Gateway')
   })
 })

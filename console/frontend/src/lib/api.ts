@@ -145,6 +145,23 @@ async function parseErrorResponse(response: Response): Promise<ApiError> {
 }
 
 /**
+ * Builds the error for a refused raw response, reading the reason the same way
+ * the typed calls do (`message` first, then the status text).
+ *
+ * For callers of apiFetch: they check `response.ok` themselves, and without
+ * this each one invented its own message and dropped the server's reason.
+ */
+export async function responseError(response: Response): Promise<ApiException> {
+  const error = await parseErrorResponse(response);
+  return new ApiException(
+    response.status,
+    error.code ?? 'UNKNOWN_ERROR',
+    errorMessage(error, response),
+    error.details
+  );
+}
+
+/**
  * Authenticated fetch for callers that need the raw Response.
  *
  * Components that talk to endpoints without a typed wrapper MUST use this
