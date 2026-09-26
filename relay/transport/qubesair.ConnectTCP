@@ -15,6 +15,8 @@
 # 表里;dom0 policy 把关调用方;整条走 mTLS。远端 GUI server 仍应自带鉴权(VNC 密码/Xpra auth)。
 # =====================================================================
 set -uo pipefail
+# 下面的正则与数值比较按字节/ASCII 解释, 不随调用方的 locale 变化。
+export LC_ALL=C
 
 log() { echo "qubesair.ConnectTCP: $*" >&2; }
 

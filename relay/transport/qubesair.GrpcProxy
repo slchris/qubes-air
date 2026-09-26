@@ -18,6 +18,8 @@
 # =====================================================================
 
 set -euo pipefail
+# 下面的正则与 ${#} 按字节/ASCII 解释, 不随调用方的 locale 变化, 与 agent (Go, 按字节) 一致。
+export LC_ALL=C
 
 log() { echo "qubesair.GrpcProxy: $*" >&2; }
 

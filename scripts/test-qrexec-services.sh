@@ -491,6 +491,20 @@ $(grpc_relay_call 180s "$arg")"
     case_end
 }
 
+# The checks run in the C locale whatever the caller's locale is, so a UTF-8
+# locale cannot widen [a-zA-Z] to accented letters or make ${#} count characters.
+t_grpcproxy_utf8_locale() {
+    local arg
+    for arg in 'remote-a+qubes.StartApp+é' 'remote-é+qubesair.Ping' "remote-a+qubes.StartApp+$(long_string é 57)"; do
+        case_begin "GrpcProxy: under a UTF-8 locale '${arg:0:40}' is still refused" || continue
+        grpc_setup
+        run_svc LC_ALL=C.UTF-8 LANG=C.UTF-8 "QUBES_AIR_RELAY_DIR=$C/relay" QREXEC_REMOTE_DOMAIN=work -- "$SVC" "$arg"
+        expect_rc 126
+        expect_no_calls
+        case_end
+    done
+}
+
 t_grpcproxy_long_target() {
     case_begin "GrpcProxy: a very long target has no endpoint and never dials" || return 0
     grpc_setup
@@ -697,6 +711,18 @@ t_connecttcp_range_boundaries() {
         expect_rc 0
         expect_calls "qubesdb-read [/remote-endpoint/remote-a]
 $(tcp_relay_call "$port")"
+        case_end
+    done
+}
+
+t_connecttcp_utf8_locale() {
+    local arg
+    for arg in 'remote-é+5901' 'remote-a+５９０１' 'remote-a+５900'; do
+        case_begin "ConnectTCP: under a UTF-8 locale '$arg' is still refused" || continue
+        tcp_setup
+        run_svc LC_ALL=C.UTF-8 LANG=C.UTF-8 "QUBES_AIR_RELAY_DIR=$C/relay" QREXEC_REMOTE_DOMAIN=work -- "$SVC" "$arg"
+        expect_rc 126
+        expect_no_calls
         case_end
     done
 }
