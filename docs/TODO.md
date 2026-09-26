@@ -1,8 +1,8 @@
 # 后续 TODO
 
-更新：2026-09-21。勾选表示本轮代码与自动化验收完成；部分条目已按分组提交落库，
-但不表示已 push 或部署。
+更新：2026-09-26。勾选表示代码与自动化验收完成并已合入 `main`；不表示已部署或已通过真机验收。
 当前能力见[路线图](roadmap-to-production.md)，历史检查见[记录索引](reviews/README.md)。
+M0–M3 里程碑与 G-* 缺口的逐项状态见[生产可用性缺口](production-readiness-gaps.md)。
 P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.md)，
 后续 REL-01/02 证据见[生命周期验收](reviews/2026-09-20-lifecycle.md)。
 
@@ -25,9 +25,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   `make audit` 已通过，见本轮安全加固记录；测试环境需要 Python 3 和整个仓库。
   2026-09-21 已按独立意图把工作区改动分成 11 组提交到本地 `main`：质量门禁/文档、
   provider、安全、会话、可靠性、备份、传输、接线、MCP、pingcheck、依赖；每组提交前
-  重跑 `make pre-commit`，个人记忆与构建产物未纳入，未 push。
-  受 `cmd/server/main.go`、`config.go`、`database.go` 等共享文件约束，中间提交不保证
-  逐个可独立构建。
+  重跑 `make pre-commit`，个人记忆与构建产物未纳入；随后经 PR #9（`5f0fd88`）合入 `main`，合并前第四轮 CI 21/21 全绿。
+  受 `cmd/server/main.go`、`config.go`、`database.go` 等共享文件约束，中间提交不保证逐个可独立构建。2026-09-26 回退：直推的 `38b71c9`
+  留下无调用方的 `runSSH`，`a011ce8` 上 Go Lint 失败；修复 `2d409fd` 与本次状态更正一起合入，合入后 `main` 上首轮 CI 全绿才关闭 G-A1。
 - [x] **REL-01：purge 部分失败与逐资源对账。** 永久 purge 意图、原子撤销与发行拦截已接入；
   失败后仅可重试 purge，分别核验 compute、holder、数据盘、当前 snippet，端点/RemoteVM
   清理失败不报成功。残留资源与不明所有权保留记录供人工核对；故障注入及门禁证据见
@@ -53,8 +53,8 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **QA-01：完整 Proxmox 回归记录。** 2026-09-22 已在 homelab 真机完成生命周期回归并
   写入[记录](reviews/2026-09-22-qa01-proxmox.md)：provision→healthy→suspend→resume→release
   →purge 全通过，RemoteVM 注册/注销与吊销状态已验证，发现并修复 `remotevm` 本地命名缺陷
-  （`1dbc87f`）。剩余：Exec/FileCopy 正值（需 console 下发允许列表）、suspend/resume 数据
-  持久性、旧盘迁移与 known_hosts 带外核对。验收条件不变。
+  （`1dbc87f`）。剩余：Exec/FileCopy 正值与负值（console 下发允许列表已由 M1-1 / PR #15 实现，但 `qubes-salt-config` `v0.1.0`
+  的 `agent_exec_allow`/`agent_filecopy_roots` 默认为空，QA 需要单独授权的非空列表）、suspend/resume 数据持久性、旧盘迁移与 known_hosts 带外核对。验收条件不变。
   2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
   未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
   详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。
@@ -64,7 +64,7 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **GUI-01：无缝桌面闭环。** 验收 appmenu、单击启动、多窗口、退出状态、断线恢复，
   明确 Xpra 与 RemoteVM 权限边界；已有服务原语不能替代完整桌面验收。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建 Qube、purge 确认及后端拒绝的
-  组件测试（20 个前端测试，随 pre-commit 与 CI 运行）；agent deb 的安装、依赖解析、升级
+  组件测试（2026-09-26 共 8 个测试文件、50 个前端测试，随 pre-commit 与 CI 运行）；agent deb 的安装、依赖解析、升级
   conffile 保留、完整性、卸载与启动拒绝路径由 `make agent-deb-test`（Docker）覆盖，
   CI 有 `agent-package` job。剩余：真实首次 bootstrap、应用启动 E2E 与取消场景。
 - [x] **AUTH-01：逐对象授权。** 命名 token 可带 `zones` 白名单，session 继承该限制；
@@ -88,9 +88,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 
 ## 推荐推进顺序
 
-P0、REL-01/REL-02、工具链准备与 ENG-01 分组提交已完成。下一阶段推进
-DATA-01/OPS-01 → QA-01，之后处理 GUI-01 和其余产品任务。这里的并列表示依赖关系，
-不代表已经分派给其他 agent。
+P0、ENG-01、REL-01/REL-02 与 DATA-01 已完成，NET-01 已撤销。下一阶段先确认修复合入后 `main` 的 CI
+恢复全绿（G-A1），再推进 OPS-01 → QA-01 的真机项（M0-5、M1-2/3/4/8/9），之后处理 GUI-01 和其余产品任务。
+这里的并列表示依赖关系，不代表已经分派给其他 agent。
 
 完成任务时，在本清单勾选并附测试/验收记录；提交后补 commit 标识，同时更新路线图和相关专题文档。
 后端入口相对 `console/backend/`；远端脚本路径相对仓库根目录。

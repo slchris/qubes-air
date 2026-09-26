@@ -1,6 +1,6 @@
 # 升级与回滚 runbook
 
-更新：2026-09-22。本文回答一个问题：**手上有一套跑着的 Qubes Air，怎么换到新版本，怎么退回来。**
+更新：2026-09-26。本文回答一个问题：**手上有一套跑着的 Qubes Air，怎么换到新版本，怎么退回来。**
 它同时补上 [G-C3](../docs/production-readiness-gaps.md) 缺的升级契约和 [G-G2](../docs/production-readiness-gaps.md)
 缺的兼容矩阵。
 
@@ -202,7 +202,10 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 
 - **没有真机演练过**：本机没有 dom0 入口，§3、§4 的步骤是按 Salt 状态与代码读出来的，未在真机
   上跑过一遍升级 + 回滚。真机项（M1-2~M1-4、M1-9）阻塞中。
-- **备份调度与留存策略**还没有（M1-5）：本文只写了"升级前手动备份一次"，没有"多久备一次、留多久"。
-- **首次 release 还没跑通**（M1-10）：`release.yml` 从未产出过制品，所以上表里的制品名与
-  `SHA256SUMS` 是 workflow 的意图，不是已验证的产物；构建身份的实际形状在本地二进制上验证过
-  （§3.2），release 制品上的那一条要等 M1-10 跑通才算。
+- **备份调度没有在真机触发过**（M1-5）：留存策略（`qubes-air-backup prune`）与 unit/timer 写法见
+  [灾难恢复](disaster-recovery.md)〈调度与留存〉，timer 由 `qubes-salt-config` `v0.1.0` 的 `qubesair.backup`
+  提供（默认关闭）；本文仍只要求升级前手动备份一次。
+- **还没有从 release 制品完成过一次真机部署或升级**（M1-10 的剩余一半）：首次 release 已经跑通——
+  `v0.1.0`（2026-09-22，`release.yml` run 35733774718）发布了 §1 表里的制品与 `SHA256SUMS`，发布制品的
+  `--version` 读数见[真机验收清单](acceptance-real-machine.md)步骤 1；但还没有按本文的钉法在真机上用
+  这些制品完成一次部署、升级或用 release URL 置备。

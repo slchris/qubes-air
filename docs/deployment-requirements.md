@@ -26,7 +26,7 @@
 | 10 | **反代要么不挂，要么接受它的两个后果** | console 不信任任何代理头（`SetTrustedProxies(nil)`），`ClientIP` 是直连对端：挂反代后**所有请求共用一个限流桶**，审计来源只剩反代地址 | 从两个不同客户端各打一次接口，看审计里的 `source` 是否相同；相同即说明反代在中间，需要在反代侧限流与留痕 |
 | 11 | **反代必须关闭响应缓冲** | job 日志是 SSE：5 分钟上限、每事件 30 秒写窗口，console 已发 `X-Accel-Buffering: no`；反代若缓冲响应，流式会退化成"跑完一次性返回" | 起一个长 job，观察日志是否逐行到达；nginx 需 `proxy_buffering off` |
 | 12 | **备份/恢复按灾难恢复文档的判据执行** | 恢复判据是 `/health`；磁盘满、只读文件系统或库文件丢失必须让它变红，否则"恢复了"只是进程起来了 | 按[灾难恢复](disaster-recovery.md)跑一次恢复：`/health` 必须为 `healthy`，且要能真的提交一个 job。注意该探测的强度在 M1-14 落地后才成立（此前 `PingContext` 不碰库文件，磁盘满也报 healthy） |
-| 13 | **升级与回滚按固定顺序** | console 二进制、web 资源、agent deb 有兼容边界；数据库 schema 前向单向，回滚等于恢复备份 | 升级/回滚 runbook **尚未成文**；在那之前按 [runtime-defaults](runtime-defaults.md) 与 schema 版本规则操作，并先备份 |
+| 13 | **升级与回滚按固定顺序** | console 二进制、web 资源、agent deb 有兼容边界；数据库 schema 前向单向，回滚等于恢复备份 | 按[升级与回滚](upgrade-rollback.md)执行：§3 的顺序（先备份，再控制台，再 agent）与 §3.1 的核对，回滚按 §4 区分 schema 是否已升；该 runbook 还没有在真机上演练过（其 §6） |
 
 ## 2. 已知暴露面（登记在案，不隐藏）
 

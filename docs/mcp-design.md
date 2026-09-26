@@ -33,7 +33,10 @@ API 的 BodyLimit 默认 1 MiB；MCP 不以重复实现取代它。
 
 Console 支持 `{name, token, scope}` token 配置，scope 为 read-only 或 control。已认证的
 GET/HEAD/OPTIONS 请求可用只读 scope，其余方法需要 control。单一 api_token 按 control
-处理；生产模式拒绝无 token 配置。按 zone/qube 的逐对象授权尚未实现。
+处理；生产模式拒绝无 token 配置。命名 token 可再带 `zones` 白名单：Console API 的 `RequireZones`
+对 MCP 发来的请求同样生效（其他 zone 的对象与不存在的对象返回 404，fleet 端点返回 403），判定规则见
+[安全控制](security-controls.md#console-api-对象级授权)。这是按 zone 的对象级隔离，不是完整多租户，
+也没有更细到单个 qube 的授权。
 
 Token 从环境或配置读取，不放命令行；凭据端点仅返回元数据。MCP 的 scope 与 API token
 权限都应检查，不能只依靠 MCP 工具列表隐藏某个操作。purge 仍需名称确认，不绕过 API 语义。

@@ -39,7 +39,7 @@ flowchart TB
 | `console/backend/cmd/server/main.go` | 构造执行器，按 zone 解析凭据并注册 Proxmox；把同一 registry 交给 zone 服务 |
 | `console/backend/internal/service/zone_service.go` | 创建 zone 时拒绝没有已注册适配器的类型 |
 | `console/backend/internal/provider/provider.go` | Adapter、Infra、Observed 与 registry 契约 |
-| `console/backend/internal/provider/proxmox/` | PVE REST 客户端、生命周期、snippet 上传与 IP 分配 |
+| `console/backend/internal/provider/proxmox/` | PVE REST 客户端、生命周期、所有权标记、snippet 上传与清理、销毁核验（不分配 IP，新建 VM 用 DHCP） |
 | `console/backend/internal/orchestrator/native.go` | 编排适配器步骤，保存资源身份，等待 agent 可达 |
 | `console/backend/internal/repository/qube_infra_repo.go` | 资源身份持久化 |
 | `console/backend/internal/service/reconcile.go` | 重启后的未完成 job 对账 |

@@ -2,8 +2,8 @@
 
 更新：2026-09-22。本页把**只有真机能回答**的三块检查写成一次可以跑完的清单：
 
-1. provision → suspend → resume → purge 生命周期，含 Exec/FileCopy 正值与数据持久性（M1-2/3/4，即 G-B2/G-B3）；
-2. 备份 create/prune/restore 演练，含一次真 timer 触发与一次**被比对过的恢复**（M1-5，即 G-C1/G-C2）；
+1. provision → suspend → resume → purge 生命周期，含 Exec/FileCopy 正值与数据持久性（M1-2/3，即 G-B2/G-B3）；
+2. 备份 create/prune/restore 演练，含一次真 timer 触发、一次**被比对过的恢复**与离机恢复实测 RTO（M1-5、M1-4，即 G-C2、G-C1）；
 3. PVE 节点 SSH 主机键指纹（M1-8 的指纹半边；PVE 集群版本半边已于 2026-09-22 经 API 带外核对）。
 
 每一步只回答一件事：**命令、跑在哪一侧、预期输出、失败意味着什么**。本页不写"确认可用"这类

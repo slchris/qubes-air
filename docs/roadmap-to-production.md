@@ -1,7 +1,7 @@
 # 当前状态与路线图
 
-整理日期：2026-09-20。本文区分当前工作区实现、已有真机验收记录和待完成验收。
-未提交代码不等于已发布版本；本轮没有重新执行真机 smoke 或恢复演练。
+整理日期：2026-09-26。本文区分 `main` 上的实现、已有真机验收记录和待完成验收；M0–M3 里程碑与 G-* 缺口的逐项状态见[生产可用性缺口](production-readiness-gaps.md)。
+`v0.1.0` 已于 2026-09-22 发布，但没有真机记录绑定到该发布构建；本轮没有重新执行真机 smoke 或恢复演练。
 
 项目已具备 Proxmox 核心闭环，仍适合受控实验与开发，尚不是通用生产发行版。
 
@@ -23,10 +23,10 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 | 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并清理端点/RemoteVM | 部分失败只允许继续 purge；不能保证清除历史备份里的密钥 |
 | 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘首次解锁原子迁移到 DEK，master 只读且仅用于迁移 | 迁移完成前旧盘仍依赖 master；agent 需先允许 RekeyData，按盘真机核验归 QA-01 |
 | 重启对账 | queued → failed、running → unknown，Qube → error；保留资源 checkpoint 及 purge 意图 | 显式重试原动作；不自动重放队列或跨进程接管 |
-| 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 仍需断线、取消、超时和重启场景的自动化回归 |
+| 传输结果 | stdout/stderr/exit code 独立传输；invoker stdout 达到 16 MiB 上限时中止 | 断线重连、调用取消、退避边界与重连时重取证书已有自动化回归（`internal/transport/grpc/reliability_test.go`），qrexec 调用超时由 `internal/qrexec/client_test.go` 的 `TestCallAppliesConfiguredTimeout` 覆盖；真机断线与 Console 进程重启未覆盖 |
 | 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 有实现与单测，尚无离机恢复演练及 RTO 记录 |
-| 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 本轮 pre-commit/audit 已通过；不替代提交后真机回归 |
-| 前端测试 | vitest 会话/API 单测接入 Makefile 和 CI | 尚缺组件/E2E 关键流程测试 |
+| 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 2026-09-26 直推的 `a011ce8` 上 Go Lint 失败；修复 `2d409fd` 与本次状态更正一起合入，以合入后 `main` 上首轮 CI 全绿为准（G-A1）；门禁不替代真机回归 |
+| 前端测试 | vitest 组件与 API 测试接入 Makefile 和 CI（8 个测试文件） | `ZonesView`、`JobLog` 等 5 个组件无测试；没有 E2E |
 
 实现入口：`internal/provider`、`internal/orchestrator/native.go`、`internal/service/reconcile.go`、
 `internal/service/qube_service.go`、`internal/service/datakey.go`、`internal/middleware`、
@@ -36,7 +36,7 @@ Proxmox 生命周期、RemoteVM/qrexec 与结构化传输结果已有现场记�
 
 [TODO 清单](TODO.md) 是优先级、依赖与验收条件的唯一维护入口。P0 代码已完成本轮加固，
 配置与验收边界见[安全控制](security-controls.md)。REL-01/02 的恢复契约已落地，
-见[生命周期验收](reviews/2026-09-20-lifecycle.md)；接下来推进密钥/备份边界、恢复演练与真机回归。
+见[生命周期验收](reviews/2026-09-20-lifecycle.md)；DATA-01 的密钥/备份边界已完成，接下来推进离机恢复演练（OPS-01/M1-4）与真机回归（M0-5、M1-2/3/9）。
 
 本轮门禁证据见[P0 安全加固记录](reviews/2026-09-20-p0-security.md)，
 此前失败保留在[工作区检查记录](reviews/2026-09-20-workspace.md)；

@@ -7,6 +7,7 @@
 
 - [当前状态](roadmap-to-production.md)：已落地能力与未通过的验收边界。
 - [后续 TODO](TODO.md)：按优先级维护任务、依赖和完成标准。
+- [生产可用性缺口](production-readiness-gaps.md)：A/B 两档的判据、G-* 缺口与 M0–M3 里程碑的逐项状态和证据。
 - [历史检查与验收](reviews/README.md)：当时的证据与限制，不作为部署入口。
 
 ## 操作入口

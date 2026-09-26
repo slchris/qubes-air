@@ -65,7 +65,7 @@
 - **schema 版本机制**：`PRAGMA user_version`，当前 `SchemaVersion = 2`（`database.go`:97）；
   迁移由 `applySchemaVersion`（`:150`）与 `addColumnIfMissing`（`:188-200`，先 `PRAGMA table_info`）实现。
   `docs/reliability-design.md`:10 声明"不能把该数据库交给仅支持 schema 1 的旧程序"。
-- **表清单（10 张，全部 `CREATE TABLE IF NOT EXISTS`）**
+- **表清单（9 张，全部 `CREATE TABLE IF NOT EXISTS`；行号以基线 `fae0aea` 为准）**——2026-09-26 更正（QA O-2）：原文写"10 张"，而基线实际只有下表这 9 个 `CREATE TABLE`。之后 M1-14 新增了探测用表 `_health_probe`（`database.go`:209，不在 `migrate()` 里建），M2-11 给 `qubes` 加了 `agent_failing_since` 列，下表的定义行号也整体位移（例如 `zones` 现在在 `database.go`:380）；当前的表清单与行号以 [runtime-defaults](../runtime-defaults.md) §2.1 为准，本节保留基线快照。
 
 | # | 表 | 定义行 | 主键 | 关键列（节选） |
 |---|---|---|---|---|
@@ -229,7 +229,7 @@ enum Direction        { LOCAL_TO_REMOTE=1, REMOTE_TO_LOCAL=2 }
 
 | ID | 缺口 | 证据 |
 |---|---|---|
-| D-6 | **SQLite schema 从未在 docs 中描述**（10 张表、`user_version=2`、刻意无外键的设计理由都只在代码注释里） | `database.go`:97,239-420；`docs/` 全目录 grep 无表名清单 |
+| D-6 | **SQLite schema 从未在 docs 中描述**（9 张表、`user_version=2`、刻意无外键的设计理由都只在代码注释里） | `database.go`:97,239-420；`docs/` 全目录 grep 无表名清单 |
 | D-7 | **14 个运维默认值未文档化**（限流 20/40、keepalive 20s、重连 500ms→30s、agent 调用超时 2min、job 流 5min、bootstrap 60s、探测 10s、解锁 60s、续期 30s 等） | 见 `docs/sprint-1/drift-check.md` §5 UD-1~UD-14 |
 | D-8 | **agent env 前缀命名不一致**（控制台 `QUBES_AIR_*` vs agent `QUBESAIR_*`）从未在 docs 说明；写错前缀静默取空值 | `config.go` 的 `QUBES_AIR_*` 全集 vs `packaging/agent-deb/qubes-air-agent.service`:18,27 与 `remote/qubes-rpc/qubesair.Exec`:60 |
 | D-9 | `docs/local-dev.md`:28 只解释了后端避让 8080，**未提示前端 5173 也常被其他项目占用**（本机实测即被占用） | `docs/local-dev.md`:22-32 vs §4.2 实测 |

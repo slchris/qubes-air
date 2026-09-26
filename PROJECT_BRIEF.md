@@ -6,8 +6,9 @@ model_context_window: 128000
 model_context_window_source: default
 kixpower_mode: 0
 current_sprint: 1
-brief_revision: 1
+brief_revision: 2
 brief_generated: 2026-09-22
+brief_status_corrected: 2026-09-26
 brief_basis_sha: fae0aea5370cbd87247255022ab16d13ff7951df
 verified_provider: proxmox
 ---
@@ -17,6 +18,7 @@ verified_provider: proxmox
 > 本文件由 kixpower Producer（Remy）在 mode 0（已有代码导入）下**从当前代码反推**。
 > 叙述区跟相邻 `docs/*.md` 使用中文（`content_language: repo`）。
 > 证据基线为 `brief_basis_sha`；任何与之不符的断言都应以当前代码为准。
+> 2026-09-26 只按 `main` 更正了 §7、§8、§9.1、§9.2 与 §11 里已经过时的状态；§2 等处的实测数字仍绑定 `brief_basis_sha`。
 
 ## 1. 项目定位与使命
 
@@ -132,7 +134,9 @@ qubes-air/
 
 ## 7. 当前 Sprint（Sprint 1）
 
-> 本节在 Sprint 收尾时由 Producer 改写为"已完成"。当前为 planning。
+> 状态（2026-09-26 更正）：Sprint 1 的交付已随 PR #9（`5f0fd88`）合入 `main`——T2/T3 的测试在 `c161bfd`，
+> T4 的文档在 `8c302e6`，T5 的门禁在 `4f52953`，T1/T2 的执行证据在 `docs/sprint-1/partitions/`。QA 签署记录
+> （`docs/qa/qa-signoff-1.md`）不在本仓库，所以这里不写"已签署"。
 
 **主题**：工程质量体检 + 未门禁测试补齐（选项 A，字面执行）。
 
@@ -148,14 +152,13 @@ qubes-air/
 
 | 候选 | 来源 | 为何不在 Sprint 1 |
 |---|---|---|
-| QA-01 剩余真机项（Exec/FileCopy 正值、suspend/resume 数据持久性、旧盘迁移、known_hosts 带外核对） | `docs/TODO.md`:56-57 | 需真实 Qubes/Proxmox 环境与 console 下发允许列表 |
-| OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md`:46-49 | 需第二台机器与真实 keyring |
-| NET-01 静态 IP 池 | `docs/TODO.md`:51-52 | 已撤销；当前 Proxmox 只支持 DHCP 分配 |
-| GUI-01 无缝桌面闭环 | `docs/TODO.md`:61-62 | 需 Xpra + 真机 GUI |
-| UI-01 设置接入（session timeout / 2FA / 邮件 / webhook） | `docs/TODO.md`:73-74 | 产品功能，非本轮质量主题 |
-| OBS-01 真实监控、告警与账单 | `docs/TODO.md`:75-76 | 依赖外部数据源 |
-| CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md`:77-78 | 未通过同等验收前不得宣称可用 |
-| QA-02 剩余：真实首次 bootstrap、应用启动 E2E、取消场景 | `docs/TODO.md`:66 | 部分可本机做，Sprint 1 已取"取消场景"进 T2 |
+| QA-01 剩余真机项（Exec/FileCopy 正值、suspend/resume 数据持久性、旧盘迁移、known_hosts 带外核对） | `docs/TODO.md` QA-01 | 需真实 Qubes/Proxmox 环境；console 下发允许列表已由 M1-1 实现，但部署侧默认列表为空 |
+| OPS-01 离机恢复与 CA 演练的真实离机归档 / 真实 keyring | `docs/TODO.md` OPS-01 | 需第二台机器与真实 keyring |
+| GUI-01 无缝桌面闭环 | `docs/TODO.md` GUI-01 | 需 Xpra + 真机 GUI |
+| UI-01 设置接入（session timeout / 2FA / 邮件 / webhook） | `docs/TODO.md` UI-01 | 产品功能，非本轮质量主题 |
+| OBS-01 真实监控、告警与账单 | `docs/TODO.md` OBS-01 | 依赖外部数据源 |
+| CLOUD-01/02 GCP/AWS 原生适配器 | `docs/TODO.md` CLOUD-01、CLOUD-02 | 未通过同等验收前不得宣称可用 |
+| QA-02 剩余：真实首次 bootstrap、应用启动 E2E、取消场景 | `docs/TODO.md` QA-02 | 部分可本机做，Sprint 1 已取"取消场景"进 T2 |
 
 ## 9. 风险登记（已有代码特化）
 
@@ -165,12 +168,12 @@ qubes-air/
 
 | ID | 风险 | 证据 | 严重度 |
 |---|---|---|---|
-| R-DOC-1 | 5 处实战发现漂移未登记，Dev/QA 可能按过时文档断言行为 | `docs/sprint-1/runtime-context.md` §6、`drift-check.md` §1 | **high** |
-| R-DOC-2 | `docs/quickstart.md`:63 断言 Ping 返回 `pong`，实际返回 `pong <remote_name> <unix_ts>`（`remote/qubes-rpc/qubesair.Ping`:10,22） | 双方原文 | medium |
-| R-DOC-3 | `docs/architecture.md`:83 把 `UnlockData` 描述为"仍有派生密钥回退路径"，而 `internal/service/datakey.go`:19-24,72-81 明确 master **只用于迁移、永不自动创建、缺 master 即报错** | 双方原文 | **high**（安全语义） |
-| R-DOC-4 | `docs/architecture.md` 与 `docs/grpc-transport-design.md` 的服务表未覆盖 `dom0-scripts/policy.d/30-qubes-air.policy` 中实际授权的 `qubesair.Status` / `qubesair.Deploy` / `qubesair.SSHProxy` / `qubesair.VaultRead` / `qubesair.GetCredential` | policy 文件 :45-121 vs 两份 doc 的服务表 | medium |
+| R-DOC-1 | 5 处实战发现漂移未登记，Dev/QA 可能按过时文档断言行为 | `docs/sprint-1/runtime-context.md` §6、`drift-check.md` §1 | 已消解（原 **high**；Sprint 1 T4 登记并处置，见 `docs/sprint-1/partitions/p2-nongo.md` §2） |
+| R-DOC-2 | `docs/quickstart.md`:63 断言 Ping 返回 `pong`，实际返回 `pong <remote_name> <unix_ts>`（`remote/qubes-rpc/qubesair.Ping`:10,22） | 双方原文 | 已消解（原 medium；Sprint 1 T4 `8c302e6` 改了 quickstart） |
+| R-DOC-3 | `docs/architecture.md`:83 把 `UnlockData` 描述为"仍有派生密钥回退路径"，而 `internal/service/datakey.go`:19-24,72-81 明确 master **只用于迁移、永不自动创建、缺 master 即报错** | 双方原文 | 已消解（原 **high**，安全语义；Sprint 1 T4 `8c302e6` 改了 architecture） |
+| R-DOC-4 | `docs/architecture.md` 与 `docs/grpc-transport-design.md` 的服务表未覆盖 `dom0-scripts/policy.d/30-qubes-air.policy` 中实际授权的 `qubesair.Status` / `qubesair.Deploy` / `qubesair.SSHProxy` / `qubesair.VaultRead` / `qubesair.GetCredential` | policy 文件 :45-121 vs 两份 doc 的服务表 | 已消解（原 medium；Sprint 1 T4 `8c302e6` 在两份文档里补了 policy 授权清单） |
 | R-DOC-5 | CI 内 Node 版本不自洽：`release.yml`:90 = 22，其余 = 20 | workflow 原文 | low |
-| R-DOC-6 | 根 README 实际文件名是小写 `readme.md`，`AGENTS.md` 与多处文档写 `README.md`；doc-link 检查不区分大小写所以不报警 | `git ls-files` 输出 | low |
+| R-DOC-6 | 根 README 实际文件名是小写 `readme.md`，`AGENTS.md` 与多处文档写 `README.md`；doc-link 检查不区分大小写所以不报警 | `git ls-files` 输出 | 已撤回（原 low；Sprint 1 T4 复核 D-5：没有文档把根文件写成 `README.md`） |
 
 > 复核边界：本清单是**抽样**（9 处文档面对代码核对），不是全仓审计。未覆盖的文档面标为未知。
 
@@ -178,11 +181,11 @@ qubes-air/
 
 | ID | 热点 | 证据（实测） | 风险 |
 |---|---|---|---|
-| R-TECH-1 | `internal/transport/grpc/server.go` 的 `(*Server).Tunnel`：**262 行**、gocyclo **44**，靠 `//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately` 保留 | `gocyclo -top`；`.go:346-347` | 帧分发 + 生命周期耦合在一个函数，改动回归面大；取消/断线路径难单测 |
-| R-TECH-2 | `internal/config/config.go` 的 `(*Config).loadFromEnv`：**199 行**、gocyclo **71**（全仓最高）；`(*Config).Validate` gocyclo **28** | `gocyclo -top`；`.go:588-589,792` | 扁平 per-field 序列，新增配置项必然继续推高；配置回归只能靠表驱动测试 |
-| R-TECH-3 | 1200 行级文件 4 个：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
-| R-TECH-4 | `console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例 | `wc -l`；`QubeList.test.ts` | 大组件 + 薄测试 = 改动高风险 |
-| R-TECH-5 | 存量 `nolint` **24 处**；其中 `gocyclo/funlen` 豁免 5 处、`gosec` 豁免约 10 处 | `grep -rn nolint console/backend` | 豁免均已注明理由，但缺少"何时可移除"的退出条件 |
+| R-TECH-1 | `internal/transport/grpc/server.go` 的 `(*Server).Tunnel`：**262 行**、gocyclo **44**，靠 `//nolint:gocyclo,funlen // frame dispatch plus lifecycle, kept together deliberately` 保留 | `gocyclo -top`；`.go:346-347` | 已解除：M2-4（PR #24）拆成按帧类型命名的步骤，豁免已删（G-F2） |
+| R-TECH-2 | `internal/config/config.go` 的 `(*Config).loadFromEnv`：**199 行**、gocyclo **71**（全仓最高）；`(*Config).Validate` gocyclo **28** | `gocyclo -top`；`.go:588-589,792` | 已解除：M2-4（PR #24）按配置段拆分，豁免已删（G-F2） |
+| R-TECH-3 | 1200 行级文件 4 个（基线 `fae0aea`）：`service/qube_service.go` 1208、`service/certrenew.go` 1192、`cmd/server/main.go` 1179、`service/certrenewsched.go` 1047；2026-09-26 依次为 1360、1192、1435、1047 | `wc -l` | 单文件多职责，review/diff 信噪比低 |
+| R-TECH-4 | `console/frontend/src/components/QubeList.svelte` **970 行**（占全部 .svelte 行数量级最大者），仅覆盖 7 个用例（基线 `fae0aea`；2026-09-26 为 1003 行、14 个用例，见 gaps G-F4） | `wc -l`；`QubeList.test.ts` | 大组件 + 薄测试 = 改动高风险 |
+| R-TECH-5 | 存量 `nolint` 原 **24 处**；2026-09-26 实测 **17 处**，其中 `gocyclo` 豁免 3 处、`gosec` 10 处 | `git grep -n nolint -- '*.go'` | 豁免均已注明理由，但仍缺"何时可移除"的退出条件（G-F3） |
 | R-TECH-6 | 源码内真·待办仅 **4 处**（`handler/billing_handler.go`:50,56；`handler/monitoring_handler.go`:53,55）+ 1 处脚本内 `remote/qubes-rpc/qubesair.UnlockData`:26 hardening TODO | `grep -rnE 'TODO\|FIXME\|XXX'` 去噪后 | 待办本身不重，但 4 处都在"假装有数据"的占位路径上，UI 必须继续标记未接入 |
 
 ### 9.3 测试覆盖度未知项
@@ -210,15 +213,15 @@ qubes-air/
 
 | 阶段 | 状态 | 证据 |
 |---|---|---|
-| P0 安全边界收紧（SEC-01/02/03） | 已完成 | `docs/TODO.md`:11-20 |
-| P1 可靠性与提交前收尾（ENG-01/REL-01/REL-02/DATA-01） | 已完成（真机剩余归 QA-01） | `docs/TODO.md`:24-45 |
-| OPS-01 | 未完成（缺真实离机归档与匹配 keyring） | `docs/TODO.md`:46-50 |
-| NET-01 | 已撤销静态 IP 池，不再作为待验收能力 | `docs/TODO.md`:51-52 |
-| QA-01 Proxmox 真机回归 | 真机主路径已过，剩余 4 项 | `docs/TODO.md`:53-57；`docs/reviews/2026-09-22-qa01-proxmox.md` |
-| **Sprint 1：质量体检 + 未门禁测试补齐** | **planning** | 本 Brief §7 |
-| P2 产品与扩展（GUI/UI/OBS/MCP/CLOUD/PUB） | 未开始 | `docs/TODO.md`:59-84 |
+| P0 安全边界收紧（SEC-01/02/03） | 已完成 | `docs/TODO.md` SEC-01、SEC-02、SEC-03 |
+| P1 可靠性与提交前收尾（ENG-01/REL-01/REL-02/DATA-01） | 已完成（真机剩余归 QA-01） | `docs/TODO.md` ENG-01、REL-01、REL-02、DATA-01 |
+| OPS-01 | 未完成（缺真实离机归档与匹配 keyring） | `docs/TODO.md` OPS-01 |
+| NET-01 | 已撤销静态 IP 池，不再作为待验收能力 | `docs/TODO.md` NET-01 |
+| QA-01 Proxmox 真机回归 | 真机主路径已过，剩余 4 项 | `docs/TODO.md` QA-01；`docs/reviews/2026-09-22-qa01-proxmox.md` |
+| **Sprint 1：质量体检 + 未门禁测试补齐** | **已合入 `main`**（PR #9 `5f0fd88`）；QA 签署记录不在本仓库 | 本 Brief §7 |
+| P2 产品与扩展（GUI/UI/OBS/MCP/CLOUD/PUB） | 未完成（GUI-01 只有服务原语，完整桌面未验收） | `docs/TODO.md`〈P2：产品与扩展〉 |
 
-推荐推进顺序（沿用 `docs/TODO.md`:86-90）：本 Sprint 质量收口 → OPS-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
+推荐推进顺序（沿用 `docs/TODO.md`〈推荐推进顺序〉）：先确认修复 `2d409fd` 合入后 `main` 的 CI 恢复全绿（G-A1）→ OPS-01/QA-01 剩余真机项 → GUI-01 与其余产品任务。
 
 ## 12. 关键约束与红线
 

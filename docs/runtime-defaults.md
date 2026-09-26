@@ -115,7 +115,7 @@
 
 > 已知有文档描述该取值但未给常量名或行号的：
 > 请求体上限 1 MiB 见 `docs/mcp-design.md:32`（"API 的 BodyLimit 默认 1 MiB"）；
-> 会话 TTL 12 小时见 `docs/roadmap-to-production.md:21`（"session TTL 默认 12h"）。
+> 会话 TTL 12 小时见 `docs/roadmap-to-production.md`〈当前代码已落地〉表的"请求与认证"行（"session TTL 默认 12h"）。
 > 本节的价值是把**常量名与行号**钉住，便于从文档反查代码。
 
 ### 1.6 qube 规格上下限（M2-12 / G-H10）
@@ -178,8 +178,8 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 > `Exec` 中。
 > **计数口径**：`database.go` 中 `CREATE TABLE IF NOT EXISTS` 命中 **10** 处、
 > `CREATE INDEX IF NOT EXISTS` 命中 **7** 处（`grep -c`）。
-> `runtime-context.md:68` 的"表清单（10 张）"与实际代码**不一致**（其自身表格也只列了 9 行），
-> 以代码为准；差异登记为开放问题 O-2。应用 schema 仍是 **9 张表**，`_health_probe` 是探测用表、
+> `runtime-context.md` 原先写的"表清单（10 张）"与其基线代码**不一致**（其自身表格也只列了 9 行），
+> 登记为开放问题 O-2，已于 2026-09-26 更正为 9 张并指向本节。应用 schema 仍是 **9 张表**，`_health_probe` 是探测用表、
 > 不属于应用 schema；`zones`、`qubes`、`qube_infra`、`infrastructure`、
 > `credentials`、`settings` 未见显式二级索引。
 
@@ -216,7 +216,7 @@ Go 版本统一走 `env.GO_VERSION: '1.26'` 或 `go-version-file: console/backen
 | ID | 问题 | 为什么不在本轮改 |
 |---|---|---|
 | O-1 | `ticketTTL` 在 `provider/proxmox/client.go:49` 与 `scheduler/proxmox.go:53` 各定义一份，改一处不会同步另一处 | 属存量重构（drift-check TD 类），需行为等价性验证，超出 T4/T5 范围 |
-| O-2 | `runtime-context.md:68` 写"表清单（10 张）"，代码实际只有 9 个 `CREATE TABLE IF NOT EXISTS` | 该文件是 Producer 的 sprint 工件，本分区不得修改（见分区报告）；本文件按代码登记 9 张，差异留在开放问题 |
+| O-2 | `runtime-context.md:68` 写"表清单（10 张）"，代码实际只有 9 个 `CREATE TABLE IF NOT EXISTS` | 该文件是 Producer 的 sprint 工件，本分区不得修改（见分区报告）；本文件按代码登记 9 张，差异留在开放问题。**2026-09-26 已更正**：`runtime-context.md` 改为基线的 9 张并指向本文 §2.1 |
 | O-3 | ~~`release.yml` 用 Node 22，其余工作流用 20；无文档说明这是有意为之~~ **已解决**：全部工作流与 `.nvmrc` 统一为 22（见 §3） | release 仍用 22，构建所用 Node 未变；变化的是 PR CI 从 20 升到 22 |
 | O-4 | `go-licenses check` 在 `dependency.yml` 上是非阻塞步骤（原为 `\|\| true`，本轮改为显式 `continue-on-error`） | 本机离线无法验证该命令是否通过；见分区报告 T5 开放问题 |
 | O-5 | `qubesair.UnlockData:5` 的注释仍写"console derives it (HKDF over its master secret + this qube's id)"，与 `internal/service/datakey.go` 的 DEK 语义不符 | 该脚本在 `remote/**`，不在本分区写集合内 |
