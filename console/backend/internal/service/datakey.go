@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 
 	"github.com/slchris/qubes-air/console/internal/models"
@@ -120,24 +119,25 @@ func (m *DataKeyManager) EnsureDataKey(ctx context.Context, qubeID string) (stri
 // DeleteDataKey removes a qube's stored key and any migration marker. Idempotent:
 // deleting credentials that are already gone is not an error, so purge can be
 // retried.
+//
+// It deletes every row that answers to the key or marker name under
+// models.MatchesConsoleName, the comparison the lookups use: a crypto-shred
+// must not leave behind a look-alike the lookup would have refused to use, and
+// must not touch an operator row that merely lower-cases to the same text
+// (strings.ToLower maps U+0130 to "i"; case folding does not).
 func (m *DataKeyManager) DeleteDataKey(ctx context.Context, qubeID string) error {
 	list, err := m.creds.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list credentials: %w", err)
 	}
-	keyName, markerName := dataKeyCredentialPrefix+qubeID, migrationMarkerPrefix+qubeID
-	found := false
-	for _, cred := range list {
-		name := strings.ToLower(cred.Name)
-		switch name {
-		case strings.ToLower(keyName), strings.ToLower(markerName):
-			if err := m.creds.Delete(ctx, cred.ID); err != nil {
-				return fmt.Errorf("delete data key for qube %s: %w", qubeID, err)
-			}
-			found = found || name == strings.ToLower(keyName)
+	keys := rowsAnswering(list, dataKeyCredentialPrefix+qubeID)
+	markers := rowsAnswering(list, migrationMarkerPrefix+qubeID)
+	for _, cred := range append(keys, markers...) {
+		if err := m.creds.Delete(ctx, cred.ID); err != nil {
+			return fmt.Errorf("delete data key for qube %s: %w", qubeID, err)
 		}
 	}
-	if found {
+	if len(keys) > 0 {
 		log.Printf("pki: deleted the per-qube data key for %s (crypto-shred)", qubeID)
 	}
 	return nil
@@ -151,25 +151,15 @@ func (m *DataKeyManager) MigrationPending(ctx context.Context, qubeID string) (b
 	if err != nil {
 		return false, fmt.Errorf("list credentials: %w", err)
 	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, migrationMarkerPrefix+qubeID) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return len(rowsAnswering(list, migrationMarkerPrefix+qubeID)) > 0, nil
 }
 
 // MarkMigrationPending records that a qube's legacy keyslot may still be valid.
 // Idempotent: marking an already-marked qube is not an error.
 func (m *DataKeyManager) MarkMigrationPending(ctx context.Context, qubeID string) error {
-	list, err := m.creds.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list credentials: %w", err)
-	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, migrationMarkerPrefix+qubeID) {
-			return nil
-		}
+	pending, err := m.MigrationPending(ctx, qubeID)
+	if err != nil || pending {
+		return err
 	}
 	if _, err := m.creds.Create(ctx, models.CredentialCreateRequest{
 		Name:        migrationMarkerPrefix + qubeID,
@@ -183,21 +173,33 @@ func (m *DataKeyManager) MarkMigrationPending(ctx context.Context, qubeID string
 }
 
 // ClearMigrationPending removes the marker once the legacy keyslot is verified
-// gone. Idempotent.
+// gone. Idempotent. Every row answering to the marker name goes, so a
+// duplicate cannot keep the qube marked forever.
 func (m *DataKeyManager) ClearMigrationPending(ctx context.Context, qubeID string) error {
 	list, err := m.creds.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list credentials: %w", err)
 	}
-	for _, cred := range list {
-		if strings.EqualFold(cred.Name, migrationMarkerPrefix+qubeID) {
-			if err := m.creds.Delete(ctx, cred.ID); err != nil {
-				return fmt.Errorf("clear migration marker for qube %s: %w", qubeID, err)
-			}
-			return nil
+	for _, cred := range rowsAnswering(list, migrationMarkerPrefix+qubeID) {
+		if err := m.creds.Delete(ctx, cred.ID); err != nil {
+			return fmt.Errorf("clear migration marker for qube %s: %w", qubeID, err)
 		}
 	}
 	return nil
+}
+
+// rowsAnswering returns the rows that answer to the console name under
+// models.MatchesConsoleName. The marker is a non-secret flag, so its readers
+// take any answering row; secrets go through lookupCredential, which refuses
+// more than one.
+func rowsAnswering(list []models.Credential, name string) []models.Credential {
+	var rows []models.Credential
+	for _, cred := range list {
+		if models.MatchesConsoleName(cred.Name, name) {
+			rows = append(rows, cred)
+		}
+	}
+	return rows
 }
 
 // storedKey returns a qube's own data key, or "" when it has none. Rows under

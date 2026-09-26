@@ -143,9 +143,13 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 判定规则只定义在一处，即 `internal/models/credential_internal.go` 的 `IsConsoleCredential`：
 类型为 `pki`，或名称以 `qubes-air-` 开头的行属于控制台。控制台写入的每一行两个条件都满足。
 类型条件兜住将来某个没放进命名空间的新行；名称条件兜住会顶替控制台密钥的运维行，因为控制台
-只按名称（`strings.EqualFold`）查找自己的密钥。名称按 Unicode 简单大小写折叠逐个字符比较，
-并忽略首尾空白，所以 `QUBES-AIR-CA-KEY`、用 `ſ`（U+017F，折叠为 `s`）拼出的名称同样在保留
-范围内。
+只按名称查找自己的密钥。控制台的查找、purge 删除 DEK 和迁移标记的读写都用同一个比较
+`models.MatchesConsoleName`：忽略首尾空白，再按 Unicode 简单大小写折叠（`strings.EqualFold`）
+比较。`IsConsoleCredential` 用同样的规则逐个字符比较前缀，所以凡是这个比较会当作控制台名称的
+名称，都在保留范围内：`QUBES-AIR-CA-KEY`、用 `ſ`（U+017F，折叠为 `s`）或 `K`（U+212A，折叠为
+`k`）拼出的名称都算。反过来，`strings.ToLower` 会把 `İ`（U+0130）变成 `i`，但大小写折叠不会，
+所以 `qubes-aİr-luks-key-<id>` 是运维行；purge 以前用 `ToLower` 比较会把它一并删掉，现在不会，
+同时会删掉所有对得上 DEK 或迁移标记名称的行，包括变体。
 
 - `GET /credentials` 只列出运维行，`total` 也只计这些行。
 - `GET`、`PUT`、`DELETE /credentials/:id` 指向控制台行时，返回与不存在的 ID 相同的状态码和

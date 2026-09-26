@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,4 +263,69 @@ func TestConsoleLookupsStillServeTheirOwnRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, found)
 	assert.Equal(t, key, got)
+}
+
+// TestPurgeDeletesWhatTheLookupWouldAnswerTo — purge's crypto-shred removes
+// every row answering to the qube's key or marker name under the lookup's own
+// comparison, including look-alikes, and leaves alone rows that do not: an
+// operator row that only lower-cases to the key name (U+0130 lower-cases to
+// "i" but does not fold to it) and another qube's key.
+func TestPurgeDeletesWhatTheLookupWouldAnswerTo(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newLookupStore(t)
+	keys := NewDataKeyManager(repo)
+	_, err := keys.EnsureDataKey(ctx, "q1")
+	require.NoError(t, err)
+	require.NoError(t, keys.MarkMigrationPending(ctx, "q1"))
+	_, err = keys.EnsureDataKey(ctx, "q2")
+	require.NoError(t, err)
+
+	name := dataKeyCredentialPrefix + "q1"
+	for _, row := range []plantedRow{
+		{caseVariant(name), models.ConsoleRowType},
+		{longSVariant(name), "other"},
+		{"qubes-air-luKs-key-q1", models.ConsoleRowType},
+		{" " + name, models.ConsoleRowType},
+		{caseVariant(migrationMarkerPrefix + "q1"), models.ConsoleRowType},
+	} {
+		plant(t, repo, row, "look-alike")
+	}
+	dottedI := "qubes-aİr-luks-key-q1"
+	require.Equal(t, name, strings.ToLower(dottedI), "the case the old ToLower comparison got wrong")
+	require.False(t, models.IsConsoleCredential(dottedI, "other"), "it is an operator row")
+	operatorID := plant(t, repo, plantedRow{dottedI, "other"}, "operator-secret")
+
+	require.NoError(t, keys.DeleteDataKey(ctx, "q1"))
+
+	left, err := repo.List(ctx)
+	require.NoError(t, err)
+	names := make([]string, 0, len(left))
+	for _, c := range left {
+		names = append(names, c.Name)
+		assert.False(t, models.MatchesConsoleName(c.Name, name), "%q answers to the shredded key and must be gone", c.Name)
+		assert.False(t, models.MatchesConsoleName(c.Name, migrationMarkerPrefix+"q1"), "%q answers to the marker and must be gone", c.Name)
+	}
+	assert.Contains(t, names, dottedI, "an operator row that only lower-cases to the key name must survive purge")
+	assert.Contains(t, names, dataKeyCredentialPrefix+"q2", "another qube's key must survive")
+	secret, err := repo.GetSecret(ctx, operatorID)
+	require.NoError(t, err)
+	assert.Equal(t, "operator-secret", secret)
+}
+
+// TestClearMigrationPendingRemovesEveryMarker — a duplicate marker must not
+// keep a qube marked after the legacy slot is verified gone.
+func TestClearMigrationPendingRemovesEveryMarker(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := newLookupStore(t)
+	keys := NewDataKeyManager(repo)
+	require.NoError(t, keys.MarkMigrationPending(ctx, "q1"))
+	require.NoError(t, keys.MarkMigrationPending(ctx, "q1"), "marking twice is idempotent")
+	assert.Equal(t, 1, rowCount(t, repo))
+	plant(t, repo, plantedRow{caseVariant(migrationMarkerPrefix + "q1"), models.ConsoleRowType}, "pending")
+
+	require.NoError(t, keys.ClearMigrationPending(ctx, "q1"))
+	pending, err := keys.MigrationPending(ctx, "q1")
+	require.NoError(t, err)
+	assert.False(t, pending)
+	assert.Zero(t, rowCount(t, repo))
 }
