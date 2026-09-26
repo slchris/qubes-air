@@ -75,8 +75,14 @@
   let runtimeMetricsRequest = 0;
   let runtimeMetricsLoaded = false;
   let monitoringRequest = 0;
+  // The time staleness is judged against. The 15s timer keeps it moving while
+  // nothing loads; every successful load also sets it, so fresh data is never
+  // compared with an old clock.
   let runtimeClock = $state(Date.now());
   const runtimeMetricsStaleAfterMs = 120_000;
+  // A poll with no answer by then is aborted and treated as a failed refresh,
+  // so a hung request cannot leave the last values on screen unflagged.
+  const pollTimeoutMs = 20_000;
 
   // A percentage to two places. The raw value is a float like 34.7182931, which
   // is what the operator meant by "小数点后太多了". Clamped so a bad number
@@ -130,15 +136,37 @@
     return n.mem_total_bytes ? (n.mem_used_bytes / n.mem_total_bytes) * 100 : 0;
   }
 
+  interface OverviewResponse {
+    metrics?: SystemMetrics | null;
+    alerts?: Alert[];
+    alerts_status?: string;
+    note?: string;
+  }
+
+  // pollJSON fetches one polled endpoint with a deadline covering the body.
+  async function pollJSON<T>(path: string, failure: string): Promise<T> {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), pollTimeoutMs);
+    try {
+      const response = await apiFetch(path, { signal: controller.signal });
+      if (!response.ok) throw new Error(failure);
+      return (await response.json()) as T;
+    } catch (e) {
+      if (controller.signal.aborted) throw new Error(`${failure}: no answer within ${pollTimeoutMs / 1000}s`);
+      throw e;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   async function loadMonitoring() {
     const requestID = ++monitoringRequest;
     if (!overviewLoaded) loading = true;
     error = null;
     try {
-      const response = await apiFetch(`/monitoring`);
-      if (!response.ok) throw new Error('Failed to load monitoring data');
-      const data = await response.json();
+      const data = await pollJSON<OverviewResponse>('/monitoring', 'Failed to load monitoring data');
       if (requestID === monitoringRequest) {
+        runtimeClock = Date.now();
         metrics = data.metrics || null;
         alerts = data.alerts || [];
         alertsNotImplemented = data.alerts_status === 'not_implemented';
@@ -166,10 +194,9 @@
     const requestID = ++runtimeMetricsRequest;
     if (!runtimeMetricsLoaded) loadingRuntimeMetrics = true;
     try {
-      const response = await apiFetch('/monitoring/qubes');
-      if (!response.ok) throw new Error('Provider runtime metrics are unavailable');
-      const data = await response.json();
+      const data = await pollJSON<{ items?: QubeRuntimeMetric[] }>('/monitoring/qubes', 'Provider runtime metrics are unavailable');
       if (requestID === runtimeMetricsRequest) {
+        runtimeClock = Date.now();
         runtimeMetrics = data.items ?? [];
         runtimeMetricsError = null;
       }
@@ -187,8 +214,10 @@
     }
   }
 
-  function isRuntimeMetricStale(capturedAt: string): boolean {
-    const capturedMillis = Date.parse(capturedAt);
+  // One staleness rule for every measurement on this page: older than two
+  // minutes, more than 30s in the future, or without a readable time.
+  function isStale(capturedAt?: string): boolean {
+    const capturedMillis = capturedAt ? Date.parse(capturedAt) : NaN;
     const age = runtimeClock - capturedMillis;
     return !Number.isFinite(capturedMillis) || age > runtimeMetricsStaleAfterMs || age < -30_000;
   }
@@ -332,7 +361,7 @@
             <article class="runtime-item">
               <div class="runtime-title"><strong>{item.qube_name}</strong><span>{item.state}</span></div>
               {#if item.metrics}
-                {#if isRuntimeMetricStale(item.metrics.captured_at)}
+                {#if isStale(item.metrics.captured_at)}
                   <p class="runtime-stale">Stale measurement — refresh the provider connection before relying on it.</p>
                 {/if}
                 <div class="runtime-values">
@@ -364,6 +393,9 @@
       <p class="error inline-error" role="alert">
         Refresh failed: {refreshError}; showing the last values{#if metrics?.capturedAt} (captured {formatTime(metrics.capturedAt)}){/if}.
       </p>
+    {/if}
+    {#if metrics && isStale(metrics.capturedAt)}
+      <p class="runtime-stale">Stale host measurement — these values are not current; do not rely on them.</p>
     {/if}
     {#if note}<p class="muted">{note}{#if metrics?.source} · {metrics.source}{/if}{#if metrics?.capturedAt} · {formatTime(metrics.capturedAt)}{/if}</p>{/if}
     {#if metrics?.reason}<p class="muted">Unavailable: {metrics.reason}</p>{/if}

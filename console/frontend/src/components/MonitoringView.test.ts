@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/svelte'
+import { fireEvent, render, screen } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 
 import MonitoringView from './MonitoringView.svelte'
@@ -71,6 +71,14 @@ afterEach(() => {
 
 function failedResponse(): Response {
   return { ok: false, status: 503, json: async () => ({}) } as unknown as Response
+}
+
+// hangingResponse never answers on its own; it rejects when the caller aborts,
+// as fetch does.
+function hangingResponse(init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')))
+  })
 }
 
 // Answers /monitoring/qubes with items and every other path with body.
@@ -444,5 +452,116 @@ describe('MonitoringView failure handling', () => {
 
     expect(await screen.findByText('Console host')).toBeInTheDocument()
     expect(apiFetch.mock.calls.filter(([path]) => path === '/monitoring')).toHaveLength(2)
+  })
+})
+
+describe('MonitoringView freshness', () => {
+  it('marks host metrics older than the freshness window as stale', async () => {
+    apiFetch.mockImplementation(async (path) => path === '/monitoring/qubes'
+      ? monitoringResponse({ items: [] })
+      : monitoringResponse({
+          metrics: { cpuUsage: 5, source: 'console-host-linux', capturedAt: new Date(Date.now() - 5 * 60_000).toISOString() },
+          alerts: [],
+        }))
+
+    render(MonitoringView)
+
+    expect(await screen.findByText(/stale host measurement/i)).toBeInTheDocument()
+  })
+
+  it('does not mark fresh host metrics stale', async () => {
+    apiFetch.mockImplementation(async (path) => path === '/monitoring/qubes'
+      ? monitoringResponse({ items: [] })
+      : monitoringResponse({ metrics: { cpuUsage: 5, source: 'console-host-linux', capturedAt: new Date().toISOString() }, alerts: [] }))
+
+    render(MonitoringView)
+
+    expect(await screen.findByText('5.00%')).toBeInTheDocument()
+    expect(screen.queryByText(/stale host measurement/i)).not.toBeInTheDocument()
+  })
+
+  it('sends every poll with an abort signal', async () => {
+    routeRuntime([])
+
+    render(MonitoringView)
+
+    expect(await screen.findByText(/no qubes are recorded/i)).toBeInTheDocument()
+    for (const path of ['/monitoring', '/monitoring/qubes']) {
+      expect(apiFetch).toHaveBeenCalledWith(path, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    }
+  })
+
+  it('aborts a hung host poll, keeps the last values and lets them go stale', async () => {
+    vi.useFakeTimers()
+    const startedAt = new Date('2026-09-23T12:00:00Z')
+    vi.setSystemTime(startedAt)
+    let hang = false
+    apiFetch.mockImplementation(async (path, init) => {
+      if (path === '/monitoring/qubes') return monitoringResponse({ items: [] })
+      if (hang) return hangingResponse(init)
+      return monitoringResponse({ metrics: { cpuUsage: 42, source: 'console-host-linux', capturedAt: new Date().toISOString() }, alerts: [] })
+    })
+
+    render(MonitoringView)
+    expect(await screen.findByText('42.00%')).toBeInTheDocument()
+
+    hang = true
+    await vi.advanceTimersByTimeAsync(60_000 + 20_000)
+    expect(screen.getByText(/refresh failed: failed to load monitoring data: no answer within 20s/i)).toBeInTheDocument()
+    expect(screen.getByText('42.00%')).toBeInTheDocument()
+    expect(screen.queryByText(/stale host measurement/i)).not.toBeInTheDocument()
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(screen.getByText(/stale host measurement/i), 'the kept values age into stale while polls keep hanging').toBeInTheDocument()
+  })
+
+  it('aborts a hung provider poll instead of waiting on it forever', async () => {
+    vi.useFakeTimers()
+    let hang = false
+    apiFetch.mockImplementation(async (path, init) => {
+      if (path !== '/monitoring/qubes') return monitoringResponse({ metrics: {}, alerts: [] })
+      if (hang) return hangingResponse(init)
+      return monitoringResponse({
+        items: [{
+          qube_id: 'q1', qube_name: 'was-measured', zone_id: 'z1', state: 'running',
+          metrics: { captured_at: new Date().toISOString(), source: 'test', cpu_fraction: 0.1 },
+        }],
+      })
+    })
+
+    render(MonitoringView)
+    expect(await screen.findByText('was-measured')).toBeInTheDocument()
+
+    hang = true
+    await vi.advanceTimersByTimeAsync(60_000 + 20_000)
+    expect(screen.getByRole('alert')).toHaveTextContent(/no answer within 20s; showing the last successful reading/i)
+  })
+
+  // Freshness is judged against the time of the latest successful load, not
+  // only the 15s clock tick: without that, data fetched right after the clock
+  // jumped would be compared with an old "now" and read as from the future.
+  it('judges freshness against the time of the latest successful load', async () => {
+    vi.useFakeTimers()
+    const startedAt = new Date('2026-09-23T12:00:00Z')
+    vi.setSystemTime(startedAt)
+    apiFetch.mockImplementation(async (path) => path === '/monitoring/qubes'
+      ? monitoringResponse({
+          items: [{
+            qube_id: 'q1', qube_name: 'fresh-vm', zone_id: 'z1', state: 'running',
+            metrics: { captured_at: new Date().toISOString(), source: 'test' },
+          }],
+        })
+      : monitoringResponse({ metrics: { cpuUsage: 1, capturedAt: new Date().toISOString() }, alerts: [] }))
+
+    render(MonitoringView)
+    expect(await screen.findByText('fresh-vm')).toBeInTheDocument()
+
+    vi.setSystemTime(new Date(startedAt.getTime() + 10 * 60_000))
+    await fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(screen.getByText('fresh-vm')).toBeInTheDocument()
+    expect(screen.queryByText(/stale measurement/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/stale host measurement/i)).not.toBeInTheDocument()
   })
 })

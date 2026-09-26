@@ -75,7 +75,7 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   不做按 zone 过滤；未做 UI 侧可见性降级。
 - [ ] **UI-01：设置接入。** 分别实现 session timeout、2FA、邮件、webhook 并提供端到端证据；
   未实现项目继续显示“未接入”，不可仅保存配置便勾选完成。
-- [ ] **OBS-01：真实监控、告警与账单。** 指标已接：Linux Console 主机指标与 Proxmox 运行中 Qube 的实时读数，均标来源与采样时间，缺失带原因不显示为零，UI 每分钟重取、超 2 分钟标 stale。
+- [ ] **OBS-01：真实监控、告警与账单。** 指标已接：Linux Console 主机指标与 Proxmox 运行中 Qube 的实时读数，均标来源与采样时间，缺失带原因不显示为零；UI 每分钟重取（单次 20 秒无应答按失败），Qube 读数与主机指标的采样时间超 2 分钟、超前 30 秒或缺失时各自标 stale。
   仍缺：Proxmox 读数未在真机 PVE 上核对；告警（`alerts_status=not_implemented`，确认接口返回 501）、费用数据源、其他 provider 的 Qube 指标与历史指标。
 - [ ] **CLOUD-01：GCP 原生适配器。** 实现资源与可信网络路径，完成独立生命周期及销毁验收。
 - [ ] **CLOUD-02：AWS 原生适配器。** 同样独立验收；不因 GCP 或 Proxmox 通过而视作可用。
