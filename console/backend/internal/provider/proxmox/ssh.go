@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"regexp"
-	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -33,7 +32,7 @@ type SSHConfig struct {
 // it is validated anyway so a future caller cannot turn it into a shell path.
 var snippetNameRE = regexp.MustCompile(`^[A-Za-z0-9._-]+\.ya?ml$`)
 
-// dialNode opens an SSH client to a cluster node using cfg.
+// nodeSSHConfig builds the SSH client config for a cluster node from cfg.
 func nodeSSHConfig(cfg SSHConfig) (*ssh.ClientConfig, error) {
 	if cfg.KnownHostsFile == "" {
 		return nil, errors.New("proxmox: SSH known_hosts file is required")
@@ -87,34 +86,6 @@ func dialNode(ctx context.Context, node string, cfg SSHConfig) (*ssh.Client, err
 		return nil, fmt.Errorf("proxmox: ssh handshake %s: %w", addr, err)
 	}
 	return ssh.NewClient(sshConn, chans, reqs), nil
-}
-
-// runSSH runs a fixed command on the node and returns its stdout.
-//
-// The command is assembled by this package from validated inputs (an IP that
-// already parsed as an address); callers must not pass user-controlled text.
-// It exists for node-local checks the PVE API cannot express, such as whether
-// an address is already claimed on the bridge.
-func runSSH(ctx context.Context, node string, cfg SSHConfig, command string) (string, error) {
-	client, err := dialNode(ctx, node, cfg)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = client.Close() }()
-
-	session, err := client.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("proxmox: ssh session %s: %w", node, err)
-	}
-	defer func() { _ = session.Close() }()
-
-	var out, errOut bytes.Buffer
-	session.Stdout = &out
-	session.Stderr = &errOut
-	if err := session.Run(command); err != nil {
-		return out.String(), fmt.Errorf("proxmox: ssh %s: %w: %s", node, err, strings.TrimSpace(errOut.String()))
-	}
-	return out.String(), nil
 }
 
 // uploadSnippet writes content to the node's local snippets store over SSH.
