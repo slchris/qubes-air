@@ -72,7 +72,7 @@ func TestAuditSkipsReads(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("reads must not be audited, got %q", buf.String())
 	}
-	if got := w.Header().Get(RequestIDHeader); got != "" {
+	if got := w.Result().Header.Get(RequestIDHeader); got != "" {
 		t.Errorf("an unaudited read must not carry a request ID that matches no line, got %q", got)
 	}
 }
@@ -116,7 +116,7 @@ func TestAuditRequestIDIsServerGenerated(t *testing.T) {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
-		header := w.Header().Get(RequestIDHeader)
+		header := w.Result().Header.Get(RequestIDHeader)
 		if header == "" || header == "client-chosen-id" {
 			t.Fatalf("response request ID = %q, want a server-generated value", header)
 		}

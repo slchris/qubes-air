@@ -125,7 +125,7 @@ func assertAuditFields(t *testing.T, line map[string]any, w *httptest.ResponseRe
 	t.Helper()
 	requestID, _ := line["request_id"].(string)
 	assert.NotEmpty(t, requestID, "audit line must carry a request ID")
-	assert.Equal(t, w.Header().Get(middleware.RequestIDHeader), requestID,
+	assert.Equal(t, w.Result().Header.Get(middleware.RequestIDHeader), requestID,
 		"the caller must get back the request ID the audit line carries")
 	assert.Equal(t, auditedPeerIP, line["source"])
 	assert.Equal(t, float64(w.Code), line["status"])
@@ -198,7 +198,7 @@ func TestAPIAuditRecordsMutationRefusedByAuthentication(t *testing.T) {
 
 // maxAnonymousAuditLine bounds the audit line one unauthenticated request can
 // write. Every field but the object is fixed by the server and together they
-// stay under 400 bytes; the object is capped at audit.MaxObjectBytes of input,
+// come to about 400 bytes (416 in a contrived worst case); the object is capped at audit.MaxObjectBytes of input,
 // and the JSON encoder turns one input byte into at most six (\u00XX, \ufffd).
 const maxAnonymousAuditLine = 2048
 
@@ -377,7 +377,7 @@ func TestAPIAuditRecordsSuccessOnce(t *testing.T) {
 		"route":         startRoute,
 		"object":        "q-a",
 	})
-	assert.NotEqual(t, "client-chosen-id", w.Header().Get(middleware.RequestIDHeader))
+	assert.NotEqual(t, "client-chosen-id", w.Result().Header.Get(middleware.RequestIDHeader))
 	assertNoCredentialMaterial(t, buf, "client-chosen-id")
 }
 

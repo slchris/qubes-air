@@ -118,7 +118,7 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 
 - 单行长度有上界。审计在认证之前运行，未认证调用方能自由决定的只有 `object`（路径参数）；其余
   字段由服务端决定：已注册路由的方法和模板、配置里的 token 名和 zone 列表、连接的对端地址。
-  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计不到 400 字节，所以
+  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 400 字节（构造的最坏情况实测 416 字节），所以
   一个未认证请求写出的审计行不超过 2 KiB（`TestAPIAuditBoundsOversizedObject` 按这个上界断言），
   远低于 journald 默认的单行上限（`LineMax=48K`），不会被拆成非 JSON 片段。已认证请求的行长还
   取决于配置里 zone 列表的长度，由管理员控制。
