@@ -893,6 +893,17 @@ func TestRenderRejectsUnsafePathAllowlists(t *testing.T) {
 		{name: "root as filecopy root", apply: func(p *AgentPackage) { p.FileCopyRoots = []string{"/"} }},
 		{name: "relative filecopy root", apply: func(p *AgentPackage) { p.FileCopyRoots = []string{"var/tmp"} }},
 		{name: "empty entry", apply: func(p *AgentPackage) { p.ExecAllow = []string{""} }},
+		{name: "tab in an exec path", apply: func(p *AgentPackage) { p.ExecAllow = []string{"/usr/bin/i\td"} }},
+		{name: "duplicate filecopy root", apply: func(p *AgentPackage) { p.FileCopyRoots = []string{"/var/tmp", "/var/tmp"} }},
+		{name: "service injecting an agent.env line", apply: func(p *AgentPackage) {
+			p.AllowedServices = []string{pingService + "\nQUBESAIR_EXEC_ALLOW=/bin/sh"}
+		}},
+		{name: "service splitting into two grants", apply: func(p *AgentPackage) {
+			p.AllowedServices = []string{pingService + ",qubesair.UnlockData"}
+		}},
+		{name: "duplicate service", apply: func(p *AgentPackage) {
+			p.AllowedServices = []string{pingService, pingService}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -905,4 +916,23 @@ func TestRenderRejectsUnsafePathAllowlists(t *testing.T) {
 			require.Error(t, err, "an unsafe allowlist must fail the render, not reach the guest")
 		})
 	}
+}
+
+// Paths delivered without their service grant nothing in the guest. The render
+// still succeeds (the console that produced it started with the same values),
+// but it says so, naming the qube and the agent.env variables — including when
+// the service list is the default one because none was configured.
+func TestRenderWarnsAboutPathsWithoutTheirService(t *testing.T) {
+	logs := captureLog(t)
+	pkg := testAgentPackage()
+	pkg.ExecAllow = []string{"/usr/bin/id"}
+	out, _ := renderWith(t, pkg)
+
+	assert.Contains(t, fileContent(t, parseConfig(t, out), "agent.env"), "QUBESAIR_EXEC_ALLOW=/usr/bin/id")
+	assert.Contains(t, logs.String(), `cloud-init for "remote-dev": QUBESAIR_EXEC_ALLOW lists 1 path(s) but QUBESAIR_ALLOW does not allow qubesair.Exec`)
+
+	logs.Reset()
+	pkg.AllowedServices = []string{pingService, "qubesair.Exec"}
+	renderWith(t, pkg)
+	assert.NotContains(t, logs.String(), "does not allow", "a paired grant is not worth a warning")
 }

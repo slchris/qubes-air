@@ -160,7 +160,7 @@ printf '%s\n' '["/usr/bin/id","-u"]' |
   qrexec-client-vm <remotevm> qubesair.Exec
 ```
 
-必须显式启用 `QUBESAIR_ALLOW` 中的 Exec，并在 `QUBESAIR_EXEC_ALLOW` 中允许该可执行文件。两个白名单都由 console 随 qube 下发到 guest 的 `agent.env`：服务白名单来自 `agent_allowed_services`，路径白名单来自 `agent_exec_allow` / `agent_filecopy_roots`（或环境变量 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）。console 在启动配置校验和渲染 cloud-init 时各校验一次路径白名单（必须是绝对、规范化、不含冒号与控制字符的路径），所以写错的值在启动或 provision 阶段就失败，而不是变成 guest 里一次被拒的调用。
+必须显式启用 `QUBESAIR_ALLOW` 中的 Exec，并在 `QUBESAIR_EXEC_ALLOW` 中允许该可执行文件。两个白名单都由 console 随 qube 下发到 guest 的 `agent.env`：服务白名单来自 `agent_allowed_services`，路径白名单来自 `agent_exec_allow` / `agent_filecopy_roots`（或环境变量 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）。console 在启动配置校验和渲染 cloud-init 时各校验一次整组授权（`qrexec.ValidateAgentGrants`）：服务名必须过传输层的名字白名单（不含逗号、空白与控制字符，否则会把一项拆成两项或在 `agent.env` 里多写一行）且不重复；路径必须是绝对、规范化、不含冒号与任何控制字符（含制表符、DEL）的路径且不重复。所以写错的值在启动或 provision 阶段就失败，而不是变成 guest 里一次被拒的调用。路径表不空、但服务白名单里没有对应的 `qubesair.Exec` / `qubesair.FileCopy` 时，agent 会整体拒绝该服务，这组路径什么也不授予：console 只在启动日志（`WARNING: agent grants:`）和渲染日志里告警，不拒绝启动。
 默认仍只启用 Ping。限制为 64 KiB 请求、1～128 个参数、每项最多 4096 UTF-8 字节，禁止 NUL、
 非法路径和服务 `+argument`。错误分别以非零退出码上报；stdout/stderr/exit code 保持独立。
 
