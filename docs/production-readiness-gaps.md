@@ -238,7 +238,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 - [x] **M1-12** purge 不可逆步骤与入队解耦：不可逆步骤成为 destroy job 的第一步（`Runner.Submit` 接受 `Step`，worker 在 job 行落库之后、provider 调用之前执行）；入队被拒时零销毁，错误文本同时说明"什么都没销毁"与 claim 已记录的部分；步骤中途失败时 job 行列出已完成步骤。测试：`internal/service/qube_purge_ordering_test.go`（拒绝入队 ×2 / 部分失败 / 幂等重试）、`internal/orchestrator/runner_steps_test.go`（顺序 / 失败跳过 action / 超时） —— 依赖：无（G-H3）；**已提交并独立复验**（两处变异红见 G-H3 行；真机生命周期属 M0-5）
 - [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）
 - [x] **M1-14** 让 `/health` 有真实语义：真实读写探测（建表/写 marker/读回 + `PRAGMA database_list` 与 `os.Stat` 识破"库文件已删仍可写"）、覆盖 job 调度器心跳（空闲 3 次丢拍 = 15s 判死；**正在执行 job 时预算 = 该 job 超时 + 15s**，避免长 provision 被误判而遭 compose 重启）、队列/运行数只做信息不做判据、未认证路由的写按 2s 窗口节流、恢复判据文档同步 —— 依赖：无（G-H2）
-- [x] **M1-15** 修 job 日志流的 WriteTimeout 矛盾：流自己管每次事件的写截止时间（`streamWriteWindow` 30s，每事件重置），写失败即结束流而不是空转到 5 分钟；`runtime-defaults` 登记 UD-6b，前端回退逻辑核对后无需改动（G-H6）
+- [x] **M1-15** 修 job 日志流的 WriteTimeout 矛盾：流自己管每次事件的写截止时间（`streamWriteWindow` 30s，每事件重置），写失败即结束流而不是空转到 5 分钟；`runtime-defaults` 登记 UD-6b，前端回退逻辑核对后无需改动（G-H6）。**更正（本次提交）**：前端当时根本没有挂上流——`JobLog.svelte` 的挂载 `$effect` 在自身同步段里读写 `running`/`offset`，于是立即重跑，teardown 中止了刚打开的流，而重跑又因 `jobId === current` 提前返回，运行中的 job 一行输出都不显示；qube 列表每次刷新重算 `jobId` 属性也会触发同一中止。现在 effect 只依赖 `$derived(jobId)`、feed 在 `untrack` 下启动并各持一个 `AbortSignal`，按服务端契约处理封顶重连（从最后 offset 续；打开不足 2 秒就被关闭的流等满 2 秒再重连，防止中间层把重连变成请求风暴）、终止事件、`{offset,error}` 读错误事件（不当作 job 结束）与断流后回退轮询；另修两处同源问题：轮询定时器在卸载/换 job 后不再继续请求，旧 job 的迟到轮询结果不再写进新 job 的面板。回归 `console/frontend/src/components/JobLog.test.ts`（22 例，在修复前的组件上 18 例失败）
 
 ### M2 — A 档收尾与可维护性
 

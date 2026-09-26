@@ -388,13 +388,16 @@ export async function getJob(id: string): Promise<Job> {
   return get<Job>(`/jobs/${id}`);
 }
 
-// JobLogChunk is one incremental read of a job's terraform output.
+// JobLogChunk is one incremental read of a job's operation output. The stream
+// also sends a read-error event, {offset, error} with no data or running flag,
+// when the console fails to read the log; the job itself is still going.
 export interface JobLogChunk {
   offset: number;
-  data: string;
-  running: boolean;
+  data?: string;
+  running?: boolean;
   state?: string;
   note?: string;
+  error?: string;
 }
 
 /**
