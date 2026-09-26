@@ -64,7 +64,7 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **GUI-01：无缝桌面闭环。** 验收 appmenu、单击启动、多窗口、退出状态、断线恢复，
   明确 Xpra 与 RemoteVM 权限边界；已有服务原语不能替代完整桌面验收。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建/编辑 Qube、purge 确认、应用菜单、zone 创建只提供已实现 provider
-  及后端拒绝的组件测试（vitest 157 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge
+  及后端拒绝的组件测试（2026-09-26 合并树上 vitest 20 个测试文件、216 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge
   （`make frontend-e2e`、CI `frontend-e2e` job）；agent deb 的安装、依赖解析、升级 conffile 保留、完整性、卸载与启动拒绝路径
   由 `make agent-deb-test`（Docker）覆盖，CI 有 `agent-package` job。剩余：真实首次 bootstrap、真实环境下的应用启动 E2E 与取消场景。
 - [x] **AUTH-01：逐对象授权。** 命名 token 可带 `zones` 白名单，session 继承该限制；
