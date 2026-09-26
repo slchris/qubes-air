@@ -81,13 +81,11 @@ cat <<EOF
 
 下一步:
   1. 部署 policy: 确保 /etc/qubes/policy.d/30-qubes-air.policy 已含 vault-cloud 段 (阶段3)。
-  2. 对 $VAULT_NAME 应用 salt: salt-call --local state.apply qubes-air.vault-cloud
-     (装 socat, 部署 qubesair.GetCredential 服务与 split-ssh agent 服务)。
-  3. 往 vault 里存凭据 (见 runbook): 在 $VAULT_NAME 内
-       mkdir -p ~/.qubes-air/credentials && chmod 700 ~/.qubes-air/credentials
-       printf '%s' "\$PROXMOX_TOKEN" > ~/.qubes-air/credentials/proxmox-token
-       chmod 600 ~/.qubes-air/credentials/proxmox-token
-  4. relay SSH 私钥放 $VAULT_NAME 的 ~/.ssh/ 并起 ssh-agent (split-ssh, 见 salt)。
+  2. $VAULT_NAME 内的 qrexec 服务 (qubesair.GetCredential) 目前没有任何 Salt state 部署:
+     Qubes 侧 Salt 的唯一来源是 qubes-salt-config, 本仓库不再携带平行的 state,
+     而 qubes-salt-config 还没有提供这个服务。在它进入 qubes-salt-config 之前,
+     保持 QUBES_AIR_TRANSPORT_VAULT_CERTS 关闭 (代码默认与 qubes-salt-config 的
+     remotevm.grpc.vault_certs 默认都是 false), mTLS 材料走 cert/key/CA 文件路径。
 EOF
 
 # =====================================================================
