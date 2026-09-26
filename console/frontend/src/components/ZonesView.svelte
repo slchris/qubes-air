@@ -1,18 +1,22 @@
 <!--
   Qubes Air Console - Zones.
 
-  A zone is a cloud/hypervisor the console provisions into. The existing
-  ZoneList.svelte was written for an aws/gcp shape (endpoint + region) and is not
-  mounted anywhere; on a Proxmox deployment it showed nothing and its edit form
-  would have erased the proxmox config on save. This view is built around what a
-  Proxmox zone actually carries — node, template, datastore, and the linked
-  credential — and preserves that config across an edit.
+  A zone is a cloud/hypervisor the console provisions into. This view is built
+  around what a Proxmox zone actually carries — node, template, datastore, and
+  the linked credential. Proxmox is the only provider with an adapter: the other
+  types are listed but cannot be chosen, and the backend refuses to create them
+  (see lib/providers.ts).
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { zoneStore } from '../lib/stores';
   import type { Zone, ZoneType, ZoneCreateRequest } from '../lib/types';
   import { ApiException, apiFetch } from '../lib/api';
+  import {
+    DEFAULT_ZONE_PROVIDER, NOT_IMPLEMENTED, ZONE_PROVIDERS,
+    isProviderImplemented, isUnimplementedProvider, providerOptionLabel,
+    unimplementedProviderLabels,
+  } from '../lib/providers';
 
   let zs = $state({ zones: [] as Zone[], loading: false, error: null as string | null });
   $effect(() => {
@@ -36,7 +40,7 @@
   let formError = $state<string | null>(null);
 
   let fName = $state('');
-  let fType = $state<ZoneType>('proxmox');
+  let fType = $state<ZoneType>(DEFAULT_ZONE_PROVIDER);
   let fCredential = $state('');
   let fEndpoint = $state('');
   // proxmox
@@ -45,15 +49,6 @@
   let fTemplateNode = $state('');
   let fDatastore = $state('');
   let fBridge = $state('vmbr0');
-  // gcp
-  let fProject = $state('');
-  let fRegion = $state('');
-  let fGcpZone = $state('');
-  let fSourceImage = $state('debian-cloud/debian-12');
-  let fBucket = $state('');
-  let fServiceAccount = $state('');
-  let fNetwork = $state('default');
-  let fPublicIp = $state(false);
 
   // Only credentials of the zone's own type can authenticate it; offering the
   // rest invites a zone that connects to nothing.
@@ -75,10 +70,8 @@
   onMount(async () => { await Promise.all([zoneStore.load(), loadCreds()]); });
 
   function openCreate(): void {
-    fName = ''; fType = 'proxmox'; fCredential = ''; fEndpoint = '';
+    fName = ''; fType = DEFAULT_ZONE_PROVIDER; fCredential = ''; fEndpoint = '';
     fNode = ''; fTemplateVmId = null; fTemplateNode = ''; fDatastore = ''; fBridge = 'vmbr0';
-    fProject = ''; fRegion = ''; fGcpZone = ''; fSourceImage = 'debian-cloud/debian-12';
-    fBucket = ''; fServiceAccount = ''; fNetwork = 'default'; fPublicIp = false;
     formError = null;
     showCreate = true;
     void loadCreds();
@@ -99,35 +92,21 @@
         network_bridge: fBridge.trim() || undefined,
         credential_id: fCredential || undefined,
       };
-    } else if (fType === 'gcp') {
-      req.config.project = fProject.trim();
-      req.config.region = fRegion.trim();
-      req.config.gcp = {
-        zone: fGcpZone.trim() || undefined,
-        source_image: fSourceImage.trim() || undefined,
-        identity_bucket: fBucket.trim() || undefined,
-        service_account_email: fServiceAccount.trim() || undefined,
-        network: fNetwork.trim() || undefined,
-        assign_public_ip: fPublicIp,
-        credential_id: fCredential || undefined,
-      };
     }
     return req;
   }
 
   // Refuses the settings that produce a zone which looks configured and cannot
-  // provision — the failures otherwise surface minutes into a terraform apply.
+  // provision — the failures otherwise surface minutes into a provision job.
   function validate(): string | null {
+    // The picker cannot select one, but the backend is not the only guard worth
+    // having: say why here rather than round-tripping for a 422.
+    if (!isProviderImplemented(fType)) return `${fType} is ${NOT_IMPLEMENTED}: this console has no adapter for it`;
     if (!fName.trim()) return 'Name is required';
     if (!fCredential) return 'A credential is required — the zone cannot reach its cluster without one';
     if (fType === 'proxmox') {
       if (!fEndpoint.trim()) return 'Endpoint is required';
       if (!fTemplateVmId) return 'Template VMID is required: without a template the clone produces a VM with no operating system';
-    }
-    if (fType === 'gcp') {
-      if (!fProject.trim()) return 'Project is required';
-      if (!fGcpZone.trim()) return 'Compute zone is required: the data disk and the instance must share one or the disk cannot be attached';
-      if (!fBucket.trim()) return 'Bootstrap bucket is required: the one-time bootstrap token must not be written into Terraform state';
     }
     return null;
   }
@@ -199,7 +178,16 @@
           </div>
 
           <dl>
-            <dt>Type</dt><dd><code>{zone.type}</code></dd>
+            <dt>Type</dt>
+            <dd>
+              <code>{zone.type}</code>
+              {#if isUnimplementedProvider(zone.type)}
+                <!-- A zone stored before the backend refused these types. It
+                     stays listed, marked, so it is not mistaken for one that
+                     can provision; the API can still delete it. -->
+                <span class="unimpl">{NOT_IMPLEMENTED}</span>
+              {/if}
+            </dd>
             <dt>Endpoint</dt><dd class="mono">{zone.config.endpoint}</dd>
             {#if zone.config.proxmox}
               {@const p = zone.config.proxmox}
@@ -254,18 +242,17 @@
         <label class="f">
           <span>Provider</span>
           <select bind:value={fType}>
-            <option value="proxmox">Proxmox</option>
-            <option value="gcp">Google Cloud</option>
-            <option value="aws">AWS</option>
+            {#each ZONE_PROVIDERS as p (p.value)}
+              <option value={p.value} disabled={!p.implemented}>{providerOptionLabel(p)}</option>
+            {/each}
           </select>
         </label>
-
-        {#if fType === 'aws'}
-          <!-- Saying so beats letting someone fill in a form whose terraform
-               module builds nothing. -->
+        {#if unimplementedProviderLabels().length > 0}
+          <!-- Listed rather than hidden so an operator looking for them learns
+               why they cannot be picked instead of assuming a missing option. -->
           <p class="note">
-            AWS is not implemented — its terraform module creates no resources.
-            A zone can be recorded, but provisioning into it will not work.
+            {unimplementedProviderLabels().join(', ')}: {NOT_IMPLEMENTED}. This console
+            has no provider adapter for them, so a zone of that type cannot be created.
           </p>
         {/if}
 
@@ -315,56 +302,6 @@
             <span>Network bridge</span>
             <input bind:value={fBridge} placeholder="vmbr0" />
           </label>
-        {:else if fType === 'gcp'}
-          <div class="row">
-            <label class="f">
-              <span>Project</span>
-              <input bind:value={fProject} placeholder="my-project" />
-            </label>
-            <label class="f">
-              <span>Region</span>
-              <input bind:value={fRegion} placeholder="asia-east1" />
-            </label>
-          </div>
-          <div class="row">
-            <label class="f">
-              <span>Compute zone</span>
-              <input bind:value={fGcpZone} placeholder="asia-east1-b" />
-            </label>
-            <label class="f">
-              <span>Source image</span>
-              <input bind:value={fSourceImage} />
-            </label>
-          </div>
-          <label class="f">
-            <span>Bootstrap bucket</span>
-            <input bind:value={fBucket} placeholder="private GCS bucket" />
-          </label>
-          <p class="note">
-            The public CA and one-time bootstrap token are delivered through this
-            bucket. The agent generates its private key inside the guest; no private
-            key is uploaded by the Console or stored in Terraform state.
-          </p>
-          <div class="row">
-            <label class="f">
-              <span>Service account</span>
-              <input bind:value={fServiceAccount} placeholder="needs read on the bucket" />
-            </label>
-            <label class="f">
-              <span>Network</span>
-              <input bind:value={fNetwork} />
-            </label>
-          </div>
-          <label class="check">
-            <input type="checkbox" bind:checked={fPublicIp} />
-            <span>Assign a public IP</span>
-          </label>
-          {#if fPublicIp}
-            <p class="note warn">
-              This exposes the agent's mTLS port to the internet, with only the
-              console CA in front of it.
-            </p>
-          {/if}
         {/if}
 
         <div class="actions">
@@ -419,17 +356,14 @@
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
 
-  .check { display: flex; align-items: center; gap: 6px; font: var(--body); margin-bottom: 12px; }
-
   .note {
     margin: 0 0 12px; font: var(--callout); line-height: 1.45;
     color: var(--systemSecondary);
   }
-  .note.warn {
-    padding: 8px 10px; border-radius: var(--global-border-radius-xsmall);
-    border: 1px solid var(--systemOrange);
-    background: color-mix(in srgb, var(--systemOrange) 12%, var(--pageBG));
-    color: var(--systemPrimary);
+  .unimpl {
+    margin-left: 6px; padding: 0.1rem 0.4rem; border-radius: 999px;
+    font: var(--subhead); color: var(--systemSecondary);
+    border: 1px solid var(--systemQuaternary);
   }
   .banner.error {
     margin: 0 0 12px; padding: 8px 10px;

@@ -41,6 +41,24 @@ func TestRegistry_RegisterRejectsDuplicate(t *testing.T) {
 	assert.True(t, r.Has(models.ZoneTypeProxmox))
 }
 
+// TestRegistry_HasOnNilRegistry — zone creation gates on Has, so a nil
+// registry must answer "no adapter" instead of panicking under the lock.
+func TestRegistry_HasOnNilRegistry(t *testing.T) {
+	var r *Registry
+	assert.False(t, r.Has(models.ZoneTypeProxmox))
+}
+
+func TestRegistry_HasOnlyRegisteredTypes(t *testing.T) {
+	r := NewRegistry()
+	ctor := func(context.Context, *models.Zone) (Adapter, error) { return stubAdapter{}, nil }
+	require.NoError(t, r.Register(models.ZoneTypeProxmox, ctor))
+
+	assert.True(t, r.Has(models.ZoneTypeProxmox))
+	for _, zt := range []models.ZoneType{models.ZoneTypeGCP, models.ZoneTypeAWS, models.ZoneTypeAzure, "", "kubevirt"} {
+		assert.False(t, r.Has(zt), "zone type %q has no adapter", zt)
+	}
+}
+
 func TestRegistry_ForReturnsNoAdapter(t *testing.T) {
 	r := NewRegistry()
 	zone := &models.Zone{Name: "pve-1", Type: models.ZoneTypeProxmox}

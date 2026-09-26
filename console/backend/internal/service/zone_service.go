@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -17,7 +18,20 @@ var (
 	ErrZoneNotFound    = errors.New("zone not found")
 	ErrZoneInUse       = errors.New("zone is in use by qubes")
 	ErrInvalidZoneType = errors.New("invalid zone type")
+	// ErrZoneTypeNotImplemented refuses a zone type the model names but no
+	// registered provider adapter serves. Accepting such a zone would only
+	// postpone the failure to the first provision job (provider.ErrNoAdapter),
+	// after the operator had already built credentials and qubes around it.
+	ErrZoneTypeNotImplemented = errors.New("provider not implemented")
 )
+
+// ZoneTypeSupport reports whether this console can provision into a zone
+// type. *provider.Registry satisfies it; the interface keeps this package from
+// depending on the provider package while still asking the one registry the
+// executor dispatches through, rather than a second hard-coded list.
+type ZoneTypeSupport interface {
+	Has(zoneType models.ZoneType) bool
+}
 
 // ZoneService defines zone business logic operations.
 type ZoneService interface {
@@ -34,19 +48,29 @@ type ZoneService interface {
 type ZoneServiceImpl struct {
 	zoneRepo repository.ZoneRepository
 	qubeRepo repository.QubeRepository
+	// adapters decides which zone types may be created. Nil admits none.
+	adapters ZoneTypeSupport
 }
 
 // NewZoneService creates a new ZoneService.
-func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository) ZoneService {
+//
+// adapters is consulted on create only. A nil value fails closed — every
+// create is refused — because the alternative, admitting every valid type, is
+// exactly the silent acceptance the check exists to remove.
+func NewZoneService(zoneRepo repository.ZoneRepository, qubeRepo repository.QubeRepository, adapters ZoneTypeSupport) ZoneService {
 	return &ZoneServiceImpl{
 		zoneRepo: zoneRepo,
 		qubeRepo: qubeRepo,
+		adapters: adapters,
 	}
 }
 
 // Create creates a new zone.
 func (s *ZoneServiceImpl) Create(ctx context.Context, req *models.ZoneCreateRequest) (*models.Zone, error) {
 	if err := validateZoneCreateRequest(req); err != nil {
+		return nil, err
+	}
+	if err := s.requireAdapter(req.Type); err != nil {
 		return nil, err
 	}
 
@@ -77,6 +101,22 @@ func validateZoneCreateRequest(req *models.ZoneCreateRequest) error {
 		return ErrInvalidZoneType
 	}
 
+	return nil
+}
+
+// requireAdapter refuses a zone type that no registered adapter serves.
+//
+// It runs on create only. Rows of such a type written before this check
+// existed must stay readable, renamable and deletable — refusing to load them
+// would strand them in the database — so reads, updates and deletes never
+// consult it. A zone's type cannot change after creation (ZoneUpdateRequest
+// has no type field), so create is the only API path by which a type enters
+// the table.
+func (s *ZoneServiceImpl) requireAdapter(zoneType models.ZoneType) error {
+	if s.adapters == nil || !s.adapters.Has(zoneType) {
+		return fmt.Errorf("%w: zone type %q has no provider adapter registered in this console, "+
+			"so nothing could be provisioned into it", ErrZoneTypeNotImplemented, zoneType)
+	}
 	return nil
 }
 

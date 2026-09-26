@@ -164,8 +164,13 @@ func (r *Registry) Register(zoneType models.ZoneType, ctor Constructor) error {
 	return nil
 }
 
-// Has reports whether a constructor is registered for a zone type.
+// Has reports whether a constructor is registered for a zone type. A nil
+// Registry has none, so a caller gating on Has fails closed rather than
+// panicking.
 func (r *Registry) Has(zoneType models.ZoneType) bool {
+	if r == nil {
+		return false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ctors[zoneType] != nil
