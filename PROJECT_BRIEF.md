@@ -190,7 +190,7 @@ qubes-air/
 | ID | 未知项 | 证据 | 影响 |
 |---|---|---|---|
 | R-COV-1 | `go test` 语句覆盖 60.7%，但 **331 个函数 0.0%**；`cmd/*` 几乎全为 0% | `go tool cover -func=coverage.out` | 入口/接线层无回归网，改动靠手工验证 |
-| R-COV-2 | 传输可靠性未经门禁：`Reconnect` 关键字在测试名中 **0 次**；`Cancel` 2 次、`Disconnect` 3 次、`Restart` 3 次 | `grep "^func Test" \| grep -i` | `client.go`:125-158 的 reconnect/backoff/jitter 循环无直接回归测试 |
+| R-COV-2 | 传输可靠性未经门禁：`Reconnect` 关键字在测试名中 **0 次**；`Cancel` 2 次、`Disconnect` 3 次、`Restart` 3 次 | `grep "^func Test" \| grep -i` | `client.go`:128-161 的 reconnect/backoff/jitter 循环无直接回归测试 |
 | R-COV-3 | `internal/qrexec` 是 Exec/FileCopy 的传输关键路径，仅 4 个 `Test*`、覆盖率 **32.1%** | `go test` 输出；`qrexec/*_test.go` | qrexec 服务边界回归薄 |
 | R-COV-4 | 前端 19 个组件中只有 3 个有测试；`MonitoringView`(502)/`CredentialList`(505)/`ZonesView`(504) 全无 | `ls components/` vs `*.test.ts` | UI 回归只能靠手工点击 |
 | R-COV-5 | 覆盖率为既有本地产物（`coverage.out` 未跟踪），无 CI 阈值门禁 | 本地 `make coverage-gate`（`pre-commit`/`audit` 都包含）按 61% 校验 `test-race` 生成的 profile；CI 的 Go Test 只生成、上传，不校验 | CI 上覆盖率仍可悄悄下降而不报警 |

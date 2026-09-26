@@ -105,8 +105,11 @@ type callResult struct {
 	err      error
 }
 
-// compile-time check: *Client satisfies transport.Transport.
-var _ transport.Transport = (*Client)(nil)
+// compile-time checks: *Client satisfies transport.Transport and can stream.
+var (
+	_ transport.Transport       = (*Client)(nil)
+	_ transport.StreamTransport = (*Client)(nil)
+)
 
 // ErrNotConnected is returned by Call when there is no live tunnel.
 var ErrNotConnected = errors.New("transport/grpc: tunnel not connected")

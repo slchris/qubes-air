@@ -86,6 +86,11 @@ rename；成功响应包含字节数和 SHA256。错误写入 stderr 并返回�
 建立原始双向 byte stream，供 Xpra/VNC/RDP 等协议使用。端口不直接暴露给 LAN，数据仍经过
 agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 target 和 port。
 
+控制台侧的流式调用是可选能力 `transport.StreamTransport`（`CallStream`），与只做一问一答的
+`transport.Transport` 分开：gRPC `Client` 实现它；默认的 `NoopTransport` 校验名字后返回
+`ErrNoTransport`；`FakeTransport` 不实现它。需要流的调用方应类型断言，拿不到就拒绝，而不是
+退回缓冲式 `Call`。
+
 ### Appmenus / StartApp
 
 `qubes.GetAppmenus` 枚举 `.desktop` 应用，`qubes.StartApp+<app-id>` 在远端 Xpra display

@@ -66,7 +66,7 @@
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
 | UD-2 | keepalive 心跳间隔 | **20s** | `internal/transport/grpc/client.go:59-60`（`withDefaults`：`KeepAlive = 20 * time.Second`） |
-| UD-3 | 重连退避 | **min 500ms / max 30s**，指数翻倍 + 抖动 | `internal/transport/grpc/client.go:63-68`（下限/上限）、`:145-150`（`jitter(backoff)`、`backoff *= 2`、封顶 `ReconnectMax`） |
+| UD-3 | 重连退避 | **min 500ms / max 30s**，指数翻倍 + 抖动 | `internal/transport/grpc/client.go:63-68`（下限/上限）、`:148-153`（`jitter(backoff)`、`backoff *= 2`、封顶 `ReconnectMax`） |
 
 ### 1.3 agent 侧（调用、探测、bootstrap、解锁、续期）
 
