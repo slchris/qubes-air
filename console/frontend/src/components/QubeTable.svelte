@@ -26,11 +26,14 @@
 
   // The agent-health label. "running + agent unhealthy" is the case worth
   // spelling out — a green status dot for a qube whose agent cannot be reached
-  // is the failure this field exists to surface.
+  // is the failure this field exists to surface. "starting" is shown as itself:
+  // folding it into "unknown" hid that the console is probing a qube that has
+  // only just booted, where silence is expected rather than a fault.
   function agentLabel(h: AgentHealth | undefined): string {
     switch (h) {
       case 'healthy': return 'healthy';
       case 'unreachable': return 'unreachable';
+      case 'starting': return 'starting';
       default: return 'unknown';
     }
   }
@@ -345,7 +348,7 @@
   .agent { font-weight: 500; }
   .agent.healthy { color: var(--systemGreen); }
   .agent.unreachable { color: var(--systemRed); }
-  .agent.unknown { color: var(--systemSecondary); }
+  .agent.unknown, .agent.starting { color: var(--systemSecondary); }
 
   .status-dot {
     width: 10px;

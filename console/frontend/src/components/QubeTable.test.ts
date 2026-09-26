@@ -109,6 +109,26 @@ describe('QubeTable agent recovery state', () => {
   })
 })
 
+describe('QubeTable agent health', () => {
+  // The backend reports "starting" while a freshly booted qube is inside its
+  // grace period (models.AgentHealthStarting). It is neither a fault nor an
+  // absence of information, so it must not read as either.
+  it('shows a booting agent as starting, not unknown or unreachable', () => {
+    renderTable(qubeFixture({ status: 'creating', agent_health: 'starting', agent_recovery: 'none' }))
+
+    const pill = screen.getByText(/^starting$/)
+    expect(pill).toHaveClass('agent', 'starting')
+    expect(screen.queryByText(/^unknown$/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^unreachable$/)).not.toBeInTheDocument()
+  })
+
+  it('shows a value it does not know as unknown', () => {
+    renderTable(qubeFixture({ agent_health: undefined }))
+
+    expect(screen.getByText(/^unknown$/)).toBeInTheDocument()
+  })
+})
+
 describe('QubeTable row', () => {
   it('names the zone and node the qube is placed on', () => {
     renderTable(
