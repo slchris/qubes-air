@@ -94,13 +94,28 @@ jobs:
     name: Validate Dependabot Config
     # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
     runs-on: ubuntu-24.04
+    # Installs and runs a PyPI package; the token only needs to read the repo.
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Check Dependabot config exists
-        run: test -f .github/dependabot.yml
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install check-jsonschema
+        run: python -m pip install check-jsonschema==0.36.2
+
+      # Schema validation, not an existence check: `test -f` stayed green while
+      # the file carried two schema errors (an empty `registries:` and the
+      # removed `reviewers:` option). The Dependabot schema is the SchemaStore
+      # copy vendored in the pinned check-jsonschema, so no network fetch.
+      - name: Validate Dependabot config against its schema
+        run: check-jsonschema --builtin-schema vendor.dependabot .github/dependabot.yml
 
   # 许可证合规检查
   license-check:
