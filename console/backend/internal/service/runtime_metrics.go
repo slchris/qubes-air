@@ -24,6 +24,9 @@ const (
 	// DefaultRuntimeMetricsPerQubeTimeout bounds the reads for one qube, so a
 	// single unresponsive VM or cluster cannot use up the whole sweep.
 	DefaultRuntimeMetricsPerQubeTimeout = 5 * time.Second
+	// DefaultRuntimeMetricsReuseWindow is how long a completed sweep's result
+	// is served to later callers before a new sweep runs.
+	DefaultRuntimeMetricsReuseWindow = 5 * time.Second
 )
 
 // Reasons a qube has no runtime measurement. They are part of the API
@@ -72,7 +75,9 @@ type QubeRuntimeMetrics struct {
 	Metrics  *provider.RuntimeMetrics `json:"metrics,omitempty"`
 }
 
-// RuntimeMetricsCollector reads each running qube from its configured provider.
+// RuntimeMetricsCollector reads each running qube from its configured
+// provider. One collector serves the whole process, which is what lets it
+// share sweeps between callers.
 type RuntimeMetricsCollector struct {
 	qubes     runtimeMetricQubeLister
 	zones     runtimeMetricZoneGetter
@@ -81,7 +86,15 @@ type RuntimeMetricsCollector struct {
 
 	sweepDeadline  time.Duration
 	perQubeTimeout time.Duration
+	reuseWindow    time.Duration
+	now            func() time.Time
 	logf           func(format string, args ...any)
+
+	// shareMu guards the sweep in flight and the last successful one.
+	shareMu  sync.Mutex
+	inflight *sharedSweep
+	last     *sharedSweep
+	lastAt   time.Time
 }
 
 // NewRuntimeMetricsCollector builds a collector with the default deadlines.
@@ -95,6 +108,8 @@ func NewRuntimeMetricsCollector(
 		qubes: qubes, zones: zones, infras: infras, providers: providers,
 		sweepDeadline:  DefaultRuntimeMetricsSweepDeadline,
 		perQubeTimeout: DefaultRuntimeMetricsPerQubeTimeout,
+		reuseWindow:    DefaultRuntimeMetricsReuseWindow,
+		now:            time.Now,
 		logf:           log.Printf,
 	}
 }
@@ -102,11 +117,66 @@ func NewRuntimeMetricsCollector(
 // Collect reports every qube, including non-running and unsupported resources,
 // so consumers can distinguish missing telemetry from an empty fleet.
 //
+// Callers share sweeps: one arriving while a sweep runs waits for it, and one
+// arriving within reuseWindow of a successful sweep gets that result. The
+// provider load is therefore bounded by time, not by how often the endpoint
+// is called. A failed sweep is not reused. The sweep runs detached from any
+// single caller, so a caller that gives up gets ctx.Err() while the others
+// still get the result. The returned slice is shared and must not be
+// modified.
+//
 // When the sweep deadline passes, the qubes not yet observed are reported with
 // RuntimeMetricsTimeout and the rest are returned: a partial answer is more
 // useful than none. An error means the qube list itself could not be read, or
 // the caller's own context ended.
 func (c *RuntimeMetricsCollector) Collect(ctx context.Context) ([]QubeRuntimeMetrics, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	call := c.joinSweep(ctx)
+	select {
+	case <-call.done:
+		return call.items, call.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// sharedSweep is one sweep's result, published by closing done.
+type sharedSweep struct {
+	done  chan struct{}
+	items []QubeRuntimeMetrics
+	err   error
+}
+
+// joinSweep returns the reusable last result, the sweep in flight, or a newly
+// started sweep, in that order of preference.
+func (c *RuntimeMetricsCollector) joinSweep(ctx context.Context) *sharedSweep {
+	c.shareMu.Lock()
+	defer c.shareMu.Unlock()
+	if c.last != nil && c.now().Sub(c.lastAt) < c.reuseWindow {
+		return c.last
+	}
+	if c.inflight == nil {
+		c.inflight = &sharedSweep{done: make(chan struct{})}
+		go c.runSharedSweep(context.WithoutCancel(ctx), c.inflight)
+	}
+	return c.inflight
+}
+
+func (c *RuntimeMetricsCollector) runSharedSweep(ctx context.Context, call *sharedSweep) {
+	call.items, call.err = c.sweep(ctx)
+	c.shareMu.Lock()
+	c.inflight = nil
+	if call.err == nil {
+		c.last, c.lastAt = call, c.now()
+	}
+	c.shareMu.Unlock()
+	close(call.done)
+}
+
+// sweep reads every qube once, within sweepDeadline.
+func (c *RuntimeMetricsCollector) sweep(ctx context.Context) ([]QubeRuntimeMetrics, error) {
 	sweep, cancel := context.WithTimeout(ctx, c.sweepDeadline)
 	defer cancel()
 	adapters := newSweepAdapters(sweep, c.providers)
@@ -128,9 +198,6 @@ func (c *RuntimeMetricsCollector) Collect(ctx context.Context) ([]QubeRuntimeMet
 		}
 	}
 	c.observeRunning(sweep, adapters, qubes, running, observations)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 	c.logUnobserved(observations, running)
 	return observations, nil
 }

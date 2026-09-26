@@ -434,6 +434,7 @@ func TestRuntimeMetricsCollectorBuildsOneAdapterPerZonePerSweep(t *testing.T) {
 		return runtimeAdapterStub{read: fixedMetrics}, nil
 	}))
 	collector, _ := newTestCollector(qubes, runtimeZoneStub{byID: zones}, computeInfra(), registry)
+	collector.reuseWindow = 0 // the second call below must sweep again
 
 	items, err := collector.Collect(context.Background())
 	require.NoError(t, err)
@@ -546,4 +547,147 @@ func (l *shiftingLister) List(_ context.Context, opts repository.QubeListOptions
 		return nil, nil
 	}
 	return current[opts.Offset:min(opts.Offset+opts.Limit, len(current))], nil
+}
+
+// countingLister counts sweeps (each starts with a first-page List) and can
+// fail the next ones.
+type countingLister struct {
+	qubes    []*models.Qube
+	pages    atomic.Int32
+	failNext atomic.Int32
+}
+
+func (l *countingLister) List(_ context.Context, opts repository.QubeListOptions) ([]*models.Qube, error) {
+	if opts.Offset == 0 {
+		l.pages.Add(1)
+		if l.failNext.Load() > 0 {
+			l.failNext.Add(-1)
+			return nil, errors.New("database unavailable")
+		}
+	}
+	if opts.Offset >= len(l.qubes) {
+		return nil, nil
+	}
+	return l.qubes[opts.Offset:min(opts.Offset+opts.Limit, len(l.qubes))], nil
+}
+
+// newSharedCollector wires a collector over a counting lister and a frozen
+// clock that only advance moves.
+func newSharedCollector(t *testing.T, read func(context.Context, *models.Qube) (provider.RuntimeMetrics, error)) (*RuntimeMetricsCollector, *countingLister, func(time.Duration)) {
+	t.Helper()
+	lister := &countingLister{qubes: []*models.Qube{runningMetricsQube("q1")}}
+	collector := NewRuntimeMetricsCollector(lister, proxmoxZone(), computeInfra(), registryWith(t, runtimeAdapterStub{read: read}))
+	collector.logf = (&logRecorder{}).logf
+	clock := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	collector.now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return clock
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		clock = clock.Add(d)
+	}
+	return collector, lister, advance
+}
+
+// A read-only token polling at the rate limit must not start a sweep per
+// request: callers arriving while a sweep runs wait for that one.
+func TestRuntimeMetricsCollectorSharesOneSweepBetweenConcurrentCallers(t *testing.T) {
+	release := make(chan struct{})
+	var reads atomic.Int32
+	collector, lister, _ := newSharedCollector(t, func(ctx context.Context, q *models.Qube) (provider.RuntimeMetrics, error) {
+		reads.Add(1)
+		<-release
+		return fixedMetrics(ctx, q)
+	})
+
+	const callers = 20
+	var wg sync.WaitGroup
+	results := make([][]QubeRuntimeMetrics, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			items, err := collector.Collect(context.Background())
+			assert.NoError(t, err)
+			results[i] = items
+		}()
+	}
+	time.Sleep(100 * time.Millisecond) // let the callers arrive while the sweep is held
+	close(release)
+	wg.Wait()
+
+	assert.Equal(t, int32(1), lister.pages.Load(), "one sweep for all concurrent callers")
+	assert.Equal(t, int32(1), reads.Load(), "one provider read per qube, not per caller")
+	for i, items := range results {
+		if assert.Len(t, items, 1, "caller %d", i) {
+			assert.NotNil(t, items[0].Metrics, "caller %d", i)
+		}
+	}
+}
+
+func TestRuntimeMetricsCollectorReusesAResultWithinTheWindowOnly(t *testing.T) {
+	collector, lister, advance := newSharedCollector(t, fixedMetrics)
+
+	first, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int32(1), lister.pages.Load())
+
+	advance(DefaultRuntimeMetricsReuseWindow - time.Millisecond)
+	again, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), lister.pages.Load(), "within the window the last result is served")
+	assert.Equal(t, first, again)
+
+	advance(time.Millisecond)
+	_, err = collector.Collect(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), lister.pages.Load(), "once the window has passed a new sweep runs")
+}
+
+func TestRuntimeMetricsCollectorDoesNotReuseAFailedSweep(t *testing.T) {
+	collector, lister, _ := newSharedCollector(t, fixedMetrics)
+	lister.failNext.Store(1)
+
+	_, err := collector.Collect(context.Background())
+	require.ErrorContains(t, err, "database unavailable")
+
+	items, err := collector.Collect(context.Background())
+	require.NoError(t, err, "a failure is not served from the reuse window")
+	require.Len(t, items, 1)
+	assert.NotNil(t, items[0].Metrics)
+	assert.Equal(t, int32(2), lister.pages.Load())
+}
+
+// A caller that gives up does not cancel the sweep others are waiting on, and
+// the sweep's result is still kept for the next caller.
+func TestRuntimeMetricsCollectorKeepsASharedSweepRunningWhenOneCallerLeaves(t *testing.T) {
+	release := make(chan struct{})
+	collector, lister, _ := newSharedCollector(t, func(ctx context.Context, q *models.Qube) (provider.RuntimeMetrics, error) {
+		<-release
+		if err := ctx.Err(); err != nil {
+			return provider.RuntimeMetrics{}, err
+		}
+		return fixedMetrics(ctx, q)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	leaving := make(chan error, 1)
+	go func() {
+		_, err := collector.Collect(ctx)
+		leaving <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-leaving, context.Canceled)
+	close(release)
+
+	items, err := collector.Collect(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.NotNil(t, items[0].Metrics, "the abandoned caller's context did not cancel the provider read")
+	assert.Equal(t, int32(1), lister.pages.Load(), "the next caller joined or reused that sweep")
 }

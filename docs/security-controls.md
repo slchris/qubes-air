@@ -149,12 +149,15 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   和读数，不含凭据或 provider 地址。
 - Proxmox 在读 `status/current` 之前先核验 compute VM 的所有权标记，不会读取、报告不属于该
   Qube 的 VM。
-- 对 provider 的请求量：每次 `/monitoring/qubes`，每个有运行中 Qube 的 zone 构造一次适配器
-  （从加密库解析一次凭据）；用户名/密码凭据的 zone 再加 1 个 `POST /api2/json/access/ticket` 登录，
-  API token 凭据不登录；每个运行中的 Qube 发 2 个 GET（所有权核验读 `config`、再读 `status/current`）。
-  即每次请求 `2 × 运行中 Qube 数 + 使用密码凭据的 zone 数` 个 PVE 请求，最多 8 路并发。请求结束时关闭
-  这些适配器的空闲连接；provider HTTP 客户端的空闲连接另有 30 秒超时（[UD-8d](runtime-defaults.md)）。
-  目前只有每客户端限流约束，没有跨请求的结果复用。
+- 对 provider 的请求量：一次采集中，每个有运行中 Qube 的 zone 构造一次适配器（从加密库解析一次
+  凭据）；用户名/密码凭据的 zone 再加 1 个 `POST /api2/json/access/ticket` 登录，API token 凭据不登录；
+  每个运行中的 Qube 发 2 个 GET（所有权核验读 `config`、再读 `status/current`）。即一次采集
+  `2 × 运行中 Qube 数 + 使用密码凭据的 zone 数` 个 PVE 请求，最多 8 路并发。采集结束时关闭这些适配器的
+  空闲连接；provider HTTP 客户端的空闲连接另有 30 秒超时（[UD-8d](runtime-defaults.md)）。
+- 采集按进程共享，与请求速率脱钩：采集进行中到达的请求等待同一次采集，成功采集完成后 5 秒内到达的请求
+  直接复用结果，所以无论调用方以多高速率请求（包括 read-only token 顶着 20 req/s 的限流），provider
+  采集最多每"一次采集耗时 + 5 秒"发生一轮。失败的采集（列不出 Qube）不复用，下一个请求会重新采集；
+  采集与发起它的连接解绑，某个调用方断开不会中断其他调用方在等的采集（[UD-25b](runtime-defaults.md)）。
 
 ## Exec：JSON 参数列表
 
