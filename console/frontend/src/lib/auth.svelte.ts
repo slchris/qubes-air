@@ -15,12 +15,13 @@
 
 /**
  * Views backed only by fleet-wide endpoints. The server refuses all of them to
- * a zone-scoped credential (403): credentials, billing and monitoring are
- * fleet prefixes, and the job history is the unqualified job listing. Settings
- * is fleet-only too, but its view also holds the sign-in and sign-out controls,
- * so it stays reachable and shows only those (see SettingsView).
+ * a zone-scoped credential (403): credentials, billing, monitoring and the
+ * desktop approval queue are fleet prefixes, and the job history is the
+ * unqualified job listing. Settings is fleet-only too, but its view also holds
+ * the sign-in and sign-out controls, so it stays reachable and shows only
+ * those (see SettingsView).
  */
-export const FLEET_ONLY_VIEWS: ReadonlySet<string> = new Set(['jobs', 'credentials', 'billing', 'monitoring']);
+export const FLEET_ONLY_VIEWS: ReadonlySet<string> = new Set(['jobs', 'desktop', 'credentials', 'billing', 'monitoring']);
 
 class AuthState {
   /**

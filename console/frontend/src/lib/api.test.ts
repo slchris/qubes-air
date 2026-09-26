@@ -3,14 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiException,
   apiFetch,
+  approveDesktopAccessRequest,
+  denyDesktopAccessRequest,
   getApiBaseUrl,
   getQubeAppMenus,
   launchQubeApp,
+  listDesktopAccessRequests,
   listQubes,
   login,
   logout,
   refreshSessionScope,
   responseError,
+  stopDesktopAccessRequest,
 } from './api'
 import { auth } from './auth.svelte'
 
@@ -250,6 +254,61 @@ describe('desktop app API', () => {
     fetchMock.mockResolvedValue(jsonResponse(401, { error: 'Unauthorized' }))
 
     await expect(getQubeAppMenus('q1')).rejects.toThrow()
+    expect(auth.required).toBe(true)
+  })
+})
+
+describe('desktop consent', () => {
+  it('reads the approval queue with the session cookie', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { requests: [{ id: 'request-1' }] }))
+
+    await expect(listDesktopAccessRequests()).resolves.toEqual([{ id: 'request-1' }])
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/desktop-access')
+    expect(init.credentials).toBe('include')
+  })
+
+  it.each([
+    [approveDesktopAccessRequest, 'approve'],
+    [denyDesktopAccessRequest, 'deny'],
+  ] as const)('sends %s with the console action header and an encoded id', async (action, path) => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { id: 'request/one', state: 'approved' }))
+
+    await expect(action('request/one')).resolves.toEqual({ id: 'request/one', state: 'approved' })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`/api/v1/desktop-access/request%2Fone/${path}`)
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('include')
+    expect(init.headers).toMatchObject({ 'X-Console-Action': 'desktop-consent' })
+    expect(init.body).toBeUndefined()
+  })
+
+  it('stops a grant with the same header', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+
+    await stopDesktopAccessRequest('request-1')
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/v1/desktop-access/request-1/stop')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toMatchObject({ 'X-Console-Action': 'desktop-consent' })
+  })
+
+  it("surfaces the server's reason for a refused decision", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(403, {
+      error: 'Forbidden', message: 'desktop approvals require a fleet-wide control session in the Console', code: 403,
+    }))
+    await expect(approveDesktopAccessRequest('request-1')).rejects.toMatchObject({
+      status: 403, message: 'desktop approvals require a fleet-wide control session in the Console',
+    })
+
+    fetchMock.mockResolvedValue(jsonResponse(409, { error: 'Conflict', message: 'desktop access was stopped', code: 409 }))
+    await expect(stopDesktopAccessRequest('request-1')).rejects.toBeInstanceOf(ApiException)
+  })
+
+  it('raises the sign-in gate when the session has expired', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(401, { error: 'Unauthorized', code: 401 }))
+
+    await expect(denyDesktopAccessRequest('request-1')).rejects.toMatchObject({ status: 401 })
     expect(auth.required).toBe(true)
   })
 })

@@ -258,6 +258,22 @@ export interface SessionScope {
   zones?: string[] | null;
 }
 
+// MCP desktop consent (GET /desktop-access). Approval metadata only: the
+// one-time grant goes to the waiting MCP caller and never to the browser, so
+// no type here has a field for it. Frame is the only operation the console
+// issues grants for.
+export type DesktopAccessOperation = 'frame';
+export type DesktopAccessState = 'pending' | 'approved' | 'active';
+
+export interface DesktopAccessRequest {
+  id: string;
+  subject: string;
+  qube_id: string;
+  operation: DesktopAccessOperation;
+  state: DesktopAccessState;
+  expires_at: string;
+}
+
 // Error response from API
 export interface ApiError {
   // The HTTP status text ("Bad Request"), not the reason. The reason is in

@@ -25,6 +25,7 @@ import type {
   StatusResponse,
   ApiError,
   SessionScope,
+  DesktopAccessRequest,
 } from './types';
 
 /**
@@ -575,4 +576,56 @@ export async function listJobs(qubeId?: string, limit?: number): Promise<JobList
  */
 export async function getZoneCapacity(zoneId: string): Promise<ZoneCapacity> {
   return get<ZoneCapacity>(`/zones/${zoneId}/capacity`);
+}
+
+// ============================================================================
+// Desktop consent API
+// ============================================================================
+
+/**
+ * The header every consent decision carries. The server refuses approve, deny
+ * and stop without it; a cross-site form cannot set a header, and the console
+ * does not list it for cross-origin requests.
+ */
+const DESKTOP_ACTION_HEADERS = { 'X-Console-Action': 'desktop-consent' } as const;
+
+/**
+ * Lists the MCP desktop requests awaiting a decision and the grants still
+ * live. Needs a fleet-wide control session; a Bearer token cannot read it.
+ */
+export async function listDesktopAccessRequests(): Promise<DesktopAccessRequest[]> {
+  const result = await get<{ requests?: DesktopAccessRequest[] | null }>('/desktop-access');
+  return result.requests ?? [];
+}
+
+/** Allows a request: the one-time grant goes to the waiting MCP caller. */
+export async function approveDesktopAccessRequest(id: string): Promise<DesktopAccessRequest> {
+  return desktopAccessDecision(id, 'approve');
+}
+
+/** Refuses a pending request. */
+export async function denyDesktopAccessRequest(id: string): Promise<DesktopAccessRequest> {
+  return desktopAccessDecision(id, 'deny');
+}
+
+/** Revokes a pending request or a live grant; a capture in progress ends. */
+export async function stopDesktopAccessRequest(id: string): Promise<void> {
+  const response = await apiFetch(`/desktop-access/${encodeURIComponent(id)}/stop`, {
+    method: 'POST',
+    headers: DESKTOP_ACTION_HEADERS,
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+}
+
+async function desktopAccessDecision(id: string, action: 'approve' | 'deny'): Promise<DesktopAccessRequest> {
+  const response = await apiFetch(`/desktop-access/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+    headers: DESKTOP_ACTION_HEADERS,
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  return response.json() as Promise<DesktopAccessRequest>;
 }
