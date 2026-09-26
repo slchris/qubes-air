@@ -141,6 +141,10 @@ async function serveJob(route: Route, backend: Backend, id: string, part: 'job' 
 // Every (method, path) the console may call on this path. Whether a request is
 // known is decided HERE, before the session check, so an unexpected call is
 // recorded even when it is made (and refused) before login.
+// What POST /session and GET /session report for the operator's fleet-wide
+// control token: labels only, never the token (zones is always an array).
+const SESSION_SCOPE = { subject: 'operator', scope: 'control', zones: [] as string[] };
+
 const ROUTES: MockRoute[] = [
   {
     method: 'POST', pattern: /^\/session$/, public: true,
@@ -148,10 +152,14 @@ const ROUTES: MockRoute[] = [
       const body = route.request().postDataJSON() as { token?: string };
       backend.authenticated = body.token === TOKEN;
       await route.fulfill(backend.authenticated
-        ? { status: 200, json: { subject: 'operator' } }
+        ? { status: 200, json: { ...SESSION_SCOPE, expires_at: '2026-09-26T00:30:00Z' } }
         : { status: 401, json: { error: 'Unauthorized', message: 'invalid token' } });
     },
   },
+  // GET /session (session_handler.go Current): the scope the session cookie
+  // resolves to. The UI reads it before it renders the shell; before login the
+  // session check below answers 401, as the real console does.
+  { method: 'GET', pattern: /^\/session$/, handle: (route) => route.fulfill({ json: SESSION_SCOPE }) },
   {
     method: 'GET', pattern: /^\/qubes$/,
     handle: async (route, backend) => {
