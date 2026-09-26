@@ -3,7 +3,8 @@
 # 常用构建和开发命令
 
 .PHONY: help build build-backup clean dev test agent-deb publish-agent-deb release-agent \
-	pre-commit audit check-tools diff-check test-race lint-new lint-whole-module gosec-new gosec-ci-new \
+	pre-commit audit check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-new lint-whole-module gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
 	agent-deb-test
@@ -18,7 +19,7 @@ help:
 	@echo "  build-frontend Build Svelte frontend"
 	@echo "  dev            Start development servers"
 	@echo "  test           Run tests"
-	@echo "  pre-commit     提交前增量门禁: test/race/lint/gosec/复杂度/前端/Shell/文档"
+	@echo "  pre-commit     提交前增量门禁: test/race/覆盖率/入口冒烟/lint/gosec/复杂度/前端/Shell/文档"
 	@echo "  audit          里程碑完整审计: 对全部存量代码执行所有门禁"
 	@echo "  clean          Clean build artifacts"
 	@echo ""
@@ -114,10 +115,12 @@ GOLANGCI_LINT ?= golangci-lint
 SHELLCHECK ?= shellcheck
 GOVULNCHECK ?= govulncheck
 
-pre-commit: check-tools diff-check test-race lint-new lint-whole-module gosec-new gosec-ci-new complexity-new \
+pre-commit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-new lint-whole-module gosec-new gosec-ci-new complexity-new \
 	vuln-check frontend-check frontend-audit-new shellcheck-new docs-check
 
-audit: check-tools diff-check test-race lint-all gosec-all gosec-ci complexity-all \
+audit: check-tools diff-check test-race coverage-gate smoke-entrypoints \
+	lint-all gosec-all gosec-ci complexity-all \
 	vuln-check frontend-check frontend-audit shellcheck-all docs-check
 
 check-tools:
@@ -130,6 +133,42 @@ diff-check:
 
 test-race:
 	cd console/backend && go test -race -coverprofile=coverage.out ./...
+
+# Go 语句总覆盖率下限，读 test-race 生成的 coverage.out（与 CI go-test 同为 -race 口径）。
+# 下调这个值就是放宽门禁，须按 AGENTS.md §4 在 commit 里写明原因和风险影响。
+GO_COVERAGE_MIN ?= 61.0
+
+coverage-gate: test-race
+	@coverage="$$(cd console/backend && go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$NF); print $$NF}')"; \
+	[ -n "$$coverage" ] || { echo "无法读取 Go 总覆盖率 (console/backend/coverage.out)" >&2; exit 1; }; \
+	awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" \
+		'BEGIN { if (actual + 0 < minimum + 0) { printf "Go 覆盖率不足: %s%% < %s%%\n", actual, minimum; exit 1 }; printf "Go 覆盖率: %s%% (门槛 %s%%)\n", actual, minimum }'
+
+# 入口冒烟：每个 cmd/* 都要能构建并启动到参数解析。只构建一次，二进制放临时目录、结束即删。
+# 入口列表取自构建产物，新增的 cmd 自动纳入；不支持 -h 的入口在 case 里单独处理：
+#   - grpc-smoke 在本机回环上完成一次真实的 mTLS 往返；
+#   - relay-client 不解析参数，改为验证它在 QUBES_AIR_TRANSPORT_ENABLED 不为 true 时拒绝启动；
+#   - qubes-air-backup 的 -h 挂在子命令上。
+# 每一项失败都立即让目标失败，而不是只看循环最后一次的退出码。
+smoke-entrypoints:
+	@bindir="$$(mktemp -d)" || exit 1; trap 'rm -rf "$$bindir"' EXIT; \
+	(cd console/backend && go build -o "$$bindir/" ./cmd/...) || { echo "smoke: 构建 cmd/... 失败" >&2; exit 1; }; \
+	"$$bindir/grpc-smoke" -addr 127.0.0.1:0 || { echo "smoke: grpc-smoke 本机 mTLS 往返失败" >&2; exit 1; }; \
+	for entry in qubes-air-agent server; do \
+		"$$bindir/$$entry" -version || { echo "smoke: $$entry -version 失败" >&2; exit 1; }; \
+	done; \
+	for path in "$$bindir"/*; do \
+		entry="$${path##*/}"; \
+		case "$$entry" in relay-client|qubes-air-backup) continue ;; esac; \
+		"$$path" -h >/dev/null 2>&1 || { echo "smoke: $$entry -h 失败" >&2; exit 1; }; \
+	done; \
+	"$$bindir/qubes-air-backup" create -h >/dev/null 2>&1 || { echo "smoke: qubes-air-backup create -h 失败" >&2; exit 1; }; \
+	output="$$(QUBES_AIR_TRANSPORT_ENABLED=false "$$bindir/relay-client" 2>&1)"; \
+	case "$$output" in \
+		*"QUBES_AIR_TRANSPORT_ENABLED is not true"*) ;; \
+		*) echo "smoke: relay-client 启动保护失效: $$output" >&2; exit 1 ;; \
+	esac; \
+	echo "smoke-entrypoints: OK"
 
 # golangci-lint 只分析当前 GOOS/GOARCH 会编译的文件：在 macOS 上 *_linux.go 和
 # //go:build linux 文件整个不可见，而 CI 的 Go Lint 跑在 linux/amd64。所以每个 golangci-lint

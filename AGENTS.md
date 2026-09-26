@@ -44,7 +44,8 @@ linux 专属文件否则不会被 lint）。仍看不见的是 `nolintlint` 报�
 | 范围 | 命令/规则 |
 |---|---|
 | Diff | `git diff --check <base>` 必须通过；不得提交冲突标记、尾随空格或意外生成物 |
-| Go 测试 | `go test -race -coverprofile=coverage.out ./...`；新增行为必须有成功、失败和边界测试 |
+| Go 测试 | `go test -race -coverprofile=coverage.out ./...`；新增行为必须有成功、失败和边界测试；总语句覆盖率不低于 61%（`coverage-gate`） |
+| 入口冒烟 | `smoke-entrypoints`：全部 `cmd/*` 可构建并通过启动冒烟，`grpc-smoke` 完成一次本机 mTLS 往返 |
 | Go lint | `golangci-lint`，配置以根目录 `.golangci.yml` 为准；本机平台与 `linux/amd64` 各跑一遍 |
 | 安全扫描 | 显式运行 `gosec` linter；不得用 `-no-fail`；涉及依赖时运行 `govulncheck` |
 | 复杂度 | `gocyclo` 最大 15；函数最大 100 行、50 条语句，由 `gocyclo`/`funlen` 强制 |
