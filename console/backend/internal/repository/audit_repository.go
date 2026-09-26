@@ -89,8 +89,8 @@ func NewAuditRepository(db *database.DB, caps AuditCaps) *AuditRepository {
 const insertAuditEvent = `
 INSERT INTO audit_events (occurred_at, request_id, authenticated, auth_disabled, subject, source,
 	method, route, object, object_truncated, status, outcome, latency_ms, zone_scope,
-	persist_class, suppressed, suppressed_since)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	persist_class, suppressed, suppressed_since, suppressed_sources, suppressed_top_sources)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // AppendEvent stores one event exactly as it was logged, in its persist class.
 func (r *AuditRepository) AppendEvent(ctx context.Context, ev audit.Event) error {
@@ -98,19 +98,21 @@ func (r *AuditRepository) AppendEvent(ctx context.Context, ev audit.Event) error
 	return r.append(ctx, class,
 		ev.Time.UnixNano(), ev.RequestID, ev.Authenticated, ev.AuthDisabled, ev.Subject, ev.Source,
 		ev.Method, ev.Route, ev.Object, ev.ObjectTruncated, ev.Status, ev.Outcome, ev.LatencyMS, ev.ZoneScope,
-		string(class), 0, 0)
+		string(class), 0, 0, 0, "")
 }
 
 // AppendSuppression stores a summary row for sampled events the budget kept
 // out: outcome "suppressed", suppressed = the count, suppressed_since and
-// occurred_at = the first and last of their times. It is not a request, so the
-// request fields are empty; it belongs to, and is capped with, the sampled
-// class.
+// occurred_at = the first and last of their times, suppressed_sources and
+// suppressed_top_sources = where they came from, and auth_disabled as the
+// events had it. It is not a request, so the request fields (request_id,
+// subject, source, method, route, object, zone_scope) are empty; it belongs
+// to, and is capped with, the sampled class.
 func (r *AuditRepository) AppendSuppression(ctx context.Context, s audit.Suppression) error {
 	return r.append(ctx, audit.ClassSampled,
-		s.Last.UnixNano(), "", false, false, audit.AnonymousSubject, "",
-		"", "", "", false, 0, audit.OutcomeSuppressed, 0, "none",
-		string(audit.ClassSampled), s.Count, s.First.UnixNano())
+		s.Last.UnixNano(), "", false, s.AuthDisabled, "", "",
+		"", "", "", false, 0, audit.OutcomeSuppressed, 0, "",
+		string(audit.ClassSampled), s.Count, s.First.UnixNano(), s.Sources, s.SourcesText())
 }
 
 // append inserts one row and, if that takes its class over the cap, evicts

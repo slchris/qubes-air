@@ -203,7 +203,11 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   - `sampled`：所有 429（不论是否认证），以及没有解析出凭据**且**没有成功的请求（401、未认证时的
     413/400/5xx）。先过全局令牌桶
     （突发 20 条，之后每 10 秒 1 条），超出的只计数，有计数时每分钟写一条汇总行（`outcome: suppressed`、
-    `suppressed` 为条数、`suppressed_since` 与 `occurred_at` 为首末时间，请求字段为空）。上限 20,000 行。
+    `suppressed` 为条数、`suppressed_since` 与 `occurred_at` 为首末时间、`auth_disabled` 取这些事件自己的值，
+    请求字段为空）。汇总行还记下它们从哪来，免得洪水把"谁在探测"一并抹掉：`suppressed_sources` 是不同来源
+    前缀（IPv4 /24、IPv6 /64，同一 /64 里轮换地址算一个）的个数，`suppressed_top_sources` 是最忙的 5 个及其
+    条数，例如 `198.51.100.0/24 4211; 2001:db8:7::/64 12; others 37`。每个汇总最多跟踪 1024 个前缀，超出后
+    新出现的前缀只计入 `others`，所以轮换地址也撑不大内存。上限 20,000 行。
   - 插入使某类超过上限时，在同一事务里删掉**该类**最旧的行，删到上限的 99%。两类互不驱逐，表的总行数
     不超过 220,000。
 

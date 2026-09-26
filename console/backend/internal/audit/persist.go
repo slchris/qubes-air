@@ -40,15 +40,6 @@ const (
 // events the budget did not store one by one. It is never an HTTP outcome.
 const OutcomeSuppressed = "suppressed"
 
-// Suppression summarizes the sampled events the budget kept out of the store.
-// Each of them still has its log line.
-type Suppression struct {
-	// First and Last bound the events' own times.
-	First time.Time
-	Last  time.Time
-	Count int64
-}
-
 // Store is where a Persister writes. Only the Persister's writer goroutine
 // calls it, one call at a time, each under a deadline.
 type Store interface {
@@ -152,7 +143,7 @@ type Persister struct {
 	mu      sync.Mutex
 	tokens  float64
 	refill  time.Time
-	pending Suppression
+	pending suppressionWindow
 
 	logMu      sync.Mutex
 	lastLog    time.Time
@@ -262,13 +253,7 @@ func (p *Persister) admit(ev Event) bool {
 		p.tokens--
 		return true
 	}
-	if p.pending.Count == 0 || ev.Time.Before(p.pending.First) {
-		p.pending.First = ev.Time
-	}
-	if p.pending.Count == 0 || ev.Time.After(p.pending.Last) {
-		p.pending.Last = ev.Time
-	}
-	p.pending.Count++
+	p.pending.add(ev)
 	p.suppressed.Add(1)
 	return false
 }
@@ -343,15 +328,16 @@ func (p *Persister) writeEvent(parent context.Context, ev Event) {
 // flush writes the pending summary, if any.
 func (p *Persister) flush(parent context.Context) {
 	p.mu.Lock()
-	s := p.pending
-	p.pending = Suppression{}
+	s, ok := p.pending.take()
 	p.mu.Unlock()
-	if s.Count == 0 {
+	if !ok {
 		return
 	}
-	p.cfg.Logf("audit: %d unauthenticated request(s) that did not succeed, between %s and %s, "+
-		"were logged but not stored one by one (persisted-trail budget); one summary row stands for them",
-		s.Count, s.First.UTC().Format(time.RFC3339Nano), s.Last.UTC().Format(time.RFC3339Nano))
+	p.cfg.Logf("audit: %d throttled or unauthenticated request(s) that did not succeed, between %s and %s, "+
+		"from %d source prefix(es) (%s), were logged but not stored one by one (persisted-trail budget); "+
+		"one summary row stands for them",
+		s.Count, s.First.UTC().Format(time.RFC3339Nano), s.Last.UTC().Format(time.RFC3339Nano),
+		s.Sources, s.SourcesText())
 	p.write(parent, "suppression summary", func(ctx context.Context) error {
 		return p.store.AppendSuppression(ctx, s)
 	})

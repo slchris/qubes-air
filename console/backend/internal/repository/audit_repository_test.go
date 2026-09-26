@@ -87,11 +87,14 @@ func TestAuditRepositoryStoresTheEventAsLogged(t *testing.T) {
 }
 
 // A suppression summary is a sampled-class row that says how many events it
-// stands for and over what span, with no request fields.
+// stands for, over what span and from where, with the auth mode the events
+// had and no request fields.
 func TestAuditRepositoryStoresSuppressionSummary(t *testing.T) {
 	db := newAuditTestDB(t)
 	repo := NewAuditRepository(db, DefaultAuditCaps())
-	s := audit.Suppression{First: auditT0, Last: auditT0.Add(time.Minute), Count: 4242}
+	s := audit.Suppression{First: auditT0, Last: auditT0.Add(time.Minute), Count: 4242, Sources: 3,
+		TopSources:   []audit.SourceCount{{Prefix: "198.51.100.0/24", Count: 4200}, {Prefix: "2001:db8:1::/64", Count: 40}},
+		AuthDisabled: true}
 	require.NoError(t, repo.AppendSuppression(context.Background(), s))
 
 	got, class, suppressed, since := storedEvent(t, db, "")
@@ -100,10 +103,18 @@ func TestAuditRepositoryStoresSuppressionSummary(t *testing.T) {
 	assert.Equal(t, auditT0.UnixNano(), since)
 	assert.True(t, got.Time.Equal(s.Last))
 	assert.Equal(t, audit.OutcomeSuppressed, got.Outcome)
-	assert.Equal(t, audit.AnonymousSubject, got.Subject)
+	assert.True(t, got.AuthDisabled, "the summary keeps the events' auth mode")
 	assert.False(t, got.Authenticated)
-	assert.Empty(t, got.Route)
-	assert.Empty(t, got.Source)
+	for name, field := range map[string]string{"subject": got.Subject, "source": got.Source, "route": got.Route,
+		"method": got.Method, "object": got.Object, "zone_scope": got.ZoneScope} {
+		assert.Empty(t, field, "a summary is not a request: %s must be empty", name)
+	}
+	var sources int
+	var top string
+	require.NoError(t, db.DB().QueryRowContext(context.Background(),
+		`SELECT suppressed_sources, suppressed_top_sources FROM audit_events WHERE outcome = 'suppressed'`).Scan(&sources, &top))
+	assert.Equal(t, 3, sources)
+	assert.Equal(t, "198.51.100.0/24 4200; 2001:db8:1::/64 40; others 2", top)
 }
 
 // The headline bound: an unauthenticated flood fills at most the sampled cap,
@@ -212,7 +223,7 @@ func TestAuditRepositoryPrunesABacklogInBatches(t *testing.T) {
 	require.NoError(t, err)
 	for i := range backlog {
 		_, err := tx.ExecContext(ctx, insertAuditEvent, auditT0.Add(time.Duration(i)).UnixNano(), fmt.Sprintf("old-%d", i),
-			true, false, "operator", "192.0.2.1", "POST", "/r", "", false, 200, "success", 0, "fleet", "full", 0, 0)
+			true, false, "operator", "192.0.2.1", "POST", "/r", "", false, 200, "success", 0, "fleet", "full", 0, 0, 0, "")
 		require.NoError(t, err)
 	}
 	require.NoError(t, tx.Commit())

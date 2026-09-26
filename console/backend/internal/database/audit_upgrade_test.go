@@ -147,7 +147,7 @@ func TestNewerSchemaWithAWiderAuditTableIsRefusedAsNewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "newer.db")
 	db := openPath(t, path)
 	ctx := context.Background()
-	_, err := db.DB().ExecContext(ctx, `ALTER TABLE audit_events ADD COLUMN auth_method TEXT NOT NULL DEFAULT ''`)
+	_, err := db.DB().ExecContext(ctx, `ALTER TABLE audit_events ADD COLUMN added_later TEXT NOT NULL DEFAULT ''`)
 	require.NoError(t, err)
 	// #nosec G202 -- a constant expression.
 	_, err = db.DB().ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion+1))

@@ -169,10 +169,10 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | # | 默认值 | 取值 | 位置 |
 |---|---|---|---|
-| UD-24 | 审计行留存期与清理 | **90 天**：严格早于 `now − 90 天` 的行被删，恰好等于的保留；**每小时**清理一次（启动时先清一次），每批 **1000** 行各自一个短事务，每次最多 **30 秒**，停机时取消 | `internal/service/audit_retention.go:13`（`DefaultAuditRetention`）、`:16`（`DefaultAuditPruneInterval`）、`:19`（`DefaultAuditPruneTimeout`）；分批 `internal/repository/audit_repository.go:31`（`auditPruneBatch`）、`:198`（`PruneBefore`） |
-| UD-24b | 每类行数硬上限 | `full`（已认证或成功的请求，429 除外）**200,000** 行，`sampled`（所有 429，以及未认证且未成功的请求）**20,000** 行；插入使某类超限时在同一事务里删该类最旧的行，删到上限的 **99%**；两类互不驱逐。**上限是判断值**；行宽实测：典型约 265 字节（含索引），最大约 683 字节 | `internal/repository/audit_repository.go:24`、`:25`（常量）、`:120`（`append`）、`:137`（删到 99%）、`:150`（`trimAuditClass`） |
-| UD-24c | `sampled` 类的落库预算 | 全局令牌桶：突发 **20** 条，之后每 **10 秒** 1 条；超出只计数，有计数时每 **60 秒**写一条汇总行（`outcome: suppressed`） | `internal/audit/persist.go:28`、`:29`（`DefaultSampledBurst`/`DefaultSampledEvery`）、`:32`（`DefaultFlushInterval`）；分类 `internal/audit/audit.go:141`（`Event.Class`） |
-| UD-24d | 落库队列、写超时与停机 | 队列 **1024**（满则丢弃并计数，不等待）；单次写 **5 秒**超时；停机时 `Stop` 先等已在写的那一条（最多一个写超时，5 秒），再用最多 **5 秒**排空队列与汇总行，合计不超过 10 秒；`Stop` 之后队列里的事件不再按完整写超时写入，宽限期用完剩下的计为丢失；失败日志第一次立即写，之后每 **60 秒**最多一行 | `internal/audit/persist.go:19`（`DefaultQueueSize`）、`:21`（`DefaultWriteTimeout`）、`:24`（`DefaultStopGrace`）、`:36`（`DefaultFailureLogEvery`）、`:223`（`Submit`，不阻塞） |
+| UD-24 | 审计行留存期与清理 | **90 天**：严格早于 `now − 90 天` 的行被删，恰好等于的保留；**每小时**清理一次（启动时先清一次），每批 **1000** 行各自一个短事务，每次最多 **30 秒**，停机时取消 | `internal/service/audit_retention.go:13`（`DefaultAuditRetention`）、`:16`（`DefaultAuditPruneInterval`）、`:19`（`DefaultAuditPruneTimeout`）；分批 `internal/repository/audit_repository.go:31`（`auditPruneBatch`）、`:200`（`PruneBefore`） |
+| UD-24b | 每类行数硬上限 | `full`（已认证或成功的请求，429 除外）**200,000** 行，`sampled`（所有 429，以及未认证且未成功的请求）**20,000** 行；插入使某类超限时在同一事务里删该类最旧的行，删到上限的 **99%**；两类互不驱逐。**上限是判断值**；行宽实测：典型约 265 字节（含索引），最大约 683 字节 | `internal/repository/audit_repository.go:24`、`:25`（常量）、`:122`（`append`）、`:139`（删到 99%）、`:152`（`trimAuditClass`） |
+| UD-24c | `sampled` 类的落库预算 | 全局令牌桶：突发 **20** 条，之后每 **10 秒** 1 条；超出只计数，有计数时每 **60 秒**写一条汇总行（`outcome: suppressed`）。汇总行记来源：按前缀（IPv4 /24、IPv6 /64）数不同来源，每个汇总最多跟踪 **1024** 个前缀（之后新出现的前缀只计为 untracked，内存有界），并写出最忙的 **5** 个及其条数 | `internal/audit/persist.go:28`、`:29`（`DefaultSampledBurst`/`DefaultSampledEvery`）、`:32`（`DefaultFlushInterval`）；`internal/audit/suppression.go:17`（`MaxTrackedSourcePrefixes`）、`:19`（`TopSourcePrefixes`）、`:72`（`SourcePrefix`）；分类 `internal/audit/audit.go:141`（`Event.Class`） |
+| UD-24d | 落库队列、写超时与停机 | 队列 **1024**（满则丢弃并计数，不等待）；单次写 **5 秒**超时；停机时 `Stop` 先等已在写的那一条（最多一个写超时，5 秒），再用最多 **5 秒**排空队列与汇总行，合计不超过 10 秒；`Stop` 之后队列里的事件不再按完整写超时写入，宽限期用完剩下的计为丢失；失败日志第一次立即写，之后每 **60 秒**最多一行 | `internal/audit/persist.go:19`（`DefaultQueueSize`）、`:21`（`DefaultWriteTimeout`）、`:24`（`DefaultStopGrace`）、`:36`（`DefaultFailureLogEvery`）、`:214`（`Submit`，不阻塞） |
 | UD-24e | `/health` 的 `audit_trail` | `ok` / `degraded`（最近一次写失败或有事件被丢，此后没有成功写入）/ `disabled`（未接线，只在测试里出现）；**只作信息**，不改变 `status` 与状态码 | `cmd/server/audittrail.go:55`（取值）、`:61`（`health`）；`cmd/server/main.go:1289`（`healthBody` 字段）、`:1311`（`healthHandler` 入参） |
 
 ## 2. SQLite 结构（D-6）
@@ -190,14 +190,14 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 
 | 项 | 事实 | 位置 |
 |---|---|---|
-| 当前 schema 版本 | `SchemaVersion = 4`（3：`bootstrap_tokens.placeholder_spki_sha256`，bootstrap 对端 pin；4：新表 `audit_events`，持久化 API 审计轨迹） | `console/backend/internal/database/database.go:232`；命名迁移步骤按版本顺序在 `migrate()` 里依次执行（`database.go:285`）：v3 `internal/database/bootstrappin.go`（`migrateBootstrapPeerPin`）、v4 `internal/database/audit.go:86`（`migrateAudit`） |
+| 当前 schema 版本 | `SchemaVersion = 4`（3：`bootstrap_tokens.placeholder_spki_sha256`，bootstrap 对端 pin；4：新表 `audit_events`，持久化 API 审计轨迹） | `console/backend/internal/database/database.go:232`；命名迁移步骤按版本顺序在 `migrate()` 里依次执行（`database.go:285`）：v3 `internal/database/bootstrappin.go`（`migrateBootstrapPeerPin`）、v4 `internal/database/audit.go:93`（`migrateAudit`） |
 | 版本写入 / 拒绝更新库 | 读到更高版本即报错拒绝打开；否则把 `user_version` 盖成当前值 | `database.go:299-317`（`applySchemaVersion`）、`:320-326`（`UserVersion`） |
 | 加列迁移 | `addColumnIfMissing`：先 `PRAGMA table_info` 再 `ALTER TABLE ADD COLUMN`，可重复执行；非空列必须给确定性默认值（`key_version` 回填 1） | `database.go:328-339`（说明）、`:341`（实现） |
 | 备份/恢复侧的版本校验 | `ErrSchemaTooNew`；"新控制台备份恢复到旧控制台"会被拒绝 | `docs/disaster-recovery.md:80`、`:84-89` |
 | 无外键设计（`qube_infra`） | 删除 qube 行不删除基础设施，只有 `DestroyStorage` 会；`protected` 默认 1 用于挡住不可逆删除 | `database.go:424-431`（注释与建表） |
 | 无外键设计（`jobs`） | job 是审计轨迹而非轮询目标，不随 qube 释放级联删除 | `database.go:465-472` |
-| 无外键设计（`audit_events`） | 审计行必须比它点名的 qube/zone 活得久，与 `jobs` 同理 | `internal/database/audit.go:34-35`（注释） |
-| 同名表列校验（`audit_events`） | 库里已有同名表、但开头的列不是 v4 这一组（未发布构建建过不含 `request_id` 的版本）时**拒绝打开**并点名列差异，`user_version` 不被改写，而不是在建索引时报 `no such column` 或混写两种格式；v4 之后的列只允许追加在末尾，这样的库按“schema 比本构建新”拒绝 | `internal/database/audit.go:102`（`checkAuditEventsColumns`）；测试 `internal/database/audit_upgrade_test.go`（`TestRefusesAuditEventsFromAnotherBuild`） |
+| 无外键设计（`audit_events`） | 审计行必须比它点名的 qube/zone 活得久，与 `jobs` 同理 | `internal/database/audit.go:38-39`（注释） |
+| 同名表列校验（`audit_events`） | 库里已有同名表、但开头的列不是 v4 这一组（未发布构建建过不含 `request_id` 的版本）时**拒绝打开**并点名列差异，`user_version` 不被改写，而不是在建索引时报 `no such column` 或混写两种格式；v4 之后的列只允许追加在末尾，这样的库按“schema 比本构建新”拒绝 | `internal/database/audit.go:109`（`checkAuditEventsColumns`）；测试 `internal/database/audit_upgrade_test.go`（`TestRefusesAuditEventsFromAnotherBuild`） |
 
 ### 2.1 表与索引清单（11 张表 / 10 个索引）
 
@@ -212,7 +212,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | 7 | `bootstrap_tokens` | `database.go:531` | `secret_hash`（存 hash，不存 token） | qube_id, qube_name, created_at, not_after, **redeemed_at**（单次使用）, **placeholder_spki_sha256**（v3 加列迁移，默认空串；空 pin 被读取方拒绝） |
 | 8 | `credentials` | `database.go:544` | `id` | name, type, description, **encrypted_data**, **key_version（默认 1）**, last_used |
 | 9 | `settings` | `database.go:557` | `key` | value, updated_at |
-| 10 | `audit_events` | `internal/database/audit.go:37` | `id`（`INTEGER PRIMARY KEY`） | occurred_at（Unix 纳秒，等于审计行的 `time`）, request_id, authenticated, auth_disabled, subject, source, method, route, object, object_truncated, status, outcome, latency_ms, zone_scope（与审计 JSON 行逐字段一致）；**persist_class**（`full`/`sampled`）、**suppressed** / **suppressed_since**（仅汇总行非 0）。v4 新表，布尔列与 `persist_class` 有 `CHECK` |
+| 10 | `audit_events` | `internal/database/audit.go:41` | `id`（`INTEGER PRIMARY KEY`） | occurred_at（Unix 纳秒，等于审计行的 `time`）, request_id, authenticated, auth_disabled, subject, source, method, route, object, object_truncated, status, outcome, latency_ms, zone_scope（与审计 JSON 行逐字段一致）；**persist_class**（`full`/`sampled`）、**suppressed** / **suppressed_since** / **suppressed_sources** / **suppressed_top_sources**（仅汇总行非空）。v4 新表，布尔列与 `persist_class` 有 `CHECK` |
 | 11 | `_health_probe` | `database.go:208` | `id`（`CHECK (id = 1)`，恒定单行） | marker（每次探测新随机值）, checked_at |
 
 > 表清单按 `database.go` 里 `migrate()` 的建表顺序列出，`audit_events` 由其后的 v4 步骤建立（`internal/database/audit.go`）；`_health_probe` 不在该清单内，由
@@ -234,9 +234,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | `idx_agent_certs_revoked` | `agent_certs` | `database.go:512` |
 | `idx_bootstrap_tokens_qube_id` | `bootstrap_tokens` | `database.go:541` |
 | `idx_bootstrap_tokens_not_after` | `bootstrap_tokens` | `database.go:542` |
-| `idx_audit_events_occurred_at` | `audit_events` | `internal/database/audit.go:62` |
-| `idx_audit_events_request_id` | `audit_events` | `internal/database/audit.go:63` |
-| `idx_audit_events_class` | `audit_events` | `internal/database/audit.go:64` |
+| `idx_audit_events_occurred_at` | `audit_events` | `internal/database/audit.go:68` |
+| `idx_audit_events_request_id` | `audit_events` | `internal/database/audit.go:69` |
+| `idx_audit_events_class` | `audit_events` | `internal/database/audit.go:70` |
 
 ## 3. CI 工具链版本（D-4 的落点）
 

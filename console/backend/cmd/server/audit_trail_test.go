@@ -297,6 +297,16 @@ func TestAPIAuditFloodIsBoundedInTheTable(t *testing.T) {
 			require.NoError(t, db.DB().QueryRowContext(context.Background(),
 				`SELECT COALESCE(SUM(suppressed), 0) FROM audit_events`).Scan(&suppressed))
 			assert.Equal(t, tc.wantSuppessed, suppressed)
+			if tc.wantSuppessed > 0 {
+				// The flood's origin survives the summary: one prefix, named.
+				var sources int
+				var top string
+				require.NoError(t, db.DB().QueryRowContext(context.Background(),
+					`SELECT suppressed_sources, suppressed_top_sources FROM audit_events WHERE outcome = 'suppressed'`).
+					Scan(&sources, &top))
+				assert.Equal(t, 1, sources)
+				assert.Equal(t, fmt.Sprintf("192.0.2.0/24 %d", tc.wantSuppessed), top)
+			}
 		})
 	}
 }

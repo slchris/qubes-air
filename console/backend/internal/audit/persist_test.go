@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -129,7 +130,7 @@ func newTestPersister(t *testing.T, tune func(*PersisterConfig)) (*Persister, *f
 
 func anonymousDenied(i int) Event {
 	return Event{Time: clockStart.Add(time.Duration(i) * time.Millisecond), RequestID: fmt.Sprintf("anon-%d", i),
-		Subject: AnonymousSubject, Status: 401, Outcome: OutcomeDenied, ZoneScope: "none"}
+		Subject: AnonymousSubject, Source: "198.51.100.9", Status: 401, Outcome: OutcomeDenied, ZoneScope: "none"}
 }
 
 func operatorAction(i int) Event {
@@ -169,15 +170,112 @@ func TestPersisterBudgetsSampledEvents(t *testing.T) {
 			t.Errorf("stored %s at %d: the budget must admit the first events", ev.RequestID, i)
 		}
 	}
-	want := Suppression{First: anonymousDenied(5).Time, Last: anonymousDenied(99).Time, Count: 95}
-	if len(summaries) != 1 || summaries[0] != want {
+	want := Suppression{First: anonymousDenied(5).Time, Last: anonymousDenied(99).Time, Count: 95,
+		Sources: 1, TopSources: []SourceCount{{Prefix: "198.51.100.0/24", Count: 95}}}
+	if len(summaries) != 1 || !reflect.DeepEqual(summaries[0], want) {
 		t.Fatalf("summaries = %+v, want exactly %+v", summaries, want)
 	}
 	if st := p.Stats(); st.Persisted != 5 || st.Suppressed != 95 || st.Dropped != 0 || st.Failed != 0 {
 		t.Errorf("stats = %+v, want 5 persisted and 95 suppressed", st)
 	}
-	if !strings.Contains(logs.all(), "95 unauthenticated request(s)") {
+	if !strings.Contains(logs.all(), "95 throttled or unauthenticated request(s)") ||
+		!strings.Contains(logs.all(), "198.51.100.0/24 95") {
 		t.Errorf("a summary must also be logged, got: %s", logs.all())
+	}
+}
+
+// A summary says where the suppressed events came from: distinct source
+// prefixes, the busiest ones by name, IPv6 addresses rotated inside one /64
+// collapsed into it, and the auth mode the events had.
+func TestPersisterSummaryNamesTheSources(t *testing.T) {
+	p, store, _, logs := newTestPersister(t, func(c *PersisterConfig) {
+		c.Budget = Budget{Burst: 1, Every: time.Hour}
+	})
+	p.Start()
+	sources := make([]string, 0, 344)
+	sources = append(sources, "192.0.2.1") // spends the only token
+	for i := range 300 {
+		sources = append(sources, fmt.Sprintf("2001:db8:0:7::%x", i+1)) // one /64
+	}
+	for range 20 {
+		sources = append(sources, "198.51.100.200", "198.51.100.7") // one /24
+	}
+	sources = append(sources, "203.0.113.5", "::ffff:192.0.2.77", "not-an-ip")
+	for i, src := range sources {
+		ev := anonymousDenied(i)
+		ev.Source = src
+		ev.AuthDisabled = i == len(sources)-1
+		p.Submit(ev)
+	}
+	p.Stop()
+
+	_, summaries := store.snapshot()
+	if len(summaries) != 1 {
+		t.Fatalf("got %d summaries, want 1", len(summaries))
+	}
+	s := summaries[0]
+	wantTop := []SourceCount{{"2001:db8:0:7::/64", 300}, {"198.51.100.0/24", 40}, {"192.0.2.0/24", 1},
+		{"203.0.113.0/24", 1}, {"not-an-ip", 1}}
+	if s.Count != int64(len(sources)-1) || s.Sources != 5 || !reflect.DeepEqual(s.TopSources, wantTop) {
+		t.Errorf("summary = count %d, %d sources, top %v; want %d, 5, %v", s.Count, s.Sources, s.TopSources, len(sources)-1, wantTop)
+	}
+	if !s.AuthDisabled {
+		t.Error("a summary of events made while authentication was disabled must say so")
+	}
+	if want := "2001:db8:0:7::/64 300; 198.51.100.0/24 40; 192.0.2.0/24 1; 203.0.113.0/24 1; not-an-ip 1"; s.SourcesText() != want {
+		t.Errorf("SourcesText() = %q, want %q", s.SourcesText(), want)
+	}
+	if !strings.Contains(logs.all(), "from 5 source prefix(es)") {
+		t.Errorf("the summary log line must name the sources, got: %s", logs.all())
+	}
+}
+
+// A caller rotating across more prefixes than the summary tracks cannot grow
+// its memory: prefixes past the cap are counted as untracked, and still
+// counted in the total.
+func TestPersisterSummaryTracksABoundedNumberOfPrefixes(t *testing.T) {
+	p, store, _, _ := newTestPersister(t, func(c *PersisterConfig) {
+		c.Budget = Budget{Burst: 1, Every: time.Hour}
+	})
+	p.Start()
+	const distinct = MaxTrackedSourcePrefixes + 500
+	p.Submit(anonymousDenied(0)) // spends the only token
+	for i := range distinct {
+		ev := anonymousDenied(i + 1)
+		ev.Source = fmt.Sprintf("10.%d.%d.1", i/256, i%256) // one /24 each
+		p.Submit(ev)
+	}
+	p.Stop()
+
+	_, summaries := store.snapshot()
+	if len(summaries) != 1 {
+		t.Fatalf("got %d summaries, want 1", len(summaries))
+	}
+	s := summaries[0]
+	if s.Count != distinct || s.Sources != MaxTrackedSourcePrefixes || s.Untracked != 500 {
+		t.Errorf("summary = count %d, sources %d, untracked %d; want %d, %d, 500",
+			s.Count, s.Sources, s.Untracked, distinct, MaxTrackedSourcePrefixes)
+	}
+	if len(s.TopSources) != TopSourcePrefixes || !strings.HasSuffix(s.SourcesText(), fmt.Sprintf("others %d", distinct-TopSourcePrefixes)) {
+		t.Errorf("top %v / text %q: want %d named and the rest as others", s.TopSources, s.SourcesText(), TopSourcePrefixes)
+	}
+}
+
+// The prefix a source is attributed to.
+func TestSourcePrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		"192.0.2.77":             "192.0.2.0/24",
+		"::ffff:192.0.2.77":      "192.0.2.0/24",
+		"2001:db8:1:2:3:4:5:6":   "2001:db8:1:2::/64",
+		"fe80::1%eth0":           "fe80::/64",
+		"":                       "",
+		"not-an-ip":              "not-an-ip",
+		strings.Repeat("x", 100): strings.Repeat("x", 64),
+		"bad\xffsource":          "bad\uFFFDsource",
+	} {
+		if got := SourcePrefix(in); got != want {
+			t.Errorf("SourcePrefix(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

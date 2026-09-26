@@ -17,19 +17,23 @@ import (
 //   - the boolean fields are 0/1 with a CHECK, so a stray value cannot read as
 //     "maybe authenticated".
 //
-// Three columns are not on the line; they record how the row got here, because
-// the persisted trail is bounded and a reader has to be able to tell what was
-// left out (see repository.AuditRepository):
+// The other columns are not on the line; they record how the row got here,
+// because the persisted trail is bounded and a reader has to be able to tell
+// what was left out (see repository.AuditRepository):
 //
 //   - persist_class is "full" for an event that is always stored (an
-//     authenticated request, or one that succeeded) and "sampled" for one that
-//     went through the unauthenticated budget (a request that proved no
-//     credential and did not succeed: the only kind a caller without a
-//     credential can produce without limit);
+//     authenticated request, or one that succeeded, unless it was throttled)
+//     and "sampled" for one that went through the budget (every 429, and every
+//     request that proved no credential and did not succeed: the kinds a
+//     caller can produce faster than anything else bounds);
 //   - suppressed and suppressed_since are non-zero only on a summary row: the
 //     number of sampled events the budget kept out, and when the first of them
 //     happened (occurred_at is the last). Every such event still has its log
-//     line.
+//     line;
+//   - suppressed_sources and suppressed_top_sources say where those events
+//     came from, so a flood does not erase who was probing: the number of
+//     distinct source prefixes (IPv4 /24, IPv6 /64; exact up to 1024), and the
+//     busiest few with their counts ("198.51.100.0/24 4211; others 37").
 //
 // There is no foreign key: the trail must outlive the qubes and zones it
 // names, exactly like the jobs table.
@@ -52,7 +56,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
 	zone_scope       TEXT NOT NULL,
 	persist_class    TEXT NOT NULL CHECK (persist_class IN ('full', 'sampled')),
 	suppressed       INTEGER NOT NULL DEFAULT 0 CHECK (suppressed >= 0),
-	suppressed_since INTEGER NOT NULL DEFAULT 0
+	suppressed_since INTEGER NOT NULL DEFAULT 0,
+	suppressed_sources     INTEGER NOT NULL DEFAULT 0 CHECK (suppressed_sources >= 0),
+	suppressed_top_sources TEXT NOT NULL DEFAULT ''
 )`
 
 // createAuditEventsIndexes serves the three ways the trail is read or trimmed:
@@ -69,6 +75,7 @@ var auditEventsColumns = []string{
 	"subject", "source", "method", "route", "object", "object_truncated",
 	"status", "outcome", "latency_ms", "zone_scope",
 	"persist_class", "suppressed", "suppressed_since",
+	"suppressed_sources", "suppressed_top_sources",
 }
 
 // migrateAudit is schema step 4. The table is new, so the step is additive:
