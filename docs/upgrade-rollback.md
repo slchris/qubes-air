@@ -71,9 +71,16 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 这条规则决定了一切：**升级过 schema 之后，回滚二进制不是回滚，而是让控制台起不来。** 所以
 "回滚"在 schema 变更后只有一个手段——从备份恢复（见 §4）。
 
-当前是 schema 3：在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，
-见 §2.4），纯加列，已有行保留、pin 为空。v2 → v3 的迁移与“再次打开无变化”由
-`internal/database/database_upgrade_test.go` 对冻结的 v2 夹具验证。
+当前是 schema 4：
+- 3 在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，见 §2.4），纯加列，
+  已有行保留、pin 为空。
+- 4 新增 `audit_events` 表（持久化的 API 审计轨迹），纯加表，不动已有行；升级后该表为空，升级前的审计
+  只在当时的日志里。库里若已有列不同的同名表（未发布构建留下的），控制台拒绝打开并点名列差异，
+  `user_version` 保持原值。
+
+v2 → 当前、v3 → 当前的迁移与“再次打开无变化”由 `internal/database/database_upgrade_test.go` 与
+`audit_upgrade_test.go` 对冻结的 v2 夹具（及由它构造的 v3 状态）验证；v2 库的备份恢复后打开即升级由
+`cmd/qubes-air-backup/upgrade_test.go` 验证。
 
 ### 2.3 API 与前端
 
@@ -165,6 +172,9 @@ console 证书（[安全控制](security-controls.md)“Agent 身份与吊销”
 - `/health`：`status` 是否为 `healthy`、`database` 是否为 `connected`、`worker.dispatcher` 是否为
   `alive`（`disabled` 表示编排被关掉，那是配置不是故障）。该检查会真的写一行探测标记再读回，
   并对调度器心跳判活（[灾难恢复](disaster-recovery.md) 第 69-72 行）。
+- **持久化审计**（schema 4 起）：`/health` 的 `audit_trail` 应为 `ok`。`degraded` 表示最近一次审计落库失败
+  或有事件被丢、此后没有成功写入（日志里有 `audit: … audit write(s) lost`）；它只是信息，不会让 `status`
+  变成 `unhealthy`，JSON 审计行照写。见[安全控制](security-controls.md)“持久化审计”。
 - **构建身份**：`/health` 的 `version` / `revision` / `build_time` / `tree` 四个字段就是这次构建的
   自我标识，与制品 `--version` 打印的是同一组值（同一份链接期注入，同一份 `buildinfo.Get()`）；
   命令与实测输出见 §3.2。
@@ -201,6 +211,7 @@ $ curl -s http://127.0.0.1:8080/health
 
 上面是本机实测（`make build-backend` 从**有未提交改动的工作树**构建，所以 `version` 以 `-dirty`
 结尾、`tree` 是 `dirty`；`dispatcher` 是 `disabled`，因为复现环境按 compose 的默认关掉了编排）。
+这次实测早于 schema 4；之后的构建在末尾多一个 `"audit_trail":"ok"`，其余键不变。
 
 **从发布制品读**（不读配置、不连库，打印完即退出，可以在一台还没部署的机器上跑）：
 

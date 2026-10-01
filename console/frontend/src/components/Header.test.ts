@@ -23,6 +23,7 @@ function healthFixture(version: string): Awaited<ReturnType<typeof api.getHealth
     revision: '0123456789abcdef0123456789abcdef01234567',
     build_time: '2026-09-22T12:33:55Z',
     tree: 'clean',
+    audit_trail: 'ok',
   }
 }
 

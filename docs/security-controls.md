@@ -152,14 +152,20 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   `denied`，见下文“Console API 凭据”。
 - 限流拒绝（429）记为 `client_error`，不记为 `denied`：节流不是授权判定，把它混进 `denied`
   会冲淡运维按 `denied` 排查越权的结果。`status: 429` 已足以区分。
-- 字段：`request_id`、`authenticated`、`subject`、`zone_scope`、`source`、`method`、`route`、
-  `object`、`object_truncated`、`status`、`outcome`、`latency_ms`。
+- 字段：`time`、`request_id`、`authenticated`、`auth_method`、`auth_disabled`、`subject`、`zone_scope`、`source`、`method`、
+  `route`、`object`、`object_truncated`、`status`、`outcome`、`latency_ms`。审计中间件把每个请求渲染成**一个**
+  事件（`internal/audit` 的 `Event`），这一行与交给持久化的副本都来自它，`time` 也是同一个时刻。
 - 没有解析出凭据的请求（认证失败、登录请求）记为 `authenticated: false`、`subject: anonymous`、
   `zone_scope: none`，不会被写成 fleet 范围。鉴权关闭（没有配置任何 token）时请求同样记为
-  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`。判断是否
-  认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
+  `anonymous`，但它不会被拒绝、能触达所有 zone，所以记为 `zone_scope: unrestricted`、`auth_disabled: true`。
+  判断是否认证以 `authenticated` 为准，名为 `anonymous` 的 token 不会与之混淆。
+- `auth_method` 说明凭据怎么来的：`session`（浏览器会话 cookie，取自 ScopedAuth 在 cookie 分支设置的类型化标记
+  `SessionAuthenticated`，handler 写不出来）、`bearer`（Bearer token）、`none`（没有解析出凭据，包括鉴权关闭）。
+  它跟随 `authenticated`：未认证的记录一律是 `none`。
 - `object` 取路径参数 `:id`（没有时取 `:app`），最多保留前 128 字节，按 UTF-8 字符边界截断；
-  截断时 `object_truncated: true`。
+  截断时 `object_truncated: true`。不是合法 UTF-8 的字节（URL 里一个 `%FF` 就能带进来）逐字节记为
+  U+FFFD：JSON 行本来就这样显示，渲染时先做这一步，交给持久化的副本才与行一致（所以截断后的
+  `object` 最多是 128 个 U+FFFD，即 384 字节）。
 - `request_id` 由服务端生成（128 位随机），同一个值通过响应头 `X-Request-Id` 返回给调用方；
   客户端自带的 `X-Request-Id` 不采信，也不写入审计。
 - 记录不包含任何请求头或请求体：Authorization、Bearer token、session cookie 以及登录请求体里的
@@ -171,15 +177,80 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
 
 - 单行长度有上界。审计在认证之前运行，未认证调用方能自由决定的只有 `object`（路径参数）；其余
   字段由服务端决定：已注册路由的方法和模板、配置里的 token 名和 zone 列表、连接的对端地址。
-  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 400 字节（构造的最坏情况实测 416 字节），所以
+  `object` 截断到 128 字节，JSON 转义最多把 1 个字节变成 6 个，其余字段合计约 470 字节（构造的最坏情况实测 467 字节：
+  最长的 IPv6 来源、`latency_ms` 取 int64 上限、`auth_disabled: true` 与 `zone_scope: unrestricted`），所以
   一个未认证请求写出的审计行不超过 2 KiB（`TestAPIAuditBoundsOversizedObject` 按这个上界断言），
   远低于 journald 默认的单行上限（`LineMax=48K`），不会被拆成非 JSON 片段。已认证请求的行长还
   取决于配置里 zone 列表的长度，由管理员控制。
 - 限流在认证之后，被认证拒绝的请求到不了限流器，所以这类变更请求不受限流，每次都会写一行审计
-  （登录接口不做 Bearer 校验，仍按来源地址限流）。写入条数与访问日志同量级，每行受上一条的上界
-  约束；做持久化审计（M2-2）之前需要重新评估写入量。
+  （登录接口不做 Bearer 校验，仍按来源地址限流）。日志的写入条数与访问日志同量级，每行受上一条的
+  上界约束；落库的条数另有预算和上限，见下一节。
 
-审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
+### 持久化审计（schema 4）
+
+每个审计事件写出 JSON 行之后，同一个事件写进 SQLite 的 `audit_events` 表（`cmd/server/audittrail.go`
+的 `startAuditTrail` 接线）。行与日志逐字段一致：`time` 存成 `occurred_at`（Unix 纳秒），其余键同名同值
+（`TestAPIAuditPersistsExactlyTheLoggedLine` 对已认证（Bearer 与会话 cookie）、匿名、只读 scope 拒绝、登录失败、截断的 object、
+鉴权关闭逐一断言，并核对响应头 `X-Request-Id` 等于行里的 `request_id`）。没有读取 API，查询直接读库，
+例如 `sqlite3 <db> "SELECT datetime(occurred_at/1e9,'unixepoch'), subject, method, route, object, status, outcome FROM audit_events ORDER BY occurred_at DESC LIMIT 50"`。
+
+- **不阻塞请求**：落库在请求之外进行，有界队列（1024）加一个写入 goroutine，每次写 5 秒超时。库写
+  失败、超时或队列满都不改变、也不推迟响应，JSON 行照写（`TestAPIAuditStoreFailureDoesNotChangeTheResponse`）。
+- **丢失可见**：日志 `audit: N audit write(s) lost since the last report (latest: request_id=…: <原因>)`，
+  第一次立刻写，之后每分钟最多一行并带计数；恢复时写 `audit: persisting audit events again`。`/health` 的
+  `audit_trail` 字段为 `degraded`（最近一次写失败或有事件被丢，此后还没有成功写入），正常为 `ok`。
+  它只是信息，不把 `/health` 变红，也不带错误细节：日志行照写，而 `/health` 是 compose 的 liveness
+  probe，审计库写不进去不该让控制台被重启。
+- **停机**：`Dependencies.Close` 先排空队列、写出待写的汇总行，再关数据库。`Stop` 先等已在写的那一条
+  （最多一个写超时，5 秒），之后队列里的事件只在 5 秒宽限期内写，不再各自按完整写超时写，合计不超过
+  10 秒；剩下的计为丢失并记日志（`TestCloseDrainsTheAuditTrailBeforeTheDatabase`、
+  `TestPersisterStopIsBoundedByTheGrace`、`TestPersisterStopTakesPriorityOverTheQueue`）。
+- **留存**：90 天，严格早于 `now − 90 天` 的行被删（恰好等于的保留）；每小时清理一次，每批 1000 行、
+  每次最多 30 秒，停机时取消。
+- **两类行，各有硬上限**（`persist_class`）：
+  - `full`：已认证的请求，以及成功的请求（登录成功、鉴权关闭时成功的请求），**限流拒绝（429）除外**。
+    每条都存，上限 200,000 行。
+  - `sampled`：所有 429（不论是否认证），以及没有解析出凭据**且**没有成功的请求（401、未认证时的
+    413/400/5xx）。先过全局令牌桶
+    （突发 20 条，之后每 10 秒 1 条），超出的只计数，有计数时每分钟写一条汇总行（`outcome: suppressed`、
+    `suppressed` 为条数、`suppressed_since` 与 `occurred_at` 为首末时间、`auth_disabled` 取这些事件自己的值，
+    请求字段为空）。汇总行还记下它们从哪来，免得洪水把"谁在探测"一并抹掉：`suppressed_sources` 是不同来源
+    前缀（IPv4 /24、IPv6 /64，同一 /64 里轮换地址算一个）的个数，`suppressed_top_sources` 是最忙的 5 个及其
+    条数，例如 `198.51.100.0/24 4211; 2001:db8:7::/64 12; others 37`。每个汇总最多跟踪 1024 个前缀，超出后
+    新出现的前缀只计入 `others`，所以轮换地址也撑不大内存。上限 20,000 行。
+  - 插入使某类超过上限时，在同一事务里删掉**该类**最旧的行，删到上限的 99%。两类互不驱逐，表的总行数
+    不超过 220,000。
+
+安全取舍：
+
+- 为什么限制放在存储层：审计中间件必须在认证和限流之前运行（这样才能记录被拒绝的请求），代价是一个
+  不持有任何凭据的调用方可以无限量制造 401/429 审计事件，在认证前加限流也没用，因为 429 同样要审计。
+  如果照单全收，匿名刷接口就能在 90 天内写满数据库，或把真实的操作记录挤出去。现在匿名失败事件先过
+  令牌桶，再受独立的行数上限；匿名洪水最多轮换 `sampled` 类自己的行，驱逐不了任何 `full` 类的行
+  （`TestAPIAuditFloodIsBoundedInTheTable` 走真实中间件链，`TestAuditRepositoryAnonymousFloodCannotEvictFullRows`
+  逐行核对上限）。
+- 为什么 429 一律进 `sampled`：限流在认证之后运行，所以一个凭据超过限流后的每一次拒绝都是**已认证**事件。
+  若按"已认证即 `full`"处理，任何 scope 的 token（包括只读 token）都能在几毫秒内用 429 把其他主体的记录
+  全部挤出 `full` 类。429 表示什么都没发生，日志行照写，所以它和匿名失败一样走预算与 `sampled` 上限
+  （`TestAPIAuditTokenFloodCannotEvictAnotherSubjectsRows` 走真实中间件链，对只读 token 与 zone token
+  各刷 1000 次，断言另一主体的行一条不少、`full` 类里没有 429）。
+- 代价一：洪水期间，同一时段里其他匿名失败事件（例如真实操作者输错 token）在库里也只剩汇总计数。令牌桶
+  是全局的，不按来源地址分：按来源分挡不住能轮换 IPv6 地址的调用方。逐条完整的记录只在 JSON 日志里，
+  所以 stderr 日志仍须由部署方接住（[生产部署安全要求](deployment-requirements.md)第 6 条）。
+- 代价二：持有凭据的调用方能写进 `full` 类的只有限流放行的那部分（UD-1：按 subject 计 20 req/s，突发 40）。
+  一个 token 满速约 3 小时就能把最旧的行挤出 200,000 行的窗口，多个 token 按个数加快。每一行都带着它的
+  `subject`，这种行为本身就留在审计里；更早的记录仍靠日志。
+- 鉴权关闭时没有请求是"已认证"的：成功的请求进 `full`，失败的进 `sampled`。
+- 空间（实测）：典型行含索引约 265 字节，最大约 683 字节（128 个非法字节记成 384 字节的 U+FFFD，加最长
+  的 IPv6 来源）；`full` 类约 53 MB，最坏 137 MB；`sampled` 类不超过 14 MB。SQLite 删除后不缩小文件，
+  但空出的页会被复用，文件大小以这个上限为准。
+- 敏感数据：行里没有请求体、请求头、token 或 cookie（上面的逐行测试扫描整张表找凭据值和
+  `Bearer`/`Authorization`/cookie 名）。`source` 是客户端 IP，属于个人数据，保留 90 天；数据库备份里
+  也有这张表（[灾难恢复](disaster-recovery.md)）。
+- 不是防篡改记录：表和控制台在同一台主机上，拿到主机 root 或数据库文件写权限的人可以改写它。需要
+  不可篡改的留存时，把 stderr 日志转发到异地。
+
+超过 90 天、逐条完整或防篡改的审计留存仍由部署方负责，见[生产部署安全要求](deployment-requirements.md)第 6 条。
 
 ## 监控读取接口
 

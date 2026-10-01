@@ -252,10 +252,15 @@ type Dependencies struct {
 	// a qube provisioned under the token design NEVER obtains an identity — it
 	// boots, looks provisioned, and its agent refuses to serve. Nil-safe.
 	bootstraps *service.BootstrapMonitor
+	// auditTrail records every mutating API request to stderr and persists it.
+	auditTrail auditTrail
 }
 
 // Close releases all resources.
 func (d *Dependencies) Close() {
+	// The audit trail first: its queue holds events of requests that have
+	// already been answered, and they must reach the database before it closes.
+	d.auditTrail.stop()
 	// Drain orchestration before the database goes away: the completion hook
 	// writes a qube's terminal status, and an in-flight provider call is
 	// allowed to finish rather than being killed mid-operation.
@@ -414,6 +419,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		runner:            runner,
 		agents:            agents,
 		certRenewals:      certRenewals,
+		auditTrail:        startAuditTrail(db, os.Stderr),
 	}, nil
 }
 
@@ -1076,7 +1082,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	build := buildinfo.Get()
 
 	// /health is intentionally left unauthenticated for liveness probes.
-	r.GET("/health", healthHandler(deps.db, deps.runner, build))
+	r.GET("/health", healthHandler(deps.db, deps.runner, deps.auditTrail, build))
 	handler.RegisterRevocations(r, deps.revocations)
 
 	// There is deliberately NO /bootstrap route. The HTTP endpoint that used to
@@ -1090,7 +1096,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	v1 := r.Group("/api/v1")
 	v1.Use(apiMiddleware(cfg, deps.sessions,
 		objectZoneResolver{qubes: deps.qubeRepo, jobs: deps.jobRepo},
-		audit.NewRecorder(os.Stderr))...)
+		deps.auditTrail.recorder)...)
 	deps.sessionHandler.RegisterRoutes(v1)
 	deps.zoneHandler.RegisterRoutes(v1)
 	deps.qubeHandler.RegisterRoutes(v1)
@@ -1295,6 +1301,11 @@ type healthBody struct {
 	Revision  string              `json:"revision"`
 	BuildTime string              `json:"build_time"`
 	Tree      buildinfo.TreeState `json:"tree"`
+
+	// AuditTrail is whether the persisted audit trail is keeping up ("ok",
+	// "degraded", "disabled"). Informational like Queued/Running: the log
+	// lines are written either way, so it never turns the probe red.
+	AuditTrail string `json:"audit_trail"`
 }
 
 // healthHandler returns a health check endpoint handler.
@@ -1316,7 +1327,7 @@ type healthBody struct {
 // build is a parameter rather than a call to buildinfo.Get here so the build
 // report is testable at the wire level, and so this route and /status cannot
 // report two different builds.
-func healthHandler(db *database.DB, runner *orchestrator.Runner, build buildinfo.Info) gin.HandlerFunc {
+func healthHandler(db *database.DB, runner *orchestrator.Runner, trail auditTrail, build buildinfo.Info) gin.HandlerFunc {
 	probe := newHealthProbe(db.HealthCheck, healthProbeInterval, time.Now)
 	return func(c *gin.Context) {
 		body := healthBody{
@@ -1327,6 +1338,8 @@ func healthHandler(db *database.DB, runner *orchestrator.Runner, build buildinfo
 			Revision:  build.Revision,
 			BuildTime: build.BuildTime,
 			Tree:      build.Tree,
+
+			AuditTrail: trail.health(),
 		}
 		if err := probe.check(c.Request.Context()); err != nil {
 			body.Status, body.Database = statusUnhealthy, dbDisconnected

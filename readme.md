@@ -144,7 +144,8 @@ npm run build
 
 真实环境必须**对外监听要么用 TLS、要么只监听 loopback**（默认 `0.0.0.0:8080` 是明文 HTTP，
 且 `Production` 模式不会因为明文而拒绝启动），并设置 `QUBES_AIR_PRODUCTION=true`、独立的 API token、
-32 字节加密密钥和受限 CORS。审计是 JSON lines 写到 stderr，没有内置轮转与留存，部署方需自行接住；
+32 字节加密密钥和受限 CORS。审计是 JSON lines 写到 stderr，库里另存一份有上限的副本（90 天，未认证的失败请求与限流拒绝只抽样）；
+逐条完整、更长或防篡改的留存需部署方接住 stderr；
 逐条硬要求与核对命令见[生产部署安全要求](docs/deployment-requirements.md)。不要把
 云凭据、CA 私钥、LUKS 密钥、Relay/agent 私钥提交到 Git。凭据存放、轮换和销毁步骤见
 [凭据文档](docs/credential-vault.md)与[销毁流程](docs/credential-destruction.md)。

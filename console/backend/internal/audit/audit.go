@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 // Entry is one audited operator action.
@@ -53,7 +55,19 @@ type Entry struct {
 	// authority. It only changes how an unauthenticated entry's zone scope
 	// reads ("unrestricted" rather than "none"); it grants nothing.
 	AuthDisabled bool
+	// SessionAuthenticated reports that the resolved credential was a browser
+	// session cookie rather than a Bearer token (middleware's typed session
+	// marker). It is rendered as auth_method and ignored unless
+	// Authenticated: an entry that proved nothing reads "none".
+	SessionAuthenticated bool
 }
+
+// Values of auth_method: how the request's credential was presented.
+const (
+	AuthMethodBearer  = "bearer"
+	AuthMethodSession = "session"
+	AuthMethodNone    = "none"
+)
 
 // AnonymousSubject is the subject recorded for a request no credential was
 // resolved for: one refused by authentication, a login attempt, or any request
@@ -80,26 +94,152 @@ const unrestrictedZoneScope = "unrestricted"
 // bytes is the longest app ID the console accepts and over three times a UUID.
 const MaxObjectBytes = 128
 
-// Recorder emits entries as JSON lines.
+// Event is one audit record as it is written: the fields of the JSON line,
+// after the anonymous/zone-scope rendering and the object cap. The line and
+// every Sink are given the same Event, so a trail read from the log and one
+// read from storage cannot disagree about who did what.
+type Event struct {
+	// Time is the line's "time": when the request finished and was recorded.
+	Time          time.Time
+	RequestID     string
+	Authenticated bool
+	// AuthMethod is AuthMethodBearer, AuthMethodSession or AuthMethodNone.
+	AuthMethod string
+	// AuthDisabled is on the line as auth_disabled so the stored row, which
+	// keeps it, is the line field for field.
+	AuthDisabled    bool
+	Subject         string
+	Source          string
+	Method          string
+	Route           string
+	Object          string
+	ObjectTruncated bool
+	Status          int
+	Outcome         string
+	LatencyMS       int64
+	// ZoneScope is the rendered scope: "fleet", the comma-joined zone list,
+	// "none" or "unrestricted".
+	ZoneScope string
+}
+
+// Class is how the persisted trail admits an event; see Event.Class.
+type Class string
+
+const (
+	// ClassFull events are all stored.
+	ClassFull Class = "full"
+	// ClassSampled events are stored through the unauthenticated budget
+	// (PersisterConfig.Budget); the rest are counted into a summary row.
+	ClassSampled Class = "sampled"
+)
+
+// Class reports how the persisted trail admits e.
+//
+// Two kinds of event are sampled, because a caller can produce them faster
+// than anything bounds on its own:
+//
+//   - a throttled request (429), authenticated or not. Rate limiting runs
+//     after authentication, so every refusal of an authenticated flood is an
+//     authenticated event; left in the full class, one token of any scope
+//     could push every other subject's records out of the table in
+//     milliseconds. Nothing happened on a 429, and its log line keeps it.
+//   - a request that proved no credential and did not succeed. Audit runs
+//     before authentication and rate limiting, so a caller holding nothing
+//     can make these without limit.
+//
+// Everything else is stored in full: an authenticated event names the
+// credential that caused it and is paced by that credential's rate limit, and
+// an unauthenticated success is either a login that presented a valid token
+// or a request made while authentication is disabled, which acted with full
+// authority and is exactly what the trail is for.
+func (e Event) Class() Class {
+	if e.Status == http.StatusTooManyRequests {
+		return ClassSampled
+	}
+	if e.Authenticated || e.Outcome == OutcomeSuccess {
+		return ClassFull
+	}
+	return ClassSampled
+}
+
+// attrs is the line's field list, in the order it has always been written.
+func (e Event) attrs() []slog.Attr {
+	return []slog.Attr{
+		slog.String("request_id", e.RequestID),
+		slog.Bool("authenticated", e.Authenticated),
+		slog.String("auth_method", e.AuthMethod),
+		slog.Bool("auth_disabled", e.AuthDisabled),
+		slog.String("subject", e.Subject),
+		slog.String("source", e.Source),
+		slog.String("method", e.Method),
+		slog.String("route", e.Route),
+		slog.String("object", e.Object),
+		slog.Bool("object_truncated", e.ObjectTruncated),
+		slog.Int("status", e.Status),
+		slog.String("outcome", e.Outcome),
+		slog.Int64("latency_ms", e.LatencyMS),
+		slog.String("zone_scope", e.ZoneScope),
+	}
+}
+
+// Sink receives every event after its line is written. Submit runs on the
+// request path, after the response has been produced, so it must not block.
+type Sink interface {
+	Submit(Event)
+}
+
+// Recorder emits entries as JSON lines and hands the same events to its Sink.
 type Recorder struct {
-	logger *slog.Logger
+	handler slog.Handler
+	sink    Sink
+	now     func() time.Time
 }
 
 // NewRecorder builds a Recorder writing JSON lines to w.
 func NewRecorder(w io.Writer) *Recorder {
 	return &Recorder{
-		logger: slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		handler: slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}),
+		now:     time.Now,
 	}
 }
 
-// Record writes one entry. The handler stamps the time, so it is not carried on
-// Entry (two "time" keys would be worse than none).
+// WithSink returns a copy of r that also hands every event to sink once its
+// line is written. The line comes first so a sink that loses an event (see
+// Persister) never costs the log its copy.
+func (r *Recorder) WithSink(sink Sink) *Recorder {
+	cp := *r
+	cp.sink = sink
+	return &cp
+}
+
+// Record renders e once and writes that Event as the line and to the sink.
+//
+// The line's "time" is the Event's Time, set here rather than stamped by the
+// handler, so the stored copy carries the same instant (two "time" keys would
+// be worse than none, so Entry has no time of its own).
 //
 // The object is cut to MaxObjectBytes and object_truncated says whether it was.
 // It is the only field a caller writes freely: the others are fixed by the
 // server (the method and template of a registered route, the configured
 // credential name and zones, the connection's peer address, the status).
 func (r *Recorder) Record(e Entry) {
+	ev := e.render(r.now())
+	record := slog.NewRecord(ev.Time, slog.LevelInfo, "audit", 0)
+	record.AddAttrs(ev.attrs()...)
+	// A failed write has nowhere better to be reported than the stream that
+	// failed; the sink still gets the event.
+	_ = r.handler.Handle(context.Background(), record)
+	if r.sink != nil {
+		r.sink.Submit(ev)
+	}
+}
+
+// render applies the rendering rules to e: an unauthenticated entry reads as
+// the anonymous subject with no zone scope (or "unrestricted" while
+// authentication is disabled), whatever Subject and ZoneScope hold, the object
+// is capped, and every string is made valid UTF-8 the way the JSON line
+// writes it.
+func (e Entry) render(at time.Time) Event {
 	subject, scope := e.Subject, zoneScope(e.ZoneScope)
 	if !e.Authenticated {
 		subject, scope = AnonymousSubject, noZoneScope
@@ -108,26 +248,66 @@ func (r *Recorder) Record(e Entry) {
 		}
 	}
 	object, truncated := boundObject(e.Object)
-	r.logger.LogAttrs(context.Background(), slog.LevelInfo, "audit",
-		slog.String("request_id", e.RequestID),
-		slog.Bool("authenticated", e.Authenticated),
-		slog.String("subject", subject),
-		slog.String("source", e.Source),
-		slog.String("method", e.Method),
-		slog.String("route", e.Route),
-		slog.String("object", object),
-		slog.Bool("object_truncated", truncated),
-		slog.Int("status", e.Status),
-		slog.String("outcome", e.Outcome),
-		slog.Int64("latency_ms", e.LatencyMS),
-		// "fleet" rather than an empty list: an absent field reads as "unknown"
-		// in a log, and the difference between no restriction and a restriction
-		// that matched nothing matters during an incident.
-		slog.String("zone_scope", scope),
-	)
+	return Event{
+		Time:            at,
+		RequestID:       validUTF8(e.RequestID),
+		Authenticated:   e.Authenticated,
+		AuthMethod:      e.authMethod(),
+		AuthDisabled:    e.AuthDisabled,
+		Subject:         validUTF8(subject),
+		Source:          validUTF8(e.Source),
+		Method:          validUTF8(e.Method),
+		Route:           validUTF8(e.Route),
+		Object:          validUTF8(object),
+		ObjectTruncated: truncated,
+		Status:          e.Status,
+		Outcome:         validUTF8(e.Outcome),
+		LatencyMS:       e.LatencyMS,
+		ZoneScope:       validUTF8(scope),
+	}
 }
 
-// zoneScope renders a nil/empty allowlist as the fleet-wide label.
+// authMethod renders how the credential was presented. It follows
+// Authenticated the way the subject does: an entry that proved nothing is
+// "none" whatever else it carries.
+func (e Entry) authMethod() string {
+	switch {
+	case !e.Authenticated:
+		return AuthMethodNone
+	case e.SessionAuthenticated:
+		return AuthMethodSession
+	default:
+		return AuthMethodBearer
+	}
+}
+
+// validUTF8 replaces each byte that is not part of a valid UTF-8 sequence with
+// U+FFFD, one for one. That is exactly what the JSON line shows for such a
+// byte, so doing it here, before the line is written, is what keeps a stored
+// copy equal to the line: the object is a path parameter, and "%FF" in a URL
+// is all it takes to put such a byte there.
+func validUTF8(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 2*utf8.UTFMax)
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(utf8.RuneError)
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// zoneScope renders a nil/empty allowlist as the fleet-wide label: "fleet"
+// rather than an empty list, because an absent field reads as "unknown" in a
+// log, and the difference between no restriction and a restriction that
+// matched nothing matters during an incident.
 func zoneScope(zones []string) string {
 	if len(zones) == 0 {
 		return "fleet"
