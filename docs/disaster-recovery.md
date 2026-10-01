@@ -15,6 +15,7 @@
 | 证书注册表与吊销状态 | `agent_certs` | 吊销状态丢失 |
 | 一次性 bootstrap token 哈希 | `bootstrap_tokens` | 未兑换 token 失效（可接受） |
 | 编排审计轨迹 | `jobs` | 审计历史丢失 |
+| API 审计轨迹（90 天，有上限） | `audit_events` | 库内审计历史丢失；stderr 日志若已转发则不受影响 |
 
 凭据与 CA 私钥在库内是**密文**，密钥来自 keyring（`security.encryption_key` 或
 `security.encryption_keys` / `QUBES_AIR_ENCRYPTION_KEYS`），**不在数据库里**。因此：
@@ -49,6 +50,9 @@ qubes-air-backup create \
 归档会保留备份时的 per-Qube 数据密钥。随后 purge 删除当前库内的密钥，不会清除这些历史
 副本。因此不能仅凭 purge 成功宣称所有盘快照均不可恢复；还需核验相关备份与密钥副本的
 保留/销毁策略，见[凭据与密钥销毁](credential-destruction.md)。
+
+归档同样包含备份时的 `audit_events`（schema 4 起）：其中的 `source` 是客户端 IP，库内只保留 90 天，
+归档里的副本则活到归档被 prune 为止。审计记录在库外实际存在多久，由归档的保留期决定。
 
 ## 调度与留存
 

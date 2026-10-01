@@ -81,7 +81,7 @@ func TestHealthIsRedWhenDispatcherIsStale(t *testing.T) {
 		Store:    orchestrator.NewMemoryJobStore(),
 	})
 
-	code, body := getHealthBody(t, healthHandler(newHealthDB(t), runner, buildForTest()))
+	code, body := getHealthBody(t, healthHandler(newHealthDB(t), runner, auditTrail{}, buildForTest()))
 
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("stale dispatcher: status = %d, want 503", code)
@@ -110,7 +110,7 @@ func TestHealthIsGreenWhenDispatcherIsAlive(t *testing.T) {
 	runner.Start()
 	t.Cleanup(func() { runner.Shutdown(time.Second) })
 
-	code, body := getHealthBody(t, healthHandler(newHealthDB(t), runner, buildForTest()))
+	code, body := getHealthBody(t, healthHandler(newHealthDB(t), runner, auditTrail{}, buildForTest()))
 
 	if code != http.StatusOK {
 		t.Fatalf("live dispatcher: status = %d, want 200", code)
@@ -143,7 +143,7 @@ func TestHealthIsRedWhenDatabaseIsNotWritable(t *testing.T) {
 	runner.Start()
 	t.Cleanup(func() { runner.Shutdown(time.Second) })
 
-	code, body := getHealthBody(t, healthHandler(db, runner, buildForTest()))
+	code, body := getHealthBody(t, healthHandler(db, runner, auditTrail{}, buildForTest()))
 
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("closed database: status = %d, want 503", code)
@@ -163,7 +163,7 @@ func TestHealthIsRedWhenDatabaseIsNotWritable(t *testing.T) {
 // Reporting that as unhealthy would fail the liveness probe of a console that is
 // working as configured.
 func TestHealthIsGreenWithOrchestrationDisabled(t *testing.T) {
-	code, body := getHealthBody(t, healthHandler(newHealthDB(t), nil, buildForTest()))
+	code, body := getHealthBody(t, healthHandler(newHealthDB(t), nil, auditTrail{}, buildForTest()))
 
 	if code != http.StatusOK {
 		t.Fatalf("disabled orchestration: status = %d, want 200", code)
@@ -216,7 +216,7 @@ func TestHealthReportsTheBuildMetadata(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := healthRequest(t, healthHandler(newHealthDB(t), nil, tt.build))
+			w := healthRequest(t, healthHandler(newHealthDB(t), nil, auditTrail{}, tt.build))
 
 			var raw map[string]any
 			if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {

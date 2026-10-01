@@ -229,7 +229,7 @@ const listDatabases = `PRAGMA database_list`
 // newer code no longer understands, and the failure would surface as corrupted
 // data rather than an error. Restoring a backup into an older console is the
 // same hazard, which is why backup carries the version too.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // migrate runs database migrations.
 func (d *DB) migrate() error {
@@ -282,11 +282,11 @@ func (d *DB) migrate() error {
 		}
 	}
 
-	if err := d.migrateLifecycle(); err != nil {
-		return err
-	}
-	if err := d.migrateBootstrapPeerPin(); err != nil {
-		return err
+	// Named schema steps in version order (3: bootstrap pin, 4: audit trail).
+	for _, step := range []func() error{d.migrateLifecycle, d.migrateBootstrapPeerPin, d.migrateAudit} {
+		if err := step(); err != nil {
+			return err
+		}
 	}
 	return d.applySchemaVersion()
 }
