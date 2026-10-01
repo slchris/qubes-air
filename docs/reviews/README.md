@@ -14,6 +14,7 @@
 | [已有真机验收汇总](validation-history.md) | 从原有文档整理的 Proxmox/RemoteVM 现场记录 | 非新验收；缺少统一源码版本和完整原始日志 |
 | [2026-09-25 OPS-01 环境只读预检](2026-09-25-ops01-environment-preflight.md) | 只读检查 Console、离机备份路径和 Qubes 配置 | 无真实离机归档/keyring，不能执行真实恢复 |
 | [2026-09-25 QA-01 Proxmox 部分回归](2026-09-25-qa01-proxmox-smoke.md) | 专用 Qube 的 provision/suspend/resume/release 与资源身份核对 | 未 purge；文件内容持久性、Exec/FileCopy、源码版本绑定未完成 |
+| [2026-09-23 MCP-01 截图客户端与经批准的取帧](2026-09-23-mcp-xpra-screenshot.md) | Xpra 单次截图客户端、consent 状态机与 API、`console-desktop` 取帧身份、MCP 工具与审批页（2026-09-26 按本仓库实现重写） | 只有自动化测试；qube 内没有部署 Xpra 监听，真实 Xpra 互通未验证；输入仍未实现 |
 
 2026-09-21 把记录对应的未提交工作区按独立意图分组提交到本地 `main`，2026-09-22 经 PR #9
 （`5f0fd88`）合入 `origin/main`；记录正文保留当时的结论，提交事实以补充说明为准。

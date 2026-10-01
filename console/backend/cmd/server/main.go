@@ -25,6 +25,7 @@ import (
 	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/config"
 	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/desktopaccess"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/lockfile"
 	"github.com/slchris/qubes-air/console/internal/middleware"
@@ -224,6 +225,9 @@ type Dependencies struct {
 	sessions *middleware.SessionStore
 	// jobHandler serves the orchestration audit trail.
 	jobHandler *handler.JobHandler
+	// desktopAccess serves MCP desktop consent: grant requests, one-frame
+	// captures and the Console operator's approval queue.
+	desktopAccess *handler.DesktopAccessHandler
 	// bootstrapTokens mints the tokens cloud-init delivers.
 	bootstrapTokens *repository.BootstrapTokenRepository
 	// transport is the cross-machine gRPC transport (NoopTransport by default).
@@ -408,6 +412,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 		sessionHandler:    handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
 		sessions:          sessionStore,
 		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
+		desktopAccess:     newDesktopAccessHandler(qubeSvc),
 		bootstraps:        bootstraps,
 		bootstrapTokens:   bootstrapTokenRepo,
 		transport:         xport,
@@ -548,7 +553,19 @@ func newQubeServiceOptions(
 		service.WithInfraStore(infraRepo),
 		// Per-qube data keys: minted at creation, deleted on purge (crypto-shred).
 		service.WithDataKeyStore(dataKeys),
+		// Desktop frames are read over a per-qube stream under the
+		// console-desktop identity, never over the general transport.
+		service.WithDesktopStreamer(service.NewAgentDesktopStreamer(certIssuer, cfg.Orchestrator.AgentListen)),
 	}
+}
+
+// newDesktopAccessHandler wires MCP desktop consent to the qube service. The
+// consent store lives in this process only: a restart drops every pending
+// request and grant. A qube service that cannot capture frames leaves the
+// handler refusing frame requests with 503 before any operator is asked.
+func newDesktopAccessHandler(qubes service.QubeService) *handler.DesktopAccessHandler {
+	frames, _ := qubes.(service.DesktopFrameCapturer)
+	return handler.NewDesktopAccessHandler(desktopaccess.NewStore(), qubes, frames)
 }
 
 // specBoundsFromConfig maps the configured qube_spec limits onto the service's
@@ -1089,6 +1106,7 @@ func setupRouter(cfg *config.Config, deps *Dependencies) *gin.Engine {
 	deps.billingHandler.RegisterRoutes(v1)
 	deps.monitoringHandler.RegisterRoutes(v1)
 	deps.settingsHandler.RegisterRoutes(v1)
+	deps.desktopAccess.RegisterRoutes(v1)
 
 	v1.GET("/status", statusHandler(deps.db, build))
 

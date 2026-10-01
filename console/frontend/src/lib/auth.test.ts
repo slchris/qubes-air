@@ -75,6 +75,6 @@ describe('auth.canOpen', () => {
   })
 
   it('lists exactly the views backed by fleet-only endpoints', () => {
-    expect([...FLEET_ONLY_VIEWS].sort()).toEqual(['billing', 'credentials', 'jobs', 'monitoring'])
+    expect([...FLEET_ONLY_VIEWS].sort()).toEqual(['billing', 'credentials', 'desktop', 'jobs', 'monitoring'])
   })
 })

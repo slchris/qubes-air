@@ -54,6 +54,10 @@
 > 接线改动使 `cmd/server/main.go` 中 `Dependencies` 之后的行下移（UD-1d/UD-1e/UD-1g/UD-23 的引用已按本次
 > 工作树逐条重算）。v4 步骤放在新文件 `internal/database/audit.go`，
 > `migrate()` 里的命名步骤改成按版本顺序的循环，行数不变，`database.go` 既有引用不位移。
+> 2026-09-26 MCP 桌面帧（新增 §1.8 UD-26 系列）：`cmd/server/main.go` 增加了桌面访问的
+> import、`Dependencies` 字段、`newDesktopAccessHandler` 与路由注册，其后的行整体下移；
+> `internal/service/qube_service.go` 在 `QubeServiceImpl` 与选项里各加一段，其后 +9。§1.1 与本节中
+> 指向这两个文件的引用已逐条重算并核对内容；其余文件沿用上次结果。
 > 相关专题：[安全控制](security-controls.md)、[可靠性契约](reliability-design.md)、
 > [灾难恢复](disaster-recovery.md)、[gRPC transport](grpc-transport-design.md)、
 > [升级与回滚](upgrade-rollback.md) §3.2。
@@ -66,15 +70,15 @@
 |---|---|---|---|
 | UD-1 | 每客户端限流 | **20 req/s，burst 40** | `console/backend/internal/config/config.go:628`（`RateLimitPerSec: 20`）、`:629`（`RateLimitBurst: 40`） |
 | UD-1b | 请求体上限 | **1 MiB**（`1 << 20`） | `config/config.go:436`（`DefaultMaxBodyBytes`） |
-| UD-1c | 浏览器会话 TTL | **30 分钟**；设置页 Session Timeout 可改为 **5–1440 分钟**，保存即生效：新 session 用新值，已签发的（包括保存者自己的）只缩短、不延长。库里存有越界值（旧版本不校验）时启动打 `WARNING` 并回退 30 分钟，不拒绝启动 | `internal/middleware/session.go:21`（`DefaultSessionTTL`）、`:62`（`SetTTL`）；`internal/service/settings_service.go:17`/`:18`/`:22`（`Min`/`Max`/`DefaultSessionTimeoutMinutes`）；`cmd/server/main.go:439`（`newConfiguredSessionStore`）；`internal/handler/settings_handler.go:83`（保存后 `SetTTL`） |
-| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1043`（`configureTrustedProxies`）、`:1055`（在 `setupRouter` 里调用） |
-| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:658`（接线） |
+| UD-1c | 浏览器会话 TTL | **30 分钟**；设置页 Session Timeout 可改为 **5–1440 分钟**，保存即生效：新 session 用新值，已签发的（包括保存者自己的）只缩短、不延长。库里存有越界值（旧版本不校验）时启动打 `WARNING` 并回退 30 分钟，不拒绝启动 | `internal/middleware/session.go:21`（`DefaultSessionTTL`）、`:62`（`SetTTL`）；`internal/service/settings_service.go:17`/`:18`/`:22`（`Min`/`Max`/`DefaultSessionTimeoutMinutes`）；`cmd/server/main.go:444`（`newConfiguredSessionStore`）；`internal/handler/settings_handler.go:83`（保存后 `SetTTL`） |
+| UD-1d | 可信代理 | **不信任任何代理**：`ClientIP()` 取对端地址，忽略 `X-Forwarded-For` | `cmd/server/main.go:1060`（`configureTrustedProxies`）、`:1072`（在 `setupRouter` 里调用） |
+| UD-1e | 单个 orchestration job 超时 | **45 分钟**（`JobTimeoutSeconds: 2700`），env `QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS` | `config/config.go:337`（字段）、`:675`（默认值）、`internal/orchestrator/runner.go:186`（`DefaultJobTimeout`）、`cmd/server/main.go:675`（接线） |
 | UD-1f | `/health` 的编排 dispatcher 心跳：空闲轮询间隔 / 判死阈值 | **5s / 15s**（阈值 = 3 次丢拍）；dispatcher 正在执行 job 时预算再加该 job 的超时（UD-1e）。**无配置键**（编译期常量） | `internal/orchestrator/health.go:11`（`DispatcherPollInterval`）、`:22`（`DispatcherStaleAfter`） |
-| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1363`（`healthProbeInterval`） |
+| UD-1g | `/health` 数据库探测的最小间隔（未认证路由的写节流） | **2s**（窗口内的重复请求复用上次成功；失败不入缓存）；代价是库变为不可写最多晚一个窗口被发现 | `cmd/server/main.go:1381`（`healthProbeInterval`） |
 | UD-1h | agent 的 Exec/FileCopy 路径白名单（随 qube 写入 `agent.env`） | **默认都为空 = 该服务在 guest 内禁用**（agent 对空列表直接 `reject(..., 77)`，不是"允许全部"）；Exec 是绝对程序路径、FileCopy 是绝对目录（`/` 被拒），冒号分隔，两侧各自校验；重复项与任何控制字符都被拒。路径表不空而 `agent_allowed_services` 未含对应服务（`qubesair.Exec` / `qubesair.FileCopy`）时**只告警不拒绝**（启动日志 `WARNING: agent grants:`，渲染日志 `cloud-init for …`），因为 agent 会整体拒绝该服务、这组路径不授予任何能力 | `config/config.go:237`（`AgentExecAllow`）、`:242`（`AgentFileCopyRoots`）、`:901`/`:904`（env `QUBES_AIR_EXEC_ALLOW`/`QUBES_AIR_FILECOPY_ROOTS`，冒号分隔）；校验 `internal/qrexec/allowlist.go:48`（`ValidateAgentGrants`，启动时 `config.go:1071`、渲染时 `internal/service/cloudinit.go:177`）；写入 `internal/service/cloudinit.go:308` |
-| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:127`（`bootLocked`：先取锁再 boot）、`:87`（main 的唯一调用点）、`:93`（失败即 `log.Fatalf`） |
-| UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1065`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1312`（`healthHandler` 入参）、`:1284`/`:1285`（`healthBody` 的 `build_time`/`tree` 键）、`:1411`（`statusHandler`）、`:69`（`--version`）、`:73`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
-| UD-25 | `GET /api/v1/monitoring/qubes` 的读取预算与刷新 | 整次采集（含列出 qube）**10s**，单个 qube **5s**，同时最多 **8** 个 provider 读取，每个 zone 每次只构造一个适配器；到点未读到的 qube 标 `provider_metrics_timeout`，其余照常返回，不等待忽略 context 的 provider 调用，因而落在 15s `WriteTimeout` 之内。**无配置键**（编译期常量）。前端每 **60s** 重取 Qube 指标与主机概览，单次轮询 **20s** 无应答即中止并按失败处理（保留上次读数）；每条 Qube 读数与主机指标各按自己的采样时间判定，早于 **120s**、超前 **30s** 或缺失时标 stale | `console/backend/internal/service/runtime_metrics.go:18`（`runtimeMetricsWorkers`）、`:23`（`DefaultRuntimeMetricsSweepDeadline`）、`:26`（`DefaultRuntimeMetricsPerQubeTimeout`）；写超时 `cmd/server/main.go:1426`；前端 `console/frontend/src/components/MonitoringView.svelte:82`（`runtimeMetricsStaleAfterMs`）、`:85`（`pollTimeoutMs`）、`:222`（超前判定）、`:234`/`:235`（刷新定时器） |
+| UD-1i | 单实例锁：同一数据库只允许一个 console 进程 | **默认 `<database.dsn>.lock`**（如 `./qubes-air.db` → `./qubes-air.db.lock`，由 DSN 派生，去掉 `?query` 与 `file:` 前缀）；启动时 `flock(2)` `LOCK_EX\|LOCK_NB` 取得并持有到进程退出，**取不到即拒绝启动**，错误文本给出锁文件路径与写入文件的持锁 pid；`lock_file` / env `QUBES_AIR_LOCK_FILE` 可显式覆盖（内存库没有可共享的文件，默认无锁，只能靠它加锁）。flock 是咨询锁、随进程死亡由内核释放 → 残留文件无害、不存在 stale-lock 判断 | `internal/config/config.go:46`（`LockFile` 字段）、`:665`（env）、`:1098`（`LockFilePath` 派生规则）、`internal/lockfile/lockfile.go:60`（`Acquire`）、`:73`（`syscall.Flock`）、`:105`（`Release`）、`cmd/server/main.go:128`（`bootLocked`：先取锁再 boot）、`:88`（main 的唯一调用点）、`:94`（失败即 `log.Fatalf`） |
+| UD-23 | console 构建身份：`/health` 的 `version` / `revision` / `build_time` / `tree`，与 `--version`、启动日志报的是同一组值（M2-10 / G-H8） | 链接期由 `-ldflags -X` 注入：`version`＝`git describe --tags --always --dirty` 的**原样**输出（tag 构建＝tag 本身；tag 之后＝`v1.2.3-4-gabcdef`；工作树有未提交改动＝结尾多一个 `-dirty`）、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC）；`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`。**未注入（如不带 `-ldflags` 的 `go build ./cmd/server`）时四个字段一律 `unknown`**——包括 `tree`，不知道就不说成 `clean`，也不报任何形似版本的常量 | `internal/buildinfo/buildinfo.go:39`（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`：空值→`unknown`）、`:108`（`String`：`--version` 的单行格式）；消费点 `cmd/server/main.go:1082`（`buildinfo.Get()` 读一次，`/health` 与 `/status` 共用）、`:1330`（`healthHandler` 入参）、`:1302`/`:1303`（`healthBody` 的 `build_time`/`tree` 键）、`:1429`（`statusHandler`）、`:70`（`--version`）、`:74`（启动日志）；注入点 `Makefile` 的 `build-backend` 与 `dev`、`.github/workflows/release.yml` 的 Build console binary 步骤（`version` 等于 release 版本、`revision`/`build_time` 非 `unknown`、`tree` 为 `clean`/`dirty`——逐字段校验，任一缺失即构建失败）；页眉显示的版本也取自这里（`unknown`/不可达时不显示）；读法与实测输出见[升级与回滚](upgrade-rollback.md) §3.2 |
+| UD-25 | `GET /api/v1/monitoring/qubes` 的读取预算与刷新 | 整次采集（含列出 qube）**10s**，单个 qube **5s**，同时最多 **8** 个 provider 读取，每个 zone 每次只构造一个适配器；到点未读到的 qube 标 `provider_metrics_timeout`，其余照常返回，不等待忽略 context 的 provider 调用，因而落在 15s `WriteTimeout` 之内。**无配置键**（编译期常量）。前端每 **60s** 重取 Qube 指标与主机概览，单次轮询 **20s** 无应答即中止并按失败处理（保留上次读数）；每条 Qube 读数与主机指标各按自己的采样时间判定，早于 **120s**、超前 **30s** 或缺失时标 stale | `console/backend/internal/service/runtime_metrics.go:18`（`runtimeMetricsWorkers`）、`:23`（`DefaultRuntimeMetricsSweepDeadline`）、`:26`（`DefaultRuntimeMetricsPerQubeTimeout`）；写超时 `cmd/server/main.go:1444`；前端 `console/frontend/src/components/MonitoringView.svelte:82`（`runtimeMetricsStaleAfterMs`）、`:85`（`pollTimeoutMs`）、`:222`（超前判定）、`:234`/`:235`（刷新定时器） |
 | UD-25b | `GET /api/v1/monitoring/qubes` 的采集共享与复用 | 进程内同一时刻只有一次采集，期间到达的请求等待它；成功采集完成后 **5s** 内的请求复用其结果；失败（列不出 qube）不复用；采集使用与调用方连接解绑的 context，调用方断开只让它自己返回。**无配置键**（编译期常量） | `console/backend/internal/service/runtime_metrics.go:29`（`DefaultRuntimeMetricsReuseWindow`）、`:164`（`joinSweep`）、`:177`（`runSharedSweep`：只缓存成功结果） |
 | UD-25c | `provider_busy`（VM 被 provider 任务锁定）的服务端日志频率 | 每个 qube **每 10 分钟最多 1 行**；其他失败原因每次都记，provider 不支持则不记。**无配置键**（编译期常量） | `console/backend/internal/service/runtime_metrics.go:52`（`runtimeMetricsBusyLogInterval`）、`:323`（`logBusy`） |
 
@@ -130,9 +134,10 @@
 | UD-13 | Console API 调用超时 | **15s** | `internal/mcp/client.go:19`（`DefaultAPITimeout`） |
 | UD-13b | 上游响应体上限 | **8 MiB** | `internal/mcp/client.go:22`（`DefaultMaxResponseBody`） |
 | UD-13c | 单条 JSON 消息上限 | **4 MiB** | `internal/mcp/protocol.go:40`（`DefaultMaxMessageSize`） |
+| UD-13d | desktop_frame_get 每次 Console 调用的超时 | **45s**（UD-26 审批窗口 + 15s，长于 Console 为这两个路由设的 35s 写截止时间）；只用于这一个工具，其他调用仍是 UD-13 | `internal/mcp/tools.go:375`（`DesktopFrameCallTimeout`）、`internal/mcp/client.go:123`（`DoWithin`） |
 
 > 已知有文档描述该取值但未给常量名或行号的：
-> 请求体上限 1 MiB 见 `docs/mcp-design.md:32`（"API 的 BodyLimit 默认 1 MiB"）；
+> 请求体上限 1 MiB 见 `docs/mcp-design.md:33`（"API 的 BodyLimit 默认 1 MiB"）；
 > 会话 TTL 30 分钟见 `docs/roadmap-to-production.md`〈当前代码已落地〉表的"请求与认证"行（"session TTL 默认 30 分钟"）。
 > 本节的价值是把**常量名与行号**钉住，便于从文档反查代码。
 
@@ -140,7 +145,7 @@
 
 校验点在 service，取值来自配置；越界在**入队与 provider 调用之前**拒绝（`Create` 与 `Update`
 共用同一个校验器）。两端都是**闭区间**：min 与 max 本身允许，min-1 / max+1 拒绝。**0 不是尺寸而是
-"未设置"**：create 时由 `applyDefaultSpec` 换成类型默认值（`internal/service/qube_service.go:424`），
+"未设置"**：create 时由 `applyDefaultSpec` 换成类型默认值（`internal/service/qube_service.go:433`），
 data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/provider/proxmox/adapter.go:55`），
 所以下限只作用于真正给了值的字段。
 
@@ -153,7 +158,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | UD-19 | GPU 卡数上下限 | **1..8** | `config.go:393-394`（字段）、`:699-700`（默认值）；服务侧 `specbounds.go:92-93`；**无仓库依据**（当前没有任何 provider 读 `Spec.GPU`），纯判断值 |
 | UD-20 | 上述 10 个键的 env 绑定 | `QUBES_AIR_QUBE_SPEC_{MIN,MAX}_{VCPU,MEMORY_MB,DISK_GB,DATA_DISK_GB,GPU_COUNT}`；缺失或非法取值保留默认（不会解析成 0） | `config.go:971-980`（逐个绑定）、`:986`（`intFromEnv`：空值与解析失败都回退到当前值） |
 | UD-21 | 非法 bounds 的处置 | **启动即失败**：`min < 1` 或 `max < min` 拒绝启动，而不是关掉校验；服务侧另有兜底（非法集合被忽略、保留默认） | `config.go:420`（`QubeSpecConfig.Validate`）、`:1046`（`Config.Validate` 中调用）；兜底 `specbounds.go:209`（`WithSpecBounds`） |
-| UD-22 | 越界错误的形状 | `invalid qube spec: <字段> <值><单位> is above the maximum <上限><单位> (qube_spec.max_<键>)`；低于下限同理。前端显示 `message` 字段（此前只显示 `error` 里的 "Bad Request"） | `specbounds.go:146`（`validateSpec`）；HTTP 400 映射 `internal/handler/qube_handler.go:341-342`；前端 `console/frontend/src/lib/api.ts:104`（`errorMessage`） |
+| UD-22 | 越界错误的形状 | `invalid qube spec: <字段> <值><单位> is above the maximum <上限><单位> (qube_spec.max_<键>)`；低于下限同理。前端显示 `message` 字段（此前只显示 `error` 里的 "Bad Request"） | `specbounds.go:146`（`validateSpec`）；HTTP 400 映射 `internal/handler/qube_handler.go:341-342`；前端 `console/frontend/src/lib/api.ts:105`（`errorMessage`） |
 
 > 依据强度分级（不要混用）：UD-15 的上限与 UD-16/17/18 的下限来自仓库里已有的表单约束或代码
 > 常量；**UD-16/17/18 的上限、以及 UD-19 整行没有仓库依据**，是按"单机自托管不应被自己绊倒"
@@ -173,7 +178,22 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | UD-24b | 每类行数硬上限 | `full`（已认证或成功的请求，429 除外）**200,000** 行，`sampled`（所有 429，以及未认证且未成功的请求）**20,000** 行；插入使某类超限时在同一事务里删该类最旧的行，删到上限的 **99%**；两类互不驱逐。**上限是判断值**；行宽实测：典型约 265 字节（含索引），最大约 683 字节 | `internal/repository/audit_repository.go:24`、`:25`（常量）、`:122`（`append`）、`:139`（删到 99%）、`:152`（`trimAuditClass`） |
 | UD-24c | `sampled` 类的落库预算 | 全局令牌桶：突发 **20** 条，之后每 **10 秒** 1 条；超出只计数，有计数时每 **60 秒**写一条汇总行（`outcome: suppressed`）。汇总行记来源：按前缀（IPv4 /24、IPv6 /64）数不同来源，每个汇总最多跟踪 **1024** 个前缀（之后新出现的前缀只计为 untracked，内存有界），并写出最忙的 **5** 个及其条数 | `internal/audit/persist.go:28`、`:29`（`DefaultSampledBurst`/`DefaultSampledEvery`）、`:32`（`DefaultFlushInterval`）；`internal/audit/suppression.go:17`（`MaxTrackedSourcePrefixes`）、`:19`（`TopSourcePrefixes`）、`:72`（`SourcePrefix`）；分类 `internal/audit/audit.go:155`（`Event.Class`） |
 | UD-24d | 落库队列、写超时与停机 | 队列 **1024**（满则丢弃并计数，不等待）；单次写 **5 秒**超时；停机时 `Stop` 先等已在写的那一条（最多一个写超时，5 秒），再用最多 **5 秒**排空队列与汇总行，合计不超过 10 秒；`Stop` 之后队列里的事件不再按完整写超时写入，宽限期用完剩下的计为丢失；失败日志第一次立即写，之后每 **60 秒**最多一行 | `internal/audit/persist.go:19`（`DefaultQueueSize`）、`:21`（`DefaultWriteTimeout`）、`:24`（`DefaultStopGrace`）、`:36`（`DefaultFailureLogEvery`）、`:214`（`Submit`，不阻塞） |
-| UD-24e | `/health` 的 `audit_trail` | `ok` / `degraded`（最近一次写失败或有事件被丢，此后没有成功写入）/ `disabled`（未接线，只在测试里出现）；**只作信息**，不改变 `status` 与状态码 | `cmd/server/audittrail.go:55`（取值）、`:61`（`health`）；`cmd/server/main.go:1290`（`healthBody` 字段）、`:1312`（`healthHandler` 入参） |
+| UD-24e | `/health` 的 `audit_trail` | `ok` / `degraded`（最近一次写失败或有事件被丢，此后没有成功写入）/ `disabled`（未接线，只在测试里出现）；**只作信息**，不改变 `status` 与状态码 | `cmd/server/audittrail.go:55`（取值）、`:61`（`health`）；`cmd/server/main.go:1308`（`healthBody` 字段）、`:1330`（`healthHandler` 入参） |
+### 1.8 MCP 桌面帧授权（MCP-01 部分）
+
+判定规则见[安全控制](security-controls.md#mcp-桌面帧授权)。全部是编译期常量，没有配置键。
+
+| # | 默认值 | 取值 | 位置 |
+|---|---|---|---|
+| UD-26 | 桌面访问审批窗口 | **30s**：请求在进程内等待 Console 操作者决定，MCP 的调用在此期间保持打开 | `console/backend/internal/desktopaccess/consent.go:31`（`ApprovalTTL`） |
+| UD-26b | 帧 grant 有效期 | **30s**，单次使用；取帧 lease 最长也只活到这里 | `internal/desktopaccess/consent.go:34`（`FrameGrantTTL`） |
+| UD-26c | 待决与有效请求上限 | **128**（pending + approved + active），超出返回 429 | `internal/desktopaccess/consent.go:38`（`MaxPendingRequests`） |
+| UD-26d | 桌面路由请求体上限 | **1 KiB**，超出 413；API 总上限 UD-1b 仍在其外 | `internal/handler/desktop_access_handler.go:26`（`desktopAccessBodyLimit`） |
+| UD-26e | 审批等待与取帧的写截止时间 | 各 **35s**（UD-26 / UD-26b + 5s），逐请求设置；服务端全局 `WriteTimeout` 仍是 15s | `internal/handler/desktop_access_handler.go:30`（`desktopWriteSlack`）、`:367`（`extendWriteDeadline`）；全局值 `cmd/server/main.go:1444` |
+| UD-26f | 并发取帧上限 | **2**；满时立即 503 + `Retry-After: 1`，不消耗 grant | `internal/handler/desktop_access_handler.go:35`（`MaxConcurrentDesktopFrames`） |
+| UD-26g | 单次取帧总时限 / `console-desktop` 证书寿命 | **20s / 2 分钟** | `internal/service/desktopframe.go:35`（`desktopFrameTimeout`）、`internal/service/desktopstream.go:34`（`desktopCertLifetime`） |
+| UD-26h | Xpra 对端数据上限 | 单 record **4 MiB**；会话 **10s**；PNG **2 MiB**、单边 **8192 px**、总像素 **4 Mi**。上限内的解码放大实测约 8.7 MB（集合）与 34 MB（16 位 RGBA PNG），UD-26f 因此限制并发 | `internal/xpra/rencode.go:26`（`MaxEncodedPacket`）；`internal/xpra/screenshot.go:22`（`ScreenshotTimeout`）、`:24`、`:26`、`:28` |
+| UD-26i | 桌面端口 | **10005**（`qubesair.StreamTCP+10005`）；agent 只对 Relay 与 `console-desktop` 开放 | `internal/transport/grpc/server.go:848`（`DesktopStreamPort`）、`:859`（`authorizeStreamCaller`） |
 
 ## 2. SQLite 结构（D-6）
 

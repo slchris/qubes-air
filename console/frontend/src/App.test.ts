@@ -82,6 +82,26 @@ describe('App session scope gate', () => {
     expect(screen.getByRole('button', { name: 'Settings' })).toBeEnabled()
   })
 
+  it('keeps a zone-scoped session off the desktop approval queue', async () => {
+    window.location.hash = '#desktop'
+    const fetchMock = stubServer(() => zoneSession)
+    render(App)
+
+    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#dashboard')
+    expect(screen.getByRole('button', { name: /desktop access, unavailable/i })).toBeDisabled()
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).not.toContain('/api/v1/desktop-access')
+  })
+
+  it('opens the desktop approval queue for a fleet-wide session', async () => {
+    window.location.hash = '#desktop'
+    stubServer(() => fleetSession)
+    render(App)
+
+    expect(await screen.findByRole('heading', { name: 'Desktop access' })).toBeInTheDocument()
+    expect(window.location.hash).toBe('#desktop')
+  })
+
   it('keeps a fleet-wide session on the view its address names', async () => {
     window.location.hash = '#jobs'
     stubServer(() => fleetSession)

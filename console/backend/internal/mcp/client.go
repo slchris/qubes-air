@@ -113,6 +113,20 @@ func NewClient(baseURL, token string, opts ...ClientOption) *Client {
 // failures (dial, timeout, body over the cap) return an error that carries no
 // credentials. A non-2xx status arrives as an *APIResponse with StatusCode set.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, body any) (*APIResponse, error) {
+	return c.do(ctx, c.client, method, path, query, body)
+}
+
+// DoWithin is Do with its own timeout instead of the client's default. It is
+// for the few calls that legitimately wait longer than an ordinary request —
+// a person deciding on a desktop request — without raising the bound every
+// other tool runs under.
+func (c *Client) DoWithin(ctx context.Context, timeout time.Duration, method, path string, body any) (*APIResponse, error) {
+	hc := *c.client
+	hc.Timeout = timeout
+	return c.do(ctx, &hc, method, path, nil, body)
+}
+
+func (c *Client) do(ctx context.Context, hc *http.Client, method, path string, query url.Values, body any) (*APIResponse, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -138,7 +152,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}

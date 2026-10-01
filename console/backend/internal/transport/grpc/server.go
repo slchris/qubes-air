@@ -585,6 +585,10 @@ func (t *tunnelSession) openStream(reqID, service string) {
 		_ = t.send(errorFrame(reqID, codeInvalid, "stream port not allowed"))
 		return
 	}
+	if err := authorizeStreamCaller(t.ctx, port); err != nil {
+		_ = t.send(errorFrame(reqID, codeDenied, err.Error()))
+		return
+	}
 	ss, derr := t.server.startStream(t.ctx, reqID, port, t.send)
 	if derr != nil {
 		_ = t.send(errorFrame(reqID, codeUnavailable, "stream dial: "+derr.Error()))
@@ -795,15 +799,13 @@ func authorizePrivilegedServiceCaller(ctx context.Context, service string) error
 	if wantCN == "" {
 		return nil
 	}
-	p, ok := peer.FromContext(ctx)
-	if !ok || p.AuthInfo == nil {
+	leaf, err := verifiedClientLeaf(ctx)
+	if errors.Is(err, errNoPeerIdentity) {
 		return fmt.Errorf("%s requires an authenticated %s identity", service, wantCN)
 	}
-	info, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok || len(info.State.VerifiedChains) == 0 || len(info.State.VerifiedChains[0]) == 0 {
+	if err != nil {
 		return fmt.Errorf("%s requires a verified client certificate", service)
 	}
-	leaf := info.State.VerifiedChains[0][0]
 	role, err := pki.RoleOf(leaf)
 	if err != nil || role != pki.RoleConsole || leaf.Subject.CommonName != wantCN {
 		log.Printf("grpc server: refusing %s to caller CN=%q: restricted to the %s console identity",
@@ -811,6 +813,64 @@ func authorizePrivilegedServiceCaller(ctx context.Context, service string) error
 		return fmt.Errorf("%s is restricted to the %s console identity", service, wantCN)
 	}
 	return nil
+}
+
+// Errors verifiedClientLeaf reports, so each caller can word its own refusal.
+var (
+	errNoPeerIdentity  = errors.New("no authenticated peer")
+	errNoVerifiedChain = errors.New("no verified client certificate")
+)
+
+// verifiedClientLeaf returns the caller's certificate from the chain the TLS
+// handshake verified (RequireAndVerifyClientCert). It never returns a
+// presented-but-unverified certificate: without a verified chain there is no
+// identity to authorize.
+func verifiedClientLeaf(ctx context.Context) (*x509.Certificate, error) {
+	p, ok := peer.FromContext(ctx)
+	if !ok || p.AuthInfo == nil {
+		return nil, errNoPeerIdentity
+	}
+	info, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(info.State.VerifiedChains) == 0 || len(info.State.VerifiedChains[0]) == 0 {
+		return nil, errNoVerifiedChain
+	}
+	return info.State.VerifiedChains[0][0], nil
+}
+
+// DesktopStreamPort is the loopback port a qube's Xpra desktop server listens
+// on, and DesktopStreamService the stream request that reaches it. The console
+// reads desktop frames through it; the agent opens it only for a Relay (the
+// operator's own GUI path) or for the console-desktop identity.
+//
+// Both sides use these two constants, so the port the console asks for and the
+// port the agent guards cannot drift apart.
+const (
+	DesktopStreamPort    = 10005
+	DesktopStreamService = streamServicePrefix + "10005"
+)
+
+// authorizeStreamCaller guards the desktop port. Any CA-signed Relay may open a
+// GUI stream, as before: that is the operator's own desktop, reached through
+// dom0 policy on the local side. A console certificate, though, is minted by
+// the console for one purpose each, and only the one minted to capture a frame
+// for an approved request may read the screen; a probe, renewal, unlock or
+// bootstrap certificate is refused before the port is dialed. Other GUI ports
+// keep their existing rule.
+func authorizeStreamCaller(ctx context.Context, port int) error {
+	if port != DesktopStreamPort {
+		return nil
+	}
+	leaf, err := verifiedClientLeaf(ctx)
+	if err != nil {
+		return fmt.Errorf("desktop stream requires a verified client certificate: %w", err)
+	}
+	role, err := pki.RoleOf(leaf)
+	if err == nil && (role == pki.RoleRelay || (role == pki.RoleConsole && leaf.Subject.CommonName == pki.ConsoleDesktopCN)) {
+		return nil
+	}
+	log.Printf("grpc server: refusing desktop stream port %d to caller CN=%q: restricted to relays and the %s console identity",
+		port, leaf.Subject.CommonName, pki.ConsoleDesktopCN)
+	return fmt.Errorf("desktop stream is restricted to relays and the %s console identity", pki.ConsoleDesktopCN)
 }
 
 // streamServicePrefix marks a request that should be TCP-proxied to a loopback

@@ -13,7 +13,7 @@ describe('Sidebar zone scope', () => {
   it('disables fleet-only views and keeps zone-addressable views and settings available', () => {
     render(Sidebar, { props: { currentView: 'dashboard', onViewChange: vi.fn(), zoneScoped: true } })
 
-    for (const label of ['Jobs', 'Credentials', 'Billing', 'Monitoring']) {
+    for (const label of ['Jobs', 'Desktop access', 'Credentials', 'Billing', 'Monitoring']) {
       expect(screen.getByRole('button', { name: unavailable(label) })).toBeDisabled()
     }
     for (const label of ['Dashboard', 'Qubes', 'Zones', 'Settings']) {
@@ -35,7 +35,7 @@ describe('Sidebar zone scope', () => {
   it('keeps every view enabled for a fleet-wide credential', () => {
     render(Sidebar, { props: { currentView: 'dashboard', onViewChange: vi.fn(), zoneScoped: false } })
 
-    for (const label of ['Jobs', 'Credentials', 'Billing', 'Monitoring', 'Settings']) {
+    for (const label of ['Jobs', 'Desktop access', 'Credentials', 'Billing', 'Monitoring', 'Settings']) {
       expect(screen.getByRole('button', { name: label })).toBeEnabled()
     }
   })

@@ -185,6 +185,10 @@ type QubeServiceImpl struct {
 	// value: NewQubeService seeds it with DefaultSpecBounds and WithSpecBounds
 	// refuses a set that would not bound anything.
 	specBounds SpecBounds
+	// desktop opens the per-qube stream a desktop frame is read over, under
+	// the dedicated console-desktop identity. Nil means frame capture is
+	// unavailable; the general transport above is never used in its place.
+	desktop DesktopTransportOpener
 }
 
 // RenewalWatch reports an outstanding certificate-renewal problem for a qube.
@@ -280,6 +284,11 @@ func WithTransport(t transport.Transport) QubeServiceOption {
 			s.transport = t
 		}
 	}
+}
+
+// WithDesktopStreamer enables desktop frame capture over streams opened by o.
+func WithDesktopStreamer(o DesktopTransportOpener) QubeServiceOption {
+	return func(s *QubeServiceImpl) { s.desktop = o }
 }
 
 // WithAgentProber enables per-qube agent probing. Without it agent health falls

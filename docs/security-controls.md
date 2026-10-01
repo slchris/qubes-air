@@ -14,6 +14,13 @@ Relay/Console 角色。角色校验不依赖 CertRegistry 是否存在。Console
 `console-bootstrap` 的 console 角色证书执行；其它 CA 签发的 Relay/Console 证书（探测、续期、
 relay-call）在进入 invoker 前被拒。
 
+桌面端口 `qubesair.StreamTCP+10005`（`transport/grpc` 的 `DesktopStreamPort`，Xpra 监听端口）同样
+按身份开放：Relay 角色照旧可以打开（操作者自己的 GUI 通道，由本地 dom0 policy 把关）；console
+角色只接受 CN 为 `console-desktop` 的证书，也就是 Console 为一次已批准的 MCP 取帧临时签发的那张，
+探测、续期、解锁与 bootstrap 证书在拨号之前就被拒（`authorizeStreamCaller`）。其它 GUI 端口
+（5900–5910、10000–10010 中的其余端口）规则不变。这条检查只在按本版本构建的 agent 上生效，
+升级顺序见[升级与回滚](upgrade-rollback.md) §2.6。
+
 实际 agent 启动入口必须配置 `--revocation-url`；打包 unit 从
 `QUBESAIR_REVOCATION_URL` 传入。Console 用以下配置把地址写进 cloud-init：
 
@@ -110,7 +117,7 @@ auth:
 - 创建或更新 Zone 时，`credential_id`（Proxmox 与 GCP）必须指向一条运维凭据。不存在的 ID 和
   控制台自有行（见下文“Console API 凭据”）返回同一个 422
   （`credential_id does not name a stored credential`），控制台行在审计里记为 `denied`。
-- `credentials`、`infrastructure`、`settings`、`monitoring`、`billing`、`status` 和 job 汇总
+- `credentials`、`infrastructure`、`settings`、`monitoring`、`billing`、`status`、`desktop-access` 和 job 汇总
   列表是 fleet 端点，zone token 一律 403（不做半真半假的过滤视图）。
 - `GET /zones` 与 `GET /qubes` 在查询层按白名单过滤，只返回可见对象。
 - 所属关系无法解析（数据库故障、body 不可解析或超限）时失败关闭，不回退为放行。
@@ -120,7 +127,7 @@ auth:
   （fleet-wide 为空数组），带 `Cache-Control: no-store`（登录 `POST /session` 同样），不回显 token、session ID 或 cookie；
   未认证 401。它只报告、不授予任何权限，供 UI 判断哪些视图会被拒绝；GET 按设计不写审计。
 - UI 侧可见性降级（显示层，判定仍在服务端）：确认 scope 之前不渲染控制台外壳；zone-scoped
-  session 的 jobs/credentials/billing/monitoring 导航置灰，落到这些视图时回到 dashboard，
+  session 的 jobs/desktop access/credentials/billing/monitoring 导航置灰，落到这些视图时回到 dashboard，
   dashboard 不请求也不显示 job 汇总，settings 只保留登录/登出。
 
 边界：这是对象级隔离，不是完整多租户。fleet 端点对 zone token 整体不可用；没有 API 可以
@@ -626,3 +633,43 @@ orchestrator:
 `QUBES_AIR_PROXMOX_SSH_KNOWN_HOSTS_FILE`。文件中的节点地址必须匹配实际连接的管理 IP/名称；
 主机公钥应通过可信渠道核验，不能把未验证的扫描结果直接作为信任依据。
 缺少信任文件、未知/错误/撤销的主机密钥会失败；握手受超时与取消控制。
+
+## MCP 桌面帧授权
+
+MCP 读取 qube 桌面的一帧之前，必须由坐在 Console 前的人批准。流程：MCP 以 control token
+`POST /qubes/:id/desktop-access`（`{"operation":"frame"}`）发起请求并保持连接；操作者在 Console 的
+Desktop access 页看到请求者、qube 与到期时间，选 Allow 或 Deny；批准后一次性 grant 只作为那个
+等待中的 MCP 调用的响应返回；MCP 随即 `POST /qubes/:id/desktop-frame`（`{"grant":"..."}`）换回一张
+PNG。实现：`internal/desktopaccess`（状态机）、`internal/handler/desktop_access_handler.go`（路由）、
+`internal/service/desktopframe.go` 与 `desktopstream.go`（取帧）。
+
+| 端点 | 认证 / 授权 | 请求体 | 时限 | 审计 | 敏感响应 |
+|---|---|---|---|---|---|
+| `POST /qubes/:id/desktop-access` | control scope 的具名凭据；`RequireZones` 按 qube 所属 zone 判定（他 zone 与不存在均 404）；只经 TLS 或 loopback 交付 | ≤1 KiB，严格 JSON，只接受 `frame` | 审批窗口 30s；本请求自设 35s 写截止时间 | 是（subject、object=qube） | grant 只出现在这一个响应里，`Cache-Control: no-store` |
+| `POST /qubes/:id/desktop-frame` | 同上，另需与 subject + qube + operation 绑定的一次性 grant | ≤1 KiB，严格 JSON | grant 30s；取帧 ≤20s，lease 结束即中断；自设 35s 写截止时间；并发 2 路 | 是（body 不入审计） | PNG，`no-store`，≤2 MiB |
+| `GET /desktop-access` | 浏览器 session + control + fleet-wide | — | 默认 | 否（GET） | 只有元数据，无 grant，`no-store` |
+| `POST /desktop-access/:id/approve\|deny\|stop` | 浏览器 session + control + fleet-wide + `X-Console-Action: desktop-consent` | 无 | 默认 | 是（操作者 subject，object=请求 ID） | 不含 grant，`no-store` |
+
+判定与边界：
+
+- **只有人能批准。** 审批路由要求 `middleware.SessionAuthenticated`：Bearer token（自动化持有的
+  凭据）即使是 fleet-wide control 也返回 403；zone-scoped session 也被拒（`/api/v1/desktop-access`
+  是 fleet 前缀，handler 自己再查一次）。**鉴权关闭（没有配置任何 token）时没有 session，批准不可能
+  发生**，发起请求也因没有具名 control 凭据而 403——即桌面帧在鉴权关闭的控制台上整体不可用。
+- 默认的 CORS 允许头只有 `Content-Type` 与 `Authorization`，不含 `X-Console-Action`，跨站表单和跨源
+  脚本都带不上它；UI 同源提供，不需要把它加进 `cors.allowed_headers`，加了就等于允许那些源发起审批。
+- grant 是 256 位随机值，只存 SHA-256；一次消费，30s 过期。以错误的 subject、qube 或 operation
+  出示 grant 返回 403，且该 grant 随即作废（持有者不是它签发给的那个请求方）。`input` 操作一律
+  400：没有消费输入的端点，`desktop_input_send` 仍是显式失败的桩。
+- 取帧走每个 qube 自己的 agent 连接，Console 为这一次取帧签发 2 分钟的 `console-desktop` 证书并
+  把对端钉在 `agent-<qube>`；agent 只对 Relay 与这个身份开放桌面端口（见上文“Agent 身份与吊销”）。
+  全局 transport 从不用于取帧，没有 streamer 时返回 503 且不打扰操作者。
+- 操作者 Stop 或 grant 到期都会立即取消正在进行的取帧流，已经读到的帧也不返回（403）。并发取帧
+  满 2 路时立即 503（`Retry-After: 1`），grant 不被消耗。
+- 存储、Xpra 与传输错误映射为固定文案（403/404/408/409/412/429/502/503/504），细节只写日志；
+  响应、审计行与队列里都没有 grant。
+- 请求与 grant 只在进程内存中；重启即全部失效。待决加有效请求上限 128，超出 429。
+
+限制：qube 里需要有监听 `127.0.0.1:10005` 的 Xpra 服务端（6.3 及以上内联 PNG），本仓库与
+qubes-salt-config 都还没有部署它，也没有 Xpra 认证；没有监听时取帧以 502 失败关闭。与真实 Xpra
+服务端的互通尚未验证（[MCP 接入](mcp-design.md#桌面能力)）。

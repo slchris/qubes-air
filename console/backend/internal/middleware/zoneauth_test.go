@@ -87,6 +87,8 @@ func zoneRouter(resolver ObjectResolver, sessions *SessionStore) *gin.Engine {
 	})
 	v1.GET("/qubes/:id", echo)
 	v1.POST("/qubes/:id/start", echo)
+	v1.GET("/desktop-access", echo)
+	v1.POST("/desktop-access/:id/approve", echo)
 	v1.POST("/qubes/:id/purge", echo)
 	v1.GET("/jobs", echo)
 	v1.GET("/jobs/:id", echo)
@@ -125,6 +127,7 @@ func TestZoneAuthFleetTokenReachesFleetRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/status", ""},
 		{http.MethodGet, "/api/v1/jobs", ""},
 		{http.MethodPost, "/api/v1/zones", "{}"},
+		{http.MethodGet, "/api/v1/desktop-access", ""},
 		{http.MethodGet, "/api/v1/mystery", ""},
 	} {
 		w := doZoneReq(r, fleetTokenValue, tc.method, tc.path, tc.body)
@@ -174,6 +177,8 @@ func TestZoneAuthScopedTokenFleetRoutesRefused(t *testing.T) {
 		{http.MethodGet, credentialsPath},
 		{http.MethodPost, credentialsPath},
 		{http.MethodGet, "/api/v1/status"},
+		{http.MethodGet, "/api/v1/desktop-access"},
+		{http.MethodPost, "/api/v1/desktop-access/r1/approve"},
 		{http.MethodGet, "/api/v1/jobs"},
 		{http.MethodPost, "/api/v1/zones"},
 		{http.MethodGet, "/api/v1/mystery"},

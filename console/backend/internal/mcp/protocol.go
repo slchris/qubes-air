@@ -144,11 +144,49 @@ type CallToolParams struct {
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
-// ContentItem is one text block of a tool result.
+// ContentItem is one content block of a tool result: text, or an image carried
+// as base64 data with its MIME type.
 type ContentItem struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string
+	Text     string
+	Data     string
+	MIMEType string
 }
+
+// MarshalJSON writes the fields the block's type defines, and only those: a
+// text block always has "text" (even when empty), an image block has "data"
+// and "mimeType" and no "text".
+func (c ContentItem) MarshalJSON() ([]byte, error) {
+	if c.Type == contentTypeImage {
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			Data     string `json:"data"`
+			MIMEType string `json:"mimeType"`
+		}{c.Type, c.Data, c.MIMEType})
+	}
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{c.Type, c.Text})
+}
+
+// UnmarshalJSON reads any block shape; a field the type does not use stays
+// empty.
+func (c *ContentItem) UnmarshalJSON(raw []byte) error {
+	var wire struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Data     string `json:"data"`
+		MIMEType string `json:"mimeType"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	*c = ContentItem{Type: wire.Type, Text: wire.Text, Data: wire.Data, MIMEType: wire.MIMEType}
+	return nil
+}
+
+const contentTypeImage = "image"
 
 // CallToolResult is the response to tools/call. IsError is true when the tool
 // ran but failed (bad upstream response, timeout, not implemented); JSON-RPC
