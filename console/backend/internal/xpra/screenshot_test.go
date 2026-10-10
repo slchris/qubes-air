@@ -7,6 +7,7 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -161,7 +162,7 @@ func TestGetScreenshotRejectsMalformedImagePackets(t *testing.T) {
 		{"negative height", []any{packetScreenshot, int64(2), int64(-3), "png", int64(8), pngData}},
 		{"width over uint16", []any{packetScreenshot, int64(1 << 16), int64(1), "png", int64(8), pngData}},
 		{"negative stride", []any{packetScreenshot, int64(2), int64(3), "png", int64(-1), pngData}},
-		{"stride over uint32", []any{packetScreenshot, int64(2), int64(3), "png", uint64(1 << 32), pngData}},
+		{"stride over uint32", []any{packetScreenshot, int64(2), int64(3), "png", uint64(math.MaxUint32) + 1, pngData}},
 		{"empty data", []any{packetScreenshot, int64(2), int64(3), "png", int64(8), []byte{}}},
 		{"not a png", []any{packetScreenshot, int64(2), int64(3), "png", int64(8), []byte("bad")}},
 		{"packet and png disagree", []any{packetScreenshot, int64(3), int64(2), "png", int64(12), pngData}},
@@ -174,6 +175,21 @@ func TestGetScreenshotRejectsMalformedImagePackets(t *testing.T) {
 				t.Fatalf("error = %v, want ErrScreenshotSession", err)
 			}
 		})
+	}
+}
+
+// TestGetScreenshotAcceptsRowStrideAtUint32Max pins the boundary of the
+// explicit stride check: MaxUint32 is the largest value the wire field can
+// carry, so it must survive the narrowing conversion unchanged.
+func TestGetScreenshotAcceptsRowStrideAtUint32Max(t *testing.T) {
+	pngData := encodePNG(t, 2, 3)
+	packet := []any{packetScreenshot, int64(2), int64(3), "png", uint64(math.MaxUint32), pngData}
+	got, err := GetScreenshot(context.Background(), newScreenshotStream(t, packet))
+	if err != nil {
+		t.Fatalf("GetScreenshot: %v", err)
+	}
+	if got.RowStride != math.MaxUint32 {
+		t.Fatalf("RowStride = %d, want %d", got.RowStride, uint32(math.MaxUint32))
 	}
 }
 
