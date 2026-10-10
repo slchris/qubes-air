@@ -646,6 +646,30 @@ func SnippetFileName(qubeName string) string {
 	return fmt.Sprintf("qubes-air-%s.yaml", qubeName)
 }
 
+// maxQubeNameLen bounds the qube name embedded in a snippet file path. It is
+// ample for any name this console mints; the cap only stops an adversarial
+// input from producing an unbounded filename.
+const maxQubeNameLen = 80
+
+// qubeNamePathRE is the allowlist a qube name must satisfy before it is
+// embedded in a filesystem path. Separators and '.' are excluded on purpose:
+// the name is the only variable part of the snippet path, so anything that can
+// form a path segment there can steer the write out of the identity directory.
+var qubeNamePathRE = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9_-]{1,%d}$`, maxQubeNameLen))
+
+// validateQubeName rejects a qube name that is not safe to embed in a snippet
+// path. Both writers call it before they build a path and before they touch
+// the filesystem, so a traversal or otherwise malformed name fails with an
+// error and never reaches a rename.
+func validateQubeName(qubeName string) error {
+	if !qubeNamePathRE.MatchString(qubeName) {
+		return fmt.Errorf(
+			"invalid qube name %q: only letters, digits, '_' and '-' are allowed, with a length of 1-%d",
+			qubeName, maxQubeNameLen)
+	}
+	return nil
+}
+
 // snippetHashLen is how much of the content digest goes in the file name.
 // 12 hex characters is 48 bits — far past accidental collision for a fleet,
 // and short enough that the name stays readable in a log line.
@@ -691,6 +715,9 @@ func snippetNamePattern(qubeName string) *regexp.Regexp {
 //
 // Mode 0600: the token is a secret for as long as it sits on the console's disk.
 func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
+	if err := validateQubeName(qubeName); err != nil {
+		return "", err
+	}
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
@@ -743,6 +770,9 @@ func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 // the file bits — which is exactly why this path must only ever carry the
 // bootstrap token and the public CA, never a private key.
 func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
+	if err := validateQubeName(qubeName); err != nil {
+		return "", err
+	}
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
