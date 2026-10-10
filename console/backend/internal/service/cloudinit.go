@@ -675,6 +675,16 @@ func validateQubeName(qubeName string) error {
 // and short enough that the name stays readable in a log line.
 const snippetHashLen = 12
 
+// snippetFileRE is the allowlist for a snippet file name this package writes.
+// It is matched in the function that joins the name onto a directory and
+// renames onto that path. A check inside a helper does not count: CodeQL's
+// go/path-injection barriers (a regexp match, filepath.IsLocal) only sanitize
+// uses that the check dominates in the same function as the sink. IsLocal
+// still accepts a nested "a/b", so the regexp is what keeps the name one
+// segment. The bounds match maxQubeNameLen and snippetHashLen.
+var snippetFileRE = regexp.MustCompile(
+	`^qubes-air-[A-Za-z0-9_-]{1,` + fmt.Sprint(maxQubeNameLen) + `}(-[0-9a-f]{` + fmt.Sprint(snippetHashLen) + `})?\.yaml$`)
+
 // ContentAddressedSnippetName names a snippet after the qube AND the bytes it
 // contains.
 //
@@ -718,13 +728,21 @@ func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 	if err := validateQubeName(qubeName); err != nil {
 		return "", err
 	}
+	// Checked again on the file name itself, in this function, before anything
+	// is joined or renamed. validateQubeName runs first so a bad name fails
+	// before the directory is created; this is the barrier on the value that
+	// actually reaches os.Rename.
+	name := SnippetFileName(qubeName)
+	if !snippetFileRE.MatchString(name) || !filepath.IsLocal(name) {
+		return "", fmt.Errorf("refusing unsafe snippet name %q", name)
+	}
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create identity dir: %w", err)
 	}
-	path := filepath.Join(dir, SnippetFileName(qubeName))
+	path := filepath.Join(dir, name)
 
 	// Write via a temp file and rename so the adapter can never read a partially
 	// written identity — half an identity document is a VM that boots and cannot
@@ -799,7 +817,14 @@ func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
 
 // writeSnippetAtomic places one snippet via a temp file and a rename, so a node
 // can never read a half-written identity.
+//
+// name is checked here, before the temp file exists. The caller validated the
+// qube name, but the file name also carries a content hash, and this function
+// is the one that joins it onto dir and renames onto that path.
 func writeSnippetAtomic(dir, name, userData string) error {
+	if !snippetFileRE.MatchString(name) || !filepath.IsLocal(name) {
+		return fmt.Errorf("refusing unsafe snippet name %q", name)
+	}
 	tmp, err := os.CreateTemp(dir, ".identity-*.yaml")
 	if err != nil {
 		return fmt.Errorf("create temp identity: %w", err)

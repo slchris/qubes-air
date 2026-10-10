@@ -95,6 +95,39 @@ func TestSnippetWritersRejectUnsafeQubeNames(t *testing.T) {
 	}
 }
 
+// The rename sink checks the file name, not only the qube name. A content hash
+// is part of the shared-storage name, and a separator that IsLocal still calls
+// local ("a/b") has to be rejected before any temp file is created.
+func TestWriteSnippetAtomicRejectsUnsafeFileNames(t *testing.T) {
+	dir := t.TempDir()
+	unsafe := []string{
+		"",
+		"../evil.yaml",
+		"qubes-air-../evil.yaml",
+		"qubes-air-a/b.yaml",
+		"/tmp/qubes-air-a.yaml",
+		`qubes-air-a\b.yaml`,
+		"not-a-snippet.yaml",
+		"qubes-air-" + strings.Repeat("a", maxQubeNameLen+1) + ".yaml",
+	}
+	for _, name := range unsafe {
+		err := writeSnippetAtomic(dir, name, "x")
+		require.Error(t, err, "name %q must be rejected", name)
+		entries, readErr := os.ReadDir(dir)
+		require.NoError(t, readErr)
+		assert.Empty(t, entries, "rejected name %q still created a file", name)
+	}
+}
+
+func TestWriteSnippetAtomicAcceptsContentAddressedName(t *testing.T) {
+	dir := t.TempDir()
+	body := "#cloud-config\n"
+	name := ContentAddressedSnippetName("dev-work", body)
+	require.NoError(t, writeSnippetAtomic(dir, name, body))
+	_, err := os.Stat(filepath.Join(dir, name))
+	require.NoError(t, err)
+}
+
 // Valid, already-conventional names must behave exactly as they did before the
 // check: a file is written and the returned name identifies the qube.
 func TestSnippetWritersAcceptConventionalNames(t *testing.T) {

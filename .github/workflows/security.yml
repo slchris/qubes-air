@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26'
+  GO_VERSION: '1.26.9'
 
 jobs:
   # Go 安全扫描 (gosec)
