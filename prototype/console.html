@@ -199,7 +199,7 @@
     const map = { ok:'text-ok ring-ok/30', warn:'text-warn ring-warn/30', signal:'text-signal ring-signal/30', neutral:'text-ink-200 ring-ink-700' };
     const el = document.createElement('div');
     el.className = `toast pointer-events-auto flex items-center gap-2.5 rounded-lg border ring-1 ${map[tone]} border-ink-700 bg-ink-900/95 backdrop-blur px-3.5 py-2.5 text-sm shadow-xl max-w-xs`;
-    el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${tone==='warn'?'bg-warn':tone==='signal'?'bg-signal':tone==='neutral'?'bg-ink-400':'bg-ok'} shrink-0"></span><span class="text-ink-200">${msg}</span>`;
+    el.innerHTML = `<span class="w-1.5 h-1.5 rounded-full ${tone==='warn'?'bg-warn':tone==='signal'?'bg-signal':tone==='neutral'?'bg-ink-400':'bg-ok'} shrink-0"></span><span class="text-ink-200">${esc(msg)}</span>`;
     $('#toasts').appendChild(el);
     setTimeout(()=>{ el.style.transition='opacity .3s, transform .3s'; el.style.opacity='0'; el.style.transform='translateY(6px)'; setTimeout(()=>el.remove(),320); }, 2600);
   }
