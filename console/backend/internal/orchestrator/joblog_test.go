@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,17 +106,128 @@ func TestReadFromRespectsMax(t *testing.T) {
 	}
 }
 
-// A job id is used to build a filename. Should one ever arrive from a request,
-// it must not be able to name a path outside the log directory.
-func TestPathCannotEscapeTheLogDirectory(t *testing.T) {
+// The job id names a file, so it is validated as an allowlist before it reaches
+// a path: an id that arrives from a request must never name anything but one
+// log file. Both length bounds and the full allowed alphabet are pinned here.
+func TestValidJobID(t *testing.T) {
+	valid := []string{
+		"a",                     // shortest allowed
+		"Z",                     // upper case
+		"0",                     // digit
+		"_",                     // underscore
+		"-",                     // hyphen
+		"job-1",                 // the shape the tests use
+		"Ab_9-",                 // mixed
+		strings.Repeat("a", 64), // longest allowed
+	}
+	for _, id := range valid {
+		if !validJobID(id) {
+			t.Errorf("expected %q to be valid", id)
+		}
+	}
+
+	invalid := []string{
+		"",                      // empty
+		strings.Repeat("a", 65), // one past the bound
+		".",
+		"..",
+		"../etc/passwd", // traversal
+		"a/b",           // path separator
+		"a\\b",          // path separator
+		"a.b",           // dot is a traversal primitive
+		"a b",           // space
+		"a\tb",          // tab
+		"a\nb",          // newline
+		"a\x00b",        // NUL truncation
+		"a;b",
+		"a$b",
+		"名字",   // non-ascii
+		"café", // non-ascii
+	}
+	for _, id := range invalid {
+		if validJobID(id) {
+			t.Errorf("expected %q to be REJECTED", id)
+		}
+	}
+}
+
+// Rejecting an id must happen before a file is opened, and the error must say
+// which kind of failure it was.
+func TestCreateRejectsInvalidJobID(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"", "a/b", "..", "a b", strings.Repeat("a", 65)} {
+		f, err := s.Create(id)
+		if err == nil {
+			if f != nil {
+				_ = f.Close()
+			}
+			t.Errorf("Create(%q): expected an error", id)
+			continue
+		}
+		var invalid *ErrInvalidJobID
+		if !errors.As(err, &invalid) {
+			t.Errorf("Create(%q): expected ErrInvalidJobID, got %v", id, err)
+		}
+	}
+}
+
+func TestReadFromRejectsInvalidJobID(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"", "a/b", "..", "a b", strings.Repeat("a", 65)} {
+		data, off, err := s.ReadFrom(id, 0, 0)
+		if err == nil {
+			t.Errorf("ReadFrom(%q): expected an error", id)
+			continue
+		}
+		var invalid *ErrInvalidJobID
+		if !errors.As(err, &invalid) {
+			t.Errorf("ReadFrom(%q): expected ErrInvalidJobID, got %v", id, err)
+		}
+		if len(data) != 0 || off != 0 {
+			t.Errorf("ReadFrom(%q): got data=%q off=%d, want empty/0", id, data, off)
+		}
+	}
+}
+
+// An escaping id must not reach the filesystem: path is the single choke point
+// and refuses it rather than building a name outside the log directory.
+func TestPathRejectsEscapingJobID(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "job-logs")
 	s, err := NewJobLogStore(dir)
 	if err != nil {
 		t.Fatalf("NewJobLogStore: %v", err)
 	}
-	got := s.path("../../etc/passwd")
-	if filepath.Dir(got) != dir {
-		t.Errorf("path escaped the log dir: %q", got)
+	got, err := s.path("../../etc/passwd")
+	if err == nil {
+		t.Errorf("path(%q) = %q, want an error", "../../etc/passwd", got)
+	}
+	if got != "" {
+		t.Errorf("path returned %q alongside the error, want empty", got)
+	}
+}
+
+// Valid ids at both length bounds must still round-trip, so the guard does not
+// reject ids that real traffic (a UUID) actually produces.
+func TestJobLogRoundTripsAtLengthBounds(t *testing.T) {
+	s := newStore(t)
+	for _, id := range []string{"a", strings.Repeat("A", 64)} {
+		f, err := s.Create(id)
+		if err != nil {
+			t.Fatalf("Create(%q): %v", id, err)
+		}
+		if _, err := f.WriteString("hello\n"); err != nil {
+			t.Fatalf("write(%q): %v", id, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close(%q): %v", id, err)
+		}
+		data, _, err := s.ReadFrom(id, 0, 0)
+		if err != nil {
+			t.Fatalf("ReadFrom(%q): %v", id, err)
+		}
+		if string(data) != "hello\n" {
+			t.Errorf("ReadFrom(%q) = %q, want %q", id, data, "hello\n")
+		}
 	}
 }
 

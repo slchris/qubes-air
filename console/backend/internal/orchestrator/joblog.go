@@ -68,19 +68,61 @@ func NewJobLogStore(dir string) (*JobLogStore, error) {
 	return &JobLogStore{dir: dir}, nil
 }
 
+// validJobID reports whether id is safe to use as a job log filename.
+//
+// Job logs are files named after the job id, and the id reaches the store from
+// a request path (see JobHandler.Log and JobHandler.LogStream), so it is
+// untrusted input at a filesystem boundary. Restricting it to a conservative,
+// separator-free alphabet means an id can only ever name a single file inside
+// the store's directory: no "../", no absolute path, no NUL to truncate the
+// name, no whitespace to confuse a reader. The upper bound keeps a request from
+// spending the budget on a name no real id (a UUID) comes close to.
+func validJobID(id string) bool {
+	if len(id) == 0 || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if !isAlnum(c) && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// ErrInvalidJobID is returned when a job id is not safe to use as a log file
+// name. It carries the offending id so a caller can report or map it without
+// re-deriving it; Error uses %q so control characters cannot forge log lines.
+type ErrInvalidJobID struct {
+	JobID string
+}
+
+func (e *ErrInvalidJobID) Error() string {
+	return fmt.Sprintf("invalid job id %q: only alphanumerics, '-' and '_' allowed (1-64 chars)", e.JobID)
+}
+
 // path is the log file for a job id.
 //
-// filepath.Base defends the path against an id that is not what the caller
-// thinks it is: job ids are generated internally today, but this turns a future
-// id that arrives from a request into a harmless filename rather than a write
-// outside the directory.
-func (s *JobLogStore) path(jobID string) string {
-	return filepath.Join(s.dir, filepath.Base(jobID)+".log")
+// It fails rather than build a name from an id that is not shaped like one, so
+// every caller validates before the id reaches a filesystem call. filepath.Base
+// is kept as defense in depth in case a future caller finds another way to
+// reach path without going through validJobID.
+func (s *JobLogStore) path(jobID string) (string, error) {
+	if !validJobID(jobID) {
+		return "", &ErrInvalidJobID{JobID: jobID}
+	}
+	return filepath.Join(s.dir, filepath.Base(jobID)+".log"), nil
 }
 
 // Create opens the log for writing. The caller closes it.
 func (s *JobLogStore) Create(jobID string) (*os.File, error) {
-	return os.OpenFile(s.path(jobID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	p, err := s.path(jobID)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G304 -- p is filepath.Join of the store dir and an id that path
+	// validated against [A-Za-z0-9_-]{1,64}; no separator or traversal survives.
+	return os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 }
 
 // ReadFrom returns the log bytes from offset, and the new offset.
@@ -94,7 +136,13 @@ func (s *JobLogStore) Create(jobID string) (*os.File, error) {
 // normal, and reporting it as a failure would make the UI show an error for a
 // job that is merely young.
 func (s *JobLogStore) ReadFrom(jobID string, offset int64, max int64) ([]byte, int64, error) {
-	f, err := os.Open(s.path(jobID))
+	p, err := s.path(jobID)
+	if err != nil {
+		return nil, offset, err
+	}
+	// #nosec G304 -- p is filepath.Join of the store dir and an id that path
+	// validated against [A-Za-z0-9_-]{1,64}; no separator or traversal survives.
+	f, err := os.Open(p)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, offset, nil
