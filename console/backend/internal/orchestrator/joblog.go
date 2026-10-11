@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/provider"
 )
@@ -68,6 +70,11 @@ func NewJobLogStore(dir string) (*JobLogStore, error) {
 	return &JobLogStore{dir: dir}, nil
 }
 
+// jobIDPattern is the filename allowlist for a job id: one path component,
+// 1-64 characters, no separators and no "." so ".." cannot be spelled.
+// Anchored so a match is the whole id, not a prefix of a longer path.
+var jobIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
 // validJobID reports whether id is safe to use as a job log filename.
 //
 // Job logs are files named after the job id, and the id reaches the store from
@@ -78,16 +85,7 @@ func NewJobLogStore(dir string) (*JobLogStore, error) {
 // name, no whitespace to confuse a reader. The upper bound keeps a request from
 // spending the budget on a name no real id (a UUID) comes close to.
 func validJobID(id string) bool {
-	if len(id) == 0 || len(id) > 64 {
-		return false
-	}
-	for i := 0; i < len(id); i++ {
-		c := id[i]
-		if !isAlnum(c) && c != '-' && c != '_' {
-			return false
-		}
-	}
-	return true
+	return jobIDPattern.MatchString(id)
 }
 
 // ErrInvalidJobID is returned when a job id is not safe to use as a log file
@@ -106,9 +104,20 @@ func (e *ErrInvalidJobID) Error() string {
 // It fails rather than build a name from an id that is not shaped like one, so
 // every caller validates before the id reaches a filesystem call. filepath.Base
 // is kept as defense in depth in case a future caller finds another way to
-// reach path without going through validJobID.
+// reach path without going through the checks below.
+//
+// The three checks are written out in this function, not only in validJobID.
+// go/path-injection drops taint only for a barrier it can see at the use:
+// strings.Contains(..., ".."), filepath.IsLocal, and a regexp match. A helper
+// is not one of those, which left os.Open and os.OpenFile tainted.
 func (s *JobLogStore) path(jobID string) (string, error) {
-	if !validJobID(jobID) {
+	if strings.Contains(jobID, "..") {
+		return "", &ErrInvalidJobID{JobID: jobID}
+	}
+	if !filepath.IsLocal(jobID) {
+		return "", &ErrInvalidJobID{JobID: jobID}
+	}
+	if !jobIDPattern.MatchString(jobID) {
 		return "", &ErrInvalidJobID{JobID: jobID}
 	}
 	return filepath.Join(s.dir, filepath.Base(jobID)+".log"), nil
