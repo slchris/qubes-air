@@ -269,7 +269,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | `Release` | `env.NODE_VERSION: '22'` | `.github/workflows/release.yml:46`（使用点 `:97`） |
 | 本地开发 | `22` | `.nvmrc`（`nvm use` 读取） |
 
-统一到 22 的直接原因：Node 20 已于 2026-04-30 EOL，而 `vitest` 5.0.1 声明
+统一到 22 的直接原因：Node 20 已于 2026-04-30 EOL，而 `vitest` 5.0.5 声明
 `engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0`，在 Node 20 上 `npm ci` 会输出 `EBADENGINE`。
 以后改 Node 版本时，上表 5 处 workflow 与 `.nvmrc` 必须一起改。
 
