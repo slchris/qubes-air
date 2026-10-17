@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image/png"
 	"io"
+	"math"
 	"sync"
 	"time"
 )
@@ -177,10 +178,16 @@ func decodeScreenshotFields(packet []any) (Screenshot, error) {
 	width, okWidth := unsignedField(packet[1], 0xffff)
 	height, okHeight := unsignedField(packet[2], 0xffff)
 	encoding, okEncoding := packet[3].(string)
-	rowStride, okStride := unsignedField(packet[4], 0xffffffff)
+	rowStride, okStride := unsignedField(packet[4], math.MaxUint64)
 	data, okData := packet[5].([]byte)
 	if !validScreenshotFields(width, height, encoding, data, okWidth, okHeight, okEncoding, okStride, okData) {
 		return Screenshot{}, fmt.Errorf("%w: screenshot fields out of range", ErrScreenshotSession)
+	}
+	// The wire format carries the row stride as a uint32. Check the bound here,
+	// before the narrowing conversion, so an oversized field is a protocol error
+	// rather than a value that silently wraps.
+	if rowStride > math.MaxUint32 {
+		return Screenshot{}, fmt.Errorf("%w: screenshot row stride exceeds uint32", ErrScreenshotSession)
 	}
 	width16 := uint16(width)   // #nosec G115 -- validScreenshotFields bounds width to 8192.
 	height16 := uint16(height) // #nosec G115 -- validScreenshotFields bounds height to 8192.
@@ -195,7 +202,7 @@ func decodeScreenshotFields(packet []any) (Screenshot, error) {
 	}
 	return Screenshot{
 		Width: width16, Height: height16,
-		RowStride: uint32(rowStride), // #nosec G115 -- unsignedField bounds this to uint32 above.
+		RowStride: uint32(rowStride),
 		PNG:       append([]byte(nil), data...),
 	}, nil
 }
