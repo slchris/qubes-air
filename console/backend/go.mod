@@ -1,12 +1,15 @@
 module github.com/slchris/qubes-air/console
 
-go 1.26.0
+go 1.26.9
 
 require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/stretchr/testify v1.8.4
+	// GO-2026-5932 flags this whole module because x/crypto/openpgp is
+	// unmaintained and has no fixed version. This module imports ssh and
+	// scrypt only, and govulncheck does not treat the advisory as reachable.
 	golang.org/x/crypto v0.57.0
 	// Pinned to the dev pseudo-version because it is the only release that fixes
 	// GO-2026-6443 (server panic via missing authority/Host headers), which is
@@ -38,7 +41,9 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	golang.org/x/arch v0.3.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	// v0.60.0 is the fix line for CVE-2026-78669 and the other x/net
+	// advisories reported against v0.58.0.
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect

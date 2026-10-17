@@ -273,8 +273,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 `engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0`，在 Node 20 上 `npm ci` 会输出 `EBADENGINE`。
 以后改 Node 版本时，上表 5 处 workflow 与 `.nvmrc` 必须一起改。
 
-Go 版本统一走 `env.GO_VERSION: '1.26'` 或 `go-version-file: console/backend/go.mod`
-（`dependency.yml:22`、`release.yml:92`）。
+Go 版本统一走 `env.GO_VERSION: '1.26.9'` 或 `go-version-file: console/backend/go.mod`
+（`dependency.yml:22`、`release.yml:92`）。钉到 1.26.9 是因为 1.26.8 的标准库
+还有 govulncheck 报出的 2026-10-08 那批问题，修复在这个补丁版本里。
 
 ## 4. 开放问题（本轮登记，不由本文件擅自"解决"）
 
