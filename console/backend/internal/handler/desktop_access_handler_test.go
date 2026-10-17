@@ -554,9 +554,13 @@ func TestDesktopStopEndsAnActiveCapture(t *testing.T) {
 	go func() {
 		done <- f.call(http.MethodPost, "/api/v1/qubes/qube-1/desktop-frame", `{"grant":"`+grant+`"}`, bearer(mcpToken))
 	}()
-	queue := f.queued(t, cookie, 1)
-	require.Eventually(t, func() bool { return len(frames.calls()) == 1 }, 3*time.Second, time.Millisecond)
-	assert.Equal(t, desktopaccess.StateActive, queue[0].State)
+	// testify 1.11 checks Eventually immediately, so the first queue snapshot
+	// can still be "approved". Wait until the capture has actually started.
+	var queue []desktopaccess.Request
+	require.Eventually(t, func() bool {
+		queue = f.queued(t, cookie, 1)
+		return len(queue) == 1 && queue[0].State == desktopaccess.StateActive && len(frames.calls()) == 1
+	}, 3*time.Second, time.Millisecond)
 
 	stop := f.call(http.MethodPost, "/api/v1/desktop-access/"+queue[0].ID+"/stop", "", operator(cookie, true))
 	require.Equal(t, http.StatusNoContent, stop.Code)

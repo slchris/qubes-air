@@ -5,8 +5,8 @@ go 1.26.9
 require (
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0
-	github.com/mattn/go-sqlite3 v1.14.22
-	github.com/stretchr/testify v1.8.4
+	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/stretchr/testify v1.11.1
 	// GO-2026-5932 flags this whole module because x/crypto/openpgp is
 	// unmaintained and has no fixed version. This module imports ssh and
 	// scrypt only, and govulncheck does not treat the advisory as reachable.
