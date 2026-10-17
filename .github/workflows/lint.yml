@@ -186,7 +186,7 @@ jobs:
       # A pinned yamllint instead of ibiqlik/action-yamllint, which ran whatever
       # yamllint the runner image happened to ship.
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
