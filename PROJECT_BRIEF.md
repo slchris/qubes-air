@@ -52,7 +52,7 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 |---|---|---|
 | 后端语言 | Go | `console/backend/go.mod`:3 `go 1.26.9` |
 | Web 框架 | Gin | `go.mod` gin `v1.9.1` |
-| 存储 | SQLite（cgo） | `go.mod` `mattn/go-sqlite3 v1.14.22` |
+| 存储 | SQLite（cgo） | `go.mod` `mattn/go-sqlite3 v1.14.52` |
 | RPC | gRPC / protobuf | `console/backend/proto/relay_transport.proto` |
 | 前端 | Svelte 5 + TS 5.9 + Vite 7 | `console/frontend/package.json` devDependencies |
 | 前端测试 | Vitest 5 + Testing Library + jsdom；浏览器 E2E 用 Playwright（模拟 API） | `package.json`；配置 `vitest.config.ts`、`playwright.config.ts` |
