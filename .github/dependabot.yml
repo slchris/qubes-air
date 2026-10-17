@@ -48,12 +48,6 @@ updates:
     labels:
       - "dependencies"
       - "javascript"
-    # typescript 7 is ignored until svelte-check accepts it. 4.7.x peers
-    # typescript ^5 || ^6, so a major bump fails npm ci.
-    ignore:
-      - dependency-name: "typescript"
-        update-types:
-          - "version-update:semver-major"
     groups:
       npm-dev:
         patterns:
