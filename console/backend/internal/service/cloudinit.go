@@ -646,10 +646,50 @@ func SnippetFileName(qubeName string) string {
 	return fmt.Sprintf("qubes-air-%s.yaml", qubeName)
 }
 
+// maxQubeNameLen matches orchestrator.ValidQubeName. A name the orchestrator
+// accepted must still fit in a snippet path; a longer one is rejected here
+// even if a caller skips that check.
+const maxQubeNameLen = 64
+
+// qubeNamePathRE matches the orchestrator allowlist: a leading alphanumeric,
+// then letters, digits, '.', '_' and '-'. '.' stays, so a name such as
+// "web.01" can be written. The pattern still matches ".." and a trailing dot,
+// which validateQubeName rejects on their own: ".." is a traversal segment,
+// and a trailing dot plus the ".yaml" suffix spells ".." inside the file name.
+var qubeNamePathRE = regexp.MustCompile(fmt.Sprintf(
+	`^[A-Za-z0-9][A-Za-z0-9._-]{0,%d}$`, maxQubeNameLen-1))
+
+// validateQubeName rejects a qube name that is not safe to embed in a snippet
+// path. Both writers call it before they build a path and before they touch
+// the filesystem, so a traversal or otherwise malformed name fails with an
+// error and never reaches a rename.
+func validateQubeName(qubeName string) error {
+	if strings.Contains(qubeName, "..") || strings.HasSuffix(qubeName, ".") ||
+		!filepath.IsLocal(qubeName) || !qubeNamePathRE.MatchString(qubeName) {
+		return fmt.Errorf(
+			"invalid qube name %q: letters, digits, '.', '_' and '-' only; "+
+				"start with a letter or digit, do not contain \"..\" or end with '.', length 1-%d",
+			qubeName, maxQubeNameLen)
+	}
+	return nil
+}
+
 // snippetHashLen is how much of the content digest goes in the file name.
 // 12 hex characters is 48 bits — far past accidental collision for a fleet,
 // and short enough that the name stays readable in a log line.
 const snippetHashLen = 12
+
+// snippetFileRE is the allowlist for a snippet file name this package writes.
+// It is matched in the function that joins the name onto a directory and
+// renames onto that path. A check inside a helper does not count: CodeQL's
+// go/path-injection barriers (a regexp match, filepath.IsLocal, and
+// strings.Contains of "..") only sanitize uses that the check dominates in
+// the same function as the sink. IsLocal still accepts a nested "a/b", so the
+// regexp is what keeps the name one segment. '.' is allowed because qube names
+// use it; the ".." check beside the match is what stops a traversal segment.
+var snippetFileRE = regexp.MustCompile(fmt.Sprintf(
+	`^qubes-air-[A-Za-z0-9][A-Za-z0-9._-]{0,%d}(-[0-9a-f]{%d})?\.yaml$`,
+	maxQubeNameLen-1, snippetHashLen))
 
 // ContentAddressedSnippetName names a snippet after the qube AND the bytes it
 // contains.
@@ -691,13 +731,24 @@ func snippetNamePattern(qubeName string) *regexp.Regexp {
 //
 // Mode 0600: the token is a secret for as long as it sits on the console's disk.
 func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
+	if err := validateQubeName(qubeName); err != nil {
+		return "", err
+	}
+	// Checked again on the file name itself, in this function, before anything
+	// is joined or renamed. validateQubeName runs first so a bad name fails
+	// before the directory is created; this is the barrier on the value that
+	// actually reaches os.Rename.
+	name := SnippetFileName(qubeName)
+	if strings.Contains(name, "..") || !filepath.IsLocal(name) || !snippetFileRE.MatchString(name) {
+		return "", fmt.Errorf("refusing unsafe snippet name %q", name)
+	}
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create identity dir: %w", err)
 	}
-	path := filepath.Join(dir, SnippetFileName(qubeName))
+	path := filepath.Join(dir, name)
 
 	// Write via a temp file and rename so the adapter can never read a partially
 	// written identity — half an identity document is a VM that boots and cannot
@@ -743,6 +794,9 @@ func WriteAgentUserData(dir, qubeName, userData string) (string, error) {
 // the file bits — which is exactly why this path must only ever carry the
 // bootstrap token and the public CA, never a private key.
 func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
+	if err := validateQubeName(qubeName); err != nil {
+		return "", err
+	}
 	if dir == "" {
 		return "", fmt.Errorf("no directory configured for agent identity files")
 	}
@@ -769,7 +823,14 @@ func WriteSharedAgentUserData(dir, qubeName, userData string) (string, error) {
 
 // writeSnippetAtomic places one snippet via a temp file and a rename, so a node
 // can never read a half-written identity.
+//
+// name is checked here, before the temp file exists. The caller validated the
+// qube name, but the file name also carries a content hash, and this function
+// is the one that joins it onto dir and renames onto that path.
 func writeSnippetAtomic(dir, name, userData string) error {
+	if strings.Contains(name, "..") || !filepath.IsLocal(name) || !snippetFileRE.MatchString(name) {
+		return fmt.Errorf("refusing unsafe snippet name %q", name)
+	}
 	tmp, err := os.CreateTemp(dir, ".identity-*.yaml")
 	if err != nil {
 		return fmt.Errorf("create temp identity: %w", err)
