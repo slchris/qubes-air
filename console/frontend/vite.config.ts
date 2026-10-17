@@ -43,8 +43,11 @@ export default defineConfig(({ mode }) => {
       // 拆分代码
       rollupOptions: {
         output: {
-          manualChunks: {
-            vendor: ['svelte'],
+          // Vite 8 builds with Rolldown, which only accepts manualChunks as a function.
+          manualChunks(id) {
+            if (id.includes('node_modules/svelte/')) {
+              return 'vendor'
+            }
           },
         },
       },

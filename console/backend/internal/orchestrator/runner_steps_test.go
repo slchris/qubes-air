@@ -45,8 +45,13 @@ func (s *tracingStore) Insert(ctx context.Context, j *Job) error {
 }
 
 func (s *tracingStore) Update(ctx context.Context, j *Job) error {
+	if err := s.memJobStore.Update(ctx, j); err != nil {
+		return err
+	}
+	// Record the write only after it is visible. OnDone runs before this
+	// Update, and a log line taken earlier would race the row itself.
 	s.log.add("update " + string(j.State))
-	return s.memJobStore.Update(ctx, j)
+	return nil
 }
 
 // loggingExecutor records the provider call into the same log.
@@ -60,8 +65,8 @@ func (e *loggingExecutor) Destroy(_ context.Context, qubeName string) error {
 	return nil
 }
 
-// waitForJob blocks until OnDone reports a job, so assertions read a settled
-// runner rather than one mid-flight.
+// waitForJob blocks until OnDone reports a job. finish calls OnDone before it
+// persists the terminal state, so the event log can still be missing that write.
 func waitForJob(t *testing.T, done <-chan *Job) *Job {
 	t.Helper()
 	select {
@@ -70,6 +75,24 @@ func waitForJob(t *testing.T, done <-chan *Job) *Job {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the job to finish")
 		return nil
+	}
+}
+
+// waitForEvents polls until the log matches want. The terminal "update …"
+// event is recorded after OnDone returns.
+func waitForEvents(t *testing.T, log *stepEventLog, want []string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got []string
+	for {
+		got = log.snapshot()
+		if slices.Equal(got, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job events = %v, want %v", got, want)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -114,9 +137,7 @@ func TestJobStepsRunAfterTheRowIsRecordedAndBeforeTheAction(t *testing.T) {
 	}
 
 	want := []string{"insert queued", "update running", "step", "action destroy goner", "update succeeded"}
-	if got := log.snapshot(); !slices.Equal(got, want) {
-		t.Errorf("job events = %v, want %v", got, want)
-	}
+	waitForEvents(t, log, want)
 }
 
 // TestJobStepFailureSkipsTheProviderAction — a step that fails stops the job.
@@ -149,9 +170,9 @@ func TestJobStepFailureSkipsTheProviderAction(t *testing.T) {
 	if !strings.Contains(settled.Error, "the data disk was not destroyed") {
 		t.Errorf("job error must carry the step's account of partial execution, got %q", settled.Error)
 	}
-	if events := log.snapshot(); containsSubstring(events, "action destroy") {
-		t.Errorf("the provider action ran despite a failed step: %v", events)
-	}
+	// The provider action must stay absent, and the terminal update is written
+	// after OnDone, so wait for the finished sequence before reading the row.
+	waitForEvents(t, log, []string{"insert queued", "update running", "update failed"})
 
 	// The failed outcome is on the row, not only in OnDone: that row is the
 	// record an operator reads later.
