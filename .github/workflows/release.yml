@@ -87,7 +87,7 @@ jobs:
           printf 'version=%s\n' "$v" >> "$GITHUB_OUTPUT"
           printf 'Building %s\n' "$v"
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: console/backend/go.mod
           cache-dependency-path: console/backend/go.sum
