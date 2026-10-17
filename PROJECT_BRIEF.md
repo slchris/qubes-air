@@ -54,7 +54,7 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 | Web 框架 | Gin | `go.mod` gin `v1.9.1` |
 | 存储 | SQLite（cgo） | `go.mod` `mattn/go-sqlite3 v1.14.22` |
 | RPC | gRPC / protobuf | `console/backend/proto/relay_transport.proto` |
-| 前端 | Svelte 5 + TS 5.9 + Vite 7 | `console/frontend/package.json` devDependencies |
+| 前端 | Svelte 5 + TS 6.0 + Vite 7 | `console/frontend/package.json` devDependencies |
 | 前端测试 | Vitest 5 + Testing Library + jsdom；浏览器 E2E 用 Playwright（模拟 API） | `package.json`；配置 `vitest.config.ts`、`playwright.config.ts` |
 | 门禁工具 | golangci-lint 2.x / gosec / gocyclo / funlen / govulncheck / shellcheck | `Makefile`:65-98；根 `.golangci.yml` |
 | CI 运行时 | Go 1.26.9、Node 22（全部 workflow；Node 与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
@@ -88,7 +88,7 @@ qubes-air/
 │   │   │                 middleware models orchestrator pki provider providerhttp qrexec
 │   │   │                 repository scheduler service transport transport/grpc transport/relaypb
 │   │   └── proto/        relay_transport.proto（service RelayTransport { rpc Tunnel(stream Frame) }）
-│   ├── frontend/         Svelte 5 + TS 5.9 + Vite 7（16 个 .svelte，4 个测试文件）
+│   ├── frontend/         Svelte 5 + TS 6.0 + Vite 7（16 个 .svelte，4 个测试文件）
 │   └── qrexec/           —（目录存在，服务脚本实际在 remote/ 与 relay/）
 ├── crypto/               密钥生成脚本
 ├── dom0-scripts/         create-remotevm / create-sys-relay / policy.d/30-qubes-air.policy

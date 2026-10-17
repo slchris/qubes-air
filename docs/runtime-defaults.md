@@ -270,7 +270,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | 本地开发 | `22` | `.nvmrc`（`nvm use` 读取） |
 
 统一到 22 的直接原因：Node 20 已于 2026-04-30 EOL，而 `vitest` 5.0.5 声明
-`engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0`，在 Node 20 上 `npm ci` 会输出 `EBADENGINE`。
+`engines.node: ^22.12.0 || ^24.0.0 || >=26.0.0`。`jsdom` 30 进一步要求
+`^22.22.2 || ^24.15.0 || >=26`，它带的 `undici` 要求 `>=22.19.0`。更早的 22
+（例如 22.14）上 `npm ci` 会输出 `EBADENGINE`，Vitest 也起不来。
 以后改 Node 版本时，上表 5 处 workflow 与 `.nvmrc` 必须一起改。
 
 Go 版本统一走 `env.GO_VERSION: '1.26.9'` 或 `go-version-file: console/backend/go.mod`
