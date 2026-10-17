@@ -50,7 +50,7 @@ jobs:
     # Pinned: ubuntu-latest turns 26.04 on 2026-10-19 (untested here); unpin once an ubuntu-26.04 trial run passes.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # build-agent-deb.sh derives its version from `git describe`, which
           # needs tags and history; a shallow clone yields a bare hash.
