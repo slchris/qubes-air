@@ -142,10 +142,7 @@ test-race:
 GO_COVERAGE_MIN ?= 61.0
 
 coverage-gate: test-race
-	@coverage="$$(cd console/backend && go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $$NF); print $$NF}')"; \
-	[ -n "$$coverage" ] || { echo "无法读取 Go 总覆盖率 (console/backend/coverage.out)" >&2; exit 1; }; \
-	awk -v actual="$$coverage" -v minimum="$(GO_COVERAGE_MIN)" \
-		'BEGIN { if (actual + 0 < minimum + 0) { printf "Go 覆盖率不足: %s%% < %s%%\n", actual, minimum; exit 1 }; printf "Go 覆盖率: %s%% (门槛 %s%%)\n", actual, minimum }'
+	@GO_COVERAGE_MIN="$(GO_COVERAGE_MIN)" ./scripts/check-go-coverage.sh console/backend/coverage.out
 
 # 入口冒烟：每个 cmd/* 都要能构建并启动到参数解析。只构建一次，二进制放临时目录、结束即删。
 # 入口列表取自构建产物，新增的 cmd 自动纳入；不支持 -h 的入口在 case 里单独处理：
