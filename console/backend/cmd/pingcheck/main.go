@@ -67,7 +67,7 @@ func main() {
 	if !pool.AppendCertsFromPEM([]byte(bundle.CAPEM)) {
 		// gocritic: the deferred cancel() is skipped. Accepted — the process is
 		// exiting, and the context it would cancel dies with it.
-		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit
+		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit; remove when main returns errors instead of calling log.Fatal
 		log.Fatal("  ✗ CA 无法解析")
 	}
 

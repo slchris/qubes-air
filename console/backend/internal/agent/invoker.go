@@ -105,7 +105,7 @@ func NewLocalInvoker(remoteName string, allowed []string) *LocalInvoker {
 // the classes, but there is no decomposition that makes this safer to read —
 // splitting it would spread the guard against qrexec injection across files.
 //
-//nolint:gocyclo // an allow-list, not a decision tree
+//nolint:gocyclo // an allow-list, not a decision tree; remove when it moves to a table/map or drops to 15
 func validServiceName(name string) bool {
 	if name == "" || len(name) > 128 {
 		return false

@@ -223,7 +223,7 @@ func BootstrapDialTLSConfig(client tls.Certificate, qubeName, pin string) (*tls.
 		// checks cannot pass for a genuine agent. VerifyConnection replaces them
 		// with the pin check on every handshake, resumed or not, reading
 		// PeerCertificates because InsecureSkipVerify leaves the chain unverified.
-		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs VerifyBootstrapPlaceholder on every handshake: token-derived SPKI pin, exact target CN, validity, ServerAuth-only usage, self-signature and RoleAgent //nolint:gosec // peer verified in VerifyConnection
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs VerifyBootstrapPlaceholder on every handshake: token-derived SPKI pin, exact target CN, validity, ServerAuth-only usage, self-signature and RoleAgent //nolint:gosec // peer verified in VerifyConnection; remove when the dialer verifies via RootCAs/VerifyPeerCertificate without InsecureSkipVerify, or gosec models VerifyConnection
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			return VerifyBootstrapPlaceholder(cs.PeerCertificates, qubeName, pin)
 		},

@@ -386,7 +386,7 @@ func (c *Client) CallStream(ctx context.Context, target, service string, stdin i
 // It returns when the stream errors (drop) or ctx is canceled.
 // A dispatch over frame types. Flat by nature; each arm is independent.
 //
-//nolint:gocyclo // frame-type dispatch
+//nolint:gocyclo // frame-type dispatch; remove when each frame type goes to a named handler or gocyclo <= 15
 func (c *Client) recvLoop(ctx context.Context, stream pb.RelayTransport_TunnelClient) error {
 	// reverse accumulates inbound reverse-request bodies by request_id.
 	reverseBuf := make(map[string]*reverseCall)
@@ -581,6 +581,6 @@ func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	delta := time.Duration(rand.Int63n(int64(d) / 5)) // #nosec G404 -- reconnect backoff jitter to avoid a thundering herd; unpredictability buys an attacker nothing and this value never leaves the retry timer //nolint:gosec // reconnect jitter, not security-sensitive
+	delta := time.Duration(rand.Int63n(int64(d) / 5)) // #nosec G404 -- reconnect backoff jitter to avoid a thundering herd; unpredictability buys an attacker nothing and this value never leaves the retry timer //nolint:gosec // reconnect jitter, not security-sensitive; remove when the jitter uses crypto/rand or gosec stops flagging backoff jitter
 	return d - (delta / 2) + delta
 }

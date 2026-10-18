@@ -89,7 +89,7 @@ func ValidArg(arg string) bool {
 		// six negated range checks, where a single flipped comparison silently
 		// widens what this accepts — and this function is the guard against
 		// qrexec command injection.
-		//nolint:staticcheck // QF1001: the allow-list reads correctly as written
+		//nolint:staticcheck // QF1001: the allow-list reads correctly as written; remove when rewritten in QF1001's form without widening what it accepts
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
 			r == '-' || r == '_' || r == '.' || r == '+') {
 			return false
