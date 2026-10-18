@@ -287,4 +287,4 @@ Go 版本统一走 `env.GO_VERSION: '1.26.9'` 或 `go-version-file: console/back
 | O-2 | `runtime-context.md:68` 写"表清单（10 张）"，代码实际只有 9 个 `CREATE TABLE IF NOT EXISTS` | 该文件是 Producer 的 sprint 工件，本分区不得修改（见分区报告）；本文件按代码登记 9 张，差异留在开放问题。**2026-09-26 已更正**：`runtime-context.md` 改为基线的 9 张并指向本文 §2.1 |
 | O-3 | ~~`release.yml` 用 Node 22，其余工作流用 20；无文档说明这是有意为之~~ **已解决**：全部工作流与 `.nvmrc` 统一为 22（见 §3） | release 仍用 22，构建所用 Node 未变；变化的是 PR CI 从 20 升到 22 |
 | O-4 | `go-licenses check` 在 `dependency.yml` 上是非阻塞步骤（原为 `\|\| true`，本轮改为显式 `continue-on-error`） | 本机离线无法验证该命令是否通过；见分区报告 T5 开放问题 |
-| O-5 | `qubesair.UnlockData:5` 的注释仍写"console derives it (HKDF over its master secret + this qube's id)"，与 `internal/service/datakey.go` 的 DEK 语义不符 | 该脚本在 `remote/**`，不在本分区写集合内 |
+| O-5 | `qubesair.UnlockData:5` 的注释仍写"console derives it (HKDF over its master secret + this qube's id)"，与 `internal/service/datakey.go` 的 DEK 语义不符 | **已更正（2026-10-19）**：`remote/qubes-rpc/qubesair.UnlockData` 注释改为 per-qube DEK，旧 master 派生键标注为一次性迁移凭据 |

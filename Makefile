@@ -231,6 +231,7 @@ frontend-check:
 	[ "$$warnings" -le "$(FRONTEND_WARNING_BUDGET)" ] || { \
 		echo "Svelte warning 超出预算: $$warnings > $(FRONTEND_WARNING_BUDGET)" >&2; exit 1; \
 	}
+	cd console/frontend && npm run check:types
 	cd console/frontend && npm run build
 	cd console/frontend && npm run test
 

@@ -103,6 +103,12 @@ jobs:
       - name: Svelte Check
         run: npm run check -- --fail-on-warnings
 
+      # vite.config.ts, playwright.config.ts and e2e/*.ts are outside the
+      # Svelte project; Playwright only transpiles them at runtime, so without
+      # this step a type error there ships unnoticed.
+      - name: Type Check config and e2e
+        run: npm run check:types
+
   # Shell Script Lint
   shellcheck:
     name: ShellCheck
