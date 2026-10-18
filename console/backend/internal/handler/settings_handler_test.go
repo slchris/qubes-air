@@ -28,6 +28,7 @@ type settingsFixture struct {
 	router   *gin.Engine
 	repo     *repository.SettingsRepository
 	sessions *middleware.SessionStore
+	db       *database.DB
 }
 
 func newSettingsHandlerFixture(t *testing.T, ttl time.Duration) settingsFixture {
@@ -43,7 +44,7 @@ func newSettingsHandlerFixture(t *testing.T, ttl time.Duration) settingsFixture 
 	sessions := middleware.NewSessionStore(ttl)
 	r := gin.New()
 	NewSettingsHandler(service.NewSettingsService(repo), sessions).RegisterRoutes(r.Group("/api/v1"))
-	return settingsFixture{router: r, repo: repo, sessions: sessions}
+	return settingsFixture{router: r, repo: repo, sessions: sessions, db: db}
 }
 
 func settingsBody(security string) string {
@@ -272,4 +273,33 @@ func TestSettingsGetReportsTheEffectiveTimeout(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"sessionTimeout":30`)
 	assert.Contains(t, w.Body.String(), `"email":false`)
+}
+
+// TestSettingsFailedSaveLeavesStoredSettingsAndSessionsUntouched — a storage
+// failure must not apply the timeout, and it must not leave the first groups
+// written while the last one failed. The trigger fails only the last group, so
+// the assertion on the earlier groups is what proves the update is atomic.
+func TestSettingsFailedSaveLeavesStoredSettingsAndSessionsUntouched(t *testing.T) {
+	f := newSettingsHandlerFixture(t, 30*time.Minute)
+	issued, err := f.sessions.Create("operator", middleware.ScopeControl, nil)
+	require.NoError(t, err)
+	_, err = f.db.DB().Exec(
+		`CREATE TRIGGER reject_security BEFORE INSERT ON settings
+		 WHEN NEW.key = 'security'
+		 BEGIN SELECT RAISE(FAIL, 'injected failure'); END`)
+	require.NoError(t, err)
+
+	w := f.put(settingsBody(`{"sessionTimeout":5}`))
+	require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+
+	current, ok := f.sessions.Get(issued.ID)
+	require.True(t, ok)
+	assert.Equal(t, issued.Expires, current.Expires, "a failed save must not shorten an issued session")
+	assert.Equal(t, 30*time.Minute, f.newSessionLifetime(t), "a failed save must not change the lifetime of new sessions")
+
+	stored, err := f.repo.Get(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "light", stored.General.Theme, "the first group must not be committed")
+	assert.True(t, stored.Notifications.Email, "the second group must not be committed")
+	assert.Equal(t, 30, stored.Security.SessionTimeout)
 }

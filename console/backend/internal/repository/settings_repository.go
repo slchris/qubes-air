@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -21,6 +20,12 @@ func NewSettingsRepository(db *database.DB) *SettingsRepository {
 }
 
 // Get returns all settings.
+//
+// Every group is read in one statement so the result comes from a single
+// SQLite snapshot. A group that was never stored keeps its default. A storage
+// or decode failure is returned to the caller rather than replaced with a
+// default: a read must not silently report different settings than the ones
+// the console is using.
 func (r *SettingsRepository) Get(ctx context.Context) (*models.Settings, error) {
 	settings := &models.Settings{
 		General: models.GeneralSettings{
@@ -39,85 +44,74 @@ func (r *SettingsRepository) Get(ctx context.Context) (*models.Settings, error) 
 		},
 	}
 
-	// Load general settings
-	general, err := r.getSettingValue(ctx, "general")
-	if err == nil && general != "" {
-		if unmarshalErr := json.Unmarshal([]byte(general), &settings.General); unmarshalErr != nil {
-			return nil, fmt.Errorf("failed to unmarshal general settings: %w", unmarshalErr)
+	rows, err := r.db.DB().QueryContext(ctx,
+		`SELECT key, value FROM settings WHERE key IN ('general', 'notifications', 'security')`)
+	if err != nil {
+		return nil, fmt.Errorf("read settings: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scan settings: %w", err)
+		}
+		var target any
+		switch key {
+		case "general":
+			target = &settings.General
+		case "notifications":
+			target = &settings.Notifications
+		case "security":
+			target = &settings.Security
+		default:
+			continue
+		}
+		if err := json.Unmarshal([]byte(value), target); err != nil {
+			return nil, fmt.Errorf("decode %s settings: %w", key, err)
 		}
 	}
-
-	// Load notification settings
-	notifications, err := r.getSettingValue(ctx, "notifications")
-	if err == nil && notifications != "" {
-		if unmarshalErr := json.Unmarshal([]byte(notifications), &settings.Notifications); unmarshalErr != nil {
-			return nil, fmt.Errorf("failed to unmarshal notification settings: %w", unmarshalErr)
-		}
-	}
-
-	// Load security settings
-	security, err := r.getSettingValue(ctx, "security")
-	if err == nil && security != "" {
-		if unmarshalErr := json.Unmarshal([]byte(security), &settings.Security); unmarshalErr != nil {
-			return nil, fmt.Errorf("failed to unmarshal security settings: %w", unmarshalErr)
-		}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read settings: %w", err)
 	}
 
 	return settings, nil
 }
 
-// getSettingValue gets a single setting value by key.
-func (r *SettingsRepository) getSettingValue(ctx context.Context, key string) (string, error) {
-	query := `SELECT value FROM settings WHERE key = ?`
-	var value string
-	err := r.db.DB().QueryRowContext(ctx, query, key).Scan(&value)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		return "", err
-	}
-	return value, nil
-}
-
-// Update updates settings.
+// Update stores all setting groups in one transaction. A failure in any group
+// leaves every group at its previous value; a partial write would make the
+// console report settings the operator never saved.
 func (r *SettingsRepository) Update(ctx context.Context, settings *models.Settings) error {
-	// Update general settings
-	generalJSON, err := json.Marshal(settings.General)
+	tx, err := r.db.DB().BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin settings update: %w", err)
 	}
-	err = r.upsertSetting(ctx, "general", string(generalJSON))
-	if err != nil {
-		return err
+	defer func() { _ = tx.Rollback() }()
+
+	groups := []struct {
+		key   string
+		value any
+	}{
+		{"general", settings.General},
+		{"notifications", settings.Notifications},
+		{"security", settings.Security},
+	}
+	for _, group := range groups {
+		encoded, err := json.Marshal(group.value)
+		if err != nil {
+			return fmt.Errorf("encode %s settings: %w", group.key, err)
+		}
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+			group.key, string(encoded))
+		if err != nil {
+			return fmt.Errorf("write %s settings: %w", group.key, err)
+		}
 	}
 
-	// Update notification settings
-	notificationsJSON, err := json.Marshal(settings.Notifications)
-	if err != nil {
-		return err
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit settings: %w", err)
 	}
-	err = r.upsertSetting(ctx, "notifications", string(notificationsJSON))
-	if err != nil {
-		return err
-	}
-
-	// Update security settings
-	securityJSON, err := json.Marshal(settings.Security)
-	if err != nil {
-		return err
-	}
-	err = r.upsertSetting(ctx, "security", string(securityJSON))
-	if err != nil {
-		return err
-	}
-
 	return nil
-}
-
-// upsertSetting inserts or updates a setting.
-func (r *SettingsRepository) upsertSetting(ctx context.Context, key, value string) error {
-	query := `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-	_, err := r.db.DB().ExecContext(ctx, query, key, value)
-	return err
 }
