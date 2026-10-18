@@ -416,7 +416,7 @@ CREATE TABLE IF NOT EXISTS qubes (
 )`
 
 // createQubeInfraTable records the provider-side identity of a qube's
-// infrastructure. It is the single source of truth that replaces a terraform
+// infrastructure. It is the single source of truth that replaces an external
 // state file.
 //
 // There is deliberately no foreign key onto qubes: a job that created a data
@@ -424,7 +424,7 @@ CREATE TABLE IF NOT EXISTS qubes (
 // disk still exists and must be adoptable. Deleting the qube row does not
 // delete infrastructure; only DestroyStorage does.
 //
-// protected is the explicit replacement for terraform's lifecycle.prevent_destroy:
+// protected is the explicit replacement for a provider's prevent-destroy guard:
 // DestroyStorage refuses while it is set. Existing rows default to 1 so a fleet
 // created before the flag existed is protected, not silently unprotected — the
 // safe direction for a column guarding irreversible data loss.

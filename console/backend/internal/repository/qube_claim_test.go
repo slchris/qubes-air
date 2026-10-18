@@ -62,7 +62,7 @@ func TestClaimTransitionRejectsWrongSource(t *testing.T) {
 // TestClaimTransitionIsAtomicUnderConcurrency is the whole point of the method:
 // N goroutines racing to claim the same qube must produce exactly one winner.
 // A read-then-write in Go would let several through, and each would enqueue its
-// own multi-minute terraform apply against the same qube.
+// own multi-minute provision against the same qube.
 func TestClaimTransitionIsAtomicUnderConcurrency(t *testing.T) {
 	repo, zoneID := claimTestEnv(t)
 	ctx := context.Background()

@@ -333,7 +333,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	// The native provider executor is the default and only real orchestration
 	// path. The database (qube_infra) is the single source of truth for what
-	// exists — there is no terraform state file, generated var-file, or
+	// exists — there is no external state file, generated var-file, or
 	// subprocess. Adapters are selected by zone type; a zone with no registered
 	// adapter fails loudly instead of silently doing nothing.
 	qubeInfraRepo := repository.NewQubeInfraRepository(db)

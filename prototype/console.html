@@ -633,14 +633,14 @@
         <p class="mt-1 text-sm text-ink-400">安全红线锁死不可关；其余是可调开关。改动只影响这台 mgmt-air 的行为。</p></div>
 
       ${card('编排', '', `<div class="divide-y divide-ink-800/70">
-        ${toggleRow('orchestrator','Orchestrator','允许控制台在 mgmt-air 上编排 Terraform / RemoteVM。关掉后只读。', settings.orchestrator, true)}
+        ${toggleRow('orchestrator','Orchestrator','允许控制台在 mgmt-air 上编排 provider / RemoteVM。关掉后只读。', settings.orchestrator, true)}
         ${infoRow('回程 Relay', `<span class="font-mono text-ink-200">${esc(settings.relay)}</span>`, '本地出站 SSH 的中继 qube，qrexec 请求经它转发')}
       </div>`)}
 
       ${card('安全红线', '锁定 · 不可关', `<div class="divide-y divide-ink-800/70">
         ${toggleRow('dom0Offline','dom0 永远离线','编排全在联网的 mgmt-air，dom0 只经 Admin API 被动配合。', true, false, true)}
         ${toggleRow('remoteAsk','远端到本地一律询问','远端发起的调用永不自动放行，破坏性操作在 dom0 弹窗确认。', settings.remoteAsk, true)}
-        ${toggleRow('clientSideEncrypt','state 客户端加密','Terraform state 先加密再进 backend，云只看到密文。', true, false, true)}
+        ${toggleRow('clientSideEncrypt','state 客户端加密','编排状态先加密再进 backend，云只看到密文。', true, false, true)}
       </div>`)}
 
       <p class="text-xs text-ink-500 leading-relaxed">

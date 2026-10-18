@@ -40,7 +40,7 @@ export interface GCPZoneConfig {
   source_image?: string;
   // A PRIVATE bucket the per-qube agent identity is delivered through. It
   // cannot go in instance metadata: metadata is a resource attribute, so
-  // terraform would write the agent's private key into state.
+  // the old state file would have written the agent's private key into state.
   identity_bucket?: string;
   service_account_email?: string;
   network?: string;
@@ -96,7 +96,7 @@ export type QubeType = 'app' | 'work' | 'dev' | 'gpu' | 'disp' | 'sys';
 // to save cost, released was deleted by the user and is awaiting a purge.
 // 'purged' is terminal: the data disk is gone and the identity revoked.
 //
-// The four transient values mean a terraform job is queued or running. They are
+// The four transient values mean a provision job is queued or running. They are
 // not decoration: the backend refuses a second operation while a qube is in one,
 // so the UI must show them rather than appear unresponsive for several minutes.
 export type QubeStatus =
@@ -112,7 +112,7 @@ export type QubeStatus =
   | 'deleting'
   | 'error';
 
-/** Statuses for which a terraform job is in flight. */
+/** Statuses for which a provision job is in flight. */
 export const TRANSIENT_QUBE_STATUSES: readonly QubeStatus[] = [
   'creating',
   'resuming',
@@ -340,7 +340,7 @@ export interface ListOptions {
 /** What a job does to infrastructure. */
 export type JobAction = 'provision' | 'resume' | 'suspend' | 'release' | 'destroy';
 
-/** Lifecycle of a single terraform invocation. */
+/** Lifecycle of a single provision job. */
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
 
 /**
@@ -367,7 +367,7 @@ export interface JobListResponse {
 
 /**
  * What a mutating qube endpoint returns. The work is NOT done when this
- * arrives: a real terraform apply takes minutes, so the qube comes back in a
+ * arrives: a real provision takes minutes, so the qube comes back in a
  * transient status and job_id is what to poll.
  */
 export interface Operation {

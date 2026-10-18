@@ -1,7 +1,7 @@
 // Package backup creates and restores encrypted copies of the console database.
 //
 // The console is a single failure domain: the SQLite database holds the qube
-// inventory, the provider identities that replace a terraform state file, the
+// inventory, the provider identities that replace an external state file, the
 // certificate registry, and the credential store — and those credentials (the
 // CA key among them) are encrypted with a keyring key that lives OUTSIDE the
 // database. This package therefore protects the archive with a passphrase that

@@ -44,8 +44,8 @@ func setupQubeServiceWithExecutor(t *testing.T, exec orchestrator.Executor, extr
 	return zoneSvc, qubeSvc, cleanup
 }
 
-// orchTestQubeName is a terraform-safe qube name used by the orchestration
-// tests (maps to a terraform -target address).
+// orchTestQubeName is a provider-safe qube name used by the orchestration
+// tests (maps to a provider target address).
 const orchTestQubeName = "web01"
 
 // createQubeForOrch creates a qube and leaves it SUSPENDED, ready to be started.
@@ -106,7 +106,7 @@ func TestStart_CallsResumeThenUpdatesStatus(t *testing.T) {
 // valid source status for a retry.
 func TestStart_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	fake := orchestrator.NewFakeExecutor()
-	fake.FailOn[orchestrator.ActionResume] = errors.New("terraform apply failed")
+	fake.FailOn[orchestrator.ActionResume] = errors.New("provider apply failed")
 
 	zoneSvc, qubeSvc, cleanup := setupQubeServiceWithExecutor(t, fake)
 	defer cleanup()
@@ -163,7 +163,7 @@ func TestStop_ExecutorFailure_StatusUnchanged(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now make suspend fail.
-	fake.FailOn[orchestrator.ActionSuspend] = errors.New("terraform destroy failed")
+	fake.FailOn[orchestrator.ActionSuspend] = errors.New("provider destroy failed")
 
 	_, err = qubeSvc.Stop(ctx, qube.ID)
 	require.Error(t, err)
@@ -205,7 +205,7 @@ func TestCreate_RejectsUnsafeName(t *testing.T) {
 	ctx := context.Background()
 	zone := createConnectedZone(t, zoneSvc)
 
-	// A display-style name with a space is not a valid terraform map key or
+	// A display-style name with a space is not a valid provider target name or
 	// -target address. Create now rejects it up front rather than accepting a
 	// qube that could never be started.
 	_, err := qubeSvc.Create(ctx, &models.QubeCreateRequest{
@@ -213,6 +213,6 @@ func TestCreate_RejectsUnsafeName(t *testing.T) {
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,
 	})
-	require.Error(t, err, "create must reject a name that is not terraform-safe")
+	require.Error(t, err, "create must reject a name that is not provider-safe")
 	assert.ErrorIs(t, err, ErrInvalidQubeName)
 }

@@ -1,10 +1,8 @@
 // Package proxmox implements the provider.Adapter contract against the Proxmox
-// VE API. It replaces the bpg/proxmox terraform provider for the console's
-// provisioning path.
+// VE API. It is the console's native provisioning path.
 //
-// The API calls here are the same ones the terraform module described in
-// terraform/modules/remote-qube-base/providers/proxmox/main.tf: a stopped
-// storage-holder VM owns the persistent data disk, and an ephemeral compute VM
+// The same resource model applies: a stopped storage-holder VM owns the
+// persistent data disk, and an ephemeral compute VM
 // clones the zone template, attaches that disk, delivers the agent identity as
 // a cloud-init snippet, and starts.
 package proxmox

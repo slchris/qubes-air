@@ -22,7 +22,7 @@ interface QubeState {
   loading: boolean;
   error: string | null;
   // The most recent job id per qube, kept so the card can tail that job's
-  // terraform output and show its failure reason. The mutating calls return a
+  // provisioning output and show its failure reason. The mutating calls return a
   // job_id that was being discarded, which is why a 20-minute apply and a
   // failure were both invisible.
   jobs: Record<string, string>;
@@ -129,7 +129,7 @@ function createQubeStore() {
   /**
    * How often to re-check a qube that has an operation in flight.
    *
-   * Terraform applies take minutes (a provision against a real cluster ran
+   * Provisions take minutes (a provision against a real cluster ran
    * about six), so this trades a little staleness for far fewer requests. It
    * is deliberately not sub-second: nothing here completes that fast.
    */
@@ -240,8 +240,8 @@ function createQubeStore() {
      * Releases a qube: the compute VM is destroyed, the data disk is kept.
      *
      * The qube deliberately stays in the list. It is NOT gone — it moves to
-     * "released" and still owns a data disk, and it must remain in terraform's
-     * variable map until that disk is purged. Filtering it out here would have
+     * "released" and still owns a data disk, and it must remain in the provisioning
+     * record until that disk is purged. Filtering it out here would have
      * the UI claim a deletion that did not happen.
      */
     async remove(id: string): Promise<void> {

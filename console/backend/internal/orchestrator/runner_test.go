@@ -103,7 +103,7 @@ func (b *blockingExecutor) seenOrder() []string {
 	return append([]string(nil), b.order...)
 }
 
-// TestRunnerSerializesWork is the core guarantee. terraform's local backend
+// TestRunnerSerializesWork is the core guarantee. The orchestration queue
 // takes a NON-blocking lock on the state file, so two concurrent processes do
 // not queue — the second fails outright. The single worker is what prevents
 // that from ever happening.
@@ -136,7 +136,7 @@ func TestRunnerSerializesWork(t *testing.T) {
 	}
 
 	if got := be.maxSeen.Load(); got != 1 {
-		t.Errorf("at most one terraform invocation may be in flight, saw %d concurrent", got)
+		t.Errorf("at most one provider invocation may be in flight, saw %d concurrent", got)
 	}
 }
 
@@ -187,7 +187,7 @@ func TestRunnerPreservesSubmissionOrder(t *testing.T) {
 // "busy".
 func TestRunnerCompletionRunsOnFailure(t *testing.T) {
 	fe := NewFakeExecutor()
-	boom := errors.New("terraform exploded")
+	boom := errors.New("provider call exploded")
 	fe.FailOn[ActionResume] = boom
 
 	store := newMemJobStore()

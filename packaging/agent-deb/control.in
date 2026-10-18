@@ -14,7 +14,7 @@
 #               after install, looking like a transport fault.
 #
 #   qemu-guest-agent — deliberately NOT a dependency. It is a hypervisor
-#               concern, not an agent concern: terraform needs it to learn the
+#               concern, not an agent concern: the provisioner needs it to learn the
 #               VM's address, and cloud-init already installs it via the
 #               packages: stanza in RenderAgentUserData. Depending on it here
 #               would mean this package can only be installed on QEMU guests,
