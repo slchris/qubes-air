@@ -766,3 +766,39 @@ func TestConfigLoadsLockFileFromEnv(t *testing.T) {
 	assert.Equal(t, "/run/qubes-air/console.lock", cfg.LockFile)
 	assert.Equal(t, "/run/qubes-air/console.lock", cfg.LockFilePath())
 }
+
+// TestValidateNotificationsRejectsUnmatchableAllowlistEntries — the settings
+// service compares the URL's exact host[:port] against this list, so an entry
+// with a wildcard, a path, upper case or a bad port could never match. Refuse
+// it at startup instead of at the first alert.
+func TestValidateNotificationsRejectsUnmatchableAllowlistEntries(t *testing.T) {
+	for _, host := range []string{
+		"hooks.example.test",
+		"hooks.example.test:8443",
+		"127.0.0.1",
+		"127.0.0.1:8443",
+	} {
+		cfg := DefaultConfig()
+		cfg.Notifications.WebhookAllowedHosts = []string{host}
+		assert.NoError(t, cfg.validateNotifications(), host)
+	}
+
+	for name, hosts := range map[string][]string{
+		"empty":            {""},
+		"upper case":       {"Hooks.Example.Test"},
+		"wildcard":         {"*.example.test"},
+		"path":             {"hooks.example.test/alerts"},
+		"query":            {"hooks.example.test?x=1"},
+		"single label":     {"localhost"},
+		"port zero":        {"hooks.example.test:0"},
+		"port too large":   {"hooks.example.test:65536"},
+		"port not decimal": {"hooks.example.test:8443x"},
+		"duplicate":        {"hooks.example.test", "hooks.example.test"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Notifications.WebhookAllowedHosts = hosts
+			require.Error(t, cfg.validateNotifications())
+		})
+	}
+}

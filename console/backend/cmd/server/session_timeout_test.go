@@ -102,7 +102,7 @@ func TestConfiguredSessionStoreUsesTheSavedTimeout(t *testing.T) {
 		`{"sessionTimeout":45}`:   45 * time.Minute,
 		`{"sessionTimeout":1440}`: 24 * time.Hour,
 	} {
-		_, store := newSettingsAndSessions(context.Background(), openSeededDB(t, security))
+		_, store := newSettingsAndSessions(context.Background(), openSeededDB(t, security), nil, nil)
 		assert.Equal(t, want, sessionLifetime(t, store), "stored %q", security)
 	}
 	assert.NotContains(t, out.String(), "WARNING")
@@ -123,7 +123,7 @@ func TestConfiguredSessionStoreFallsBackOnABadStoredTimeout(t *testing.T) {
 	} {
 		t.Run(security, func(t *testing.T) {
 			out := captureStartupLog(t)
-			_, store := newSettingsAndSessions(context.Background(), openSeededDB(t, security))
+			_, store := newSettingsAndSessions(context.Background(), openSeededDB(t, security), nil, nil)
 			require.NotNil(t, store)
 			assert.Equal(t, middleware.DefaultSessionTTL, sessionLifetime(t, store))
 			logged := out.String()

@@ -17,10 +17,15 @@ type GeneralSettings struct {
 }
 
 // NotificationSettings represents notification settings.
+//
+// WebhookURL is write-only: the destination is stored as an encrypted
+// credential and never returned by the settings API. WebhookConfigured reports
+// whether an encrypted destination exists without exposing it.
 type NotificationSettings struct {
-	Email      bool   `json:"email"`
-	Webhook    bool   `json:"webhook"`
-	WebhookURL string `json:"webhookUrl"`
+	Email             bool   `json:"email"`
+	Webhook           bool   `json:"webhook"`
+	WebhookURL        string `json:"webhookUrl,omitempty"`
+	WebhookConfigured bool   `json:"webhookConfigured"`
 }
 
 // SecuritySettings represents security settings.

@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,14 +21,15 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	Server       ServerConfig       `yaml:"server"`
-	Database     DatabaseConfig     `yaml:"database"`
-	CORS         CORSConfig         `yaml:"cors"`
-	Security     SecurityConfig     `yaml:"security"`
-	Auth         AuthConfig         `yaml:"auth"`
-	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
-	Transport    TransportConfig    `yaml:"transport"`
-	QubeSpec     QubeSpecConfig     `yaml:"qube_spec"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	CORS          CORSConfig          `yaml:"cors"`
+	Security      SecurityConfig      `yaml:"security"`
+	Auth          AuthConfig          `yaml:"auth"`
+	Orchestrator  OrchestratorConfig  `yaml:"orchestrator"`
+	Transport     TransportConfig     `yaml:"transport"`
+	QubeSpec      QubeSpecConfig      `yaml:"qube_spec"`
+	Notifications NotificationsConfig `yaml:"notifications"`
 
 	// LockFile is the file the console takes its exclusive single-instance lock
 	// on at startup and holds for its whole lifetime (internal/lockfile). A
@@ -44,6 +47,13 @@ type Config struct {
 	// locking; setting this explicitly is the only way to lock in that case.
 	// Env: QUBES_AIR_LOCK_FILE.
 	LockFile string `yaml:"lock_file"`
+}
+
+// NotificationsConfig restricts operator-configured outbound webhook targets.
+// A destination must be an HTTPS URL whose exact host (and non-default port)
+// appears in this allowlist; the settings page cannot widen it.
+type NotificationsConfig struct {
+	WebhookAllowedHosts []string `yaml:"webhook_allowed_hosts"`
 }
 
 // TransportConfig configures the gRPC bidirectional-stream cross-machine
@@ -1105,7 +1115,63 @@ func (c *Config) Validate() error {
 	if err := c.validateTransport(); err != nil {
 		return err
 	}
+	if err := c.validateNotifications(); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// validateNotifications rejects an allowlist entry that could never match a
+// URL the settings service accepts. Entries are exact host[:port] keys, lower
+// case, with no wildcard, path, userinfo or query.
+func (c *Config) validateNotifications() error {
+	seen := make(map[string]struct{}, len(c.Notifications.WebhookAllowedHosts))
+	for _, host := range c.Notifications.WebhookAllowedHosts {
+		if host == "" || strings.TrimSpace(host) != host || strings.ToLower(host) != host || strings.ContainsAny(host, "*/@?#") {
+			return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
+		}
+		hostname, port := host, ""
+		if strings.Contains(host, ":") {
+			var err error
+			hostname, port, err = net.SplitHostPort(host)
+			if err != nil {
+				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
+			}
+			portNumber, parseErr := strconv.Atoi(port)
+			if parseErr != nil || portNumber < 1 || portNumber > 65535 || strconv.Itoa(portNumber) != port {
+				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid port in %q", host)
+			}
+		}
+		if _, err := netip.ParseAddr(hostname); err != nil {
+			if err := validateDNSHost(hostname); err != nil {
+				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
+			}
+		}
+		if _, exists := seen[host]; exists {
+			return fmt.Errorf("notifications.webhook_allowed_hosts contains duplicate host %q", host)
+		}
+		seen[host] = struct{}{}
+	}
+	return nil
+}
+
+func validateDNSHost(host string) error {
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return fmt.Errorf("host must be fully qualified")
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("invalid DNS label")
+		}
+		for _, r := range label {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+				continue
+			}
+			return fmt.Errorf("invalid DNS label")
+		}
+	}
 	return nil
 }
 

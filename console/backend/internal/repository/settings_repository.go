@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -82,18 +83,55 @@ func (r *SettingsRepository) Get(ctx context.Context) (*models.Settings, error) 
 // leaves every group at its previous value; a partial write would make the
 // console report settings the operator never saved.
 func (r *SettingsRepository) Update(ctx context.Context, settings *models.Settings) error {
+	return r.update(ctx, settings, nil)
+}
+
+// UpdateWithWebhook commits settings and their encrypted destination together.
+// Both repositories must share the same database; no compensating writes are
+// needed because the credential row is written in the settings transaction.
+func (r *SettingsRepository) UpdateWithWebhook(ctx context.Context, settings *models.Settings, credentials *CredentialRepository, target string) error {
+	if credentials == nil || credentials.db != r.db {
+		return fmt.Errorf("settings and webhook must share a database")
+	}
+	return r.update(ctx, settings, func(tx *sql.Tx) error {
+		return credentials.setAlertWebhookTarget(ctx, tx, target)
+	})
+}
+
+func (r *SettingsRepository) update(ctx context.Context, settings *models.Settings, webhook func(*sql.Tx) error) error {
 	tx, err := r.db.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin settings update: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if err := writeSettings(ctx, tx, settings); err != nil {
+		return err
+	}
+	if webhook != nil {
+		if err := webhook(tx); err != nil {
+			return fmt.Errorf("write webhook credential: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit settings: %w", err)
+	}
+	return nil
+}
+
+func writeSettings(ctx context.Context, tx *sql.Tx, settings *models.Settings) error {
+	// The destination is stored as an encrypted credential. Keeping it (or the
+	// derived "configured" flag) in the settings JSON would leak the URL through
+	// a plaintext row and make the two stores disagree after a failed save.
+	notifications := settings.Notifications
+	notifications.WebhookURL = ""
+	notifications.WebhookConfigured = false
 	groups := []struct {
 		key   string
 		value any
 	}{
 		{"general", settings.General},
-		{"notifications", settings.Notifications},
+		{"notifications", notifications},
 		{"security", settings.Security},
 	}
 	for _, group := range groups {
@@ -108,10 +146,6 @@ func (r *SettingsRepository) Update(ctx context.Context, settings *models.Settin
 		if err != nil {
 			return fmt.Errorf("write %s settings: %w", group.key, err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit settings: %w", err)
 	}
 	return nil
 }
