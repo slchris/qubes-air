@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/orchestrator"
@@ -44,4 +45,49 @@ func TestPurgeCompletionWaitsForRemoteVMCleanup(t *testing.T) {
 	caller.reply = "OK"
 	require.NoError(t, hook(context.Background(), job))
 	assert.Equal(t, models.QubeStatusPurged, q.status)
+}
+
+// ctxAwareCompletionQubes refuses a status write on a canceled context, like
+// the SQL repository. The base fake ignores contexts, which would hid the bug.
+type ctxAwareCompletionQubes struct {
+	completionQubes
+}
+
+func (q *ctxAwareCompletionQubes) UpdateStatus(ctx context.Context, id string, status models.QubeStatus) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return q.completionQubes.UpdateStatus(ctx, id, status)
+}
+
+// blockingCaller consumes the hook's whole budget and then fails, the shape of
+// a dom0 registration/deregistration call that times out.
+type blockingCaller struct{}
+
+func (c *blockingCaller) Call(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestPurgeCompletionPersistsErrorAfterCleanupTimeout — a timed-out RemoteVM
+// deregistration must still leave the qube in a terminal, retryable state. The
+// deferred status write used the exhausted hook context, so the row stayed on
+// "deleting" with no terminal state at all.
+func TestPurgeCompletionPersistsErrorAfterCleanupTimeout(t *testing.T) {
+	q := &ctxAwareCompletionQubes{completionQubes: completionQubes{
+		status: models.QubeStatusDeleting,
+	}}
+	hook := makeCompletionHook(q, nil, service.NewRemoteVMRegistrar(&blockingCaller{}, true))
+	job := &orchestrator.Job{
+		QubeID: "q", QubeName: "remote-one",
+		Action: orchestrator.ActionDestroy, State: orchestrator.JobSucceeded,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := hook(ctx, job)
+
+	require.ErrorContains(t, err, "remove RemoteVM")
+	assert.Equal(t, models.QubeStatusError, q.status,
+		"a cleanup timeout must still record a terminal status")
 }
