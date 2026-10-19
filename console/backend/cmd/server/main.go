@@ -721,7 +721,7 @@ func startOrchestration(
 		// Off unless configured, because it needs the dom0 service and policy
 		// from mgmt.remotevm.register to exist.
 		registrar := service.NewRemoteVMRegistrar(
-			qrexec.NewClient(), cfg.RegisterRemoteVM)
+			qrexec.NewClient(qrexec.WithTimeout(service.RemoteVMCallTimeout)), cfg.RegisterRemoteVM)
 		if cfg.RegisterRemoteVM {
 			log.Printf("orchestrator: RemoteVM registration enabled (dom0 %s)",
 				"qubesair.RegisterRemoteVM")

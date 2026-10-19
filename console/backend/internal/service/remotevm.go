@@ -6,7 +6,18 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 )
+
+// RemoteVMCallTimeout bounds one dom0 registration/deregistration call.
+//
+// The service runs qvm-create followed by several qvm-prefs writes in dom0.
+// On the production console the first registration exceeded the qrexec
+// client's 30s default: dom0 created the shell, but the call was cut off
+// before its properties were set, leaving a RemoteVM that looked registered
+// and was not addressable. The completion hook must give this call room to
+// finish; its own budget is larger than this value.
+const RemoteVMCallTimeout = 2 * time.Minute
 
 // RemoteVM registration: telling dom0 that a provisioned qube exists.
 //

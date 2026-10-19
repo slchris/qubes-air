@@ -550,3 +550,13 @@ func TestRunnerPersistsOutcomeAfterCompletionHookExhaustsItsBudget(t *testing.T)
 		t.Errorf("the completion failure must be part of the persisted error, got %q", got.Error)
 	}
 }
+
+// TestDefaultCompletionTimeoutCoversRemoteVM — the completion hook must outlast
+// the RemoteVM qrexec budget (service.RemoteVMCallTimeout, 2 minutes), or a
+// dom0 registration is cut off before its properties are set. The service
+// package cannot be imported here (import cycle), so the bound is mirrored.
+func TestDefaultCompletionTimeoutCoversRemoteVM(t *testing.T) {
+	if defaultCompletionTimeout < 2*time.Minute {
+		t.Fatalf("completion timeout %s does not cover the RemoteVM call budget", defaultCompletionTimeout)
+	}
+}
