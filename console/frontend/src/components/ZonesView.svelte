@@ -49,6 +49,7 @@
   let fTemplateNode = $state('');
   let fDatastore = $state('');
   let fBridge = $state('vmbr0');
+  let fVlan = $state<number | null>(null);
 
   // Only credentials of the zone's own type can authenticate it; offering the
   // rest invites a zone that connects to nothing.
@@ -71,7 +72,7 @@
 
   function openCreate(): void {
     fName = ''; fType = DEFAULT_ZONE_PROVIDER; fCredential = ''; fEndpoint = '';
-    fNode = ''; fTemplateVmId = null; fTemplateNode = ''; fDatastore = ''; fBridge = 'vmbr0';
+    fNode = ''; fTemplateVmId = null; fTemplateNode = ''; fDatastore = ''; fBridge = 'vmbr0'; fVlan = null;
     formError = null;
     showCreate = true;
     void loadCreds();
@@ -90,6 +91,7 @@
         template_node: fTemplateNode.trim() || undefined,
         datastore_id: fDatastore.trim() || undefined,
         network_bridge: fBridge.trim() || undefined,
+        vlan_tag: fVlan ?? undefined,
         credential_id: fCredential || undefined,
       };
     }
@@ -107,6 +109,9 @@
     if (fType === 'proxmox') {
       if (!fEndpoint.trim()) return 'Endpoint is required';
       if (!fTemplateVmId) return 'Template VMID is required: without a template the clone produces a VM with no operating system';
+      if (fVlan !== null && (!Number.isInteger(fVlan) || fVlan < 1 || fVlan > 4094)) {
+        return 'VLAN tag must be an integer between 1 and 4094 (leave it empty for an untagged NIC)';
+      }
     }
     return null;
   }
@@ -197,7 +202,7 @@
                 <dd>VMID {p.template_vm_id}{#if p.template_node} on {p.template_node}{/if}</dd>
               {/if}
               {#if p.datastore_id}<dt>Datastore</dt><dd>{p.datastore_id}</dd>{/if}
-              {#if p.network_bridge}<dt>Bridge</dt><dd>{p.network_bridge}</dd>{/if}
+              {#if p.network_bridge}<dt>Bridge</dt><dd>{p.network_bridge}{#if p.vlan_tag} · VLAN {p.vlan_tag}{/if}</dd>{/if}
               <dt>Credential</dt>
               <dd>{p.credential_id ? 'linked' : '⚠ none — cannot provision'}</dd>
             {/if}
@@ -298,10 +303,16 @@
               <input bind:value={fDatastore} placeholder="ceph-pve" />
             </label>
           </div>
-          <label class="f">
-            <span>Network bridge</span>
-            <input bind:value={fBridge} placeholder="vmbr0" />
-          </label>
+          <div class="row">
+            <label class="f">
+              <span>Network bridge</span>
+              <input bind:value={fBridge} placeholder="vmbr0" />
+            </label>
+            <label class="f">
+              <span>VLAN tag</span>
+              <input type="number" bind:value={fVlan} placeholder="untagged" />
+            </label>
+          </div>
         {/if}
 
         <div class="actions">

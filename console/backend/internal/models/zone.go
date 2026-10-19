@@ -1,7 +1,10 @@
 // Package models defines the core domain types for Qubes Air.
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Zone represents a remote infrastructure boundary.
 type Zone struct {
@@ -68,6 +71,17 @@ type ProxmoxZoneConfig struct {
 	DatastoreID string `json:"datastore_id,omitempty"`
 	// NetworkBridge is the bridge new VMs attach to, e.g. "vmbr0".
 	NetworkBridge string `json:"network_bridge,omitempty"`
+	// VLANTag places new NICs in this 802.1Q VLAN (1-4094). Zero leaves them
+	// untagged on the bridge.
+	//
+	// A dedicated VLAN is the supported way to give qubes their own DHCP scope:
+	// addresses come from DHCP, and a pool shared with other infrastructure can
+	// lease an address another host already owns. The VLAN must have its own
+	// DHCP server (or the VMs need static addresses), the bridge plus the
+	// upstream switch must carry the tag, and the console must be able to route
+	// to the VLAN's address range — the tag isolates a broadcast domain, it does
+	// not create that route.
+	VLANTag int `json:"vlan_tag,omitempty"`
 	// TemplateVMID is the cloud-init template VM to clone. Its boot disk must
 	// be on scsi0 and it must have a cloud-init drive and qemu-guest-agent, or
 	// the adapter cannot report the instance's address.
@@ -91,6 +105,17 @@ type ProxmoxZoneConfig struct {
 	// rotated and audited in one place, and never leaves the credential store
 	// except to the components that must call the cluster.
 	CredentialID string `json:"credential_id,omitempty"`
+}
+
+// Validate checks provider-specific bounds that the API type cannot express.
+func (c *ProxmoxZoneConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.VLANTag < 0 || c.VLANTag > 4094 {
+		return fmt.Errorf("vlan_tag %d is outside 0-4094 (0 disables tagging)", c.VLANTag)
+	}
+	return nil
 }
 
 type ZoneConfig struct {

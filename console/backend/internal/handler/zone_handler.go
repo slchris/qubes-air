@@ -213,6 +213,8 @@ func handleZoneError(c *gin.Context, err error) {
 		respondError(c, http.StatusConflict, err)
 	case errors.Is(err, service.ErrInvalidZoneType):
 		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrInvalidZoneConfig):
+		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrZoneTypeNotImplemented):
 		// Distinct from 400: the type is spelled correctly and known to the
 		// model, but no adapter serves it, so the zone could never provision.

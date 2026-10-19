@@ -18,6 +18,10 @@ var (
 	ErrZoneNotFound    = errors.New("zone not found")
 	ErrZoneInUse       = errors.New("zone is in use by qubes")
 	ErrInvalidZoneType = errors.New("invalid zone type")
+	// ErrInvalidZoneConfig refuses provider-specific settings outside their
+	// bounds (today the Proxmox VLAN tag). Caught at create/update so the
+	// operator sees it in the API response, not at the first provision.
+	ErrInvalidZoneConfig = errors.New("invalid zone configuration")
 	// ErrZoneTypeNotImplemented refuses a zone type the model names but no
 	// registered provider adapter serves. Accepting such a zone would only
 	// postpone the failure to the first provision job (provider.ErrNoAdapter),
@@ -141,7 +145,24 @@ func validateZoneCreateRequest(req *models.ZoneCreateRequest) error {
 	if !req.Type.IsValid() {
 		return ErrInvalidZoneType
 	}
+	if req.Type == models.ZoneTypeProxmox {
+		if err := validateProxmoxConfig(req.Config.Proxmox); err != nil {
+			return err
+		}
+	}
 
+	return nil
+}
+
+// validateProxmoxConfig wraps the model's bounds check in the service error the
+// handler maps to 400.
+func validateProxmoxConfig(cfg *models.ProxmoxZoneConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidZoneConfig, err)
+	}
 	return nil
 }
 
@@ -204,6 +225,11 @@ func (s *ZoneServiceImpl) update(ctx context.Context, id string, req *models.Zon
 	}
 
 	applyZoneUpdates(zone, req)
+	if zone.Type == models.ZoneTypeProxmox {
+		if err := validateProxmoxConfig(zone.Config.Proxmox); err != nil {
+			return nil, err
+		}
+	}
 	zone.UpdatedAt = time.Now()
 
 	if err := s.zoneRepo.Update(ctx, zone); err != nil {

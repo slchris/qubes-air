@@ -92,6 +92,63 @@ func TestZoneService_Create(t *testing.T) {
 	assert.Equal(t, "disconnected", zone.Status)
 }
 
+func TestZoneService_Create_ValidatesVLANTag(t *testing.T) {
+	zoneSvc, cleanup := setupTestServices(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, tag := range []int{-1, 4095} {
+		_, err := zoneSvc.Create(ctx, &models.ZoneCreateRequest{
+			Name: "vlan",
+			Type: models.ZoneTypeProxmox,
+			Config: models.ZoneConfig{
+				Proxmox: &models.ProxmoxZoneConfig{VLANTag: tag},
+			},
+		})
+		require.Error(t, err, "tag %d must be refused", tag)
+		assert.ErrorIs(t, err, ErrInvalidZoneConfig)
+	}
+
+	zone, err := zoneSvc.Create(ctx, &models.ZoneCreateRequest{
+		Name: "vlan-ok",
+		Type: models.ZoneTypeProxmox,
+		Config: models.ZoneConfig{
+			Proxmox: &models.ProxmoxZoneConfig{VLANTag: 42},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, zone.Config.Proxmox)
+	assert.Equal(t, 42, zone.Config.Proxmox.VLANTag)
+}
+
+func TestZoneService_Update_ValidatesVLANTag(t *testing.T) {
+	zoneSvc, cleanup := setupTestServices(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	zone, err := zoneSvc.Create(ctx, &models.ZoneCreateRequest{
+		Name: "vlan-update",
+		Type: models.ZoneTypeProxmox,
+		Config: models.ZoneConfig{
+			Proxmox: &models.ProxmoxZoneConfig{VLANTag: 42},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = zoneSvc.Update(ctx, zone.ID, &models.ZoneUpdateRequest{
+		Config: &models.ZoneConfig{
+			Proxmox: &models.ProxmoxZoneConfig{VLANTag: 4095},
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidZoneConfig)
+
+	got, err := zoneSvc.GetByID(ctx, zone.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.Config.Proxmox)
+	assert.Equal(t, 42, got.Config.Proxmox.VLANTag, "a refused update must not persist")
+}
+
 func TestZoneService_Create_InvalidType(t *testing.T) {
 	zoneSvc, cleanup := setupTestServices(t)
 	defer cleanup()
