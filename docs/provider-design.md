@@ -83,6 +83,14 @@ PVE 节点管理地址由集群信息解析，provider 步骤写入 job log。Pr
 新建 compute VM 使用 DHCP；恢复已有 compute VM 时保留其当前 `ipconfig0`，避免覆盖
 provider 已有网络配置。静态 IP 池不是当前支持能力，原有配置与分配实现已移除。
 
+Proxmox zone 可设置 `vlan_tag`（1–4094，空/0 表示不打标签）。设置后，storage holder
+和 compute 的 `net0` 都写成 `virtio,bridge=<bridge>,tag=<vlan>`。这是把 qube 的 DHCP
+流量限制在独立广播域的受支持方式：VLAN 内必须有该网段的 DHCP 服务（或给 VM 配静态
+地址），且 bridge 与上游交换机必须放行该 tag。共享 LAN 的 DHCP 池若与其他基础设施
+的静态地址重叠，新 VM 会拿到别人的地址，表现为 agent 在 guest 内正常监听但 console
+不可达。修改 `vlan_tag` 不会热改运行中的 VM：新 provision 或下一次 resume（重建
+compute）时才写到 `net0`；已经运行的 qube 需要 suspend/resume 才会换到新 VLAN。
+
 ## 信任边界与已知限制
 
 - zone 凭据按调用从加密库解析，SSH key 也在调用时读取；不能把凭据写入日志或文档。

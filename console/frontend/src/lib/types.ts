@@ -22,6 +22,8 @@ export interface ProxmoxZoneConfig {
   node?: string;
   datastore_id?: string;
   network_bridge?: string;
+  // 802.1Q tag for new NICs; absent means untagged.
+  vlan_tag?: number;
   template_vm_id?: number;
   template_node?: string;
   ssh_public_keys?: string[];

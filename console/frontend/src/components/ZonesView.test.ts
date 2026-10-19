@@ -129,6 +129,29 @@ describe('ZonesView create', () => {
     expect(screen.queryByRole('dialog', { name: /add zone/i })).not.toBeInTheDocument()
   })
 
+  it('sends the optional VLAN tag with the zone', async () => {
+    createZone.mockResolvedValue(zoneFixture())
+    const dialog = await openAddZone()
+
+    await fillProxmoxZone(dialog)
+    await userEvent.type(within(dialog).getByLabelText(/^vlan tag$/i), '42')
+    await userEvent.click(within(dialog).getByRole('button', { name: /create zone/i }))
+
+    expect(createZone).toHaveBeenCalledTimes(1)
+    expect(createZone.mock.calls[0][0].config.proxmox).toMatchObject({ vlan_tag: 42 })
+  })
+
+  it('refuses a VLAN tag outside 1-4094 before posting', async () => {
+    const dialog = await openAddZone()
+
+    await fillProxmoxZone(dialog)
+    await userEvent.type(within(dialog).getByLabelText(/^vlan tag$/i), '4095')
+    await userEvent.click(within(dialog).getByRole('button', { name: /create zone/i }))
+
+    expect(await within(dialog).findByText(/vlan tag must be an integer/i)).toBeInTheDocument()
+    expect(createZone).not.toHaveBeenCalled()
+  })
+
   it('keeps the dialog open and shows the backend refusal', async () => {
     // The backend is the authority on which providers exist; if it refuses
     // what the UI offered, the operator must see its reason, not a generic one.

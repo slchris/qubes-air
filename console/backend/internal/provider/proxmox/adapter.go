@@ -100,7 +100,24 @@ func zoneConfig(zone *models.Zone) (*models.ProxmoxZoneConfig, error) {
 	if zone.Config.Proxmox == nil {
 		return nil, fmt.Errorf("proxmox: zone %q has no proxmox config", zone.Name)
 	}
+	// Re-checked here because rows written before the zone API validated the
+	// tag, or edited directly in the database, must not reach qemu-server as an
+	// invalid NIC option.
+	if err := zone.Config.Proxmox.Validate(); err != nil {
+		return nil, fmt.Errorf("proxmox: zone %q: %w", zone.Name, err)
+	}
 	return zone.Config.Proxmox, nil
+}
+
+// net0Device is the NIC string for the VMs this adapter creates. The VLAN tag
+// keeps the qube's DHCP traffic in the zone's own broadcast domain; without it
+// a shared LAN pool can lease an address another host already owns.
+func net0Device(pc *models.ProxmoxZoneConfig) string {
+	device := "virtio,bridge=" + pc.NetworkBridge
+	if pc.VLANTag > 0 {
+		device += ",tag=" + strconv.Itoa(pc.VLANTag)
+	}
+	return device
 }
 
 // resolveNode picks the node a qube runs on: its own pin, else the zone default.
@@ -362,7 +379,7 @@ func (a *Adapter) createStorage(ctx context.Context, pc *models.ProxmoxZoneConfi
 	form.Set("memory", "512")
 	form.Set("ostype", "l26")
 	form.Set("scsihw", "virtio-scsi-single")
-	form.Set("net0", "virtio,bridge="+pc.NetworkBridge)
+	form.Set("net0", net0Device(pc))
 	form.Set("scsi0", fmt.Sprintf("%s:%d,discard=on,iothread=1", pc.DatastoreID, dataGB))
 	form.Set("onboot", "0")
 	form.Set("tags", "qubes-air;storage;"+string(q.Type))
@@ -445,7 +462,7 @@ func (a *Adapter) configureCompute(ctx context.Context, pc *models.ProxmoxZoneCo
 	form.Set("cpu", "x86-64-v2-AES")
 	form.Set("agent", "enabled=1")
 	form.Set("onboot", "0")
-	form.Set("net0", "virtio,bridge="+pc.NetworkBridge)
+	form.Set("net0", net0Device(pc))
 	form.Set("scsi1", in.DataVolume)
 	form.Set("tags", "qubes-air;compute;"+string(q.Type))
 	if q.Spec.VCPU > 0 {

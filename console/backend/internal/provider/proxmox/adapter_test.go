@@ -97,6 +97,42 @@ func TestEnsureStorage_CreatesHolderAndDisk(t *testing.T) {
 	assert.Contains(t, create, "net0=virtio%2Cbridge%3Dvmbr0")
 }
 
+func TestEnsureStorage_TagsTheNICWithTheZoneVLAN(t *testing.T) {
+	ad, rec := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/cluster/nextid"):
+			writeData(w, "105")
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/nodes/infra-node1/qemu"):
+			writeData(w, testUPID)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/"):
+			taskOK(w)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/qemu/105/config"):
+			writeData(w, map[string]string{"scsi0": "ceph-pve:vm-105-disk-0,discard=on,size=20G"})
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusNotFound)
+		}
+	}, Options{})
+
+	zone := testZone()
+	zone.Config.Proxmox.VLANTag = 42
+	_, err := ad.EnsureStorage(testCheckpointContext(), testQube(), zone, provider.Infra{})
+	require.NoError(t, err)
+	create := rec.body("POST", "/api2/json/nodes/infra-node1/qemu")
+	assert.Contains(t, create, "net0=virtio%2Cbridge%3Dvmbr0%2Ctag%3D42")
+}
+
+func TestEnsureStorage_RefusesInvalidVLANBeforeCallingTheAPI(t *testing.T) {
+	ad, _ := newTestAdapter(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "the adapter must not reach the API", http.StatusInternalServerError)
+	}, Options{})
+
+	zone := testZone()
+	zone.Config.Proxmox.VLANTag = 4095
+	_, err := ad.EnsureStorage(testCheckpointContext(), testQube(), zone, provider.Infra{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vlan_tag")
+}
+
 func TestRuntimeMetricsReadsLiveQEMUStatus(t *testing.T) {
 	ad, rec := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/infra-node1/qemu/106/config" {
