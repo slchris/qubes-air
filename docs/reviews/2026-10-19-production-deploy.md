@@ -181,9 +181,9 @@ qa-deploy-5 之后把 provider 创建的 NIC 隔离到专用 VLAN：zone 改为
 - Qubes Air 实例的地址只在 `<pxe-subnet>`；LAN 侧的静态地址只属于 PXE 网关的
   eth0 出口。
 
-未做：LAN DHCP 池仍与 K8s/Ceph/PVE 的静态地址段重叠；VLAN 方案已让 Qubes Air
-不再依赖该池，但其他 DHCP 客户端仍可能撞上这些静态地址，建议后续把静态段加入
-排除。
+LAN DHCP 池的静态段排除已补齐：K8s 节点、静态 VM、Qubes 主机、PXE 网关、
+WIN-GAMING 静态映射和 PVE 节点的地址已加入 exclude（共 14 个），随后对新客户端
+做 DHCP DISCOVER，offer 已落在排除段之外。
 
 ## 发现
 
@@ -249,8 +249,6 @@ lifecycle 没有在 running 时调用 purge，下一次补做），单元测试�
 
 - Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
 - 发现 4 的 409 文案生产复验（VLAN 路径已打通，可在下一次 running 测试时补做）；
-- LAN DHCP 池与静态基础设施地址段的重叠清理（VLAN 方案已让 Qubes Air 不再依赖
-  该池，但其他客户端仍可能撞上）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
 - RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）。
 
