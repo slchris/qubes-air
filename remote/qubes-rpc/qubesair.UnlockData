@@ -2,11 +2,13 @@
 # qubesair.UnlockData — unlock (and, on first boot, create) the encrypted data disk.
 # =====================================================================================
 # The data disk on this untrusted remote is a LUKS container. The passphrase NEVER
-# lives here: the console derives it (HKDF over its master secret + this qube's id) and
-# pushes it over the agent's mTLS channel only when the disk needs opening. This service
-# receives that passphrase on stdin, opens the container, and mounts /data — the key
-# stays in RAM (a shell var and a pipe), is never written to any disk, and is gone when
-# this process exits.
+# lives here: the console stores a random per-qube data key (DEK) and pushes it over
+# the agent's mTLS channel only when the disk needs opening. A disk created before
+# per-qube keys is migrated: the console derives the legacy master-based key once,
+# rekeys the disk to its DEK, and uses the DEK from then on. This service receives the
+# passphrase on stdin, opens the container, and mounts /data — the key stays in RAM
+# (a shell var and a pipe), is never written to any disk, and is gone when this
+# process exits.
 #
 # Contract:
 #   stdin  : the LUKS passphrase (raw bytes, no framing). At most 4096 bytes in
