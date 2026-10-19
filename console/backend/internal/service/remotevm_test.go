@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeQrexec records the call and returns a canned reply.
@@ -139,5 +140,14 @@ func TestRegisterQuietlySwallowsFailure(t *testing.T) {
 	r.RegisterQuietly(context.Background(), "dev-1")
 	if f.calls != 1 {
 		t.Errorf("expected one attempt, got %d", f.calls)
+	}
+}
+
+// TestRemoteVMCallTimeout pins the budget that must cover qvm-create plus the
+// qvm-prefs writes in dom0. It is larger than the qrexec client default because
+// the production console timed out at 30s with a half-configured shell.
+func TestRemoteVMCallTimeout(t *testing.T) {
+	if RemoteVMCallTimeout != 2*time.Minute {
+		t.Fatalf("RemoteVMCallTimeout = %s, want 2m", RemoteVMCallTimeout)
 	}
 }

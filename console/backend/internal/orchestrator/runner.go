@@ -202,7 +202,12 @@ const (
 	// status and may call dom0 to register a RemoteVM. Kept separate from the
 	// outcome write below: cleanup that consumes its whole budget must not be
 	// able to prevent the job's terminal state from being recorded.
-	defaultCompletionTimeout = 30 * time.Second
+	//
+	// It must exceed the RemoteVM qrexec budget (service.RemoteVMCallTimeout,
+	// 2 minutes): creating a RemoteVM runs qvm-create plus several qvm-prefs
+	// writes in dom0, and a 30s budget cut that call off after the shell existed
+	// but before its properties were set.
+	defaultCompletionTimeout = 150 * time.Second
 	// outcomePersistTimeout bounds persisting the terminal job row after the
 	// completion hook. It gets its own context for the reason above.
 	outcomePersistTimeout = 10 * time.Second
