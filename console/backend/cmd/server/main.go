@@ -909,7 +909,9 @@ func buildExecutor(
 		return orchestrator.NewNoopExecutor()
 	}
 	log.Printf("Orchestrator: ENABLED (native provider executor; zones with no adapter are refused)")
-	return orchestrator.NewNativeExecutor(registry, resolver, store)
+	native := orchestrator.NewNativeExecutor(registry, resolver, store)
+	native.WithProvisionWait(time.Duration(cfg.ProvisionWaitSeconds) * time.Second)
+	return native
 }
 
 // registerProxmoxAdapter wires the Proxmox provider adapter.

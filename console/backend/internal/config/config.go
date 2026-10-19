@@ -346,6 +346,17 @@ type OrchestratorConfig struct {
 	// the bound.
 	// Env: QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS.
 	JobTimeoutSeconds int `yaml:"job_timeout_seconds"`
+	// ProvisionWaitSeconds bounds the post-provision reachability wait
+	// (default 240).
+	//
+	// Separate from AgentProbeSettleSeconds: that budget runs after the job
+	// completes, while this one gates the job itself. A cold boot includes
+	// cloud-init package installation, agent download and first bootstrap; the
+	// previous compile-time four minutes left too little margin on slow storage
+	// and failed healthy provisions at the boundary. Zero or negative falls back
+	// to the compile-time default.
+	// Env: QUBES_AIR_ORCHESTRATOR_PROVISION_WAIT_SECONDS.
+	ProvisionWaitSeconds int `yaml:"provision_wait_seconds"`
 }
 
 // QubeSpecConfig bounds the resource sizes a qube create/update request may
@@ -683,7 +694,8 @@ func DefaultConfig() *Config {
 			AgentCertRenewThresholdPercent: 33,
 			AgentBootstrapIntervalSeconds:  60,
 			// 45 minutes, against a documented 15-25 minute provision.
-			JobTimeoutSeconds: 2700,
+			JobTimeoutSeconds:    2700,
+			ProvisionWaitSeconds: 240,
 		},
 		Transport: TransportConfig{
 			// Disabled by default: no gRPC transport wired (noop). Enable and
@@ -942,6 +954,11 @@ func (c *Config) loadOrchestratorTimingEnv() {
 	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_JOB_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Orchestrator.JobTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("QUBES_AIR_ORCHESTRATOR_PROVISION_WAIT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.Orchestrator.ProvisionWaitSeconds = n
 		}
 	}
 }

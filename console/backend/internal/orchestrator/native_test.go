@@ -443,3 +443,14 @@ func TestDestroyFailureStagesRetainIdentityForRetry(t *testing.T) {
 		})
 	}
 }
+
+// TestWithProvisionWait — the provision reachability budget is configurable;
+// zero keeps the compile-time default rather than disabling the wait.
+func TestWithProvisionWait(t *testing.T) {
+	n := NewNativeExecutor(nil, nil, nil)
+	n.WithProvisionWait(7 * time.Minute)
+	assert.Equal(t, 7*time.Minute, n.probeTimeout)
+
+	n.WithProvisionWait(0)
+	assert.Equal(t, 7*time.Minute, n.probeTimeout, "an unset config must not disable the wait")
+}

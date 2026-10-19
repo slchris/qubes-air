@@ -808,3 +808,22 @@ func TestValidateNotificationsRejectsUnmatchableAllowlistEntries(t *testing.T) {
 		})
 	}
 }
+
+// TestConfig_ProvisionWait — the post-provision reachability budget must have a
+// positive default and be tunable for slower boot/install paths.
+func TestConfig_ProvisionWait(t *testing.T) {
+	cfg := DefaultConfig()
+	require.Equal(t, 240, cfg.Orchestrator.ProvisionWaitSeconds)
+
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_PROVISION_WAIT_SECONDS", "600")
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 600, cfg.Orchestrator.ProvisionWaitSeconds)
+}
+
+func TestConfig_ProvisionWaitGarbageKeepsDefault(t *testing.T) {
+	t.Setenv("QUBES_AIR_ORCHESTRATOR_PROVISION_WAIT_SECONDS", "four minutes")
+	cfg, err := Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 240, cfg.Orchestrator.ProvisionWaitSeconds)
+}
