@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-19 告警确认与历史视图](2026-10-19-alert-ui.md) | Monitoring 视图的告警确认、操作者/时间显示与分页历史；失败路径测试 | 组件测试，无真实登录/触发器的 E2E 或真机验证 |
 | [2026-10-19 Job 日志保留与恢复语义](2026-10-19-job-log-retention.md) | 30 天保留/每日清理、`log_created_at`/`log_pruned_at`、API `log_state` 五种状态与前端说明 | 本机自动化；未做换机恢复演练，未在真机观察恢复后的 UI |
 | [2026-10-19 Webhook 安全审查修复](2026-10-19-webhook-security-review.md) | webhook 目标移入控制台凭据命名空间、DNS 解析 SSRF 防护、确认接口 fail closed 与 fleet 路由验证 | 本机自动化与变异测试；无真机投递/内网 DNS 场景 |
 | [2026-10-19 告警持久化与加密 Webhook](2026-10-19-alert-webhook.md) | 告警事件/确认/历史、加密 webhook 目标、主机白名单与 outbox 重试 | 本机自动化，无真机告警/投递验证；前端确认与历史视图未接 |
