@@ -48,7 +48,10 @@ func NewCredentialRepository(db *database.DB, kr *keyring.Keyring) *CredentialRe
 	}
 }
 
-const alertWebhookTargetCredentialID = "system:alert-webhook-target"
+// The webhook destination is a console-owned row: the settings service writes
+// it, and CredentialService must not expose or change it through the operator
+// API. See models.IsConsoleCredential.
+const alertWebhookTargetCredentialID = models.ConsoleWebhookTargetID
 
 // credentialWriter is the subset of *sql.DB and *sql.Tx the webhook target
 // needs. It lets the settings repository write the destination in the same
@@ -76,10 +79,11 @@ func (r *CredentialRepository) setAlertWebhookTarget(ctx context.Context, writer
 	now := time.Now().UTC()
 	_, err = writer.ExecContext(ctx, `INSERT INTO credentials
 		(id, name, type, description, encrypted_data, key_version, created_at, updated_at)
-		VALUES (?, 'Alert webhook endpoint', 'webhook', 'Encrypted alert notification destination', ?, ?, ?, ?)
+		VALUES (?, ?, ?, 'Encrypted alert notification destination', ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET encrypted_data = excluded.encrypted_data,
 		key_version = excluded.key_version, updated_at = excluded.updated_at`,
-		alertWebhookTargetCredentialID, ciphertext, version, now, now)
+		alertWebhookTargetCredentialID, models.ConsoleWebhookTargetName, models.ConsoleRowType,
+		ciphertext, version, now, now)
 	return err
 }
 

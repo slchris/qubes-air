@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/netguard"
 	"github.com/slchris/qubes-air/console/internal/repository"
 )
 
@@ -23,6 +26,10 @@ const (
 	alertWebhookMaxBackoff   = time.Hour
 	alertWebhookRetention    = 90 * 24 * time.Hour
 )
+
+// errNonPublicWebhookAddress is safe to store in the outbox: it names no URL
+// and no internal address.
+var errNonPublicWebhookAddress = errors.New("webhook host resolves to a non-public address")
 
 type alertWebhookOutbox interface {
 	ListDue(context.Context, int) ([]repository.MonitoringAlertWebhookDelivery, error)
@@ -48,7 +55,7 @@ type AlertWebhookDispatcher struct {
 
 // NewAlertWebhookDispatcher builds the retrying webhook sender.
 func NewAlertWebhookDispatcher(outbox alertWebhookOutbox, target AlertWebhookTargetProvider, allowedHosts []string) *AlertWebhookDispatcher {
-	transport := &http.Transport{Proxy: nil}
+	transport := &http.Transport{Proxy: nil, DialContext: safeWebhookDialContext}
 	return &AlertWebhookDispatcher{
 		outbox:       outbox,
 		target:       target,
@@ -166,6 +173,9 @@ func (d *AlertWebhookDispatcher) send(ctx context.Context, delivery repository.M
 	request.Header.Set("User-Agent", "Qubes-Air-Alert-Webhook/1")
 	response, err := d.client.Do(request)
 	if err != nil {
+		if errors.Is(err, errNonPublicWebhookAddress) {
+			return errNonPublicWebhookAddress
+		}
 		return fmt.Errorf("request failed")
 	}
 	defer response.Body.Close()
@@ -185,6 +195,42 @@ func validateDispatcherTarget(raw string, allowedHosts []string) error {
 		return errors.New("webhook host is not allowlisted")
 	}
 	return nil
+}
+
+// safeWebhookDialContext resolves the destination itself, refuses every
+// non-public address, and dials one of the addresses it just validated. It
+// never resolves twice, so a DNS answer that changes between validation and
+// connection cannot move the destination inside the network. TLS still sees
+// the original URL hostname, so certificate verification and SNI are
+// unchanged.
+func safeWebhookDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid webhook address")
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve webhook host: %w", err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("webhook host has no addresses")
+	}
+	for _, ip := range ips {
+		parsed, ok := netip.AddrFromSlice(ip.IP)
+		if !ok || !netguard.IsPublicUnicast(parsed) {
+			return nil, errNonPublicWebhookAddress
+		}
+	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("connect webhook host: %w", lastErr)
 }
 
 func alertWebhookBackoff(attempt int) time.Duration {

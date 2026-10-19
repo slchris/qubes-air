@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-19 Webhook 安全审查修复](2026-10-19-webhook-security-review.md) | webhook 目标移入控制台凭据命名空间、DNS 解析 SSRF 防护、确认接口 fail closed 与 fleet 路由验证 | 本机自动化与变异测试；无真机投递/内网 DNS 场景 |
 | [2026-10-19 告警持久化与加密 Webhook](2026-10-19-alert-webhook.md) | 告警事件/确认/历史、加密 webhook 目标、主机白名单与 outbox 重试 | 本机自动化，无真机告警/投递验证；前端确认与历史视图未接 |
 | [2026-10-18 设置读取与原子保存最小移植](2026-10-18-settings-atomicity-port.md) | 设置单快照读取、错误传播、三组设置事务写入及失败路径测试 | 只覆盖无 webhook 的最小部分；本机自动化，无真机证据 |
 | [2026-09-22 QA-01 Proxmox 回归](2026-09-22-qa01-proxmox.md) | 真机 provision→purge、RemoteVM 注册/注销、吊销状态；发现并修复 remotevm 命名缺陷 | Exec/FileCopy 正值与迁移未覆盖；known_hosts 为首次扫描 |

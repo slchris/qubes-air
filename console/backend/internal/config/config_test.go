@@ -775,8 +775,8 @@ func TestValidateNotificationsRejectsUnmatchableAllowlistEntries(t *testing.T) {
 	for _, host := range []string{
 		"hooks.example.test",
 		"hooks.example.test:8443",
-		"127.0.0.1",
-		"127.0.0.1:8443",
+		"8.8.8.8",
+		"8.8.8.8:8443",
 	} {
 		cfg := DefaultConfig()
 		cfg.Notifications.WebhookAllowedHosts = []string{host}
@@ -794,6 +794,12 @@ func TestValidateNotificationsRejectsUnmatchableAllowlistEntries(t *testing.T) {
 		"port too large":   {"hooks.example.test:65536"},
 		"port not decimal": {"hooks.example.test:8443x"},
 		"duplicate":        {"hooks.example.test", "hooks.example.test"},
+		"loopback":         {"127.0.0.1"},
+		"loopback port":    {"127.0.0.1:8443"},
+		"private":          {"10.1.2.3"},
+		"link local":       {"169.254.1.1"},
+		"cgnat":            {"100.64.0.1"},
+		"ipv6 loopback":    {"[::1]:8443"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := DefaultConfig()

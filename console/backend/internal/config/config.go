@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/middleware"
+	"github.com/slchris/qubes-air/console/internal/netguard"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/qrexec"
 	"gopkg.in/yaml.v3"
@@ -1128,30 +1129,42 @@ func (c *Config) Validate() error {
 func (c *Config) validateNotifications() error {
 	seen := make(map[string]struct{}, len(c.Notifications.WebhookAllowedHosts))
 	for _, host := range c.Notifications.WebhookAllowedHosts {
-		if host == "" || strings.TrimSpace(host) != host || strings.ToLower(host) != host || strings.ContainsAny(host, "*/@?#") {
-			return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
-		}
-		hostname, port := host, ""
-		if strings.Contains(host, ":") {
-			var err error
-			hostname, port, err = net.SplitHostPort(host)
-			if err != nil {
-				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
-			}
-			portNumber, parseErr := strconv.Atoi(port)
-			if parseErr != nil || portNumber < 1 || portNumber > 65535 || strconv.Itoa(portNumber) != port {
-				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid port in %q", host)
-			}
-		}
-		if _, err := netip.ParseAddr(hostname); err != nil {
-			if err := validateDNSHost(hostname); err != nil {
-				return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
-			}
+		if err := validateNotificationHost(host); err != nil {
+			return err
 		}
 		if _, exists := seen[host]; exists {
 			return fmt.Errorf("notifications.webhook_allowed_hosts contains duplicate host %q", host)
 		}
 		seen[host] = struct{}{}
+	}
+	return nil
+}
+
+// validateNotificationHost checks one allowlist entry's shape, port and
+// address family. It is separate from the duplicate scan so the list walk and
+// the single-entry rules stay within the complexity gate.
+func validateNotificationHost(host string) error {
+	if host == "" || strings.TrimSpace(host) != host || strings.ToLower(host) != host || strings.ContainsAny(host, "*/@?#") {
+		return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
+	}
+	hostname, port := host, ""
+	if strings.Contains(host, ":") {
+		var err error
+		hostname, port, err = net.SplitHostPort(host)
+		if err != nil {
+			return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
+		}
+		portNumber, parseErr := strconv.Atoi(port)
+		if parseErr != nil || portNumber < 1 || portNumber > 65535 || strconv.Itoa(portNumber) != port {
+			return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid port in %q", host)
+		}
+	}
+	if addr, err := netip.ParseAddr(hostname); err == nil {
+		if !netguard.IsPublicUnicast(addr) {
+			return fmt.Errorf("notifications.webhook_allowed_hosts contains non-public address %q", host)
+		}
+	} else if err := validateDNSHost(hostname); err != nil {
+		return fmt.Errorf("notifications.webhook_allowed_hosts contains invalid host %q", host)
 	}
 	return nil
 }

@@ -153,3 +153,31 @@ func TestAlertWebhookBackoffIsExponentialAndBounded(t *testing.T) {
 	require.Equal(t, 10*time.Second, alertWebhookBackoff(2))
 	require.Equal(t, alertWebhookMaxBackoff, alertWebhookBackoff(20))
 }
+
+// TestAlertWebhookDispatcherRejectsLoopbackAtDialTime — the production client
+// resolves and validates the address itself. httptest servers listen on
+// 127.0.0.1, so this test deliberately does not replace dispatcher.client: the
+// safe dialer must refuse the loopback address before the TLS handshake.
+func TestAlertWebhookDispatcherRejectsLoopbackAtDialTime(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("loopback webhook must never be reached")
+	}))
+	defer server.Close()
+	stub := &alertWebhookOutboxStub{deliveries: []repository.MonitoringAlertWebhookDelivery{{
+		ID: 9, Event: repository.MonitoringAlertEvent{ID: 3},
+	}}}
+	dispatcher := NewAlertWebhookDispatcher(stub,
+		alertWebhookTargetStub{target: server.URL, enabled: true},
+		[]string{server.Listener.Addr().String()})
+	dispatcher.dispatchDue(context.Background())
+	require.Empty(t, stub.delivered)
+	require.Len(t, stub.failed, 1)
+	require.Equal(t, "webhook host resolves to a non-public address", stub.failed[0].description)
+}
+
+func TestSafeWebhookDialContextRejectsNonPublicAddresses(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:443", "10.0.0.1:443", "[::1]:443"} {
+		_, err := safeWebhookDialContext(context.Background(), "tcp", addr)
+		require.ErrorIs(t, err, errNonPublicWebhookAddress, addr)
+	}
+}

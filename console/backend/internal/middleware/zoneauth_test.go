@@ -95,6 +95,8 @@ func zoneRouter(resolver ObjectResolver, sessions *SessionStore) *gin.Engine {
 	v1.GET("/jobs/:id/log", echo)
 	v1.GET("/credentials", echo)
 	v1.POST("/credentials", echo)
+	v1.GET("/monitoring", echo)
+	v1.POST("/monitoring/alerts/:id/acknowledge", echo)
 	v1.GET("/status", echo)
 	// Deliberately unclassified: a zone-restricted token must not reach a route
 	// this middleware does not know.
@@ -128,6 +130,8 @@ func TestZoneAuthFleetTokenReachesFleetRoutes(t *testing.T) {
 		{http.MethodGet, "/api/v1/jobs", ""},
 		{http.MethodPost, "/api/v1/zones", "{}"},
 		{http.MethodGet, "/api/v1/desktop-access", ""},
+		{http.MethodGet, "/api/v1/monitoring", ""},
+		{http.MethodPost, "/api/v1/monitoring/alerts/zone-disconnected:z1/acknowledge", ""},
 		{http.MethodGet, "/api/v1/mystery", ""},
 	} {
 		w := doZoneReq(r, fleetTokenValue, tc.method, tc.path, tc.body)
@@ -181,6 +185,8 @@ func TestZoneAuthScopedTokenFleetRoutesRefused(t *testing.T) {
 		{http.MethodPost, "/api/v1/desktop-access/r1/approve"},
 		{http.MethodGet, "/api/v1/jobs"},
 		{http.MethodPost, "/api/v1/zones"},
+		{http.MethodGet, "/api/v1/monitoring"},
+		{http.MethodPost, "/api/v1/monitoring/alerts/zone-disconnected:z1/acknowledge"},
 		{http.MethodGet, "/api/v1/mystery"},
 	} {
 		w := doZoneReq(r, zoneTokenValue, tc.method, tc.path, "")

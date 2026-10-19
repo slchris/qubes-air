@@ -10,12 +10,15 @@
 - `GET /monitoring/alerts` 从持久化的 Zone/Qube 健康状态生成活跃告警；
   `GET /monitoring/alerts/history` 分页读取转变历史；`POST /monitoring/alerts/:id/acknowledge`
   只接受当前活跃告警，并把操作者与时间写入 `alert_acknowledgements`。告警解除后下一次读取清除确认。
-- Webhook 目标以 AES-256-GCM 加密存入 credentials（`system:alert-webhook-target`）。设置响应只
-  返回 `webhookConfigured`，不返回 URL；未配置的目标不会通过 API 泄露。
+- Webhook 目标以 AES-256-GCM 加密，写成控制台自有 credential 行
+  `qubes-air-alert-webhook`（ID `qubes-air-alert-webhook-target`，类型 `pki`），凭证 API 不可见。
+  设置响应只返回 `webhookConfigured`，不返回 URL。
 - 设置与加密目标在同一事务提交。启用、替换、禁用或写入失败时，设置、凭据和 session TTL
   一起保留原值；保存成功后才更新运行时 TTL。
 - 只有 HTTPS、无 userinfo/fragment、且精确 `host[:port]` 出现在
-  `notifications.webhook_allowed_hosts` 的地址才被接受；重定向被拒绝。
+  `notifications.webhook_allowed_hosts` 的地址才被接受；重定向被拒绝。dispatcher 自己解析
+  主机名，要求每个地址都是 public unicast，并只拨刚校验过的 IP，拒绝 loopback、private、
+  link-local、multicast 与 special-use；配置校验也拒绝这些地址的 IP 字面量。
 - 启用 webhook 时，SQLite 触发器把新告警事件写入 `monitoring_alert_webhook_outbox`；
   后台 dispatcher 每 5 秒投递，失败按指数退避（上限 1 小时），完成记录保留 90 天。
 - 未移植：前端告警历史/确认界面。API 已提供，UI 仍只展示活跃告警列表。
@@ -34,11 +37,18 @@
   跨数据库拒接。
 - `internal/service/settings_service_test.go`：目标校验、启用/替换/禁用回滚、取消、并发保存、
   凭据写入失败回滚。
-- `internal/service/alert_webhook_test.go`：投递、重试、允许主机、重定向和响应状态。
+- `internal/service/alert_webhook_test.go`：投递、重试、允许主机、重定向、响应状态、
+  loopback 拨号拒绝与非公开地址错误。
+- `internal/netguard/netguard_test.go`：public unicast 分类（loopback/private/link-local/
+  multicast/special-use）。
+- `internal/database/webhook_credential_migration_test.go`：旧 webhook 行迁移到控制台命名空间。
+- `internal/service/credential_service_test.go`：webhook 目标行不被凭证 API 列出、读取、修改或删除。
 - `internal/handler/monitoring_handler_test.go`：健康状态生成告警、失败关闭、确认、历史分页、
-  忽略非告警状态。
+  忽略非告警状态、无认证 subject 时拒绝确认。
+- `internal/middleware/zoneauth_test.go`：`/monitoring` 是 fleet 路由，zone token 被 403。
 - `internal/handler/settings_handler_test.go`：目标加密且脱敏、非白名单拒绝、禁用删除目标。
-- `internal/config/config_test.go`：webhook 主机白名单校验。
+- `internal/config/config_test.go`：webhook 主机白名单校验，包括 loopback/private/link-local/
+  CGNAT 字面量拒绝。
 
 | 检查 | 结果 |
 |---|---|
@@ -51,5 +61,6 @@
 
 - 仅本机自动化验收，未在真实 PVE/Qubes 上触发告警或投递 webhook；真机验收仍属 OBS-01/QA-01。
 - 前端告警确认与历史视图未接入，API 能力先于 UI。
+- 安全审查发现的凭证命名空间与 SSRF 问题已修复，见[安全审查修复](2026-10-19-webhook-security-review.md)。
 - 邮件与 2FA 仍未实现；本次只完成 webhook。
 - 未做多 Console 进程间的运行时配置同步；设置 service 的互斥只覆盖单进程。

@@ -284,7 +284,9 @@ func (d *DB) migrate() error {
 	}
 
 	// Named schema steps in version order (3: bootstrap pin, 4: audit trail).
-	for _, step := range []func() error{d.migrateLifecycle, d.migrateBootstrapPeerPin, d.migrateAudit} {
+	for _, step := range []func() error{
+		d.migrateLifecycle, d.migrateBootstrapPeerPin, d.migrateAudit, d.migrateAlertWebhookCredential,
+	} {
 		if err := step(); err != nil {
 			return err
 		}

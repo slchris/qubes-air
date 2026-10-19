@@ -324,6 +324,21 @@ func TestAcknowledgeAlertPersistsOnlyAnActiveAlert(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, recorder.Code)
 }
 
+func TestAcknowledgeAlertRequiresAnAuthenticatedSubject(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &alertAcknowledgementsStub{records: make(map[string]repository.AlertAcknowledgement)}
+	h := newAlertHandler(
+		monitoringZonesStub{zones: []*models.Zone{{ID: "z1", Name: "lab", Status: models.ZoneStatusDisconnected}}},
+		monitoringQubesStub{},
+	).WithAlertAcknowledgements(store)
+	router := gin.New()
+	h.RegisterRoutes(router.Group("/api"))
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/monitoring/alerts/zone-disconnected%3Az1/acknowledge", nil))
+	require.Equal(t, http.StatusUnauthorized, recorder.Code)
+	require.Empty(t, store.records, "an unauthenticated request must not record an acknowledgement")
+}
+
 func TestGetAlertsIncludesAcknowledgementAndExpiresResolvedAlert(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := &alertAcknowledgementsStub{records: map[string]repository.AlertAcknowledgement{

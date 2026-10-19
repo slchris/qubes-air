@@ -298,7 +298,16 @@ func (h *MonitoringHandler) AcknowledgeAlert(c *gin.Context) {
 	}
 	subject, ok := middleware.SubjectFromContext(c)
 	if !ok {
-		subject = "anonymous"
+		// Authentication can be disabled on a development console, but an
+		// acknowledgement is an operator action; recording it as "anonymous"
+		// would make the audit trail claim an identity that was never
+		// authenticated.
+		c.JSON(http.StatusUnauthorized, ErrorResponse{
+			Error:   http.StatusText(http.StatusUnauthorized),
+			Message: "alert acknowledgement requires an authenticated operator",
+			Code:    http.StatusUnauthorized,
+		})
+		return
 	}
 	acknowledgedAt := time.Now().UTC()
 	if err := h.acknowledgements.Acknowledge(c.Request.Context(), alertID, subject, acknowledgedAt); err != nil {
