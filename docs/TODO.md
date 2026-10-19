@@ -58,10 +58,14 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
   未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
   详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。
-  2026-10-19 在当前 main `4f16915` 上执行了部分真机回归：provider zone/credential/capacity、
-  job 日志与失败后的 purge 销毁通过；首次成功 agent bootstrap 与 suspend/resume 未通过，
-  根因是 console 的 token pin 校验拒绝了旧 agent 包，且当前 agent 包缺少 artifact 上传凭据。
-  详见[记录](reviews/2026-10-19-current-main-real-machine.md)。
+  2026-10-19 在当前 main 上完成了一次当前 revision 绑定的真机 lifecycle：
+  修复后的 `0d23189`（#73 / `24f8e0c`）上 provision→suspend→resume→suspend→purge 全通过，
+  证书随 resume 重新签发、purge 后 PVE 匹配 VM 为 0，job 结果均持久化；期间定位并修复了
+  completion hook 耗尽上下文导致 job 停在 running 的问题。测试用独立 console 实例，
+  关闭了 RemoteVM 注册（该实例的 dom0 qrexec 调用超时）。
+  剩余仍是 Exec/FileCopy 正反例、数据盘跨 suspend/resume 持久性、旧盘迁移与 known_hosts
+  带外核对，以及生产 console 自身的升级部署。详见
+  [记录](reviews/2026-10-19-current-main-real-machine.md)。
 
 ## P2：产品与扩展
 
