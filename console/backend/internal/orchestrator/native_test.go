@@ -345,6 +345,81 @@ func TestNativeExecutor_ProvisionWaitsForReachable(t *testing.T) {
 	assert.Equal(t, "10.31.0.70", probe.last.IPAddress, "the probe must see the address from Describe")
 }
 
+// fakeAddressRecorder records what the executor persisted and can fail.
+type fakeAddressRecorder struct {
+	calls int
+	id    string
+	addr  string
+	err   error
+}
+
+func (f *fakeAddressRecorder) UpdateIPAddress(_ context.Context, id, addr string) error {
+	f.calls++
+	f.id, f.addr = id, addr
+	return f.err
+}
+
+// The reachability loop is the first component to learn a new VM's address.
+// Bootstrap schedules read the qube row, so an address kept only in the loop's
+// memory made a resumed qube wait for the health monitor before it could be
+// issued a certificate.
+func TestNativeExecutor_RecordsLearnedAddress(t *testing.T) {
+	ad := &fakeAdapter{}
+	ad.describe = func(context.Context, provider.Infra) (provider.Observed, error) {
+		return provider.Observed{IPAddress: "10.31.0.70"}, nil
+	}
+	probe := &fakeProbe{failTimes: 1}
+	rec := &fakeAddressRecorder{}
+	exec, _ := newNativeTestExecutor(t, ad)
+	exec.WithReachability(probe)
+	exec.WithAddressRecorder(rec)
+	exec.probeInterval = time.Millisecond
+	exec.probeTimeout = time.Second
+
+	require.NoError(t, exec.Provision(context.Background(), "remote-1"))
+	assert.Equal(t, 1, rec.calls, "the learned address is written once, not on every poll")
+	assert.Equal(t, "q1", rec.id)
+	assert.Equal(t, "10.31.0.70", rec.addr)
+}
+
+func TestNativeExecutor_AddressRecordFailureDoesNotFailProvision(t *testing.T) {
+	ad := &fakeAdapter{}
+	ad.describe = func(context.Context, provider.Infra) (provider.Observed, error) {
+		return provider.Observed{IPAddress: "10.31.0.70"}, nil
+	}
+	rec := &fakeAddressRecorder{err: errors.New("database is locked")}
+	exec, _ := newNativeTestExecutor(t, ad)
+	exec.WithReachability(&fakeProbe{})
+	exec.WithAddressRecorder(rec)
+	exec.probeInterval = time.Millisecond
+	exec.probeTimeout = time.Second
+
+	// The VM exists and the probe already knows the address; a failure to
+	// persist it leaves the health monitor as the fallback reader, it does not
+	// turn a reachable provision into a failed one.
+	require.NoError(t, exec.Provision(context.Background(), "remote-1"))
+	assert.Equal(t, 1, rec.calls)
+}
+
+func TestNativeExecutor_DoesNotRewriteUnchangedAddress(t *testing.T) {
+	ad := &fakeAdapter{}
+	ad.describe = func(context.Context, provider.Infra) (provider.Observed, error) {
+		return provider.Observed{IPAddress: "10.31.0.70"}, nil
+	}
+	q := testQube()
+	q.IPAddress = "10.31.0.70"
+	reg := provider.NewRegistry()
+	require.NoError(t, reg.Register(models.ZoneTypeProxmox,
+		func(context.Context, *models.Zone) (provider.Adapter, error) { return ad, nil }))
+	exec := NewNativeExecutor(reg, fakeResolver{qube: q, zone: testZone()}, &memStore{})
+	rec := &fakeAddressRecorder{}
+	exec.WithReachability(&fakeProbe{})
+	exec.WithAddressRecorder(rec)
+
+	require.NoError(t, exec.Provision(context.Background(), "remote-1"))
+	assert.Zero(t, rec.calls, "an address already on the row is not written again")
+}
+
 func TestNativeExecutor_ProvisionFailsWhenAgentNeverReachable(t *testing.T) {
 	probe := &fakeProbe{failTimes: 1 << 30}
 	exec, _ := newNativeTestExecutor(t, &fakeAdapter{})
