@@ -26,6 +26,11 @@ var (
 	// ErrPurgeConfirmation means the caller's confirmation string did not match
 	// the qube's name. Purge is irreversible, so the name must be typed exactly.
 	ErrPurgeConfirmation = errors.New("purge confirmation does not match the qube name")
+	// ErrQubeNotPurgeable means the qube is running, so its data disk is still
+	// attached to a live machine. The caller has to suspend or release it first;
+	// the generic transition-conflict error made this state rule look like a
+	// concurrent operation and invited blind retries.
+	ErrQubeNotPurgeable = errors.New("qube is running; suspend or release it before purging")
 	// ErrOrchestration wraps a failure that occurred while triggering the real
 	// infrastructure action (provider suspend/resume). When this is returned
 	// the DB status is left unchanged.
@@ -605,6 +610,14 @@ func (s *QubeServiceImpl) Purge(ctx context.Context, id, confirmName string) err
 	// Only from states where the compute instance is already gone. A running
 	// qube must be released (or stopped) first, so the disk being destroyed is
 	// not attached to a live machine.
+	//
+	// A running qube is the common refusal and the one the generic claim error
+	// describes badly. The claim remains the authority for every state: the
+	// status can change between this read and the UPDATE, and that race still
+	// returns the transition conflict.
+	if qube.Status == models.QubeStatusRunning {
+		return ErrQubeNotPurgeable
+	}
 	_, err = s.claimAndEnqueue(ctx, qube,
 		[]models.QubeStatus{
 			models.QubeStatusReleased, models.QubeStatusSuspended,

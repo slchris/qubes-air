@@ -131,13 +131,17 @@ resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 这样 bootstrap 不再依赖健康监控的独立 sweep，强制 kill 或禁用它也不会让 resume
 在地址已存在时卡住。
 
-### 4. 对 running qube 执行 purge 的 409 文案未说明原因
+### 4. 对 running qube 执行 purge 的 409 文案未说明原因（已修）
 
 对仍在 `running` 的 qube 直接调用 purge，API 返回
 `409 {"error":"Conflict","message":"qube is busy: another operation is in progress"}`。
 实际原因是 purge 只接受 released/suspended/stopped/error 状态，必须先 suspend。
-该文案会让调用方以为存在并发操作而重试。建议在 `Purge` 前按状态返回明确错误
-（例如 “suspend the qube before purging”）；本次未改。
+该文案会让调用方以为存在并发操作而重试。
+
+修复：`Purge` 在状态为 `running` 时返回
+`ErrQubeNotPurgeable`（`qube is running; suspend or release it before purging`），
+handler 映射为 409；其他状态仍由原子 claim 处理，因此真正的并发状态变化依旧返回
+transition conflict。单元测试覆盖 running 拒绝、状态保持不变且不调用 provider。
 
 ## 重要未完成：Salt pin 尚未更新
 
@@ -152,8 +156,7 @@ resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 
 - Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
-- RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）；
-- 发现 4 的错误文案改进。
+- RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）。
 
 ## 清理
 

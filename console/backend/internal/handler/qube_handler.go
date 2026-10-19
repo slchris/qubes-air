@@ -342,6 +342,8 @@ func handleQubeError(c *gin.Context, err error) {
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrPurgeConfirmation):
 		respondError(c, http.StatusBadRequest, err)
+	case errors.Is(err, service.ErrQubeNotPurgeable):
+		respondError(c, http.StatusConflict, err)
 	case errors.Is(err, service.ErrInvalidAppID):
 		respondError(c, http.StatusBadRequest, err)
 	case errors.Is(err, service.ErrUnreachable):
