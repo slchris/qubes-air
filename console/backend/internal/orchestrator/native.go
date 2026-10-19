@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/models"
@@ -46,10 +47,18 @@ type NativeExecutor struct {
 	resolver     QubeZoneResolver
 	store        InfraStore
 	reachability ReachabilityProbe
+	addresses    AddressRecorder
 	// probeTimeout/probeInterval bound the provision reachability wait. Zero
 	// means the package defaults; tests set them small.
 	probeTimeout  time.Duration
 	probeInterval time.Duration
+}
+
+// AddressRecorder persists the address the provider reports for a qube. It is
+// optional: without one the executor still probes the address it just learned,
+// but the row stays empty until another reader (the health monitor) stores it.
+type AddressRecorder interface {
+	UpdateIPAddress(ctx context.Context, id, ipAddress string) error
 }
 
 // ReachabilityProbe reports whether a qube's agent answers.
@@ -89,6 +98,18 @@ func NewNativeExecutor(registry *provider.Registry, resolver QubeZoneResolver, s
 func (n *NativeExecutor) WithProvisionWait(wait time.Duration) *NativeExecutor {
 	if n != nil && wait > 0 {
 		n.probeTimeout = wait
+	}
+	return n
+}
+
+// WithAddressRecorder lets the reachability loop record the address it learns
+// from the provider. Bootstrap and the agent prober read the stored address, so
+// leaving it only in this loop's memory makes a resumed qube's first
+// certificate wait for the health monitor's next sweep — observed as roughly
+// two minutes of "has no IP address" during a production resume.
+func (n *NativeExecutor) WithAddressRecorder(r AddressRecorder) *NativeExecutor {
+	if n != nil {
+		n.addresses = r
 	}
 	return n
 }
@@ -215,8 +236,9 @@ func (n *NativeExecutor) awaitReachable(ctx context.Context, q *models.Qube, ad 
 	deadline := time.Now().Add(timeout)
 	var last error
 	for {
-		if obs, err := ad.Describe(ctx, q, in); err == nil && obs.IPAddress != "" {
+		if obs, err := ad.Describe(ctx, q, in); err == nil && obs.IPAddress != "" && obs.IPAddress != q.IPAddress {
 			q.IPAddress = obs.IPAddress
+			n.recordAddress(ctx, q, obs.IPAddress)
 		}
 		last = n.reachability.ProbeReachable(ctx, q)
 		if last == nil {
@@ -231,6 +253,24 @@ func (n *NativeExecutor) awaitReachable(ctx context.Context, q *models.Qube, ad 
 			return fmt.Errorf("agent reachability wait canceled: %w", ctx.Err())
 		case <-time.After(interval):
 		}
+	}
+}
+
+// recordAddress writes the address the provider just reported, so anything
+// that reads the qube row (bootstrap schedules, the next resume) can use it
+// immediately. The write is bounded and detached from the job context: the VM
+// already exists regardless of whether this job survives, and a failed write
+// must not gate the probe that follows — the health monitor remains a fallback
+// reader.
+func (n *NativeExecutor) recordAddress(ctx context.Context, q *models.Qube, addr string) {
+	if n.addresses == nil {
+		return
+	}
+	recCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := n.addresses.UpdateIPAddress(recCtx, q.ID, addr); err != nil {
+		log.Printf("orchestrator: qube %q: learned address %s was not recorded: %v "+
+			"(bootstrap will wait for the health monitor to read it)", q.Name, addr, err)
 	}
 }
 

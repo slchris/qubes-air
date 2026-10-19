@@ -411,6 +411,10 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	// as a qube that reads running and is silently dead.
 	if native, ok := exec.(*orchestrator.NativeExecutor); ok {
 		native.WithReachability(service.NewAgentReachability(agentProber))
+		// The reachability loop is the first component to learn a new VM's
+		// address. Recording it there lets bootstrap dial the qube on its next
+		// sweep instead of waiting for the health monitor's separate read.
+		native.WithAddressRecorder(qubeRepo)
 	}
 
 	certRenewals, bootstraps := newFleetMonitors(cfg, certIssuer, credentialRepo, agentCertRepo, bootstrapTokenRepo, qubeRepo)
