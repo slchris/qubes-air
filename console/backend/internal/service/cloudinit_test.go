@@ -307,8 +307,8 @@ func TestSnippetVolumeIDFormat(t *testing.T) {
 // The property the whole shared-storage path rests on: the name changes when
 // the content changes, and only then.
 //
-// This replaces `checksum = filesha256(...)` on the terraform file resource,
-// which is what makes terraform depend on content today. Lose this and a
+// This is the content pin that replaces a plain source-path reference,
+// which is what makes the provisioner depend on content. Lose this and a
 // re-rendered identity keeps the same volume id, the VM is never rebuilt, and
 // certificate rotation silently never lands while every apply reports success —
 // the failure docs/bootstrap-design.md §7 was written about.
@@ -329,7 +329,7 @@ func TestContentAddressedNameTracksContent(t *testing.T) {
 // TestUserDataInstallsGuestAgent — setting user-data REPLACES a template's own
 // cicustom entry, so whatever its vendor snippet did stops happening. Real
 // deployment showed exactly that: the template installed qemu-guest-agent from
-// its vendor data, delivering an identity silently disabled it, and terraform
+// its vendor data, delivering an identity silently disabled it, and the provision job
 // then waited for an IP the guest could never report while the VM sat running.
 func TestUserDataInstallsGuestAgent(t *testing.T) {
 	out, _ := renderFixture(t)
@@ -341,13 +341,13 @@ func TestUserDataInstallsGuestAgent(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte(out), &cc))
 
 	assert.Contains(t, cc.Packages, "qemu-guest-agent",
-		"the document must be self-sufficient: terraform cannot see the VM without the guest agent")
+		"the document must be self-sufficient: the provisioner cannot see the VM without the guest agent")
 	assert.Contains(t, out, "[ systemctl, enable, --now, qemu-guest-agent ]",
 		"installing is not enough; the guest agent must be started")
 }
 
 // TestGuestAgentIsEnabledBeforeTheAgentInstaller — the installer downloads over
-// the network and can stall or fail. If it ran first, terraform would be left
+// the network and can stall or fail. If it ran first, provisioning would be left
 // waiting for an IP the guest has no way to report and the apply would hang to
 // its timeout with the VM sitting there running. That already happened once for
 // a different reason; the ordering is what stops it happening for this one.
@@ -679,7 +679,7 @@ func TestUnpinnedConsoleStillUsesAnImageBakedAgent(t *testing.T) {
 // behind a job that cannot finish until the start returns: the boot hangs
 // forever, JobTimeoutSec being infinity for service units.
 //
-// The hang is invisible — qemu-guest-agent is already up, so terraform reports
+// The hang is invisible — qemu-guest-agent is already up, so provisioning reports
 // success while every diagnostic the installer would emit sits downstream of
 // the block. Two independent reviewers found this before it ever shipped.
 func TestInstallerDoesNotBlockOnCloudFinal(t *testing.T) {
@@ -727,10 +727,10 @@ func TestForkThenDieIsCaught(t *testing.T) {
 		"the reason must name what happened, not just that something did")
 }
 
-// TestIdentitySnippetIsPinnedByContent — the terraform file resource must carry
+// TestIdentitySnippetIsPinnedByContent — the snippet resource must carry
 // a content checksum, not just a path.
 //
-// Without it terraform tracks only source_file.path, so a REWRITTEN identity at
+// Without it the provisioner tracks only the source path, so a REWRITTEN identity at
 // the same path is invisible: apply reports success while the node still serves
 // the previous file. Observed on real hardware — the console rendered a document
 // containing the agent installer, the node kept a version from hours earlier,

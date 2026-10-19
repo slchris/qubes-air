@@ -167,7 +167,7 @@ func waitFor(t *testing.T, within time.Duration, what string, cond func() bool) 
 // TestSettle_RetriesThenGivesUp is the core of the post-provision behavior.
 //
 // A single immediate probe would report every healthy qube unreachable, because
-// cloud-init installs the agent only after terraform has finished. So the
+// cloud-init installs the agent only after provisioning has finished. So the
 // monitor retries — but a budget that never ends would leave a genuinely broken
 // agent sitting in "starting" forever, which hides the failure exactly as well
 // as reporting nothing did. Both halves are asserted here.
@@ -193,7 +193,7 @@ func TestSettle_RetriesThenGivesUp(t *testing.T) {
 
 	calls := prober.recorded()
 	require.GreaterOrEqual(t, len(calls), 3,
-		"one probe is not enough: the agent is legitimately absent when terraform returns")
+		"one probe is not enough: the agent is legitimately absent when provisioning returns")
 
 	// Every attempt but the last is inside the grace period and must record
 	// "starting" — a qube that is still coming up is not a qube that failed.
@@ -254,7 +254,7 @@ func TestSettle_StopsAsSoonAsTheAgentAnswers(t *testing.T) {
 }
 
 // TestSettle_LateAddressIsPickedUp — the qube is re-read on every attempt, so an
-// address that terraform only reports after the job finished is still used. A
+// address that provisioning only reports after the job finished is still used. A
 // cached copy would keep probing an empty address for the whole budget and then
 // declare a perfectly healthy agent unreachable.
 func TestSettle_LateAddressIsPickedUp(t *testing.T) {
@@ -482,7 +482,7 @@ func TestShutdown_LeavesNoGoroutinesBehind(t *testing.T) {
 
 // TestNilMonitorIsInert — main wires the monitor optionally, and the completion
 // hook reaches it unconditionally. A nil monitor must be a no-op, not a panic
-// during a terraform job.
+// during a provision job.
 func TestNilMonitorIsInert(t *testing.T) {
 	var m *AgentHealthMonitor
 	assert.NotPanics(t, func() {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/handler"
 	"github.com/slchris/qubes-air/console/internal/provider"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -13,11 +14,15 @@ import (
 // the executor dispatches through. The host sampler is built once here because
 // CPU usage and network rates are deltas against its previous sample.
 func newMonitoringHandler(
+	db *database.DB,
 	zoneRepo repository.ZoneRepository,
 	qubeRepo repository.QubeRepository,
 	qubeInfraRepo *repository.QubeInfraRepository,
 	providerRegistry *provider.Registry,
 ) *handler.MonitoringHandler {
 	return handler.NewMonitoringHandler(systemmetrics.NewHostSampler(),
-		service.NewRuntimeMetricsCollector(qubeRepo, zoneRepo, qubeInfraRepo, providerRegistry))
+		service.NewRuntimeMetricsCollector(qubeRepo, zoneRepo, qubeInfraRepo, providerRegistry)).
+		WithAlertSources(zoneRepo, qubeRepo).
+		WithAlertAcknowledgements(repository.NewAlertAcknowledgementRepository(db)).
+		WithAlertEvents(repository.NewMonitoringAlertEventRepository(db))
 }

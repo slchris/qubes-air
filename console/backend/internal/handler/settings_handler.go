@@ -73,7 +73,9 @@ func (h *SettingsHandler) Update(c *gin.Context) {
 	defer h.updateMu.Unlock()
 	if err := h.svc.Update(c.Request.Context(), &settings); err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, service.ErrInvalidSessionTimeout) || errors.Is(err, service.ErrUnsupportedSetting) {
+		if errors.Is(err, service.ErrInvalidSessionTimeout) ||
+			errors.Is(err, service.ErrInvalidWebhookTarget) ||
+			errors.Is(err, service.ErrUnsupportedSetting) {
 			status = http.StatusBadRequest
 		}
 		respondError(c, status, err)

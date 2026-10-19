@@ -17,7 +17,7 @@ import (
 // resumeFixture wires a QubeService to a REAL CertIssuer over a real database,
 // so these tests cross the seam that matters: a resume is only fixed if a
 // certificate is actually signed, registered and rendered into the cloud-init
-// document terraform uploads. A fake issuer would pass while the qube still came
+// document provisioning uploads. A fake issuer would pass while the qube still came
 // back locked out.
 type resumeFixture struct {
 	svc      QubeService
@@ -149,7 +149,7 @@ func TestStart_ResumeIssuesAFreshIdentity(t *testing.T) {
 		"the resumed qube must come back with a credential that has not already expired")
 
 	// Minting is only half of it: the credential has to reach the remote, and
-	// the cloud-init document terraform uploads is the only channel that does.
+	// the cloud-init document provisioning uploads is the only channel that does.
 	// A token in the table with no rendered document is one the agent never
 	// receives.
 	path := f.issuer.IdentityPath(f.qubeName)
@@ -239,7 +239,7 @@ func TestStart_LongSuspendedQubeWithAnExpiredCertificateResumes(t *testing.T) {
 // issuance fails, so the qube must not be left pinned in "resuming", which would
 // refuse every future operation on it as busy.
 //
-// It must also not reach terraform: a resume that cannot deliver an identity
+// It must also not reach the provider: a resume that cannot deliver an identity
 // would rebuild the compute instance around an agent that then refuses to start,
 // which is the same lockout dressed up as a successful apply.
 func TestStart_ReissueFailureDoesNotStrandTheClaim(t *testing.T) {
@@ -264,7 +264,7 @@ func TestStart_ReissueFailureDoesNotStrandTheClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, models.QubeStatusSuspended, after.Status,
 		"the claim must be released; a qube stuck in a transient status refuses every later operation")
-	assert.Empty(t, f.exec.Calls(), "terraform must not run for a qube that has no identity to deliver")
+	assert.Empty(t, f.exec.Calls(), "the provider must not run for a qube that has no identity to deliver")
 }
 
 // TestProbeAgent_SuspendedQubeIsNotAFailure — "no compute instance, so nothing
@@ -346,24 +346,24 @@ func (s stuckRenewal) RenewalWarning(string) string { return string(s) }
 // TestErrorStatusDoesNotRevokeALiveAgent — starting an Error qube must not
 // withdraw the certificate its running agent is using.
 //
-// The old guard asked computeRunning(prior), which answers "should terraform
+// The old guard asked computeRunning(prior), which answers "should the provisioner
 // build a VM", not "is one running". Error is exactly where those diverge, and
 // it is reached with a live VM routinely: reconcileStrandedQubes rewrites every
 // Creating/Resuming qube to Error when the console restarts, including ones
 // whose apply had already succeeded and whose agent is healthy.
 //
 // Reissuing there revokes a running agent's certificate and replaces nothing —
-// terraform sees the VM already matching compute_running=true, so it is not
+// the provisioner sees the VM already matching compute_running=true, so it is not
 // rebuilt and never re-reads cloud-init. Both the prober and the renewer then
 // refuse the peer: unreachable, unrenewable, rebuild-only.
 func TestErrorStatusDoesNotRevokeALiveAgent(t *testing.T) {
 	assert.False(t, instanceProvablyDestroyed(models.QubeStatusError),
 		"Error may have a live VM behind it; revoking there is unrecoverable")
 	assert.False(t, instanceProvablyDestroyed(models.QubeStatusStopped),
-		"Stopped does not prove terraform destroyed anything")
+		"Stopped does not prove the provider destroyed anything")
 	assert.False(t, instanceProvablyDestroyed(models.QubeStatusRunning))
 
-	// Only the statuses terraform reaches by actually destroying the instance.
+	// Only the statuses the provider reaches by actually destroying the instance.
 	assert.True(t, instanceProvablyDestroyed(models.QubeStatusSuspended))
 	assert.True(t, instanceProvablyDestroyed(models.QubeStatusReleased))
 }

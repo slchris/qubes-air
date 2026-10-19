@@ -254,6 +254,10 @@ type Dependencies struct {
 	bootstraps *service.BootstrapMonitor
 	// auditTrail records every mutating API request to stderr and persists it.
 	auditTrail auditTrail
+	// alertWebhooks delivers the durable alert-event outbox. Cancel and wait
+	// before the database closes: an in-flight delivery writes its retry state.
+	alertWebhookCancel context.CancelFunc
+	alertWebhookDone   chan struct{}
 }
 
 // Close releases all resources.
@@ -279,6 +283,12 @@ func (d *Dependencies) Close() {
 	// token, in which case the next sweep starts over, or did, in which case the
 	// certificate is registered and the next sweep skips the qube.
 	d.bootstraps.Shutdown(agentHealthShutdownGrace)
+	// Stop webhook delivery before the database closes: a delivery in flight
+	// writes its retry state, and abandoning it would just be retried next boot.
+	if d.alertWebhookCancel != nil {
+		d.alertWebhookCancel()
+		<-d.alertWebhookDone
+	}
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -333,7 +343,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	// The native provider executor is the default and only real orchestration
 	// path. The database (qube_infra) is the single source of truth for what
-	// exists — there is no terraform state file, generated var-file, or
+	// exists — there is no external state file, generated var-file, or
 	// subprocess. Adapters are selected by zone type; a zone with no registered
 	// adapter fails loudly instead of silently doing nothing.
 	qubeInfraRepo := repository.NewQubeInfraRepository(db)
@@ -396,30 +406,34 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	infraRepo := repository.NewInfraRepository(db)
 	infraSvc := service.NewInfraService(infraRepo)
 
-	settingsSvc, sessionStore := newSettingsAndSessions(context.Background(), db)
+	settingsSvc, sessionStore := newSettingsAndSessions(context.Background(), db, credentialRepo, cfg.Notifications.WebhookAllowedHosts)
+	alertWebhookCancel, alertWebhookDone := startAlertWebhookDispatcher(
+		repository.NewMonitoringAlertWebhookRepository(db), settingsSvc, cfg.Notifications.WebhookAllowedHosts)
 	return &Dependencies{
-		qubeRepo:          qubeRepo,
-		jobRepo:           jobRepo,
-		db:                db,
-		zoneHandler:       handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
-		qubeHandler:       handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
-		infraHandler:      handler.NewInfraHandler(infraSvc),
-		credentialHandler: handler.NewCredentialHandler(credentialSvc),
-		billingHandler:    handler.NewBillingHandler(),
-		monitoringHandler: newMonitoringHandler(zoneRepo, qubeRepo, qubeInfraRepo, providerRegistry),
-		settingsHandler:   handler.NewSettingsHandler(settingsSvc, sessionStore),
-		revocations:       certIssuer,
-		sessionHandler:    handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
-		sessions:          sessionStore,
-		jobHandler:        handler.NewJobHandler(jobRepo, jobLogs),
-		desktopAccess:     newDesktopAccessHandler(qubeSvc),
-		bootstraps:        bootstraps,
-		bootstrapTokens:   bootstrapTokenRepo,
-		transport:         xport,
-		runner:            runner,
-		agents:            agents,
-		certRenewals:      certRenewals,
-		auditTrail:        startAuditTrail(db, os.Stderr),
+		qubeRepo:           qubeRepo,
+		jobRepo:            jobRepo,
+		db:                 db,
+		zoneHandler:        handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
+		qubeHandler:        handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
+		infraHandler:       handler.NewInfraHandler(infraSvc),
+		credentialHandler:  handler.NewCredentialHandler(credentialSvc),
+		billingHandler:     handler.NewBillingHandler(),
+		monitoringHandler:  newMonitoringHandler(db, zoneRepo, qubeRepo, qubeInfraRepo, providerRegistry),
+		settingsHandler:    handler.NewSettingsHandler(settingsSvc, sessionStore),
+		revocations:        certIssuer,
+		sessionHandler:     handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
+		sessions:           sessionStore,
+		jobHandler:         handler.NewJobHandler(jobRepo, jobLogs),
+		desktopAccess:      newDesktopAccessHandler(qubeSvc),
+		bootstraps:         bootstraps,
+		bootstrapTokens:    bootstrapTokenRepo,
+		transport:          xport,
+		runner:             runner,
+		agents:             agents,
+		certRenewals:       certRenewals,
+		auditTrail:         startAuditTrail(db, os.Stderr),
+		alertWebhookCancel: alertWebhookCancel,
+		alertWebhookDone:   alertWebhookDone,
 	}, nil
 }
 
@@ -427,9 +441,34 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 // store whose lifetime it holds. The store is shared with ScopedAuth (cookie
 // authentication), the session handler (login) and the settings handler (which
 // applies a newly saved timeout without a restart).
-func newSettingsAndSessions(ctx context.Context, db *database.DB) (*service.SettingsService, *middleware.SessionStore) {
-	settingsSvc := service.NewSettingsService(repository.NewSettingsRepository(db))
+func newSettingsAndSessions(
+	ctx context.Context,
+	db *database.DB,
+	credentials *repository.CredentialRepository,
+	webhookHosts []string,
+) (*service.SettingsService, *middleware.SessionStore) {
+	settingsSvc := service.NewSettingsService(repository.NewSettingsRepository(db)).
+		WithWebhookAllowedHosts(webhookHosts).
+		WithWebhookCredentials(credentials)
 	return settingsSvc, newConfiguredSessionStore(ctx, settingsSvc)
+}
+
+// startAlertWebhookDispatcher runs the outbox sender for the life of the
+// process. The target is read from the settings service on every sweep, so a
+// destination saved in the UI takes effect without a restart.
+func startAlertWebhookDispatcher(
+	repo *repository.MonitoringAlertWebhookRepository,
+	target service.AlertWebhookTargetProvider,
+	allowedHosts []string,
+) (context.CancelFunc, chan struct{}) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	dispatcher := service.NewAlertWebhookDispatcher(repo, target, allowedHosts)
+	go func() {
+		defer close(done)
+		dispatcher.Run(ctx)
+	}()
+	return cancel, done
 }
 
 // newConfiguredSessionStore builds the session store with the timeout an

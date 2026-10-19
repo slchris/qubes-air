@@ -20,8 +20,9 @@ export default defineConfig(({ mode }) => {
   const tlsCertFile = env.VITE_TLS_CERT || ''
   const tlsKeyFile = env.VITE_TLS_KEY || ''
   
-  // Build HTTPS config if TLS is enabled
-  let httpsConfig: boolean | { key: Buffer; cert: Buffer } = false
+  // Build HTTPS config if TLS is enabled. `undefined` (not `false`) is what
+  // Vite's ServerOptions accepts for "serve plain HTTP".
+  let httpsConfig: { key: Buffer; cert: Buffer } | undefined
   if (tlsEnabled && tlsCertFile && tlsKeyFile) {
     try {
       httpsConfig = {

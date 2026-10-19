@@ -68,6 +68,15 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 
+      - name: Enforce coverage floor
+        run: ../../scripts/check-go-coverage.sh coverage.out
+
+      # The local gate has always run this; CI did not, so an entrypoint could
+      # stop compiling or start panicking without any check noticing.
+      - name: Smoke-test cmd entrypoints
+        working-directory: .
+        run: make smoke-entrypoints
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
@@ -102,6 +111,12 @@ jobs:
       # AGENTS.md §3). Without the flag svelte-check exits 0 on warnings.
       - name: Svelte Check
         run: npm run check -- --fail-on-warnings
+
+      # vite.config.ts, playwright.config.ts and e2e/*.ts are outside the
+      # Svelte project; Playwright only transpiles them at runtime, so without
+      # this step a type error there ships unnoticed.
+      - name: Type Check config and e2e
+        run: npm run check:types
 
   # Shell Script Lint
   shellcheck:

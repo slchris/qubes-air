@@ -2,7 +2,7 @@
   Qubes Air Console - job history.
 
   The audit trail: every infrastructure change this console made, including the
-  ones that failed and terraform's own error text. The API has served this from
+  ones that failed and the provisioner's own error text. The API has served this from
   the start and nothing called it, so a failed provision could only be
   investigated through the API by hand.
 -->
@@ -63,7 +63,7 @@
   {:else if jobs.length === 0 && !loading}
     <p class="empty">
       No jobs yet. Creating, resuming or releasing a qube records one here —
-      including its terraform output.
+      including its provisioning output.
     </p>
   {:else}
     <ul class="rows">

@@ -101,7 +101,7 @@ describe('ZonesView provider picker', () => {
     expect(select.value).toBe('proxmox')
     expect(within(dialog).queryByLabelText(/^project$/i)).not.toBeInTheDocument()
     expect(within(dialog).queryByLabelText(/bootstrap bucket/i)).not.toBeInTheDocument()
-    // The removed Terraform deployment path must not be described as live.
+    // The removed external deployment path must not be described as live.
     expect(dialog.textContent).not.toMatch(/terraform/i)
   })
 })

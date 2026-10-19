@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check:types": "tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium"
@@ -19,6 +20,7 @@
     "@testing-library/svelte": "^5.4.2",
     "@testing-library/user-event": "^14.6.8",
     "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^22.20.5",
     "jsdom": "^30.1.2",
     "svelte": "^5.57.2",
     "svelte-check": "^4.7.7",

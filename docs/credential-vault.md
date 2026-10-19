@@ -48,7 +48,7 @@ QUBES_AIR_ENCRYPTION_KEYS='v1:<32-byte-key>'
 
 通过 UI/API 创建 credential，再让 Zone 的 `credential_id` 引用它。当前原生执行器按调用
 解析目标 Zone 的凭据并构造 Proxmox 适配器；GCP/AWS 尚未注册适配器。多 Zone 的完整现场
-验收仍需单独记录，不能沿用旧 Terraform 根模块的单实例限制描述当前行为。
+验收仍需单独记录，不能沿用旧部署入口的单实例限制描述当前行为。
 
 运行 job 时：
 

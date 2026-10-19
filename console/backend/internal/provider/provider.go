@@ -1,7 +1,7 @@
 // Package provider defines the contract between the console's orchestrator and
 // the infrastructure providers it drives directly.
 //
-// This is the seam that replaces Terraform. The console no longer renders a
+// This is the provider seam. The console no longer renders a
 // remote_qubes variable file, shells out to a binary, or reads a state file:
 // an Adapter speaks each cloud's native API, and the SQLite qube_infra row is
 // the single record of what exists.
@@ -46,7 +46,7 @@ func LogWriterFrom(ctx context.Context) io.Writer {
 
 // Infra is the recorded identity of one qube's provider-side infrastructure.
 //
-// It replaces the terraform state file. The rule that makes it work is that it
+// It replaces an external state file. The rule that makes it work is that it
 // records allocated IDs BEFORE create requests via a required checkpoint.
 // Observed volume details follow; ambiguous outcomes retain the reserved ID.
 // Provider ownership checks are still required before adopting that ID.
@@ -69,7 +69,7 @@ type Infra struct {
 	// ObservedState is the provider's most recent view: running / suspended /
 	// absent. Empty means never observed.
 	ObservedState string `json:"observed_state,omitempty"`
-	// Protected is the explicit replacement for terraform's prevent_destroy.
+	// Protected is the explicit replacement for a provider's prevent-destroy guard.
 	// DestroyStorage refuses while it is set, so releasing the data disk is a
 	// deliberate act rather than an effect of the qube leaving a variable map.
 	Protected  bool       `json:"protected"`
