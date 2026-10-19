@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/middleware"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -302,4 +303,85 @@ func TestSettingsFailedSaveLeavesStoredSettingsAndSessionsUntouched(t *testing.T
 	assert.Equal(t, "light", stored.General.Theme, "the first group must not be committed")
 	assert.True(t, stored.Notifications.Email, "the second group must not be committed")
 	assert.Equal(t, 30, stored.Security.SessionTimeout)
+}
+
+// newWebhookSettingsHandlerFixture is the same fixture as
+// newSettingsHandlerFixture, but with the credential store and allowlist the
+// production server wires. It returns the raw credential repository so a test
+// can prove the destination was encrypted rather than merely echoed.
+func newWebhookSettingsHandlerFixture(t *testing.T) (settingsFixture, *repository.CredentialRepository) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	cfg := database.DefaultConfig()
+	cfg.DSN = filepath.Join(t.TempDir(), "settings.db")
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	kr, err := keyring.NewSingle([]byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	credentials := repository.NewCredentialRepository(db, kr)
+	repo := repository.NewSettingsRepository(db)
+	sessions := middleware.NewSessionStore(30 * time.Minute)
+	svc := service.NewSettingsService(repo).
+		WithWebhookCredentials(credentials).
+		WithWebhookAllowedHosts([]string{"hooks.example.test"})
+	r := gin.New()
+	NewSettingsHandler(svc, sessions).RegisterRoutes(r.Group("/api/v1"))
+	return settingsFixture{router: r, repo: repo, sessions: sessions, db: db}, credentials
+}
+
+func webhookSettingsBody(target string, enabled bool) string {
+	return fmt.Sprintf(`{"general":{"timezone":"UTC","language":"en","theme":"system"},`+
+		`"notifications":{"email":false,"webhook":%t,"webhookUrl":%q},`+
+		`"security":{"sessionTimeout":30}}`, enabled, target)
+}
+
+func TestSettingsWebhookDestinationIsEncryptedAndRedacted(t *testing.T) {
+	f, credentials := newWebhookSettingsHandlerFixture(t)
+	const target = "https://hooks.example.test/v1/alerts"
+	w := f.put(webhookSettingsBody(target, true))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NotContains(t, w.Body.String(), "hooks.example.test", "the destination must never be returned")
+	require.Contains(t, w.Body.String(), `"webhookConfigured":true`)
+
+	stored, configured, err := credentials.GetAlertWebhookTarget(context.Background())
+	require.NoError(t, err)
+	require.True(t, configured)
+	require.Equal(t, target, stored)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	recorder := httptest.NewRecorder()
+	f.router.ServeHTTP(recorder, req)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NotContains(t, recorder.Body.String(), "hooks.example.test")
+	require.Contains(t, recorder.Body.String(), `"webhookConfigured":true`)
+}
+
+func TestSettingsWebhookRejectsDestinationOutsideAllowlist(t *testing.T) {
+	f, credentials := newWebhookSettingsHandlerFixture(t)
+	w := f.put(webhookSettingsBody("https://evil.example.test/alerts", true))
+	require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), "webhook_allowed_hosts")
+
+	_, configured, err := credentials.GetAlertWebhookTarget(context.Background())
+	require.NoError(t, err)
+	require.False(t, configured, "a rejected destination must not be stored")
+
+	stored, err := f.repo.Get(context.Background())
+	require.NoError(t, err)
+	require.False(t, stored.Notifications.Webhook)
+}
+
+func TestSettingsWebhookDisableRemovesEncryptedDestination(t *testing.T) {
+	f, credentials := newWebhookSettingsHandlerFixture(t)
+	require.Equal(t, http.StatusOK, f.put(webhookSettingsBody("https://hooks.example.test/alerts", true)).Code)
+	_, configured, err := credentials.GetAlertWebhookTarget(context.Background())
+	require.NoError(t, err)
+	require.True(t, configured)
+
+	w := f.put(webhookSettingsBody("", false))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	_, configured, err = credentials.GetAlertWebhookTarget(context.Background())
+	require.NoError(t, err)
+	require.False(t, configured)
 }

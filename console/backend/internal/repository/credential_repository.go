@@ -48,6 +48,58 @@ func NewCredentialRepository(db *database.DB, kr *keyring.Keyring) *CredentialRe
 	}
 }
 
+const alertWebhookTargetCredentialID = "system:alert-webhook-target"
+
+// credentialWriter is the subset of *sql.DB and *sql.Tx the webhook target
+// needs. It lets the settings repository write the destination in the same
+// transaction as the settings row that enables it.
+type credentialWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// SetAlertWebhookTarget stores the destination URL as an encrypted credential.
+// An empty target removes it idempotently.
+func (r *CredentialRepository) SetAlertWebhookTarget(ctx context.Context, target string) error {
+	return r.setAlertWebhookTarget(ctx, r.db.DB(), target)
+}
+
+func (r *CredentialRepository) setAlertWebhookTarget(ctx context.Context, writer credentialWriter, target string) error {
+	if target == "" {
+		_, err := writer.ExecContext(ctx, `DELETE FROM credentials WHERE id = ?`, alertWebhookTargetCredentialID)
+		return err
+	}
+	version := r.keyring.PrimaryVersion()
+	ciphertext, err := r.encryptWith(target, version)
+	if err != nil {
+		return fmt.Errorf("encrypt alert webhook target: %w", err)
+	}
+	now := time.Now().UTC()
+	_, err = writer.ExecContext(ctx, `INSERT INTO credentials
+		(id, name, type, description, encrypted_data, key_version, created_at, updated_at)
+		VALUES (?, 'Alert webhook endpoint', 'webhook', 'Encrypted alert notification destination', ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET encrypted_data = excluded.encrypted_data,
+		key_version = excluded.key_version, updated_at = excluded.updated_at`,
+		alertWebhookTargetCredentialID, ciphertext, version, now, now)
+	return err
+}
+
+// GetAlertWebhookTarget decrypts the configured destination without exposing it
+// through the ordinary settings response.
+func (r *CredentialRepository) GetAlertWebhookTarget(ctx context.Context) (string, bool, error) {
+	credential, err := r.GetByID(ctx, alertWebhookTargetCredentialID)
+	if err != nil {
+		return "", false, err
+	}
+	if credential == nil {
+		return "", false, nil
+	}
+	target, err := r.GetSecret(ctx, alertWebhookTargetCredentialID)
+	if err != nil {
+		return "", false, err
+	}
+	return target, true, nil
+}
+
 // encryptWith encrypts plaintext with the key for the given version.
 func (r *CredentialRepository) encryptWith(plaintext string, version int) (string, error) {
 	key, err := r.keyring.Key(version)

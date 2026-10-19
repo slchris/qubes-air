@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/slchris/qubes-air/console/internal/database"
+	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/stretchr/testify/assert"
@@ -154,4 +156,155 @@ func TestSettingsSessionTTL(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, ErrInvalidSessionTimeout), "a row that does not parse is not a range violation: %v", err)
 	})
+}
+
+// newWebhookSettingsFixture returns a service backed by a real keyring and an
+// allowlisted destination, plus the raw handles needed to inject failures.
+func newWebhookSettingsFixture(t *testing.T) (*SettingsService, *database.DB, *repository.CredentialRepository) {
+	t.Helper()
+	cfg := database.DefaultConfig()
+	cfg.DSN = filepath.Join(t.TempDir(), "settings.db")
+	db, err := database.New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	kr, err := keyring.NewSingle([]byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
+	credentials := repository.NewCredentialRepository(db, kr)
+	svc := NewSettingsService(repository.NewSettingsRepository(db)).
+		WithWebhookCredentials(credentials).
+		WithWebhookAllowedHosts([]string{"hooks.example.test"})
+	return svc, db, credentials
+}
+
+func TestValidateWebhookTargetRequiresConfiguredHTTPSHost(t *testing.T) {
+	tests := []struct {
+		name  string
+		url   string
+		allow []string
+		valid bool
+	}{
+		{"configured host", "https://hooks.example.test/v1/events", []string{"hooks.example.test"}, true},
+		{"default port", "https://hooks.example.test:443/events", []string{"hooks.example.test:443"}, true},
+		{"explicit configured port", "https://hooks.example.test:8443/events", []string{"hooks.example.test:8443"}, true},
+		{"not allowlisted", "https://other.example.test/events", []string{"hooks.example.test"}, false},
+		{"http rejected", "http://hooks.example.test/events", []string{"hooks.example.test"}, false},
+		{"userinfo rejected", "https://user:pass@hooks.example.test/events", []string{"hooks.example.test"}, false},
+		{"nonstandard port rejected", "https://hooks.example.test:8443/events", []string{"hooks.example.test"}, false},
+		{"fragment rejected", "https://hooks.example.test/events#frag", []string{"hooks.example.test"}, false},
+		{"no hosts configured", "https://hooks.example.test/events", nil, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateWebhookTarget(test.url, test.allow)
+			if test.valid {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidWebhookTarget)
+		})
+	}
+}
+
+// TestSettingsUpdateRollbackIncludesWebhook injects a failure into the last
+// write (settings for enable/replace, the credential delete for disable) and
+// asserts that neither store changed.
+func TestSettingsUpdateRollbackIncludesWebhook(t *testing.T) {
+	for _, operation := range []string{"enable", "replace", "disable"} {
+		t.Run(operation, func(t *testing.T) {
+			svc, db, credentials := newWebhookSettingsFixture(t)
+			ctx := context.Background()
+			original := &models.Settings{Security: models.SecuritySettings{SessionTimeout: 30}}
+			if operation != "enable" {
+				original.Notifications.Webhook = true
+				original.Notifications.WebhookURL = "https://hooks.example.test/original"
+			}
+			require.NoError(t, svc.Update(ctx, original))
+			oldTarget, oldConfigured, err := credentials.GetAlertWebhookTarget(ctx)
+			require.NoError(t, err)
+			trigger := `CREATE TRIGGER fail_security BEFORE UPDATE ON settings WHEN NEW.key='security' BEGIN SELECT RAISE(FAIL,'injected'); END`
+			if operation == "disable" {
+				trigger = `CREATE TRIGGER fail_delete BEFORE DELETE ON credentials BEGIN SELECT RAISE(FAIL,'injected'); END`
+			}
+			_, err = db.DB().Exec(trigger)
+			require.NoError(t, err)
+			changed := *original
+			changed.General.Theme = "dark"
+			changed.Security.SessionTimeout = 5
+			changed.Notifications.Webhook = operation != "disable"
+			changed.Notifications.WebhookURL = "https://hooks.example.test/replacement"
+			require.Error(t, svc.Update(ctx, &changed))
+			after, err := svc.Get(ctx)
+			require.NoError(t, err)
+			require.Equal(t, original, after)
+			target, configured, err := credentials.GetAlertWebhookTarget(ctx)
+			require.NoError(t, err)
+			require.Equal(t, oldTarget, target)
+			require.Equal(t, oldConfigured, configured)
+		})
+	}
+}
+
+func TestSettingsRepeatedCanceledAndConcurrentUpdates(t *testing.T) {
+	svc, _, credentials := newWebhookSettingsFixture(t)
+	ctx := context.Background()
+	initial := &models.Settings{Security: models.SecuritySettings{SessionTimeout: 30}, Notifications: models.NotificationSettings{Webhook: true, WebhookURL: "https://hooks.example.test/initial"}}
+	require.NoError(t, svc.Update(ctx, initial))
+	// Saving the redacted API response preserves the encrypted destination.
+	require.NoError(t, svc.Update(ctx, initial))
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	changed := *initial
+	changed.Notifications.WebhookURL = "https://hooks.example.test/canceled"
+	require.Error(t, svc.Update(canceled, &changed))
+	target, _, err := credentials.GetAlertWebhookTarget(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "https://hooks.example.test/initial", target)
+	errors := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		go func(index int) {
+			name := fmt.Sprintf("writer-%d", index)
+			settings := &models.Settings{General: models.GeneralSettings{Theme: name}, Security: models.SecuritySettings{SessionTimeout: 30}, Notifications: models.NotificationSettings{Webhook: true, WebhookURL: "https://hooks.example.test/" + name}}
+			errors <- svc.Update(ctx, settings)
+		}(i)
+	}
+	for i := 0; i < 12; i++ {
+		require.NoError(t, <-errors)
+	}
+	final, err := svc.Get(ctx)
+	require.NoError(t, err)
+	target, configured, err := svc.WebhookTarget(ctx)
+	require.NoError(t, err)
+	require.True(t, configured)
+	require.Equal(t, "https://hooks.example.test/"+final.General.Theme, target)
+}
+
+func TestSettingsCredentialWriteFailureRollsBackSettings(t *testing.T) {
+	for _, operation := range []string{"INSERT", "UPDATE"} {
+		t.Run(operation, func(t *testing.T) {
+			svc, db, _ := newWebhookSettingsFixture(t)
+			ctx := context.Background()
+			original := &models.Settings{Security: models.SecuritySettings{SessionTimeout: 30}}
+			if operation == "UPDATE" {
+				original.Notifications.Webhook = true
+				original.Notifications.WebhookURL = "https://hooks.example.test/original"
+			}
+			require.NoError(t, svc.Update(ctx, original))
+			_, err := db.DB().Exec(`CREATE TRIGGER reject_credential BEFORE ` + operation + ` ON credentials BEGIN SELECT RAISE(FAIL,'injected'); END`)
+			require.NoError(t, err)
+			changed := *original
+			changed.Security.SessionTimeout = 5
+			changed.Notifications.Webhook = true
+			changed.Notifications.WebhookURL = "https://hooks.example.test/new"
+			require.Error(t, svc.Update(ctx, &changed))
+			actual, err := svc.Get(ctx)
+			require.NoError(t, err)
+			require.Equal(t, original, actual)
+			if operation == "UPDATE" {
+				target, enabled, err := svc.WebhookTarget(ctx)
+				require.NoError(t, err)
+				require.True(t, enabled)
+				require.Equal(t, "https://hooks.example.test/original", target)
+			}
+		})
+	}
 }

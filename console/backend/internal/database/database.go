@@ -229,7 +229,7 @@ const listDatabases = `PRAGMA database_list`
 // newer code no longer understands, and the failure would surface as corrupted
 // data rather than an error. Restoring a backup into an older console is the
 // same hazard, which is why backup carries the version too.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // migrate runs database migrations.
 func (d *DB) migrate() error {
@@ -243,6 +243,7 @@ func (d *DB) migrate() error {
 		createAgentCertsTable,
 		createBootstrapTokensTable,
 		createQubeInfraTable,
+		createAlertAcknowledgementsTable,
 	}
 
 	for _, m := range migrations {
@@ -287,6 +288,17 @@ func (d *DB) migrate() error {
 		if err := step(); err != nil {
 			return err
 		}
+	}
+
+	// Alert history triggers reference the agent-health columns added above and
+	// the lifecycle columns upgraded by migrateLifecycle, so they are installed
+	// only after both. The outbox trigger also reads the settings row that says
+	// whether delivery is enabled.
+	if _, err := d.db.ExecContext(context.Background(), createMonitoringAlertEventsTable); err != nil {
+		return err
+	}
+	if _, err := d.db.ExecContext(context.Background(), createMonitoringAlertWebhookOutboxTable); err != nil {
+		return err
 	}
 	return d.applySchemaVersion()
 }
@@ -560,3 +572,124 @@ CREATE TABLE IF NOT EXISTS settings (
 	value TEXT NOT NULL,
 	updated_at DATETIME NOT NULL
 )`
+
+const createAlertAcknowledgementsTable = `
+CREATE TABLE IF NOT EXISTS alert_acknowledgements (
+	alert_id TEXT PRIMARY KEY,
+	acknowledged_by TEXT NOT NULL,
+	acknowledged_at DATETIME NOT NULL
+)`
+
+// Alert transition events are captured by SQLite so they are not lost when
+// nobody has the monitoring page open. They intentionally have no foreign key:
+// resource deletion must not erase incident history.
+const createMonitoringAlertEventsTable = `
+CREATE TABLE IF NOT EXISTS monitoring_alert_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	alert_id TEXT NOT NULL,
+	resource_id TEXT NOT NULL,
+	event_type TEXT NOT NULL CHECK (event_type IN ('raised', 'resolved')),
+	severity TEXT NOT NULL,
+	message TEXT NOT NULL,
+	source TEXT NOT NULL,
+	occurred_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_monitoring_alert_events_occurred_at
+	ON monitoring_alert_events(occurred_at DESC, id DESC);
+CREATE TRIGGER IF NOT EXISTS monitoring_zone_alert_insert
+AFTER INSERT ON zones WHEN NEW.status = 'disconnected'
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('zone-disconnected:' || NEW.id, NEW.id, 'raised', 'warning',
+		'Zone "' || NEW.name || '" is disconnected', 'zone-status', NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_zone_alert_update
+AFTER UPDATE OF status ON zones
+WHEN OLD.status != NEW.status AND (OLD.status = 'disconnected' OR NEW.status = 'disconnected')
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('zone-disconnected:' || NEW.id, NEW.id,
+		CASE WHEN NEW.status = 'disconnected' THEN 'raised' ELSE 'resolved' END,
+		'warning', 'Zone "' || NEW.name || '" is disconnected', 'zone-status', NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_zone_alert_delete
+AFTER DELETE ON zones WHEN OLD.status = 'disconnected'
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('zone-disconnected:' || OLD.id, OLD.id, 'resolved', 'warning',
+		'Zone "' || OLD.name || '" was deleted while disconnected', 'zone-status', CURRENT_TIMESTAMP);
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_agent_alert_insert
+AFTER INSERT ON qubes
+WHEN NEW.agent_health = 'unreachable' AND NEW.status NOT IN ('stopped', 'suspended', 'released', 'purged')
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('agent-unreachable:' || NEW.id, NEW.id, 'raised', 'critical',
+		'Agent for qube "' || NEW.name || '" is unreachable', 'agent-health',
+		COALESCE(NEW.agent_last_probed_at, CURRENT_TIMESTAMP));
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_agent_alert_update
+AFTER UPDATE OF agent_health ON qubes
+WHEN OLD.agent_health != NEW.agent_health AND
+	((OLD.agent_health = 'unreachable' AND OLD.status NOT IN ('stopped', 'suspended', 'released', 'purged')) OR
+	(NEW.agent_health = 'unreachable' AND NEW.status NOT IN ('stopped', 'suspended', 'released', 'purged')))
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('agent-unreachable:' || NEW.id, NEW.id,
+		CASE WHEN NEW.agent_health = 'unreachable' THEN 'raised' ELSE 'resolved' END,
+		'critical', 'Agent for qube "' || NEW.name || '" is unreachable', 'agent-health',
+		COALESCE(NEW.agent_last_probed_at, CURRENT_TIMESTAMP));
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_agent_alert_compute_stop
+AFTER UPDATE OF status ON qubes
+WHEN OLD.status != NEW.status AND OLD.agent_health = 'unreachable' AND
+	OLD.status NOT IN ('stopped', 'suspended', 'released', 'purged') AND
+	NEW.status IN ('stopped', 'suspended', 'released', 'purged')
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('agent-unreachable:' || NEW.id, NEW.id, 'resolved', 'critical',
+		'Agent for qube "' || NEW.name || '" is unreachable', 'agent-health', NEW.updated_at);
+END;
+CREATE TRIGGER IF NOT EXISTS monitoring_agent_alert_delete
+AFTER DELETE ON qubes WHEN OLD.agent_health = 'unreachable' AND
+	OLD.status NOT IN ('stopped', 'suspended', 'released', 'purged')
+BEGIN
+	INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+	VALUES ('agent-unreachable:' || OLD.id, OLD.id, 'resolved', 'critical',
+		'Agent for qube "' || OLD.name || '" was deleted while unreachable', 'agent-health',
+		CURRENT_TIMESTAMP);
+END;
+INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+SELECT 'zone-disconnected:' || z.id, z.id, 'raised', 'warning',
+	'Zone "' || z.name || '" is disconnected', 'zone-status', z.updated_at
+FROM zones z WHERE z.status = 'disconnected'
+	AND NOT EXISTS (SELECT 1 FROM monitoring_alert_events e WHERE e.alert_id = 'zone-disconnected:' || z.id);
+INSERT INTO monitoring_alert_events (alert_id, resource_id, event_type, severity, message, source, occurred_at)
+SELECT 'agent-unreachable:' || q.id, q.id, 'raised', 'critical',
+	'Agent for qube "' || q.name || '" is unreachable', 'agent-health',
+	COALESCE(q.agent_last_probed_at, CURRENT_TIMESTAMP)
+FROM qubes q WHERE q.agent_health = 'unreachable'
+	AND q.status NOT IN ('stopped', 'suspended', 'released', 'purged')
+	AND NOT EXISTS (SELECT 1 FROM monitoring_alert_events e WHERE e.alert_id = 'agent-unreachable:' || q.id)`
+
+const createMonitoringAlertWebhookOutboxTable = `
+CREATE TABLE IF NOT EXISTS monitoring_alert_webhook_outbox (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	event_id INTEGER NOT NULL UNIQUE,
+	attempts INTEGER NOT NULL DEFAULT 0,
+	next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	last_error TEXT NOT NULL DEFAULT '',
+	delivered_at DATETIME
+);
+CREATE INDEX IF NOT EXISTS idx_monitoring_alert_webhook_due
+	ON monitoring_alert_webhook_outbox(delivered_at, next_attempt_at, id);
+CREATE TRIGGER IF NOT EXISTS monitoring_alert_webhook_enqueue
+AFTER INSERT ON monitoring_alert_events
+WHEN EXISTS (
+	SELECT 1 FROM settings
+	WHERE key = 'notifications' AND json_valid(value)
+	AND json_extract(value, '$.webhook') = 1
+)
+BEGIN
+	INSERT INTO monitoring_alert_webhook_outbox (event_id) VALUES (NEW.id);
+END`

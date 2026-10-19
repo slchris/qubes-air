@@ -73,3 +73,8 @@ auth:
   # Set this before exposing the console beyond localhost.
   # Generate one, e.g.:  openssl rand -hex 32
   api_token: ""
+
+notifications:
+  # Exact HTTPS hostnames allowed for alert webhooks configured in Settings.
+  # Use hostname:port to allow a non-default port. Leave empty to disable delivery.
+  webhook_allowed_hosts: []
