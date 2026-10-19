@@ -53,8 +53,10 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **QA-01：完整 Proxmox 回归记录。** 2026-09-22 已在 homelab 真机完成生命周期回归并
   写入[记录](reviews/2026-09-22-qa01-proxmox.md)：provision→healthy→suspend→resume→release
   →purge 全通过，RemoteVM 注册/注销与吊销状态已验证，发现并修复 `remotevm` 本地命名缺陷
-  （`1dbc87f`）。剩余：Exec/FileCopy 正值与负值（console 下发允许列表已由 M1-1 / PR #15 实现，但 `qubes-salt-config` `v0.1.0`
-  的 `agent_exec_allow`/`agent_filecopy_roots` 默认为空，QA 需要单独授权的非空列表）、suspend/resume 数据持久性、旧盘迁移与 known_hosts 带外核对。验收条件不变。
+  （`1dbc87f`）。剩余：Exec/FileCopy 的 qrexec transport（dom0 policy 仍拒绝，
+  需要外部 `qubes-salt-config` 授权）、旧盘迁移与 known_hosts 带外核对。验收条件不变。
+  2026-10-19 生产测试已补：白名单下发到 guest、agent 侧 Exec/FileCopy 正反例、
+  加密数据盘文件跨 suspend/resume 持久性（详见生产部署记录）。
   2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
   未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
   详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。
@@ -63,9 +65,12 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   证书随 resume 重新签发、purge 后 PVE 匹配 VM 为 0，job 结果均持久化；期间定位并修复了
   completion hook 耗尽上下文导致 job 停在 running 的问题。测试用独立 console 实例，
   关闭了 RemoteVM 注册（该实例的 dom0 qrexec 调用超时）。
-  剩余仍是 Exec/FileCopy 正反例、数据盘跨 suspend/resume 持久性、旧盘迁移与 known_hosts
-  带外核对，以及生产 console 自身的升级部署。详见
-  [记录](reviews/2026-10-19-current-main-real-machine.md)。
+  2026-10-19 随后把修复部署到生产 console（最终 `66325fb`），三次重跑 lifecycle，
+  并验证 RemoteVM 注册/注销、Exec/FileCopy agent 侧正反例与数据盘持久性。
+  剩余仍是 Exec/FileCopy 的 qrexec transport（dom0 policy 未授权）、旧盘迁移、
+  known_hosts 带外核对。详见
+  [生产部署记录](reviews/2026-10-19-production-deploy.md) 与
+  [当前 main 记录](reviews/2026-10-19-current-main-real-machine.md)。
 
 ## P2：产品与扩展
 
