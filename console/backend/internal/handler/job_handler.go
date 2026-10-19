@@ -99,6 +99,62 @@ func (h *JobHandler) List(c *gin.Context) {
 // poll loop, resend the same megabytes on every tick.
 const maxLogChunk = 256 * 1024
 
+// Log states reported alongside a log response. A missing file alone cannot
+// say why it is missing: the job may never have logged, the retention pass may
+// have removed it, or the console may have been restored from a database
+// backup that does not contain log files. The job row's timestamps distinguish
+// them, so the UI can tell an operator "expired" instead of an unexplained
+// empty pane.
+const (
+	jobLogAvailable = "available"
+	jobLogNone      = "none"
+	jobLogExpired   = "expired"
+	jobLogLost      = "lost"
+	jobLogDisabled  = "disabled"
+)
+
+// logState classifies a job's log for the API.
+func (h *JobHandler) logState(job *orchestrator.Job) (string, error) {
+	if h.logs == nil {
+		return jobLogDisabled, nil
+	}
+	exists, err := h.logs.Exists(job.ID)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case exists:
+		return jobLogAvailable, nil
+	case job.LogPrunedAt != nil:
+		return jobLogExpired, nil
+	case job.LogCreatedAt != nil:
+		// The job recorded writing a log, but the file is gone and no retention
+		// pass claimed it. That is what a restore without the log directory
+		// looks like, and it is worth flagging rather than showing as "none".
+		return jobLogLost, nil
+	default:
+		return jobLogNone, nil
+	}
+}
+
+// logStateNote explains a state that an operator would otherwise have to
+// interpret from an empty pane. Running jobs get no note for "none": a job that
+// has not printed yet is normal, not a fault.
+func logStateNote(state string, job *orchestrator.Job) string {
+	running := job.State == orchestrator.JobRunning || job.State == orchestrator.JobQueued
+	switch state {
+	case jobLogExpired:
+		return "job log expired after the retention window"
+	case jobLogLost:
+		return "job log is missing; the console may have been restored without its log directory"
+	case jobLogNone:
+		if !running {
+			return "no log was recorded for this job"
+		}
+	}
+	return ""
+}
+
 // Log returns the operation output of a job, from ?offset= onwards.
 //
 // Offset-based polling rather than a streamed connection: a provision runs for
@@ -124,7 +180,8 @@ func (h *JobHandler) Log(c *gin.Context) {
 	if h.logs == nil {
 		c.JSON(http.StatusOK, gin.H{
 			"offset": 0, "data": "", "running": job.State == orchestrator.JobRunning,
-			"note": "job logs are not enabled on this console",
+			"log_state": jobLogDisabled,
+			"note":      "job logs are not enabled on this console",
 		})
 		return
 	}
@@ -140,16 +197,27 @@ func (h *JobHandler) Log(c *gin.Context) {
 		return
 	}
 
+	logState, err := h.logState(job)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	// running tells the client whether to poll again. Derived from the job
 	// record rather than from "the log stopped growing": a slow provider call
 	// prints nothing for minutes at a time, and treating that as completion is
 	// how a UI decides an operation finished while it is still going.
-	c.JSON(http.StatusOK, gin.H{
-		"offset":  next,
-		"data":    string(data),
-		"running": job.State == orchestrator.JobRunning || job.State == orchestrator.JobQueued,
-		"state":   job.State,
-	})
+	body := gin.H{
+		"offset":    next,
+		"data":      string(data),
+		"running":   job.State == orchestrator.JobRunning || job.State == orchestrator.JobQueued,
+		"state":     job.State,
+		"log_state": logState,
+	}
+	if note := logStateNote(logState, job); note != "" {
+		body["note"] = note
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 // streamPollInterval is how often the stream checks for new log output.

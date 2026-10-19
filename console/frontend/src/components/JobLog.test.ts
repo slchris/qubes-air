@@ -328,6 +328,56 @@ describe('JobLog live stream', () => {
   })
 })
 
+describe('JobLog missing output reasons', () => {
+  it.each([
+    ['expired', 'job log expired after the retention window', /expired/],
+    ['lost', 'job log is missing; the console may have been restored without its log directory', /restored/],
+    ['disabled', 'job logs are not enabled on this console', /not enabled/],
+    ['none', 'no log was recorded for this job', /no log was recorded/],
+  ])('explains a %s log instead of showing an unexplained empty pane', async (logState, note, expected) => {
+    server.pollReply = () =>
+      json(200, { offset: 0, data: '', running: false, state: 'succeeded', log_state: logState, note })
+    server.jobReply = (id) => json(200, { id, state: 'succeeded' })
+    mount('j1', false)
+    await flush()
+
+    // Finished jobs start collapsed.
+    await userEvent.click(screen.getByRole('button', { name: /job log/i }))
+    expect(screen.getByText(expected)).toBeInTheDocument()
+    expect(screen.getByText(note)).toBeInTheDocument()
+    expect(screen.queryByText('No output recorded for this job.')).not.toBeInTheDocument()
+  })
+
+  it('keeps the local reason when an older console omits the note', async () => {
+    server.pollReply = () =>
+      json(200, { offset: 0, data: '', running: false, state: 'succeeded', log_state: 'lost' })
+    server.jobReply = (id) => json(200, { id, state: 'succeeded' })
+    mount('j1', false)
+    await flush()
+
+    await userEvent.click(screen.getByRole('button', { name: /job log/i }))
+    expect(screen.getByText(/Job output is missing/)).toBeInTheDocument()
+  })
+
+  it('keeps the reason visible above a failed job\'s recorded error', async () => {
+    server.pollReply = () =>
+      json(200, {
+        offset: 0,
+        data: '',
+        running: false,
+        state: 'failed',
+        log_state: 'expired',
+        note: 'job log expired after the retention window',
+      })
+    server.jobReply = (id) => json(200, { id, state: 'failed', error: 'provider refused the request' })
+    const { container } = mount('j1', false)
+    await flush()
+
+    expect(screen.getByText('job log expired after the retention window')).toBeInTheDocument()
+    expect(logText(container)).toBe('provider refused the request')
+  })
+})
+
 // The server's duration cap (streamMaxDuration in job_handler.go).
 const STREAM_CAP_MS = 5 * 60_000
 

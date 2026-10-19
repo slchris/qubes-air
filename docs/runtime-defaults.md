@@ -100,6 +100,7 @@
 | UD-5 | pending renewal（等待签发的私钥）TTL | **5 分钟** | `internal/agent/renewal.go:54`（`DefaultPendingRenewalTTL`） |
 | UD-6 | job 日志 SSE 流最长时长 | **5 分钟**（到点干净结束，客户端按 offset 重连） | `internal/handler/job_handler.go:179`（`streamMaxDuration`） |
 | UD-6b | SSE 单个事件的写窗口 | **30 秒**（每个事件重置；只界定一次写，不界定整条流） | `internal/handler/job_handler.go:188`（`streamWriteWindow`） |
+| UD-6c | job 日志目录、保留期与清理间隔 | 目录固定为 **`<数据库目录>/job-logs/`**（`0600`，每个 job 一个文件，随 DSN 派生，无独立配置键）；保留 **30 天**，启动时及之后每 **24 小时**清理一次，按文件 mtime 只删合法 job id 的 `*.log` 普通文件，并在 `jobs.log_pruned_at` 留痕。日志文件**不进入数据库备份**；API 的 `log_state` 区分 `available` / `none` / `expired` / `lost` / `disabled` | `internal/config/config.go:1429`（`JobLogDir`）；`cmd/server/joblog_retention.go:12-23`（保留期/间隔）；`internal/orchestrator/joblog.go:221`（`Prune`）；`internal/handler/job_handler.go:117`（`logState`） |
 | UD-9 | agent 探测超时 | **10s** | `internal/service/agentprobe.go:71`（`DefaultAgentProbeTimeout`） |
 | UD-9b | agent 默认监听端口 | **8443** | `internal/service/agentprobe.go:75`（`defaultAgentPort`） |
 | UD-9c | 新置备 qube 的 agent 就绪结算预算 / 重试间隔 | **5 分钟 / 15s** | `internal/service/agenthealth.go:27`、`:29`（`DefaultAgentSettleBudget`、`DefaultAgentSettleRetry`） |

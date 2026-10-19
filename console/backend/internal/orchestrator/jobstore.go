@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 )
 
 // ErrJobNotFound is returned when a job id is unknown.
@@ -46,15 +47,52 @@ func (m *MemoryJobStore) Insert(_ context.Context, j *Job) error {
 	return nil
 }
 
-// Update replaces a recorded job.
+// Update replaces a recorded job's lifecycle fields.
+//
+// Log timestamps are owned by MarkLogCreated/MarkLogPruned and are preserved
+// here, mirroring the SQL repository, whose UPDATE does not touch those columns.
+// The runner's finish path writes back a Job value captured before the log was
+// opened; replacing the whole record would erase the creation time and make an
+// existing log look lost.
 func (m *MemoryJobStore) Update(_ context.Context, j *Job) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.jobs[j.ID]; !ok {
+	existing, ok := m.jobs[j.ID]
+	if !ok {
 		return ErrJobNotFound
 	}
 	cp := *j
+	cp.LogCreatedAt = existing.LogCreatedAt
+	cp.LogPrunedAt = existing.LogPrunedAt
 	m.jobs[j.ID] = &cp
+	return nil
+}
+
+// MarkLogCreated records the first time a log file was opened for the job.
+func (m *MemoryJobStore) MarkLogCreated(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return ErrJobNotFound
+	}
+	if j.LogCreatedAt == nil {
+		t := at.UTC()
+		j.LogCreatedAt = &t
+	}
+	return nil
+}
+
+// MarkLogPruned records that the retention pass removed the job's log file.
+func (m *MemoryJobStore) MarkLogPruned(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return ErrJobNotFound
+	}
+	t := at.UTC()
+	j.LogPrunedAt = &t
 	return nil
 }
 
