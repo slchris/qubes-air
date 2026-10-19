@@ -63,20 +63,23 @@ web 归档同理（第 301-329 行），并且只在归档内容变化时才重�
 ### 2.2 数据库 schema：前向单向
 
 `SchemaVersion` 是编译期常量（[database.go](../console/backend/internal/database/database.go) 第 232 行），
-存在 SQLite 的 `user_version` 里（`UserVersion`，第 320 行）。打开一个**更新**版本的库会被拒绝：
+存在 SQLite 的 `user_version` 里（`UserVersion`，第 351 行）。打开一个**更新**版本的库会被拒绝：
 
 > `database schema version N is newer than this console supports (M); upgrade the console before opening this database`
-> （`applySchemaVersion`，第 299-317 行）
+> （`applySchemaVersion`，第 330 行）
 
 这条规则决定了一切：**升级过 schema 之后，回滚二进制不是回滚，而是让控制台起不来。** 所以
 "回滚"在 schema 变更后只有一个手段——从备份恢复（见 §4）。
 
-当前是 schema 4：
+当前是 schema 6：
 - 3 在 2 的基础上给 `bootstrap_tokens` 加了 `placeholder_spki_sha256`（bootstrap 对端 pin，见 §2.4），纯加列，
   已有行保留、pin 为空。
 - 4 新增 `audit_events` 表（持久化的 API 审计轨迹），纯加表，不动已有行；升级后该表为空，升级前的审计
   只在当时的日志里。库里若已有列不同的同名表（未发布构建留下的），控制台拒绝打开并点名列差异，
   `user_version` 保持原值。
+- 5 新增告警事件、确认与 webhook outbox 表，并把 webhook 目标迁移到控制台凭据命名空间；迁移保留
+  原密文与 `key_version`。
+- 6 给 `jobs` 加 `log_created_at` / `log_pruned_at`，用于区分 job 日志“从未写入 / 已过期 / 恢复后丢失”。
 
 v2 → 当前、v3 → 当前的迁移与“再次打开无变化”由 `internal/database/database_upgrade_test.go` 与
 `audit_upgrade_test.go` 对冻结的 v2 夹具（及由它构造的 v3 状态）验证；v2 库的备份恢复后打开即升级由
@@ -98,7 +101,9 @@ bootstrap 握手（[安全控制](security-controls.md)“Bootstrap 首次连接
 | 新 | **旧（随机占位证书）** | **永远失败**：pin 不符，bootstrap 反复记为 `unreachable`，日志 `refusing the listener … does not match the pin` |
 
 所以 **agent 包必须先于控制台、或与控制台同一次 `state.apply` 升级**。已经拿到证书的 qube 不再走
-bootstrap，不受影响。
+bootstrap，不受影响。2026-10-19 的真机复验确认了这条顺序：当前 console 拒绝 `3d4fdad`（早于 `f34f343`）
+并报 pin 不符；换用同一 revision 构建的 agent 包后 bootstrap 成功
+（[记录](reviews/2026-10-19-current-main-real-machine.md)）。
 
 同一版本还收紧了**启动期**的授权校验（`qrexec.ValidateAgentGrants`）：`agent_allowed_services`
 里的服务名必须过传输层名字白名单且不重复，`agent_exec_allow` / `agent_filecopy_roots` 不得有重复项、

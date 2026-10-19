@@ -65,12 +65,13 @@ job 在 4 分钟后以证书不受信任失败。`3d4fdad` 早于 token 派生�
 会耗尽预算的 hook 和一个拒绝已取消 context 的 store。变异验证：把持久化 context 换成
 已取消的 context，测试报 `completion failure must persist as failed, got running`。
 
-### 3. provision 的可达性等待是硬编码 4 分钟（未改，记录风险）
+### 3. provision 可达性等待原为硬编码 4 分钟（已修）
 
-`internal/orchestrator/native.go` 的 `provisionProbeTimeout = 4 * time.Minute` 不可配置。
+`internal/orchestrator/native.go` 原先用编译期常量 `provisionProbeTimeout = 4 * time.Minute`。
 本环境一次冷启动包含 apt 安装、agent 包下载、bootstrap 和证书签发，稳定通过时约 2m49s，
-但早期几次因启动/安装较慢在 4 分钟边界失败。更慢的硬件或包安装可能让健康的 provision
-被误判失败。建议后续把它做成配置项或从部署预算推导；本次不改行为，只记录。
+早期几次因启动/安装较慢在 4 分钟边界失败。现已改为
+`QUBES_AIR_ORCHESTRATOR_PROVISION_WAIT_SECONDS`（默认 240s，0/负数回退到编译期默认），
+由 `NativeExecutor.WithProvisionWait` 接线；须小于 job 总超时（UD-1e）。
 
 ### 4. RemoteVM 注册/注销未在本次独立实例中验证（测试环境限制）
 
