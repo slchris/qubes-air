@@ -8,12 +8,21 @@ import type { NodeInfo, Zone, ZoneCapacity } from '../lib/types'
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>()
-  return { ...actual, apiFetch: vi.fn(), listZones: vi.fn(), getZoneCapacity: vi.fn() }
+  return {
+    ...actual,
+    apiFetch: vi.fn(),
+    listZones: vi.fn(),
+    getZoneCapacity: vi.fn(),
+    acknowledgeAlert: vi.fn(),
+    listAlertHistory: vi.fn(),
+  }
 })
 
 const apiFetch = vi.mocked(api.apiFetch)
 const listZones = vi.mocked(api.listZones)
 const getZoneCapacity = vi.mocked(api.getZoneCapacity)
+const acknowledgeAlert = vi.mocked(api.acknowledgeAlert)
+const listAlertHistory = vi.mocked(api.listAlertHistory)
 
 // The view asks the console host's /monitoring endpoint for host metrics, the
 // /monitoring/qubes endpoint for per-qube provider metrics, and every zone for
@@ -61,8 +70,12 @@ beforeEach(() => {
   apiFetch.mockReset()
   listZones.mockReset()
   getZoneCapacity.mockReset()
+  acknowledgeAlert.mockReset()
+  listAlertHistory.mockReset()
   apiFetch.mockResolvedValue(monitoringResponse({ metrics: {}, alerts: [] }))
   listZones.mockResolvedValue({ zones: [], total: 0 } as never)
+  acknowledgeAlert.mockResolvedValue()
+  listAlertHistory.mockResolvedValue({ events: [], total: 0, limit: 10, offset: 0 })
 })
 
 afterEach(() => {
@@ -563,5 +576,108 @@ describe('MonitoringView freshness', () => {
     expect(screen.getByText('fresh-vm')).toBeInTheDocument()
     expect(screen.queryByText(/stale measurement/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/stale host measurement/i)).not.toBeInTheDocument()
+  })
+})
+
+
+describe('MonitoringView alert acknowledgement', () => {
+  function alertResponse(acknowledged: boolean): Response {
+    return monitoringResponse({
+      metrics: {},
+      alerts: [{
+        id: 'agent-unreachable:q1',
+        severity: 'critical',
+        message: 'Agent for qube "work-vm" is unreachable',
+        source: 'agent-health',
+        timestamp: '2026-10-19T00:00:00Z',
+        acknowledged,
+        ...(acknowledged
+          ? { acknowledged_by: 'operator', acknowledged_at: '2026-10-19T00:05:00Z' }
+          : {}),
+      }],
+    })
+  }
+
+  it('records the operator and replaces the button with who acknowledged', async () => {
+    let acknowledged = false
+    acknowledgeAlert.mockImplementation(async () => { acknowledged = true })
+    apiFetch.mockImplementation(async (path) => {
+      if (path === '/monitoring/qubes') return monitoringResponse({ items: [] })
+      if (path === '/monitoring') return alertResponse(acknowledged)
+      throw new Error(`unexpected request ${path}`)
+    })
+
+    render(MonitoringView)
+    expect(await screen.findByText(/Agent for qube "work-vm" is unreachable/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Acknowledge' }))
+
+    expect(acknowledgeAlert).toHaveBeenCalledWith('agent-unreachable:q1')
+    expect(await screen.findByText(/by operator/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Acknowledge' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the alert actionable and names the failure when the write is refused', async () => {
+    acknowledgeAlert.mockRejectedValue(new Error('could not persist alert acknowledgement'))
+    apiFetch.mockImplementation(async (path) => {
+      if (path === '/monitoring/qubes') return monitoringResponse({ items: [] })
+      if (path === '/monitoring') return alertResponse(false)
+      throw new Error(`unexpected request ${path}`)
+    })
+
+    render(MonitoringView)
+    await userEvent.click(await screen.findByRole('button', { name: 'Acknowledge' }))
+
+    expect(await screen.findByText('could not persist alert acknowledgement')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Acknowledge' })).toBeInTheDocument()
+  })
+})
+
+describe('MonitoringView alert history', () => {
+  it('renders persisted transitions and pages older events from the server offset', async () => {
+    listAlertHistory.mockImplementation(async (_limit, offset) => ({
+      events: offset === 0
+        ? [{
+            id: 2, alert_id: 'agent-unreachable:q1', resource_id: 'q1',
+            event_type: 'resolved', severity: 'critical',
+            message: 'Agent for qube "work-vm" is reachable again',
+            source: 'agent-health', occurred_at: '2026-10-19T01:00:00Z',
+          }]
+        : [{
+            id: 1, alert_id: 'agent-unreachable:q1', resource_id: 'q1',
+            event_type: 'raised', severity: 'critical',
+            message: 'Agent for qube "work-vm" is unreachable',
+            source: 'agent-health', occurred_at: '2026-10-19T00:00:00Z',
+          }],
+      total: 2,
+      limit: 10,
+      offset,
+    }))
+    apiFetch.mockImplementation(async (path) => {
+      if (path === '/monitoring/qubes') return monitoringResponse({ items: [] })
+      if (path === '/monitoring') return monitoringResponse({ metrics: {}, alerts: [] })
+      throw new Error(`unexpected request ${path}`)
+    })
+
+    render(MonitoringView)
+    expect(await screen.findByText('Agent for qube "work-vm" is reachable again')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /Show older/ }))
+
+    expect(await screen.findByText('Agent for qube "work-vm" is unreachable')).toBeInTheDocument()
+    expect(listAlertHistory).toHaveBeenLastCalledWith(10, 1)
+  })
+
+  it('says history is unavailable instead of showing an empty list', async () => {
+    listAlertHistory.mockRejectedValue(new Error('alert history storage is unavailable'))
+    apiFetch.mockImplementation(async (path) => {
+      if (path === '/monitoring/qubes') return monitoringResponse({ items: [] })
+      if (path === '/monitoring') return monitoringResponse({ metrics: {}, alerts: [] })
+      throw new Error(`unexpected request ${path}`)
+    })
+
+    render(MonitoringView)
+    expect(await screen.findByText(/Alert history is unavailable/)).toBeInTheDocument()
+    expect(screen.queryByText('No alert transitions have been recorded yet.')).not.toBeInTheDocument()
   })
 })

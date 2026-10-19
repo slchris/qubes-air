@@ -3,7 +3,15 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { apiFetch, getZoneCapacity, listZones } from '../lib/api';
+  import {
+    acknowledgeAlert,
+    apiFetch,
+    getZoneCapacity,
+    listAlertHistory,
+    listZones,
+    type AlertHistoryEvent,
+    type MonitoringAlert,
+  } from '../lib/api';
   import type { Zone, ZoneCapacity } from '../lib/types';
   import { SCHEDULER_HEADROOM } from '../lib/types';
 
@@ -23,17 +31,7 @@
     reason?: string;
   }
 
-  interface Alert {
-    id: string;
-    severity: 'critical' | 'warning' | 'info';
-    message: string;
-    source: string;
-    timestamp?: string;
-    acknowledged: boolean;
-  }
-
-  // A value the provider did not report is absent (or null); either way it is
-  // shown as missing, never as 0.
+  // A value the provider did not report is absent (or null); either way it is  // shown as missing, never as 0.
   interface RuntimeValues {
     captured_at: string;
     source: string;
@@ -56,10 +54,23 @@
   }
 
   let metrics = $state<SystemMetrics | null>(null);
-  let alerts = $state<Alert[]>([]);
+  let alerts = $state<MonitoringAlert[]>([]);
   // The backend says when alerting is not wired yet; an empty list must then
   // not be shown as "all systems operational".
   let alertsNotImplemented = $state(false);
+  // Acknowledgement is an operator action: keep the button disabled while the
+  // request is in flight so a double click cannot race two writes, and name the
+  // failure instead of silently leaving the button unchanged.
+  let acknowledging = $state<string | null>(null);
+  let ackError = $state<string | null>(null);
+  // Persisted transitions, newest first. Pagination is explicit: an operator
+  // reads a page at a time rather than loading unbounded history.
+  let history = $state<AlertHistoryEvent[]>([]);
+  let historyTotal = $state(0);
+  let historyError = $state<string | null>(null);
+  let historyLoading = $state(false);
+  let historyLoaded = $state(false);
+  const HISTORY_PAGE = 10;
   let loading = $state(true);
   // error replaces the view only while nothing has loaded yet. A failed poll
   // after that keeps the last good values on screen and reports itself in
@@ -138,7 +149,7 @@
 
   interface OverviewResponse {
     metrics?: SystemMetrics | null;
-    alerts?: Alert[];
+    alerts?: MonitoringAlert[];
     alerts_status?: string;
     note?: string;
   }
@@ -222,14 +233,49 @@
     return !Number.isFinite(capturedMillis) || age > runtimeMetricsStaleAfterMs || age < -30_000;
   }
 
+  async function acknowledge(alert: MonitoringAlert): Promise<void> {
+    acknowledging = alert.id;
+    ackError = null;
+    try {
+      await acknowledgeAlert(alert.id);
+      // Re-read both: the active list now carries the operator and the history
+      // gained no event (acknowledgement is state, not a transition), but the
+      // refresh keeps the two panels consistent with the server.
+      await loadMonitoring();
+      await loadHistory();
+    } catch (e) {
+      ackError = e instanceof Error ? e.message : 'Could not acknowledge the alert';
+    } finally {
+      acknowledging = null;
+    }
+  }
+
+  async function loadHistory(append = false): Promise<void> {
+    const offset = append ? history.length : 0;
+    historyLoading = true;
+    try {
+      const data = await listAlertHistory(HISTORY_PAGE, offset);
+      const events = data.events ?? [];
+      history = append ? [...history, ...events] : events;
+      historyTotal = data.total ?? history.length;
+      historyError = null;
+    } catch (e) {
+      historyError = e instanceof Error ? e.message : 'Alert history is unavailable';
+    } finally {
+      historyLoading = false;
+      historyLoaded = true;
+    }
+  }
+
   function refreshAll() {
-    void Promise.all([loadMonitoring(), loadCapacity(), loadRuntimeMetrics()]);
+    void Promise.all([loadMonitoring(), loadCapacity(), loadRuntimeMetrics(), loadHistory()]);
   }
 
   onMount(() => {
     void loadMonitoring();
     void loadCapacity();
     void loadRuntimeMetrics();
+    void loadHistory();
     const clockTimer = window.setInterval(() => { runtimeClock = Date.now(); }, 15_000);
     const refreshTimer = window.setInterval(() => { void loadRuntimeMetrics(); }, 60_000);
     const overviewTimer = window.setInterval(() => { void loadMonitoring(); }, 60_000);
@@ -435,6 +481,9 @@
 
     <div class="section">
       <h3>Active Alerts</h3>
+      {#if ackError}
+        <p class="error inline-error" role="alert">{ackError}</p>
+      {/if}
       {#if alertsNotImplemented}
         <p class="muted not-implemented">
           Alerting is not implemented yet. Zone and agent health are shown in their own views;
@@ -447,7 +496,7 @@
         </div>
       {:else}
         <div class="alert-list">
-          {#each alerts as alert}
+          {#each alerts as alert (alert.id)}
             <div class="alert-item {getSeverityClass(alert.severity)}">
               <div class="alert-header">
                 <span class="alert-severity">{alert.severity.toUpperCase()}</span>
@@ -455,9 +504,49 @@
               </div>
               <p class="alert-message">{alert.message}</p>
               <span class="alert-source">Source: {alert.source}</span>
+              {#if alert.acknowledged}
+                <span class="alert-ack">
+                  Acknowledged{#if alert.acknowledged_by} by {alert.acknowledged_by}{/if}{#if alert.acknowledged_at} · {formatTime(alert.acknowledged_at)}{/if}
+                </span>
+              {:else}
+                <button
+                  class="ack"
+                  onclick={() => acknowledge(alert)}
+                  disabled={acknowledging === alert.id}
+                >
+                  {acknowledging === alert.id ? 'Acknowledging…' : 'Acknowledge'}
+                </button>
+              {/if}
             </div>
           {/each}
         </div>
+      {/if}
+    </div>
+
+    <div class="section">
+      <h3>Alert history</h3>
+      {#if historyError}
+        <p class="error inline-error" role="alert">Alert history is unavailable ({historyError}).</p>
+      {/if}
+      {#if historyLoading && history.length === 0}
+        <p class="muted">Loading alert history…</p>
+      {:else if historyLoaded && history.length === 0 && !historyError}
+        <p class="muted">No alert transitions have been recorded yet.</p>
+      {:else if history.length > 0}
+        <ul class="history">
+          {#each history as event (event.id)}
+            <li>
+              <span class="event-type {event.event_type}">{event.event_type}</span>
+              <span class="event-message">{event.message}</span>
+              <span class="event-meta">{event.source} · {formatTime(event.occurred_at)}</span>
+            </li>
+          {/each}
+        </ul>
+        {#if history.length < historyTotal}
+          <button class="more" onclick={() => loadHistory(true)} disabled={historyLoading}>
+            {historyLoading ? 'Loading…' : `Show older (${historyTotal - history.length} more)`}
+          </button>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -695,5 +784,65 @@
   .alert-source {
     font: var(--subhead);
     color: var(--systemSecondary);
+  }
+
+  .alert-ack {
+    display: block;
+    margin-top: 0.4rem;
+    font: var(--subhead);
+    color: var(--systemSecondary);
+  }
+
+  .ack, .more {
+    margin-top: 0.6rem;
+    padding: 0.35rem 0.75rem;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
+    background: var(--pageBG);
+    color: var(--systemPrimary);
+    font: var(--callout);
+    cursor: pointer;
+  }
+
+  .ack:disabled, .more:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .history {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--systemQuaternary);
+    border-radius: var(--global-border-radius-xsmall);
+    overflow: hidden;
+  }
+
+  .history li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    padding: 0.5rem 0.8rem;
+    background: var(--pageBG);
+    border-top: 1px solid var(--systemQuaternary);
+    font: var(--body);
+  }
+
+  .history li:first-child { border-top: none; }
+
+  .event-type {
+    flex: none;
+    min-width: 4.5rem;
+    font: var(--subhead);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .event-type.raised { color: var(--systemRed); }
+  .event-type.resolved { color: var(--systemGreen); }
+  .event-message { flex: 1; }
+  .event-meta {
+    color: var(--systemSecondary);
+    font: var(--callout);
+    white-space: nowrap;
   }
 </style>
