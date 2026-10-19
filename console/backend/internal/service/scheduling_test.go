@@ -104,12 +104,12 @@ func TestPlacementUnconfiguredZoneDefers(t *testing.T) {
 // TestParseProxmoxSecret — the two accepted shapes, told apart by the '!' that
 // only ever appears in a token id.
 func TestParseProxmoxSecret(t *testing.T) {
-	tok := parseProxmoxSecret("terraform@pve!tf=aaaa-bbbb-cccc")
-	assert.Equal(t, "terraform@pve!tf=aaaa-bbbb-cccc", tok.APIToken)
+	tok := parseProxmoxSecret("automation@pve!tf=aaaa-bbbb-cccc")
+	assert.Equal(t, "automation@pve!tf=aaaa-bbbb-cccc", tok.APIToken)
 	assert.Empty(t, tok.Username, "a token must not be misread as a username")
 
-	pw := parseProxmoxSecret("terraform@pve:hunter2")
-	assert.Equal(t, "terraform@pve", pw.Username)
+	pw := parseProxmoxSecret("automation@pve:hunter2")
+	assert.Equal(t, "automation@pve", pw.Username)
 	assert.Equal(t, "hunter2", pw.Password)
 	assert.Empty(t, pw.APIToken)
 

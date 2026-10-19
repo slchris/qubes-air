@@ -111,7 +111,7 @@
   /**
    * Human-readable label for a status. Transient ones read as verbs so the UI
    * says what is happening rather than showing an opaque noun for the several
-   * minutes a terraform apply takes.
+   * minutes a provision takes.
    */
   function getStatusLabel(status: string): string {
     switch (status) {

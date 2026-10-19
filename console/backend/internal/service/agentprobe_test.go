@@ -188,7 +188,7 @@ func TestProbe_AgentAnswers(t *testing.T) {
 }
 
 // TestProbe_NoAddressIsItsOwnDiagnosis — a qube with no IP must not look like a
-// qube whose agent is dead. One is waiting on terraform, the other is broken.
+// qube whose agent is dead. One is waiting on provisioning, the other is broken.
 func TestProbe_NoAddressIsItsOwnDiagnosis(t *testing.T) {
 	ca := newCA(t)
 	certs := &recordingCerts{}

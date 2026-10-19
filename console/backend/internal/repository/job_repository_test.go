@@ -48,7 +48,7 @@ func TestJobRepository_RoundTrip(t *testing.T) {
 
 	finished := now.Add(5 * time.Minute)
 	j.State = orchestrator.JobFailed
-	j.Error = "terraform apply failed: prevent_destroy"
+	j.Error = "provider destroy failed: prevent_destroy"
 	j.FinishedAt = &finished
 	require.NoError(t, repo.Update(ctx, j))
 

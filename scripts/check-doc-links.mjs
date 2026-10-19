@@ -31,7 +31,6 @@ import { dirname, join, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const ignoredDirectories = new Set([
   '.git',
-  '.terraform',
   'dist',
   'node_modules',
   'vendor'

@@ -40,7 +40,7 @@ describe('JobsView', () => {
   it('loads the job history and expands a completed job log', async () => {
     const job = jobFixture()
     listJobs.mockResolvedValue({ jobs: [job], count: 1 } as never)
-    getJobLog.mockResolvedValue({ offset: 18, data: 'terraform: provision complete\n', running: false, state: 'succeeded' })
+    getJobLog.mockResolvedValue({ offset: 18, data: 'provision: complete\n', running: false, state: 'succeeded' })
 
     render(JobsView)
 
@@ -50,7 +50,7 @@ describe('JobsView', () => {
     await userEvent.click(row)
     await userEvent.click(await screen.findByRole('button', { name: /job log/i }))
 
-    expect(await screen.findByText(/terraform: provision complete/)).toBeInTheDocument()
+    expect(await screen.findByText(/provision: complete/)).toBeInTheDocument()
     expect(getJobLog).toHaveBeenCalledWith(job.id, 0)
   })
 

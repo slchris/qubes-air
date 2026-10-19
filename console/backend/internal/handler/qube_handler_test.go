@@ -213,7 +213,7 @@ func TestQubeHandler_Delete(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, w.Code)
 
 	// The qube still exists — DELETE releases compute and keeps the data disk.
-	// It must remain in the terraform variable map until the disk is purged.
+	// It must remain in the provisioning record until the disk is purged.
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequest("GET", "/api/v1/qubes/"+createdOp.Qube.ID, nil)
 	router.ServeHTTP(w, req)
@@ -244,7 +244,7 @@ func TestQubeHandler_Start(t *testing.T) {
 	req, _ := http.NewRequest("POST", "/api/v1/qubes/"+createdOp.Qube.ID+"/start", nil)
 	router.ServeHTTP(w, req)
 
-	// 202: the terraform apply is queued, not done.
+	// 202: the provision job is queued, not done.
 	assert.Equal(t, http.StatusAccepted, w.Code)
 
 	qube, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)

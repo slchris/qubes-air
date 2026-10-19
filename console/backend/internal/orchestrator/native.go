@@ -28,7 +28,7 @@ type QubeZoneResolver interface {
 // NativeExecutor errors.
 var (
 	// ErrInfraProtected refuses a destructive purge while the record is marked
-	// protected. It replaces terraform's lifecycle.prevent_destroy.
+	// protected. It replaces a provider's prevent-destroy guard.
 	ErrInfraProtected = errors.New("qube infrastructure is protected; clear protection before destroying the data disk")
 	// ErrNoInfrastructure means the qube has no recorded infrastructure, so the
 	// requested operation has nothing to act on.
@@ -36,7 +36,7 @@ var (
 )
 
 // NativeExecutor is the production Executor. It drives provider adapters
-// directly — no terraform, no var-file, no state file.
+// directly — no external tool, no var-file, no state file.
 //
 // The database row (provider.Infra) is the single source of truth: every method
 // checkpoints reserved IDs before provider creation, then records observed

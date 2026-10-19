@@ -256,7 +256,7 @@ func TestQubeService_Delete(t *testing.T) {
 
 	// Delete RELEASES rather than destroys: the compute instance goes away but
 	// the data disk, and the row describing it, are kept. The row must survive —
-	// it is what keeps the qube in the rendered terraform variables, and dropping
+	// it is what keeps the qube in the provisioning record, and dropping
 	// it while the prevent_destroy storage VM is still in state would wedge every
 	// subsequent apply for every qube.
 	after, err := qubeSvc.GetByID(ctx, createdOp.Qube.ID)
@@ -272,7 +272,7 @@ func TestQubeService_Start(t *testing.T) {
 	zone := createConnectedZone(t, zoneSvc)
 
 	req := &models.QubeCreateRequest{
-		// Name must be terraform-safe: it maps to a terraform -target address.
+		// Name must be provider-safe: it maps to a provider target address.
 		Name:   "start-qube",
 		Type:   models.QubeTypeApp,
 		ZoneID: zone.ID,

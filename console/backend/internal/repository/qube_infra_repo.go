@@ -12,7 +12,7 @@ import (
 
 // QubeInfraRepository persists the provider-side identity of a qube's
 // infrastructure. It is the storage behind provider.Infra and replaces the
-// terraform state file as the console's record of what exists.
+// external state file as the console's record of what exists.
 type QubeInfraRepository struct {
 	db *database.DB
 }

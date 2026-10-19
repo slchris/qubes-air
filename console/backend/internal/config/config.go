@@ -1103,11 +1103,11 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	// Real orchestration no longer requires a terraform working directory. The
-	// native provider executor drives each zone's API directly and records
-	// resource identities in qube_infra, so the console starts on a machine
-	// with no terraform installed; a zone with no registered adapter fails
-	// loudly at operation time.
+	// Real orchestration requires no external working directory. The native
+	// provider executor drives each zone's API directly and records resource
+	// identities in qube_infra, so the console starts with no orchestration
+	// tool installed; a zone with no registered adapter fails loudly at
+	// operation time.
 
 	if err := c.validateAgentArtifacts(); err != nil {
 		return err
