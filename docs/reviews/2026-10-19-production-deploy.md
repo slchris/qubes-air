@@ -58,6 +58,42 @@
   - suspend 成功；purge 后 qube `purged`，PVE 匹配 VM 为 **0**，RemoteVM 不存在，
     三条证书全部 revoked（两次 resume rebuild + purge）。
 
+## Exec/FileCopy 与数据盘持久性（qa-deploy-4）
+
+为覆盖剩余的真机缺口，临时在 console.env 中打开 agent 授权（测试后已还原）：
+
+```
+QUBES_AIR_AGENT_ALLOWED_SERVICES=qubesair.Ping,qubesair.UnlockData,qubesair.Exec,qubesair.FileCopy
+QUBES_AIR_EXEC_ALLOW=/usr/bin/id:/usr/bin/cat:/usr/bin/echo:/usr/bin/sha256sum
+QUBES_AIR_FILECOPY_ROOTS=/data:/tmp
+```
+
+重启 console 后 provision `qa-deploy-4-20261019`，确认这些值写入了 guest 的
+`/etc/qubes-air/agent.env`。
+
+- **dom0 policy 尚未授权高危服务**：从 console 和 mgmt-jump 调用
+  `qrexec-client-vm remote-qa-deploy-4-20261019 qubesair.Exec` /
+  `qubesair.FileCopy` 都返回 `Request refused`（rc 126）；只有从 console 发起的
+  `qubesair.Ping` 成功。授权 Exec/FileCopy 需要改外部 `qubes-salt-config` 的
+  dom0 policy，本次未改，因此 **qrexec transport 路径仍未验证**。
+- **agent 侧逻辑**：用 PVE `qm guest exec` 在 guest 内加载 agent.env 后直接执行
+  安装的 service 脚本：
+  - `["/usr/bin/id"]` → `uid=0(root) gid=0(root) ...`，rc 0；
+  - `["/bin/sh","-c","id"]` → `executable is not allowed`，rc 126；
+  - FileCopy push `/data/qubes-air-check.txt` → `OK push 27 <sha256> ...`，rc 0；
+  - FileCopy push `/etc/qubes-air-evil.txt` → `path outside allowed directories`，rc 126；
+  - FileCopy pull 回读内容一致。
+- **数据盘持久性**：写入 `/data/qubes-air-check.txt` 后 suspend（compute 销毁、
+  storage VM 保留）→ resume；新 compute 中 `/data` 仍是
+  `/dev/mapper/qubesair-data`（ext4），文件内容仍为
+  `qubes-air-persist-20261019`。
+- **resume 延迟异常**：这次 resume 用了 7m12s。agent 在 08:50:01Z 已启动并监听
+  `*:8443`；08:56Z 从 PVE 节点连接 `10.31.0.113:8443` 成功，但 console 在同一地址
+  持续得到 `connection refused`，直到约 08:55:5xZ 才恢复，证书在 08:55:53Z 签发。
+  原因未定位，表现像桥接/DHCP 层的地址复用或 ARP 缓存；600s 的 provision 等待
+  吸收了这次延迟，但说明 resume 耗时可能由 console→guest 可达性决定，而不是
+  bootstrap。建议在真实网络里复现并抓取邻居表。
+
 ## 发现
 
 ### 1. RemoteVM 注册调用慢，30s 超时会留下半配置的 shell（已修，#78）
@@ -114,15 +150,16 @@ resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 
 ## 未覆盖
 
-- Exec/FileCopy 真机正反例；
-- 数据盘内容跨 suspend/resume 的持久性；
+- Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
 - RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）；
 - 发现 4 的错误文案改进。
 
 ## 清理
 
-三个测试 qube（`qa-deploy-20261019-1`、`-2`、`-3`）均已 purge；PVE 按名称匹配的
-VM 为 **0**；对应 RemoteVM 均不存在；各 qube 的证书均为 revoked。临时测试脚本、
-HTTP 转发和 PVE ticket 已清理。生产 console 保持运行在 `66325fb`；三个部署前备份
-保留用于回滚。
+四个测试 qube（`qa-deploy-20261019-1`、`-2`、`-3`、`-4`）均已 purge；PVE 按名称
+匹配的 VM 为 **0**；对应 RemoteVM 均不存在；各 qube 的证书均为 revoked。
+Exec/FileCopy 测试用的 console.env 授权已从
+`/rw/config/qubesair/pre-exec-test/console.env` 还原并重启 console，`/health` 仍为
+`v0.1.0-224-g66325fb`。临时测试脚本、HTTP 转发和 PVE ticket 已清理。生产 console
+保持运行在 `66325fb`；部署前备份保留用于回滚。
