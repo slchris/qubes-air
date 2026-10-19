@@ -112,8 +112,15 @@ func TestPurge_FromRunningIsRefused(t *testing.T) {
 	fake.Reset()
 
 	err = qubeSvc.Purge(ctx, op.Qube.ID, "running")
-	assert.ErrorIs(t, err, repository.ErrTransitionConflict)
+	// The refusal must name the remedy: the generic transition conflict made a
+	// state rule look like a concurrent operation and invited blind retries.
+	assert.ErrorIs(t, err, ErrQubeNotPurgeable)
+	assert.Contains(t, err.Error(), "running")
 	assert.Empty(t, fake.Calls(), "a running qube must be released before it can be purged")
+
+	got, getErr := qubeSvc.GetByID(ctx, op.Qube.ID)
+	require.NoError(t, getErr)
+	assert.Equal(t, models.QubeStatusRunning, got.Status)
 }
 
 func TestPurge_DestroysDiskAndClearsProtection(t *testing.T) {
