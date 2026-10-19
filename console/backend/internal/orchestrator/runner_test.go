@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -494,5 +495,58 @@ func TestRunnerLogMarkFailureDoesNotFailJob(t *testing.T) {
 	}
 	if !exists {
 		t.Error("the log file was not written despite the job running")
+	}
+}
+
+// ctxJobStore refuses Update when the context is already done, like the SQL
+// store. The plain memJobStore ignores contexts, which would let a canceled
+// persistence call pass unnoticed.
+type ctxJobStore struct {
+	*memJobStore
+}
+
+func (s *ctxJobStore) Update(ctx context.Context, j *Job) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.memJobStore.Update(ctx, j)
+}
+
+// TestRunnerPersistsOutcomeAfterCompletionHookExhaustsItsBudget — the completion
+// hook updates qube status and may spend its whole budget in a dom0 RemoteVM
+// registration call. It must not also consume the context used to persist the
+// job row: doing so left the job permanently "running" in the database while the
+// qube was actually healthy and running.
+func TestRunnerPersistsOutcomeAfterCompletionHookExhaustsItsBudget(t *testing.T) {
+	store := &ctxJobStore{memJobStore: newMemJobStore()}
+	r := NewRunner(RunnerConfig{
+		Executor: NewFakeExecutor(),
+		Store:    store,
+		OnDone: func(ctx context.Context, _ *Job) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	r.completionTimeout = 20 * time.Millisecond
+
+	job, err := r.Submit(context.Background(), "q", "remote-finish", ActionResume)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	r.Start()
+	r.Shutdown(time.Second)
+
+	got, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.State != JobFailed {
+		t.Fatalf("completion failure must persist as failed, got %s", got.State)
+	}
+	if got.FinishedAt == nil {
+		t.Error("a terminal job must carry its finish time")
+	}
+	if !strings.Contains(got.Error, "completion: context deadline exceeded") {
+		t.Errorf("the completion failure must be part of the persisted error, got %q", got.Error)
 	}
 }
