@@ -43,7 +43,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-3 合并 main | 已完成 `5f0fd88` | 21/21 全绿后用 **merge commit** 合并（不能用 squash/rebase：会改写 `4f52953` 这些已被 QA 记录的 revision，已核对仍在 main 历史里）；合并后在 main 上重跑 `make audit` **rc=0** |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；真机复现待 M0-5 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
-| M0-5 / M1-2 / M1-3 / M1-4 真机项 | **环境阻塞** | 本机没有 dom0/Qubes 入口：`~/.ssh/config` 无 `mgmt-jump`，`chris-dev` 拒绝公钥。经 `NAS` 可确认 PVE `10.31.0.200:8006` 与 QA 吊销端点 `10.31.0.135:18080` 在线，但 lifecycle 冒烟必须在 Qubes 侧执行；真机窗口一到就按[真机验收清单](acceptance-real-machine.md) 一次跑完 |
+| M0-5 / M1-2 / M1-3 / M1-4 真机项 | **部分执行，仍阻塞** | 2026-10-19 已在当前 main `4f16915` 上取得 Qubes 管理入口并执行：[记录](reviews/2026-10-19-current-main-real-machine.md)。当前 HEAD 构建/迁移、PVE zone/credential/capacity、job 日志、失败后的 purge 销毁通过；首次成功 agent bootstrap 与 suspend/resume 仍被 agent 包发布阻塞（缺 artifact 上传凭据），且 console 升级必须同步发布含 token pin 的 agent 包。原环境阻塞（保留）：`~/.ssh/config` 无 `mgmt-jump`、`chris-dev` 拒绝公钥 |
 
 ### 0.3 M1 执行结果（本轮，2026-09-22）
 
@@ -237,7 +237,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 - [x] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 已完成：gitleaks 按值放行 `fa2b8a4`、deb 版本排序 `3afbcd7`、gosec 29 条 `a118c3c` + 门禁等价 `5f1bf72`；第二轮 CI 复验（G-A1）
 - [x] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 已完成：`5f0fd88`（merge commit，保留 QA 记录的 revision），`main` 上 `make audit` rc=0（G-A2）
 - [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
-- [ ] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 依赖：M0-3（G-B6）
+- [ ] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 依赖：M0-3（G-B6）。2026-10-19 在当前 main `4f16915` 上执行了部分：[记录](reviews/2026-10-19-current-main-real-machine.md)；zone/capacity/job log/purge 通过，成功 provision→suspend→resume 仍待 agent 包发布（缺 artifact 上传凭据）
 - [x] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 2026-09-22 完成：`6f6d0dc`（清 terraform 时代）+ `9866baa`（白名单 env + 备份 state），PR [#1](https://github.com/slchris/qubes-salt-config/pull/1) `--merge` → `db1b68d`，tag `v0.1.0`；该仓 CI（yamllint / salt-lint / top-pairing）三项 pass —— 依赖：无（G-G4）
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）

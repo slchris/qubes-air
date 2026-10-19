@@ -58,6 +58,10 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
   未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
   详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。
+  2026-10-19 在当前 main `4f16915` 上执行了部分真机回归：provider zone/credential/capacity、
+  job 日志与失败后的 purge 销毁通过；首次成功 agent bootstrap 与 suspend/resume 未通过，
+  根因是 console 的 token pin 校验拒绝了旧 agent 包，且当前 agent 包缺少 artifact 上传凭据。
+  详见[记录](reviews/2026-10-19-current-main-real-machine.md)。
 
 ## P2：产品与扩展
 
