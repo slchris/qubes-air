@@ -28,8 +28,41 @@ func (m *memJobStore) Insert(_ context.Context, j *Job) error {
 func (m *memJobStore) Update(_ context.Context, j *Job) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	existing, ok := m.jobs[j.ID]
+	if !ok {
+		return errors.New("job not found")
+	}
+	// Mirror the real stores: lifecycle updates do not rewrite log timestamps.
 	cp := *j
+	cp.LogCreatedAt = existing.LogCreatedAt
+	cp.LogPrunedAt = existing.LogPrunedAt
 	m.jobs[j.ID] = &cp
+	return nil
+}
+
+func (m *memJobStore) MarkLogCreated(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return errors.New("job not found")
+	}
+	if j.LogCreatedAt == nil {
+		t := at.UTC()
+		j.LogCreatedAt = &t
+	}
+	return nil
+}
+
+func (m *memJobStore) MarkLogPruned(_ context.Context, id string, at time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return errors.New("job not found")
+	}
+	t := at.UTC()
+	j.LogPrunedAt = &t
 	return nil
 }
 
@@ -375,5 +408,91 @@ func TestRunnerJobTimeoutComesFromConfig(t *testing.T) {
 	}
 	if got := NewRunner(RunnerConfig{Timeout: 3 * time.Second}).timeout; got != 3*time.Second {
 		t.Fatalf("configured timeout = %s, want 3s", got)
+	}
+}
+
+// The row must record that a log file was written, because "file is gone" only
+// means "expired" or "lost" when the database says one existed.
+func TestRunnerRecordsLogCreation(t *testing.T) {
+	dir := t.TempDir()
+	logs, err := NewJobLogStore(dir)
+	if err != nil {
+		t.Fatalf("NewJobLogStore: %v", err)
+	}
+	store := newMemJobStore()
+	done := make(chan *Job, 1)
+	r := NewRunner(RunnerConfig{
+		Executor: NewFakeExecutor(),
+		Store:    store,
+		Logs:     logs,
+		OnDone:   func(_ context.Context, j *Job) error { done <- j; return nil },
+	})
+	r.Start()
+	defer r.Shutdown(2 * time.Second)
+
+	job, err := r.Submit(context.Background(), "q", "remote-logged", ActionResume)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out")
+	}
+
+	stored, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if stored.LogCreatedAt == nil {
+		t.Error("a job that wrote a log did not record its creation time")
+	}
+	exists, err := logs.Exists(job.ID)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists {
+		t.Error("the log file the runner opened is missing")
+	}
+}
+
+// markingStore fails the log-creation write, which must not fail the job:
+// losing observability is bad, losing the infrastructure operation with it is
+// worse.
+type markingStore struct {
+	*memJobStore
+}
+
+func (s *markingStore) MarkLogCreated(context.Context, string, time.Time) error {
+	return errors.New("injected log mark failure")
+}
+
+func TestRunnerLogMarkFailureDoesNotFailJob(t *testing.T) {
+	logs, err := NewJobLogStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJobLogStore: %v", err)
+	}
+	store := &markingStore{memJobStore: newMemJobStore()}
+	r := NewRunner(RunnerConfig{Executor: NewFakeExecutor(), Store: store, Logs: logs})
+	job, err := r.Submit(context.Background(), "q", "remote-one", ActionResume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Start()
+	r.Shutdown(2 * time.Second)
+
+	got, err := store.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != JobSucceeded {
+		t.Fatalf("log bookkeeping failure changed the job outcome: %s (%s)", got.State, got.Error)
+	}
+	exists, err := logs.Exists(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Error("the log file was not written despite the job running")
 	}
 }

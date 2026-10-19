@@ -186,3 +186,29 @@ func TestUpgradeFromV2AddsBootstrapPin(t *testing.T) {
 	assert.Equal(t, SchemaVersion, got)
 	assert.Equal(t, before, schemaObjects(t, again), "re-opening an upgraded database must not alter it")
 }
+
+// Schema 6: job logs live in files, but the row records when one was created
+// and when retention removed it. Both must be added to an existing jobs table,
+// not only to freshly created databases, or an upgraded console would lose the
+// ability to distinguish an expired log from one missing after a restore.
+func TestUpgradeFromV2AddsJobLogColumns(t *testing.T) {
+	db, _ := openV2Fixture(t)
+	fresh := openPath(t, filepath.Join(t.TempDir(), "fresh.db"))
+
+	require.GreaterOrEqual(t, SchemaVersion, 6)
+	cols := tableColumns(t, db, "jobs")
+	assert.Equal(t, tableColumns(t, fresh, "jobs"), cols, "upgraded and fresh jobs tables must match")
+	assert.Contains(t, cols, "log_created_at DATETIME notnull=0 default=NULL")
+	assert.Contains(t, cols, "log_pruned_at DATETIME notnull=0 default=NULL")
+
+	// A job row that predates the columns must survive with no log history.
+	_, err := db.DB().ExecContext(context.Background(), `INSERT INTO jobs
+		(id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at)
+		VALUES ('legacy-job', 'qube-healthy', 'remote-one', 'provision', 'succeeded', '', '2026-09-20 10:00:00+00:00', NULL, NULL)`)
+	require.NoError(t, err)
+	var created, pruned sql.NullTime
+	require.NoError(t, db.DB().QueryRowContext(context.Background(),
+		`SELECT log_created_at, log_pruned_at FROM jobs WHERE id = 'legacy-job'`).Scan(&created, &pruned))
+	assert.False(t, created.Valid)
+	assert.False(t, pruned.Valid)
+}

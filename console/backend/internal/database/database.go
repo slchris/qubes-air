@@ -229,7 +229,11 @@ const listDatabases = `PRAGMA database_list`
 // newer code no longer understands, and the failure would surface as corrupted
 // data rather than an error. Restoring a backup into an older console is the
 // same hazard, which is why backup carries the version too.
-const SchemaVersion = 5
+const SchemaVersion = 6
+
+// dateTimeColumn is the SQLite type shared by nullable timestamp columns added
+// by additive migrations.
+const dateTimeColumn = "DATETIME"
 
 // migrate runs database migrations.
 func (d *DB) migrate() error {
@@ -260,6 +264,19 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Job log state. The database backup does not contain the log files, so a
+	// job whose file is gone after a restore needs to be distinguishable from
+	// one that never logged at all. log_created_at says a file was written;
+	// log_pruned_at says the retention pass removed it.
+	for _, c := range []struct{ column, definition string }{
+		{"log_created_at", dateTimeColumn},
+		{"log_pruned_at", dateTimeColumn},
+	} {
+		if err := d.addColumnIfMissing("jobs", c.column, c.definition); err != nil {
+			return err
+		}
+	}
+
 	// Agent health: whether the agent inside a qube answers, which is a separate
 	// fact from the VM's own status (see models.Qube). Existing rows backfill to
 	// 'unknown' — the truthful value for a qube that has never been probed, and
@@ -268,15 +285,15 @@ func (d *DB) migrate() error {
 	for _, c := range []struct{ column, definition string }{
 		{"purge_requested", "INTEGER NOT NULL DEFAULT 0"},
 		{"agent_health", "TEXT NOT NULL DEFAULT 'unknown'"},
-		{"agent_last_probed_at", "DATETIME"},
-		{"agent_last_healthy_at", "DATETIME"},
+		{"agent_last_probed_at", dateTimeColumn},
+		{"agent_last_healthy_at", dateTimeColumn},
 		{"agent_last_error", "TEXT NOT NULL DEFAULT ''"},
 		// NULL for every existing row, which is correct rather than merely
 		// convenient: nobody observed those failures as one continuous run, so
 		// claiming a start time for them would invent an observation. The next
 		// failed probe starts the streak, and models.ClassifyAgentRecovery
 		// treats a missing streak as "not yet known" until it does.
-		{"agent_failing_since", "DATETIME"},
+		{"agent_failing_since", dateTimeColumn},
 	} {
 		if err := d.addColumnIfMissing("qubes", c.column, c.definition); err != nil {
 			return err
@@ -493,7 +510,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 	error TEXT DEFAULT '',
 	enqueued_at DATETIME NOT NULL,
 	started_at DATETIME,
-	finished_at DATETIME
+	finished_at DATETIME,
+	log_created_at DATETIME,
+	log_pruned_at DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_qube_id ON jobs(qube_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_enqueued_at ON jobs(enqueued_at DESC);

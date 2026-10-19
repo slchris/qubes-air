@@ -49,15 +49,17 @@ const (
 // it: a real apply takes minutes, far longer than any request may block, so the
 // caller is handed a job id and polls for the outcome.
 type Job struct {
-	ID         string     `json:"id"`
-	QubeID     string     `json:"qube_id"`
-	QubeName   string     `json:"qube_name"`
-	Action     Action     `json:"action"`
-	State      JobState   `json:"state"`
-	Error      string     `json:"error,omitempty"`
-	EnqueuedAt time.Time  `json:"enqueued_at"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	ID           string     `json:"id"`
+	QubeID       string     `json:"qube_id"`
+	QubeName     string     `json:"qube_name"`
+	Action       Action     `json:"action"`
+	State        JobState   `json:"state"`
+	Error        string     `json:"error,omitempty"`
+	EnqueuedAt   time.Time  `json:"enqueued_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	LogCreatedAt *time.Time `json:"log_created_at,omitempty"`
+	LogPrunedAt  *time.Time `json:"log_pruned_at,omitempty"`
 }
 
 // JobStore records jobs so a client can poll for an outcome.
@@ -66,6 +68,12 @@ type JobStore interface {
 	Update(ctx context.Context, j *Job) error
 	GetByID(ctx context.Context, id string) (*Job, error)
 	ListByQube(ctx context.Context, qubeID string, limit int) ([]*Job, error)
+	// MarkLogCreated records that a job log file was opened. It is separate
+	// from Update so the log lifecycle does not have to travel through the
+	// job's terminal-status write. The first timestamp wins.
+	MarkLogCreated(ctx context.Context, id string, at time.Time) error
+	// MarkLogPruned records that the retention pass removed the log file.
+	MarkLogPruned(ctx context.Context, id string, at time.Time) error
 }
 
 // Step is work the worker performs INSIDE a job: after the job row is durable
@@ -335,6 +343,17 @@ func (r *Runner) run(entry *queuedJob) {
 		if f, lerr := r.logs.Create(job.ID); lerr == nil {
 			defer func() { _ = f.Close() }()
 			ctx = WithLogSink(ctx, f)
+			// Record the file's existence before the job can finish, so a file
+			// missing later (after a restore or a prune) is distinguishable from
+			// one that never existed. Detached from the job context: the log
+			// file is already on disk even if the job is canceled immediately.
+			if r.store != nil {
+				markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				if err := r.store.MarkLogCreated(markCtx, job.ID, time.Now().UTC()); err != nil {
+					log.Printf("orchestrator: job %s: could not record log creation: %v", job.ID, err)
+				}
+				markCancel()
+			}
 		} else {
 			log.Printf("orchestrator: job %s: no log (%v)", job.ID, lerr)
 		}
