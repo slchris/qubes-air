@@ -64,10 +64,46 @@ func (r *JobRepository) Update(ctx context.Context, j *orchestrator.Job) error {
 	return nil
 }
 
+// MarkLogCreated records the first time a job log file was opened. The first
+// timestamp wins so a re-run of the same job does not move the origin.
+func (r *JobRepository) MarkLogCreated(ctx context.Context, id string, at time.Time) error {
+	const q = `UPDATE jobs SET log_created_at = COALESCE(log_created_at, ?) WHERE id = ?`
+	res, err := r.db.DB().ExecContext(ctx, q, at.UTC(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrJobNotFound
+	}
+	return nil
+}
+
+// MarkLogPruned records that the retention pass removed the job's log file.
+func (r *JobRepository) MarkLogPruned(ctx context.Context, id string, at time.Time) error {
+	const q = `UPDATE jobs SET log_pruned_at = ? WHERE id = ?`
+	res, err := r.db.DB().ExecContext(ctx, q, at.UTC(), id)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrJobNotFound
+	}
+	return nil
+}
+
 // GetByID returns a single job.
 func (r *JobRepository) GetByID(ctx context.Context, id string) (*orchestrator.Job, error) {
 	const q = `
-		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at
+		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at,
+		       log_created_at, log_pruned_at
 		FROM jobs WHERE id = ?`
 	row := r.db.DB().QueryRowContext(ctx, q, id)
 
@@ -84,7 +120,8 @@ func (r *JobRepository) ListByQube(ctx context.Context, qubeID string, limit int
 		limit = 50
 	}
 	const q = `
-		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at
+		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at,
+		       log_created_at, log_pruned_at
 		FROM jobs WHERE qube_id = ? ORDER BY enqueued_at DESC LIMIT ?`
 	rows, err := r.db.DB().QueryContext(ctx, q, qubeID, limit)
 	if err != nil {
@@ -117,7 +154,8 @@ func (r *JobRepository) ListByStates(ctx context.Context, states []orchestrator.
 	}
 	// #nosec G202 -- the only concatenated text is "?" placeholders; states are
 	// bound as parameters.
-	q := "SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at " +
+	q := "SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at, " +
+		"log_created_at, log_pruned_at " +
 		"FROM jobs WHERE state IN (" + strings.Join(placeholders, ",") + ") ORDER BY enqueued_at ASC"
 	rows, err := r.db.DB().QueryContext(ctx, q, args...)
 	if err != nil {
@@ -142,7 +180,8 @@ func (r *JobRepository) List(ctx context.Context, limit int) ([]*orchestrator.Jo
 		limit = 100
 	}
 	const q = `
-		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at
+		SELECT id, qube_id, qube_name, action, state, error, enqueued_at, started_at, finished_at,
+		       log_created_at, log_pruned_at
 		FROM jobs ORDER BY enqueued_at DESC LIMIT ?`
 	rows, err := r.db.DB().QueryContext(ctx, q, limit)
 	if err != nil {
@@ -193,10 +232,12 @@ func scanJobRow(sc rowScanner) (*orchestrator.Job, error) {
 		state      string
 		startedAt  sql.NullTime
 		finishedAt sql.NullTime
+		logCreated sql.NullTime
+		logPruned  sql.NullTime
 	)
 	if err := sc.Scan(
 		&j.ID, &j.QubeID, &j.QubeName, &action, &state, &j.Error,
-		&j.EnqueuedAt, &startedAt, &finishedAt,
+		&j.EnqueuedAt, &startedAt, &finishedAt, &logCreated, &logPruned,
 	); err != nil {
 		return nil, err
 	}
@@ -209,6 +250,14 @@ func scanJobRow(sc rowScanner) (*orchestrator.Job, error) {
 	if finishedAt.Valid {
 		t := finishedAt.Time
 		j.FinishedAt = &t
+	}
+	if logCreated.Valid {
+		t := logCreated.Time
+		j.LogCreatedAt = &t
+	}
+	if logPruned.Valid {
+		t := logPruned.Time
+		j.LogPrunedAt = &t
 	}
 	return &j, nil
 }

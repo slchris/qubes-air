@@ -15,7 +15,13 @@
 | 证书注册表与吊销状态 | `agent_certs` | 吊销状态丢失 |
 | 一次性 bootstrap token 哈希 | `bootstrap_tokens` | 未兑换 token 失效（可接受） |
 | 编排审计轨迹 | `jobs` | 审计历史丢失 |
+| job 执行日志 | `<数据库目录>/job-logs/<job-id>.log` | **不在归档内**；保留 30 天，恢复后文件缺失的 job 在 API/UI 中显示 `log_state=lost` |
 | API 审计轨迹（90 天，有上限） | `audit_events` | 库内审计历史丢失；stderr 日志若已转发则不受影响 |
+
+job 日志是每个 job 一个 `0600` 文件，按 30 天保留、每 24 小时清理；它们**不进入**数据库
+备份归档。恢复只替换数据库，所以同机恢复且日志目录仍在时旧日志仍可读；换机恢复或目录已
+删除时，`jobs` 行还在而文件不在——控制台据 `jobs.log_created_at` / `log_pruned_at` 区分
+`expired`（保留期已过）与 `lost`（有创建记录但文件缺失），不会把两者都显示成"从未记录"。
 
 凭据与 CA 私钥在库内是**密文**，密钥来自 keyring（`security.encryption_key` 或
 `security.encryption_keys` / `QUBES_AIR_ENCRYPTION_KEYS`），**不在数据库里**。因此：
@@ -186,6 +192,9 @@ ls -lt /secure/offhost/*.qab | head              # 归档数量与 mtime
    在线（看第 6 步），也不做全库完整性校验（那是 `PRAGMA integrity_check` 的事）。
 6. 抽查：列出 zone/qube（`GET /api/v1/zones`、`/qubes`）、对某 qube 触发一次 agent ping
    （`agent_health` 应为 `healthy`）、确认 `agent_certs` 中已有证书仍在其有效期内。
+7. job 日志不在归档内：同机恢复且 `<数据库目录>/job-logs/` 仍在时可直接读取；换机恢复或目录
+   缺失时，抽查任一历史 job 的 `GET /api/v1/jobs/<id>/log` 应返回 `log_state=lost`，而不是
+   看起来像"这个 job 从未输出"的空日志。
 
 恢复的拒绝条件（都会明确报错而非静默）：
 

@@ -476,6 +476,9 @@ export interface JobLogChunk {
   data?: string;
   running?: boolean;
   state?: string;
+  // Why the log is (or is not) readable: available, none, expired, lost or
+  // disabled. A missing file has different causes and the API names which.
+  log_state?: 'available' | 'none' | 'expired' | 'lost' | 'disabled';
   note?: string;
   error?: string;
 }

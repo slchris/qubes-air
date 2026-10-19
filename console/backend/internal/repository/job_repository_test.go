@@ -184,3 +184,51 @@ func TestJobRepository_SatisfiesStoreInterface(t *testing.T) {
 	_, err := store.GetByID(context.Background(), "missing")
 	assert.True(t, errors.Is(err, ErrJobNotFound))
 }
+
+// TestJobRepository_LogTimestamps — the API distinguishes an expired log from
+// one lost in a restore by these two columns, so both must round-trip and the
+// creation time must not move when the same job is observed again.
+func TestJobRepository_LogTimestamps(t *testing.T) {
+	db, cleanup := setupQubeTestDB(t)
+	defer cleanup()
+	repo := NewJobRepository(db)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, repo.Insert(ctx, newJob("job-log", "q1", "n", orchestrator.ActionProvision, now)))
+
+	got, err := repo.GetByID(ctx, "job-log")
+	require.NoError(t, err)
+	assert.Nil(t, got.LogCreatedAt, "a job that has not logged yet has no creation time")
+	assert.Nil(t, got.LogPrunedAt)
+
+	created := now.Add(time.Minute)
+	require.NoError(t, repo.MarkLogCreated(ctx, "job-log", created))
+	require.NoError(t, repo.MarkLogCreated(ctx, "job-log", created.Add(time.Hour)))
+
+	got, err = repo.GetByID(ctx, "job-log")
+	require.NoError(t, err)
+	require.NotNil(t, got.LogCreatedAt)
+	assert.True(t, created.Equal(*got.LogCreatedAt), "the first log creation wins, got %s", got.LogCreatedAt)
+	assert.Nil(t, got.LogPrunedAt)
+
+	pruned := now.Add(31 * 24 * time.Hour)
+	require.NoError(t, repo.MarkLogPruned(ctx, "job-log", pruned))
+
+	got, err = repo.GetByID(ctx, "job-log")
+	require.NoError(t, err)
+	require.NotNil(t, got.LogPrunedAt)
+	assert.True(t, pruned.Equal(*got.LogPrunedAt))
+	require.NotNil(t, got.LogCreatedAt, "pruning must not erase when the log existed")
+	assert.True(t, created.Equal(*got.LogCreatedAt))
+}
+
+func TestJobRepository_LogTimestampsUnknownJob(t *testing.T) {
+	db, cleanup := setupQubeTestDB(t)
+	defer cleanup()
+	repo := NewJobRepository(db)
+	ctx := context.Background()
+
+	assert.ErrorIs(t, repo.MarkLogCreated(ctx, "missing", time.Now().UTC()), ErrJobNotFound)
+	assert.ErrorIs(t, repo.MarkLogPruned(ctx, "missing", time.Now().UTC()), ErrJobNotFound)
+}

@@ -23,6 +23,11 @@
   let text = $state('');
   let running = $state(false);
   let jobState = $state<string | null>(null);
+  // Why there is (or is not) output. "expired", "lost" and "disabled" are
+  // different situations for an operator: wait for retention versus investigate
+  // a restore versus enable logging.
+  let logState = $state<string | null>(null);
+  let logNote = $state<string | null>(null);
   let error = $state<string | null>(null);
   let open = $state(false); // auto-expanded from active when a job is attached
   let streaming = $state(false); // true while the live stream is attached
@@ -78,6 +83,8 @@
     text = '';
     offset = 0;
     jobState = null;
+    logState = null;
+    logNote = null;
     error = null;
     streaming = false;
     running = active;
@@ -99,6 +106,10 @@
     // not stop the feed; the next good chunk clears the message.
     if (typeof chunk.running === 'boolean') running = chunk.running;
     jobState = chunk.state ?? jobState;
+    logState = chunk.log_state ?? logState;
+    // The server sends a note only when the state needs explaining; stream
+    // events carry none, so an absent note must not erase one already shown.
+    if (chunk.note !== undefined) logNote = chunk.note;
     error = chunk.error ?? null;
     if (el && atBottom) queueMicrotask(() => { el.scrollTop = el.scrollHeight; });
   }
@@ -205,6 +216,17 @@
   // Strip ANSI colour codes some tools emit; they render as noise in HTML.
   const clean = $derived(text.replace(/\x1b\[[0-9;]*m/g, ''));
   const failed = $derived(jobState === 'failed');
+  // Prefer the server's explanation; the fallbacks keep the reason visible if
+  // an older console omits the note.
+  const logStateMessage = $derived.by(() => {
+    if (logNote) return logNote;
+    switch (logState) {
+      case 'expired': return 'Job output expired after the retention window.';
+      case 'lost': return 'Job output is missing.';
+      case 'disabled': return 'Job logging is disabled on this console.';
+      default: return null;
+    }
+  });
 </script>
 
 <div class="joblog" class:failed>
@@ -220,11 +242,14 @@
     {#if error}
       <p class="err">{error}</p>
     {/if}
+    {#if logStateMessage}
+      <p class="state">{logStateMessage}</p>
+    {/if}
     {#if clean.trim()}
       <pre bind:this={pre}>{clean}</pre>
     {:else if running}
       <p class="waiting">Waiting for job output…</p>
-    {:else}
+    {:else if !logStateMessage}
       <p class="waiting">No output recorded for this job.</p>
     {/if}
   {/if}
@@ -255,6 +280,7 @@
     background: #0f172a; color: #e2e8f0;
     font: var(--subhead); line-height: 1.45; white-space: pre-wrap; word-break: break-word;
   }
-  .waiting, .err { margin: 0; padding: 0.6rem; font: var(--callout); color: var(--systemSecondary); }
+  .waiting, .err, .state { margin: 0; padding: 0.6rem; font: var(--callout); color: var(--systemSecondary); }
   .err { color: var(--systemRed); }
+  .state { background: var(--systemQuinary); }
 </style>

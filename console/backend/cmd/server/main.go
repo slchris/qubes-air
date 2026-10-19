@@ -258,6 +258,10 @@ type Dependencies struct {
 	// before the database closes: an in-flight delivery writes its retry state.
 	alertWebhookCancel context.CancelFunc
 	alertWebhookDone   chan struct{}
+	// jobLogRetention prunes old job logs. Stop it before the database closes
+	// because each removal writes log_pruned_at on the job row.
+	jobLogRetentionCancel context.CancelFunc
+	jobLogRetentionDone   chan struct{}
 }
 
 // Close releases all resources.
@@ -289,6 +293,10 @@ func (d *Dependencies) Close() {
 		d.alertWebhookCancel()
 		<-d.alertWebhookDone
 	}
+	if d.jobLogRetentionCancel != nil {
+		d.jobLogRetentionCancel()
+		<-d.jobLogRetentionDone
+	}
 	if d.db != nil {
 		if err := d.db.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
@@ -297,6 +305,30 @@ func (d *Dependencies) Close() {
 }
 
 // initDependencies creates and wires all application dependencies.
+// startBackgroundMaintenance starts work that keeps stored state bounded and
+// truthful. The retention cancel/done are returned so Close can stop the prune
+// before the database closes.
+func startBackgroundMaintenance(
+	jobLogs *orchestrator.JobLogStore,
+	jobRepo *repository.JobRepository,
+	bootstrapTokens *repository.BootstrapTokenRepository,
+	qubeRepo repository.QubeRepository,
+) (context.CancelFunc, chan struct{}) {
+	cancel, done := startJobLogRetention(jobLogs, jobRepo)
+
+	// Spent and expired tokens can no longer authorize anything, so retention
+	// costs only history. Run once at startup rather than on a timer: the table
+	// gains one row per provision, so it grows at human speed, and restarts are
+	// frequent enough to keep it bounded without another goroutine to own.
+	go pruneBootstrapTokens(bootstrapTokens)
+
+	// A qube left in a transient status belongs to a job that died with a
+	// previous process — the queue is in memory, so nothing will ever finish it.
+	// Without this they stay "busy" forever and every later operation is refused.
+	reconcileStrandedQubes(context.Background(), qubeRepo)
+	return cancel, done
+}
+
 func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	dbCfg := database.DefaultConfig()
 	dbCfg.DSN = cfg.Database.DSN
@@ -388,19 +420,11 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	jobRepo := repository.NewJobRepository(db)
 	qubeSvc, runner, agents, jobLogs := startOrchestration(
 		cfg.Orchestrator, cfg.JobLogDir(), jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
+	jobLogRetentionCancel, jobLogRetentionDone := startBackgroundMaintenance(
+		jobLogs, jobRepo, bootstrapTokenRepo, qubeRepo)
 
 	certRenewals.Start()
 	bootstraps.Start()
-	// Spent and expired tokens can no longer authorize anything, so retention
-	// costs only history. Run once at startup rather than on a timer: the table
-	// gains one row per provision, so it grows at human speed, and restarts are
-	// frequent enough to keep it bounded without another goroutine to own.
-	go pruneBootstrapTokens(bootstrapTokenRepo)
-
-	// A qube left in a transient status belongs to a job that died with a
-	// previous process — the queue is in memory, so nothing will ever finish it.
-	// Without this they stay "busy" forever and every later operation is refused.
-	reconcileStrandedQubes(context.Background(), qubeRepo)
 
 	// Infrastructure repository and service
 	infraRepo := repository.NewInfraRepository(db)
@@ -410,30 +434,32 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 	alertWebhookCancel, alertWebhookDone := startAlertWebhookDispatcher(
 		repository.NewMonitoringAlertWebhookRepository(db), settingsSvc, cfg.Notifications.WebhookAllowedHosts)
 	return &Dependencies{
-		qubeRepo:           qubeRepo,
-		jobRepo:            jobRepo,
-		db:                 db,
-		zoneHandler:        handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
-		qubeHandler:        handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
-		infraHandler:       handler.NewInfraHandler(infraSvc),
-		credentialHandler:  handler.NewCredentialHandler(credentialSvc),
-		billingHandler:     handler.NewBillingHandler(),
-		monitoringHandler:  newMonitoringHandler(db, zoneRepo, qubeRepo, qubeInfraRepo, providerRegistry),
-		settingsHandler:    handler.NewSettingsHandler(settingsSvc, sessionStore),
-		revocations:        certIssuer,
-		sessionHandler:     handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
-		sessions:           sessionStore,
-		jobHandler:         handler.NewJobHandler(jobRepo, jobLogs),
-		desktopAccess:      newDesktopAccessHandler(qubeSvc),
-		bootstraps:         bootstraps,
-		bootstrapTokens:    bootstrapTokenRepo,
-		transport:          xport,
-		runner:             runner,
-		agents:             agents,
-		certRenewals:       certRenewals,
-		auditTrail:         startAuditTrail(db, os.Stderr),
-		alertWebhookCancel: alertWebhookCancel,
-		alertWebhookDone:   alertWebhookDone,
+		qubeRepo:              qubeRepo,
+		jobRepo:               jobRepo,
+		db:                    db,
+		zoneHandler:           handler.NewZoneHandler(zoneSvc, handler.WithCapacityReader(clusterScheduler)),
+		qubeHandler:           handler.NewQubeHandler(qubeSvc, handler.WithCertRepository(agentCertRepo)),
+		infraHandler:          handler.NewInfraHandler(infraSvc),
+		credentialHandler:     handler.NewCredentialHandler(credentialSvc),
+		billingHandler:        handler.NewBillingHandler(),
+		monitoringHandler:     newMonitoringHandler(db, zoneRepo, qubeRepo, qubeInfraRepo, providerRegistry),
+		settingsHandler:       handler.NewSettingsHandler(settingsSvc, sessionStore),
+		revocations:           certIssuer,
+		sessionHandler:        handler.NewSessionHandler(cfg.Auth.APIToken, scopedTokens(cfg), sessionStore, cfg.Server.TLS.Enabled),
+		sessions:              sessionStore,
+		jobHandler:            handler.NewJobHandler(jobRepo, jobLogs),
+		desktopAccess:         newDesktopAccessHandler(qubeSvc),
+		bootstraps:            bootstraps,
+		bootstrapTokens:       bootstrapTokenRepo,
+		transport:             xport,
+		runner:                runner,
+		agents:                agents,
+		certRenewals:          certRenewals,
+		auditTrail:            startAuditTrail(db, os.Stderr),
+		alertWebhookCancel:    alertWebhookCancel,
+		alertWebhookDone:      alertWebhookDone,
+		jobLogRetentionCancel: jobLogRetentionCancel,
+		jobLogRetentionDone:   jobLogRetentionDone,
 	}, nil
 }
 

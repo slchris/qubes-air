@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/slchris/qubes-air/console/internal/provider"
 )
@@ -186,4 +188,74 @@ func (s *JobLogStore) ReadFrom(jobID string, offset int64, max int64) ([]byte, i
 		return nil, offset, err
 	}
 	return buf[:read], offset + int64(read), nil
+}
+
+// Exists reports whether a job's log file is present.
+//
+// It is separate from ReadFrom because a missing file has two different
+// meanings to the API: a job that never logged, and a log that was pruned or
+// lost. The handler combines this with the job's recorded timestamps to say
+// which one it is.
+func (s *JobLogStore) Exists(jobID string) (bool, error) {
+	p, err := s.path(jobID)
+	if err != nil {
+		return false, err
+	}
+	// #nosec G304 -- p is filepath.Join of the store dir and an id that path
+	// validated against [A-Za-z0-9_-]{1,64}; no separator or traversal survives.
+	info, err := os.Stat(p)
+	if err == nil {
+		return info.Mode().IsRegular(), nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// Prune removes log files last written before the cutoff and returns their job
+// ids. Only regular .log files whose name is a valid job id are considered, so
+// a stray file in the directory is left alone. A canceled context returns the
+// ids removed so far with the context error, letting the caller still record
+// what it deleted.
+func (s *JobLogStore) Prune(ctx context.Context, before time.Time) ([]string, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	var pruned []string
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			sort.Strings(pruned)
+			return pruned, err
+		}
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		jobID := strings.TrimSuffix(entry.Name(), ".log")
+		if !validJobID(jobID) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return pruned, err
+		}
+		if !info.ModTime().Before(before) {
+			continue
+		}
+		p, err := s.path(jobID)
+		if err != nil {
+			return pruned, err
+		}
+		// #nosec G304 -- p is the same validated path ReadFrom uses.
+		if err := os.Remove(p); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return pruned, err
+		}
+		pruned = append(pruned, jobID)
+	}
+	sort.Strings(pruned)
+	return pruned, nil
 }
