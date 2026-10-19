@@ -632,3 +632,71 @@ async function desktopAccessDecision(id: string, action: 'approve' | 'deny'): Pr
   }
   return response.json() as Promise<DesktopAccessRequest>;
 }
+
+// ============================================================================
+// Monitoring alerts
+// ============================================================================
+
+/**
+ * An alert derived from persisted zone or agent health.
+ *
+ * `id` is stable for the underlying condition (for example
+ * `agent-unreachable:<qube-id>`), so an acknowledgement applies until the
+ * condition resolves.
+ */
+export interface MonitoringAlert {
+  id: string;
+  resourceId?: string;
+  severity: 'critical' | 'warning' | 'info';
+  message: string;
+  source: string;
+  timestamp?: string;
+  acknowledged: boolean;
+  acknowledged_by?: string;
+  acknowledged_at?: string;
+}
+
+/** One persisted alert transition, from the SQLite trigger history. */
+export interface AlertHistoryEvent {
+  id: number;
+  alert_id: string;
+  resource_id: string;
+  event_type: string;
+  severity: string;
+  message: string;
+  source: string;
+  occurred_at: string;
+}
+
+export interface AlertHistoryResponse {
+  events: AlertHistoryEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Records the signed-in operator against an active alert.
+ *
+ * The server refuses an alert that is no longer active: acknowledging a
+ * resolved condition would be cleared on the next read and would misstate what
+ * the operator acted on.
+ */
+export async function acknowledgeAlert(id: string): Promise<void> {
+  const response = await apiFetch(`/monitoring/alerts/${encodeURIComponent(id)}/acknowledge`, {
+    method: 'POST',
+    body: '{}',
+  });
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+}
+
+/** Reads persisted alert transitions, newest first. */
+export async function listAlertHistory(limit = 10, offset = 0): Promise<AlertHistoryResponse> {
+  const response = await apiFetch(`/monitoring/alerts/history?limit=${limit}&offset=${offset}`);
+  if (!response.ok) {
+    throw await responseError(response);
+  }
+  return response.json() as Promise<AlertHistoryResponse>;
+}
