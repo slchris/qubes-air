@@ -201,8 +201,12 @@ func TestAgentStartLimitBudgetMatchesTheShippedUnit(t *testing.T) {
 	burst := unitCount(t, settings["StartLimitBurst"])
 	restartDelay := unitTimeSpan(t, settings["RestartSec"])
 
-	assert.GreaterOrEqual(t, AgentStartLimitBudget, interval,
-		"the budget must cover the whole start-rate-limit window (%s)", interval)
+	// Exact, not a floor: a budget LONGER than the unit's window would leave a
+	// failure that systemd has already given up on described as "may still
+	// resolve", delaying the operator. The constant is derived from the unit,
+	// so any difference is drift in one direction or the other.
+	assert.Equal(t, interval, AgentStartLimitBudget,
+		"the budget is the unit's start-rate-limit window, not a longer console preference")
 
 	spread := time.Duration(burst-1) * restartDelay
 	assert.GreaterOrEqual(t, AgentStartLimitBudget, spread,
