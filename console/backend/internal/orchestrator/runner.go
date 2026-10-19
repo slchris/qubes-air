@@ -162,6 +162,10 @@ type Runner struct {
 	// Submit takes the read lock; Shutdown takes the write lock before closing.
 	closeMu sync.RWMutex
 	closing bool
+
+	// completionTimeout bounds the completion hook. It is a field so tests can
+	// shorten it; production takes defaultCompletionTimeout.
+	completionTimeout time.Duration
 }
 
 // RunnerConfig configures a Runner.
@@ -193,6 +197,17 @@ const DefaultQueueSize = 64
 // could be canceled after its VM and disk already existed.
 const DefaultJobTimeout = 45 * time.Minute
 
+const (
+	// defaultCompletionTimeout bounds the completion hook, which updates qube
+	// status and may call dom0 to register a RemoteVM. Kept separate from the
+	// outcome write below: cleanup that consumes its whole budget must not be
+	// able to prevent the job's terminal state from being recorded.
+	defaultCompletionTimeout = 30 * time.Second
+	// outcomePersistTimeout bounds persisting the terminal job row after the
+	// completion hook. It gets its own context for the reason above.
+	outcomePersistTimeout = 10 * time.Second
+)
+
 // NewRunner builds a Runner. Call Start to spawn the worker.
 func NewRunner(cfg RunnerConfig) *Runner {
 	if cfg.QueueSize <= 0 {
@@ -203,14 +218,15 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	}
 	base, cancel := context.WithCancel(context.Background())
 	return &Runner{
-		exec:    cfg.Executor,
-		store:   cfg.Store,
-		onDone:  cfg.OnDone,
-		timeout: cfg.Timeout,
-		logs:    cfg.Logs,
-		queue:   make(chan *queuedJob, cfg.QueueSize),
-		base:    base,
-		cancel:  cancel,
+		exec:              cfg.Executor,
+		store:             cfg.Store,
+		onDone:            cfg.OnDone,
+		timeout:           cfg.Timeout,
+		completionTimeout: defaultCompletionTimeout,
+		logs:              cfg.Logs,
+		queue:             make(chan *queuedJob, cfg.QueueSize),
+		base:              base,
+		cancel:            cancel,
 	}
 }
 
@@ -409,19 +425,26 @@ func (r *Runner) finish(job *Job, started time.Time, err error) {
 		job.State, job.Error = JobFailed, err.Error()
 	}
 	// Cleanup is part of the result, not a best-effort action after success.
-	finalCtx, finalCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer finalCancel()
+	// Its context is separate from the outcome write: the hook updates the qube
+	// and may spend its whole budget in a dom0 registration call, and letting it
+	// also consume the deadline for store.Update left the job permanently
+	// "running" in the database while the qube was actually up.
 	if r.onDone != nil {
-		if err := r.onDone(finalCtx, job); err != nil {
+		doneCtx, doneCancel := context.WithTimeout(context.Background(), r.completionTimeout)
+		doneErr := r.onDone(doneCtx, job)
+		doneCancel()
+		if doneErr != nil {
 			job.State = JobFailed
 			if job.Error != "" {
 				job.Error += "; "
 			}
-			job.Error += "completion: " + err.Error()
+			job.Error += "completion: " + doneErr.Error()
 		}
 	}
 	if r.store != nil {
-		if err := r.store.Update(finalCtx, job); err != nil {
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), outcomePersistTimeout)
+		defer persistCancel()
+		if err := r.store.Update(persistCtx, job); err != nil {
 			log.Printf("orchestrator: job %s outcome not persisted: %v", job.ID, err)
 			return
 		}
