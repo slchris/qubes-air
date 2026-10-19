@@ -823,6 +823,14 @@ func terminalStatusForJob(j *orchestrator.Job) models.QubeStatus {
 	}
 }
 
+// completionStatusTimeout bounds the qube status writes in the completion hook.
+// They are detached from the hook's context on purpose: a cleanup call (dom0
+// RemoteVM deregistration) can consume the whole completion budget, and the
+// status is the durable record of what happened — it must still land. Without
+// this, a timed-out deregistration left the qube stuck on "deleting" with no
+// terminal state at all.
+const completionStatusTimeout = 5 * time.Second
+
 func makeCompletionHook(
 	qubeRepo repository.QubeRepository, agents func() *service.AgentHealthMonitor,
 	registrar *service.RemoteVMRegistrar,
@@ -831,7 +839,9 @@ func makeCompletionHook(
 		// A cleanup failure must leave a retryable error, never a terminal purge.
 		defer func() {
 			if result != nil {
-				result = errors.Join(result, qubeRepo.UpdateStatus(ctx, j.QubeID, models.QubeStatusError))
+				statusCtx, statusCancel := context.WithTimeout(context.WithoutCancel(ctx), completionStatusTimeout)
+				defer statusCancel()
+				result = errors.Join(result, qubeRepo.UpdateStatus(statusCtx, j.QubeID, models.QubeStatusError))
 			}
 		}()
 		if j.State == orchestrator.JobSucceeded && service.ComputeDestroyingAction(j.Action) {
@@ -845,7 +855,9 @@ func makeCompletionHook(
 				return fmt.Errorf("remove RemoteVM: %w", err)
 			}
 		}
-		if err := qubeRepo.UpdateStatus(ctx, j.QubeID, terminalStatusForJob(j)); err != nil {
+		statusCtx, statusCancel := context.WithTimeout(context.WithoutCancel(ctx), completionStatusTimeout)
+		defer statusCancel()
+		if err := qubeRepo.UpdateStatus(statusCtx, j.QubeID, terminalStatusForJob(j)); err != nil {
 			return err
 		}
 		if j.State == orchestrator.JobSucceeded &&
