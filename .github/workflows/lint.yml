@@ -68,6 +68,15 @@ jobs:
       - name: Run tests
         run: go test -v -race -coverprofile=coverage.out ./...
 
+      - name: Enforce coverage floor
+        run: ../../scripts/check-go-coverage.sh coverage.out
+
+      # The local gate has always run this; CI did not, so an entrypoint could
+      # stop compiling or start panicking without any check noticing.
+      - name: Smoke-test cmd entrypoints
+        working-directory: .
+        run: make smoke-entrypoints
+
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
