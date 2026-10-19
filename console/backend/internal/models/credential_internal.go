@@ -42,6 +42,14 @@ const (
 	// identity.
 	ConsoleCACertName = "qubes-air-ca-cert"
 	ConsoleCAKeyName  = "qubes-air-ca-key"
+
+	// ConsoleWebhookTargetName and ConsoleWebhookTargetID identify the
+	// console-owned row that holds the encrypted alert webhook destination.
+	// The settings service is the only writer; the row carries the console
+	// type and name prefix so CredentialService cannot list, read, change or
+	// delete it.
+	ConsoleWebhookTargetName = ConsoleRowNamePrefix + "alert-webhook"
+	ConsoleWebhookTargetID   = ConsoleRowNamePrefix + "alert-webhook-target"
 )
 
 // IsConsoleCredential reports whether a credential row with this name and type

@@ -267,8 +267,10 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   原因码和错误；整次失败时记录错误原文。provider 不支持该能力是预期状态，不记日志。VM 被备份等
   provider 任务锁定（`provider_busy`）通常是暂时的，每个 Qube 每 10 分钟最多记一行，锁一直不释放时
   服务端仍看得到（[UD-25c](runtime-defaults.md)）。
-- `POST /monitoring/alerts/:id/acknowledge` 在告警实现之前是桩：返回 501 和固定文本
-  `alert acknowledgement is not implemented`，不记录任何确认；作为变更请求照常进审计。
+- `POST /monitoring/alerts/:id/acknowledge` 只接受当前活跃告警，把操作者和时间写入
+  `alert_acknowledgements`；告警解除后下一次读取清除确认。没有已认证 subject 时返回 401，
+  不把确认记成 anonymous。`/monitoring` 是 fleet 路由，zone token 在中间件层被 403；作为变更
+  请求照常进审计。
 - 敏感响应：数据库、provider 的错误原文不进响应体。单个 Qube 只返回固定原因码；整次失败返回
   503 和固定文本 `provider runtime metrics are unavailable`。响应只含 Qube 名称/ID、zone ID、状态
   和读数，不含凭据或 provider 地址。
@@ -283,6 +285,27 @@ RequireControl → RequireZones（`cmd/server/main.go` 的 `apiMiddleware`）。
   直接复用结果，所以无论调用方以多高速率请求（包括 read-only token 顶着 20 req/s 的限流），provider
   采集最多每"一次采集耗时 + 5 秒"发生一轮。失败的采集（列不出 Qube）不复用，下一个请求会重新采集；
   采集与发起它的连接解绑，某个调用方断开不会中断其他调用方在等的采集（[UD-25b](runtime-defaults.md)）。
+
+## 告警 Webhook 出站
+
+`internal/service/alert_webhook.go` 把持久化 outbox 投递到设置页配置的目标。它有四层边界：
+
+- **目标存储**：URL 以 AES-256-GCM 加密，写成控制台自有 credential 行
+  `qubes-air-alert-webhook`（ID `qubes-air-alert-webhook-target`，类型 `pki`）。凭证 API 不会
+  列出、读取、修改或删除它；设置 API 只返回 `webhookConfigured`。旧行
+  `system:alert-webhook-target` 在启动迁移时搬入这个命名空间，密文和 key_version 不变。
+- **主机允许列表**：只接受 HTTPS、无 userinfo/fragment，且精确 `host[:port]` 出现在
+  `notifications.webhook_allowed_hosts` 的地址。配置校验拒绝 loopback、private、link-local、
+  multicast 与 special-use 的 IP 字面量；主机名在每次拨号时解析后再次校验。
+- **解析与拨号**：dispatcher 自己解析主机名，要求每个解析结果都是 public unicast，然后拨刚校验
+  过的 IP；不会二次解析，因此 DNS 在“校验”和“连接”之间改变答案也不能把目标移到内网。代理为
+  nil，重定向被拒绝。TLS 仍用原 URL 主机名做 SNI 和证书校验。
+- **失败与审计**：失败按指数退避写回 outbox（上限 1 小时），完成记录保留 90 天。出站错误只记
+  固定文本，不把 URL 或内网地址写进 job/log；非公开地址错误使用固定文案
+  `webhook host resolves to a non-public address`。
+
+边界：目标没有客户端证书/mTLS，认证完全依赖 HTTPS 服务端证书与允许列表；允许列表由运维方
+维护，不是租户级隔离。
 
 ## Console API 凭据：控制台自有行不经 API
 

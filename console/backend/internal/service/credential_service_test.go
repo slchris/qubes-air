@@ -48,6 +48,7 @@ func newCredStoreRig(t *testing.T) credStoreRig {
 	_, err = r.keys.EnsureDataKey(ctx, "q1")
 	require.NoError(t, err)
 	require.NoError(t, r.keys.MarkMigrationPending(ctx, "q1"))
+	require.NoError(t, repo.SetAlertWebhookTarget(ctx, "https://hooks.example.test/alerts"))
 	// The console no longer mints a legacy master; a deployment that predates
 	// per-qube keys still has one.
 	r.create(t, dataMasterCredentialName, dataMasterCredentialType, base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
@@ -62,7 +63,7 @@ func newCredStoreRig(t *testing.T) credStoreRig {
 	for _, c := range list {
 		r.consoleIDs = append(r.consoleIDs, c.ID)
 	}
-	require.Len(t, r.consoleIDs, 7, "CA cert+key, DEK, marker, master and two legacy rows")
+	require.Len(t, r.consoleIDs, 8, "CA cert+key, DEK, marker, webhook target, master and two legacy rows")
 
 	for _, op := range []struct{ name, typ string }{
 		{"pve-prod", "proxmox"},
