@@ -83,6 +83,16 @@ func NewNativeExecutor(registry *provider.Registry, resolver QubeZoneResolver, s
 	return &NativeExecutor{registry: registry, resolver: resolver, store: store}
 }
 
+// WithProvisionWait overrides the post-provision reachability budget. Zero or
+// negative keeps the compile-time default, so a console that never configures
+// it behaves exactly as before.
+func (n *NativeExecutor) WithProvisionWait(wait time.Duration) *NativeExecutor {
+	if n != nil && wait > 0 {
+		n.probeTimeout = wait
+	}
+	return n
+}
+
 // adapterFor validates the name, resolves the qube and zone, and selects the
 // provider adapter. Every entry point funnels through here so validation and
 // adapter selection cannot be skipped.
