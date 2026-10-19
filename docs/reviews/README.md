@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-19 生产 console 部署与复验](2026-10-19-production-deploy.md) | 当前 HEAD + 新 agent 包部署到生产 console，schema 2→6，数据保留，lifecycle 通过；RemoteVM 注册超时与 Salt pin 风险 | 手工部署；Salt pin 未更新；Exec/FileCopy、数据持久性未覆盖 |
 | [2026-10-19 当前 main 真机测试](2026-10-19-current-main-real-machine.md) | 当前 HEAD 构建、独立实例、PVE credential/zone/capacity、job 日志写入与保留/过期、完整 lifecycle（provision→suspend→resume→suspend→purge）、证书轮换与销毁；定位并修复 completion 上下文 bug | 独立实例测试；Exec/FileCopy、数据持久性、生产部署升级与 RemoteVM 注册未覆盖 |
 | [2026-10-19 告警确认与历史视图](2026-10-19-alert-ui.md) | Monitoring 视图的告警确认、操作者/时间显示与分页历史；失败路径测试 | 组件测试，无真实登录/触发器的 E2E 或真机验证 |
 | [2026-10-19 Job 日志保留与恢复语义](2026-10-19-job-log-retention.md) | 30 天保留/每日清理、`log_created_at`/`log_pruned_at`、API `log_state` 五种状态与前端说明 | 本机自动化；未做换机恢复演练，未在真机观察恢复后的 UI |
