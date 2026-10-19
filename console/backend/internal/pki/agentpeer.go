@@ -103,7 +103,7 @@ func AgentDialTLSConfig(client tls.Certificate, roots *x509.CertPool, remoteName
 		// certificate carries no SAN for the address dialed, so the stack's own
 		// check would reject a good agent. VerifyConnection runs VerifyAgentChain
 		// in its place, against roots only.
-		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs VerifyAgentChain on every handshake: CA chain and validity (ServerAuth usage), RoleOf == RoleAgent, and the leaf CN pinned to AgentCommonName(remoteName) //nolint:gosec // chain verified in VerifyConnection
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs VerifyAgentChain on every handshake: CA chain and validity (ServerAuth usage), RoleOf == RoleAgent, and the leaf CN pinned to AgentCommonName(remoteName) //nolint:gosec // chain verified in VerifyConnection; remove when the dialer verifies via RootCAs/VerifyPeerCertificate without InsecureSkipVerify, or gosec models VerifyConnection
 		// VerifyConnection, not VerifyPeerCertificate: the latter is skipped on
 		// a resumed session, so a check that lives there can be bypassed by a
 		// peer that resumes a cached one. PeerCertificates rather than

@@ -232,7 +232,7 @@ func NewAgentProber(ca CAProvider, certs LastSeenRecorder, agentListen string, t
 // "the handshake worked but the service did not answer". Collapsing them to
 // satisfy the metric would collapse the messages, which are the whole point.
 //
-//nolint:gocyclo // each branch is a separate operator-facing diagnosis
+//nolint:gocyclo // each branch is a separate operator-facing diagnosis; remove when they move to named helpers and gocyclo <= 15
 func (p *AgentProber) Probe(ctx context.Context, qube *models.Qube) AgentProbeResult {
 	started := time.Now()
 	res := AgentProbeResult{
@@ -506,7 +506,7 @@ func probeTLSConfig(bundle *pki.Bundle, wantCN string) (*tls.Config, error) {
 		// So the chain is verified by hand below, against this CA and this CA
 		// only. An unsigned or wrongly-signed certificate is still rejected;
 		// what is skipped is the name, which the callback replaces with a CN pin.
-		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs pki.VerifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection below runs pki.VerifyAgentChain on every handshake: it checks the CA chain (ServerAuth usage), pki.RoleOf == RoleAgent, and that the leaf CN equals wantCN for this address //nolint:gosec // chain verified in VerifyPeerCertificate/VerifyConnection; remove when the dialer verifies via RootCAs/VerifyPeerCertificate without InsecureSkipVerify, or gosec models the callback
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			certs := make([]*x509.Certificate, 0, len(rawCerts))
 			for _, der := range rawCerts {

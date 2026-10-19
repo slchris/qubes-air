@@ -178,7 +178,7 @@ func main() {
 	if err := srv.Serve(ctx); err != nil {
 		// gocritic flags the skipped `defer stop()`. Accepted: stop() only
 		// detaches the signal handler, and the process is terminating anyway.
-		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit
+		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit; remove when main returns errors instead of calling log.Fatalf
 		log.Fatalf("serve: %v", err)
 	}
 	log.Printf("qubes-air-agent stopped")

@@ -83,7 +83,7 @@ func main() {
 	if err := client.Start(ctx); err != nil && ctx.Err() == nil {
 		// Same as the agent: the only deferred work is detaching the signal
 		// handler, which the process exit makes moot.
-		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit
+		//nolint:gocritic // exitAfterDefer: the deferred work is moot at exit; remove when main returns errors instead of calling log.Fatalf
 		log.Fatalf("client stopped: %v", err)
 	}
 	log.Printf("shutdown")
