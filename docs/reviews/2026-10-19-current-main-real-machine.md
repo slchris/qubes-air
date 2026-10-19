@@ -27,6 +27,10 @@
 5. **失败路径与销毁**：provision 在 agent 不可达后以明确错误失败（qube `error`，
    `agent_health=unreachable` 带原因）；对 `error` 状态的 qube 执行 purge 被接受，
    destroy job 成功，PVE 上 compute 与 storage 两个 VM 都被删除，qube 变为 `purged`。
+  销毁日志明确记录了 `qmstop` 后对 compute 与 storage 两个 VM 的 `qmdestroy`。
+6. **job 日志保留（M2-8）**：把一份已完成 job 的日志文件 mtime 调到 31 天前并重启实例；
+   启动清理删除了该文件，job 行写入 `log_pruned_at`，API 返回
+   `log_state=expired` 与对应 note；同日期的另一份日志仍为 `available`，未被误删。
 
 ## 未通过 / 未覆盖
 
@@ -59,7 +63,6 @@ agent unit 未运行、8443 连接被拒；本次测试环境中 guest 无法访
 - 成功 provision 后的 suspend → resume；
 - 成功 provision 后的 purge（数据盘与身份销毁）；
 - Exec/FileCopy、数据盘跨 suspend/resume 持久性；
-- job 日志保留/`log_state=expired` 的真机演练（M2-8 的清理路径只有本机自动化测试）。
 
 当前 agent 包已构建并保存在本机临时目录；需要 artifact store 上传凭据或一个 guest
 可达的 HTTP 位置后即可继续。
@@ -76,6 +79,6 @@ agent unit 未运行、8443 连接被拒；本次测试环境中 guest 无法访
 ## 结论
 
 当前 HEAD 的 console 构建、数据库迁移、zone/credential 创建、真实 PVE 读路径、job 日志
-写入和服务端失败/销毁路径均通过。**生命周期冒烟（M0-5）仍不能标记完成**：首次成功的
-agent bootstrap 未发生，根因已定位为 agent 包版本与 console pin 校验不匹配，第二个阻塞
-是本次会话缺少 artifact 上传凭据。记录保留为失败证据，不把部分通过写成全量通过。
+写入与保留/过期状态、服务端失败/销毁路径均通过。**生命周期冒烟（M0-5）仍不能标记完成**：
+首次成功的 agent bootstrap 未发生，根因已定位为 agent 包版本与 console pin 校验不匹配，
+第二个阻塞是本次会话缺少 artifact 上传凭据。记录保留为失败证据，不把部分通过写成全量通过。
