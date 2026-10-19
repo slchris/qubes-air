@@ -1,9 +1,10 @@
 # 2026-10-19 生产 console 部署与当前 HEAD 复验
 
 起始基线：`origin/main` `b73cae1`（#73 completion 结果持久化、#75 cleanup 超时状态持久化、
-#76 可配置 provision 等待）。当天在同一生产 console 上又部署了三次：`87ef8c1`
-（#78 RemoteVM 调用预算）、`66325fb`（#79 resume 可达性循环记录地址）和 `d4eb48c`
-（#82 purge 状态文案）。最终运行版本为 `v0.1.0-230-gd4eb48c`，schema 6。
+#76 可配置 provision 等待）。当天在同一生产 console 上又部署了四次：`87ef8c1`
+（#78 RemoteVM 调用预算）、`66325fb`（#79 resume 可达性循环记录地址）、`d4eb48c`
+（#82 purge 状态文案）和 `e23265a`（#85 Proxmox zone VLAN 标签，含前端）。最终运行版本为
+`v0.1.0-236-ge23265a`，schema 6。
 
 ## 部署内容
 
@@ -18,7 +19,7 @@
     （数据库 `.backup`、console.env、secrets.env、旧二进制、旧 web）。
   - 数据库从 schema 2 迁移到 6；迁移后 1 个 zone、13 个既有 qube、56 条 job 均保留，
     既有 released qube 与证书未改动。
-- 后续三次是二进制替换，未改前端、未改 agent 包、未迁移 schema：
+- 后续四次是二进制/前端替换，未改 agent 包、未迁移 schema：
   - `87ef8c1`：备份在 `/rw/config/qubesair/pre-deploy-regtimeout`
     （数据库 `.backup`、console.env、secrets.env、旧二进制）。
   - `66325fb`：备份在 `/rw/config/qubesair/pre-deploy-66325fb`（内容同上）。
@@ -30,11 +31,19 @@
     二进制 `<artifact-store>/local/qubes-air/qubes-air-console-d4eb48c`，
     SHA-256 `c7d2ae2a0c36e8f596b3f7d00bb099274bb103e626dec7c064abdee23601a9d3`，
     console 内回读一致后 stop → install → start。
-  - #78/#79/#82 未修改 agent 源码，agent 包保持 `0.0.0+qab73cae1`。
+  - `e23265a`：备份在 `/rw/config/qubesair/pre-deploy-e23265a`
+    （数据库、env、旧二进制、旧 web）。二进制
+    `<artifact-store>/local/qubes-air/qubes-air-console-e23265a`，
+    SHA-256 `a774c82630f9890ac84e3cd3bed84f75538351cb391d150c02e33239861b3014`；
+    前端 `<artifact-store>/local/qubes-air/qubes-air-web-e23265a.tar.gz`，
+    SHA-256 `04cff373bedcbd1d867b53f5c597c404ac38707f4d514ad4ae59a4a4ed705e67`。
+    #85 修改了前端，因此这次同时替换 `/rw/config/qubesair/web`；服务端返回的
+    `index.html` 与磁盘文件哈希一致。
+  - #78/#79/#82/#85 未修改 agent 源码，agent 包保持 `0.0.0+qab73cae1`。
 
 ## 部署后验证
 
-- `/health`（最终）：`status=healthy`、`revision=d4eb48c`、`tree=clean`、
+- `/health`（最终）：`status=healthy`、`revision=e23265a`、`tree=clean`、
   `audit_trail=ok`。
 - 部署前旧 console 上偶发的 `/api/v1/zones` 500（`context canceled`）在升级后不再复现。
 - `b73cae1` 上的 lifecycle（qube `qa-deploy-20261019-1`）：
@@ -138,6 +147,44 @@ agent 正常。qa-deploy-4 的 7m12s resume 与 qa-deploy-5 的 10 分钟失败�
 覆盖错误类型、状态不变与 409 映射）。qube 已 purge，PVE、RemoteVM、证书均无
 残留。
 
+## VLAN 隔离方案与 qa-deploy-8（`e23265a`）
+
+qa-deploy-5 之后把 provider 创建的 NIC 隔离到专用 VLAN：zone 改为
+`network_bridge=vmbr4094`、`vlan_tag=4094`，实例只从该 VLAN 的 PXE/DHCP 服务
+（`<pxe-subnet>`）拿地址，不再使用 LAN 的 DHCP 池。
+
+网络侧需要三件事，本次已在真机配置并验证：
+
+1. 该 VLAN 的网关/PXE 服务在 LAN 侧使用一个空闲静态地址（不再从冲突的 LAN 池
+   获取），并把它从 DHCP 池中排除。
+2. LAN 路由器增加 `<pxe-subnet>` 的静态路由，下一跳是该网关的 LAN 地址。没有
+   这条路由时 console 的包会走默认路由，永远到不了 PXE VLAN（抓包上表现为
+   guest 侧完全看不到 console 的连接）。
+3. 网关不能对“console → guest”的流量做 MASQUERADE（否则回包源地址被改写，
+   mTLS 握手无法完成）；对“guest → console”的新连接（agent 拉取 revocation
+   文档）需要按 conntrack `NEW` 做源地址转换到网关的 LAN 地址，否则 console
+   的入口只接受 LAN 源地址。该规则已做成网关上的 systemd oneshot，重复启动
+   幂等（先用 `iptables -C` 检查）。
+
+验证（`qa-deploy-8-20261019`）：
+
+- PVE 配置为 `net0: virtio=...,bridge=vmbr4094,tag=4094`；guest 从 PXE DHCP
+  获得 `<pxe-guest-ip>`，agent 监听 `*:8443`。
+- 第一次 bootstrap 前，agent 拉取 console 的 revocation 文档超时（`context
+  deadline exceeded`，日志在 `server.go` 拒绝 client cert 处）；按第 3 条加
+  NAT 后，guest 侧 `curl` 返回 200，bootstrap 随即签发证书。
+- provision 于 14:22:27Z 成功（含中途修复 revocation 路径，共约 9m12s）；
+  suspend 成功；resume 后获得新租约、旧证书以
+  `compute instance rebuilt on resume from suspended` 撤销、新证书签发，
+  耗时约 4m03s；再次 suspend 后 purge；PVE 匹配 VM 为 0、RemoteVM 不存在、
+  两条证书均 revoked。
+- Qubes Air 实例的地址只在 `<pxe-subnet>`；LAN 侧的静态地址只属于 PXE 网关的
+  eth0 出口。
+
+未做：LAN DHCP 池仍与 K8s/Ceph/PVE 的静态地址段重叠；VLAN 方案已让 Qubes Air
+不再依赖该池，但其他 DHCP 客户端仍可能撞上这些静态地址，建议后续把静态段加入
+排除。
+
 ## 发现
 
 ### 1. RemoteVM 注册调用慢，30s 超时会留下半配置的 shell（已修，#78）
@@ -186,29 +233,34 @@ resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 `ErrQubeNotPurgeable`（`qube is running; suspend or release it before purging`），
 handler 映射为 409；其他状态仍由原子 claim 处理，因此真正的并发状态变化依旧返回
 transition conflict。单元测试覆盖 running 拒绝、状态保持不变且不调用 provider。
-修复随 `d4eb48c` 部署到生产；**409 文案的生产复验被 qa-deploy-5 的地址冲突阻塞**
-（见上），单元测试通过。
+修复随 `d4eb48c` 部署到生产；**409 文案的生产复验仍未做**（qa-deploy-8 的
+lifecycle 没有在 running 时调用 purge，下一次补做），单元测试通过。
 
 ## 重要未完成：Salt pin 尚未更新
 
 四次都是手工部署；`qubes-salt-config` 仍钉着旧 console/agent 制品。再次执行
 `qubesair.console` state 会用旧二进制覆盖当前 schema 6 数据库，而旧二进制无法打开
 新 schema，导致 console 无法启动。**在下次 salt apply 之前，必须先把外部仓库的
-`console_binary_*` pin 更新到 `d4eb48c` 的二进制；`console_web_*` 与
-`agent_package_*` 保持 `b73cae1` 的制品即可（这两部分源码未变）。**
+`console_binary_*` 与 `console_web_*` pin 更新到 `e23265a` 的制品（#85 改了前端）；
+`agent_package_*` 保持 `b73cae1` 即可（agent 源码未变）。**
 本仓库不复制第二套部署入口，所以没有改那个仓库。
 
 ## 未覆盖
 
 - Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
-- 发现 4 的 409 文案生产复验（被 qa-deploy-5 的地址冲突阻塞）；
+- 发现 4 的 409 文案生产复验（VLAN 路径已打通，可在下一次 running 测试时补做）；
+- LAN DHCP 池与静态基础设施地址段的重叠清理（VLAN 方案已让 Qubes Air 不再依赖
+  该池，但其他客户端仍可能撞上）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
 - RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）。
 
 ## 清理
 
-五个测试 qube（`qa-deploy-20261019-1`、`-2`、`-3`、`-4`、`-5`）均已 purge；PVE
-按名称匹配的 VM 为 **0**；对应 RemoteVM 均不存在；有证书的 qube 均为 revoked
-（`-5` 未完成 bootstrap，没有证书）。Exec/FileCopy 测试用的 console.env 授权已从
-`/rw/config/qubesair/pre-exec-test/console.env` 还原。临时测试脚本、HTTP 转发和
-PVE ticket 已清理。生产 console 保持运行在 `d4eb48c`；部署前备份保留用于回滚。
+八个测试 qube（`qa-deploy-20261019-1` 到 `-8`）均已 purge；PVE 按名称匹配的
+VM 为 **0**；对应 RemoteVM 均不存在；有证书的 qube 均为 revoked（`-5`、`-6`、
+`-7` 未完成 bootstrap，没有证书）。Exec/FileCopy 测试用的 console.env 授权已从
+`/rw/config/qubesair/pre-exec-test/console.env` 还原。zone 保持
+`network_bridge=vmbr4094`、`vlan_tag=4094`；PXE 网关上的 `qubesair-pxe-nat`
+oneshot 已 enable（仅对 `NEW` 的 guest→LAN 连接做 SNAT）。临时测试脚本、HTTP
+转发和 PVE ticket 已清理。生产 console 保持运行在 `e23265a`；部署前备份保留用于
+回滚。
