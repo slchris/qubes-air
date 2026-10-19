@@ -84,8 +84,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **OBS-01：真实监控、告警与账单。** 指标已接：Linux Console 主机指标与 Proxmox 运行中 Qube 的实时读数，均标来源与采样时间，缺失带原因不显示为零；UI 每分钟重取（单次 20 秒无应答按失败），Qube 读数与主机指标的采样时间超 2 分钟、超前 30 秒或缺失时各自标 stale。
   告警已接：Zone disconnected / agent unreachable 的 raised/resolved 由 SQLite 触发器持久化，
   提供确认、历史与加密 webhook outbox 重试（见[记录](reviews/2026-10-19-alert-webhook.md)）。
-  仍缺：Proxmox 读数未在真机 PVE 上核对；费用数据源、其他 provider 的 Qube 指标与历史指标；
-  前端告警确认/历史视图尚未接入。
+  仍缺：Proxmox 读数未在真机 PVE 上核对；费用数据源、其他 provider 的 Qube 指标与历史指标。
+  前端告警确认/历史视图已接入 Monitoring 视图：确认按钮、操作者/时间、分页历史
+  （见[记录](reviews/2026-10-19-alert-ui.md)）。
 - [ ] **CLOUD-01：GCP 原生适配器。** 实现资源与可信网络路径，完成独立生命周期及销毁验收。
 - [ ] **CLOUD-02：AWS 原生适配器。** 同样独立验收；不因 GCP 或 Proxmox 通过而视作可用。
 - [ ] **MCP-01：桌面帧与输入。** 部分完成：desktop_frame_get 经 Console 逐帧人工批准（Desktop access 页 Allow/Deny/Stop）后读一帧，
