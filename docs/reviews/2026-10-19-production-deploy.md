@@ -23,11 +23,11 @@
     （数据库 `.backup`、console.env、secrets.env、旧二进制）。
   - `66325fb`：备份在 `/rw/config/qubesair/pre-deploy-66325fb`（内容同上）。
     二进制经 artifact store 下发：
-    `http://10.31.0.2/local/qubes-air/qubes-air-console-66325fb`，
+    `<artifact-store>/local/qubes-air/qubes-air-console-66325fb`，
     SHA-256 `89c1689ed8ec750666ae8073af031286f1487eea072266421484cf141e90bd1f`；
     console 内回读校验一致后执行 stop → install → start。
   - `d4eb48c`：备份在 `/rw/config/qubesair/pre-deploy-d4eb48c`（内容同上）；
-    二进制 `http://10.31.0.2/local/qubes-air/qubes-air-console-d4eb48c`，
+    二进制 `<artifact-store>/local/qubes-air/qubes-air-console-d4eb48c`，
     SHA-256 `c7d2ae2a0c36e8f596b3f7d00bb099274bb103e626dec7c064abdee23601a9d3`，
     console 内回读一致后 stop → install → start。
   - #78/#79/#82 未修改 agent 源码，agent 包保持 `0.0.0+qab73cae1`。
@@ -57,7 +57,7 @@
   - suspend 成功；resume 成功（约 1m36s），证书在 08:20:56Z 签发；resume 期间
     bootstrap 只在 23:19:56 记录一次 `has no IP address`，下一次 sweep 即完成签发；
   - 再次 suspend 成功；第二次 resume 成功（约 2m12s）。轮询 API 在 08:25:41Z
-    已返回 `ip_address=10.31.0.111`（此时 job 仍 `running`、agent 仍
+    已返回新地址的 `ip_address`（此时 job 仍 `running`、agent 仍
     `unreachable`），证书在 08:25:56Z 签发——地址在 bootstrap 之前已经写入
     qube 行（#79 的目标行为）；
   - suspend 成功；purge 后 qube `purged`，PVE 匹配 VM 为 **0**，RemoteVM 不存在，
@@ -93,11 +93,11 @@ QUBES_AIR_FILECOPY_ROOTS=/data:/tmp
   `/dev/mapper/qubesair-data`（ext4），文件内容仍为
   `qubes-air-persist-20261019`。
 - **resume 延迟异常**：这次 resume 用了 7m12s。agent 在 08:50:01Z 已启动并监听
-  `*:8443`；08:56Z 从 PVE 节点连接 `10.31.0.113:8443` 成功，但 console 在同一地址
-  持续得到 `connection refused`，直到约 08:55:5xZ 才恢复，证书在 08:55:53Z 签发。
-  原因未定位，表现像桥接/DHCP 层的地址复用或 ARP 缓存；600s 的 provision 等待
-  吸收了这次延迟，但说明 resume 耗时可能由 console→guest 可达性决定，而不是
-  bootstrap。qa-deploy-5 上发现的地址冲突（见下）与其表现相似，可能同源。
+  `*:8443`；08:56Z 从 PVE 节点连接该地址成功，但 console 在同一地址持续得到
+  `connection refused`，直到约 08:55:5xZ 才恢复，证书在 08:55:53Z 签发。
+  事后确认这个地址属于 K8s 基础设施节点，本次延迟与 qa-deploy-5 的地址冲突同源；
+  600s 的 provision 等待吸收了延迟，但说明 resume 耗时可能由 console→guest
+  可达性决定，而不是 bootstrap。
 
 ## purge 文案修复的部署与 qa-deploy-5（`d4eb48c`）
 
@@ -106,21 +106,37 @@ QUBES_AIR_FILECOPY_ROOTS=/data:/tmp
 
 ```
 agent did not become reachable within 10m0s ... nothing is listening on
-10.31.0.114:8443 ... connection refused (check ... whether the address is
+<guest-ip>:8443 ... connection refused (check ... whether the address is
 already used by another host)
 ```
 
-- guest 内 agent 从启动起就监听 `*:8443`，eth0 为 `10.31.0.114`；
-- PVE 节点上 `ip neigh show 10.31.0.114` 指向 `6a:fb:08:dd:20:2a`，而 VM 的
-  `net0` MAC 是 `bc:24:11:6d:41:9a`；占用 MAC 不在六个 PVE 节点的 bridge FDB 中，
-  说明占用者在 PVE 桥之外（很可能是 Qubes 主机/路由器侧的其他设备）；
-- console 与 PVE 节点发往 `10.31.0.114:8443` 的连接都被错误主机拒绝，没有到达 VM。
+- guest 内 agent 从启动起就监听 `*:8443`，eth0 就是 DHCP 分配的地址；
+- PVE 节点上 `ip neigh show <guest-ip>` 指向 `<conflicting-mac>`，而 VM 的
+  `net0` MAC 是 `<vm-mac>`；占用 MAC 经 bridge FDB 追到物理上联口，说明占用者
+  在 PVE 桥之外；
+- console 与 PVE 节点发往 `<guest-ip>:8443` 的连接都被错误主机拒绝，没有到达 VM。
 
-因此本轮没有得到一个 `running` 的测试 qube，**#82 的 409 文案未做生产复验**
-（单元测试覆盖错误类型、状态不变与 409 映射）。qube 已 purge，PVE、RemoteVM、
-证书均无残留。这是环境 DHCP 地址冲突，不是 console 逻辑；错误文案已经提示
-"whether the address is already used by another host"。建议在 DHCP/路由器侧排查
-`10.31.0.114` 的占用者并清理，或把该地址移出可分配池。
+排查占用者：对该地址的 node_exporter（9100/tcp）读取 `node_uname_info` 与
+`node_network_info`，确认它是一个 Debian 12（cloud 内核）Kubernetes 基础设施
+节点，带 Calico 接口；扫描同网段 9100 端口后发现一个 **3 master + 5 worker**
+的 K8s 集群，其静态地址段正好覆盖 DHCP 最近分配给测试 VM 的多个地址
+（qa-deploy-3/4/5 先后拿到过属于 2 个 master 和 2 个 worker 的地址）。对新客户端做
+DHCP DISCOVER，服务器返回的 offer 也是该 K8s 集群中一个 worker 的地址。
+
+根因：**LAN 的 DHCP 池与 K8s 基础设施集群的静态地址段重叠**，且没有排除项或
+保留。provider 现在只用 DHCP（静态 IP 池已移除），因此池里任何被其他主机静态
+占用的地址都会被租给新 qube；console 的连接被真正的占用者拒绝，而 guest 内
+agent 正常。qa-deploy-4 的 7m12s resume 与 qa-deploy-5 的 10 分钟失败都是这个
+冲突的不同 ARP 时序表现。
+
+修复方向在 DHCP 服务器侧（不是 console）：把全部静态基础设施地址段
+（K8s 节点、Ceph、PVE 节点、网络服务地址）加入排除/保留，或把池限制在一个
+专用未占用段；改完用 `nmap --script broadcast-dhcp-discover` 确认 offer 落在
+静态段之外。本次未改 DHCP/路由器配置。
+
+由于 qa-deploy-5 未能 provision，**#82 的 409 文案未做生产复验**（单元测试
+覆盖错误类型、状态不变与 409 映射）。qube 已 purge，PVE、RemoteVM、证书均无
+残留。
 
 ## 发现
 
@@ -150,7 +166,7 @@ suspend 会清空 qube 的 `ip_address`（compute 已销毁，旧地址失效）
 因此只能等健康监控的另一次 provider 读取把地址落库。在 `b73cae1` 上观测到：
 resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 `has no IP address`，直到 07:51:30Z 才签发证书；而可达性探针在 07:50:56Z
-已经能从 `10.31.0.108:8443` 的 TLS 错误中看出 agent 在那里。
+已经能从 `<guest-ip>:8443` 的 TLS 错误中看出 agent 在那里。
 
 修复：`NativeExecutor` 增加可选 `AddressRecorder`（接到 qube repository），
 第一次从 provider 得到地址时用 5 秒独立超时写入 qube 行；写失败只记录日志，
