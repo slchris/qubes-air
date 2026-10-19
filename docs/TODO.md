@@ -56,7 +56,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   （`1dbc87f`）。剩余：Exec/FileCopy 的 qrexec transport（dom0 policy 仍拒绝，
   需要外部 `qubes-salt-config` 授权）、旧盘迁移与 known_hosts 带外核对。验收条件不变。
   2026-10-19 生产测试已补：白名单下发到 guest、agent 侧 Exec/FileCopy 正反例、
-  加密数据盘文件跨 suspend/resume 持久性（详见生产部署记录）。
+  加密数据盘文件跨 suspend/resume 持久性（详见生产部署记录）。同轮发现环境 DHCP
+  会把已被桥外设备占用的地址（如 `10.31.0.114`）分配给新 qube，导致 agent 在监听
+  但 console 10 分钟不可达；需在 DHCP/路由器侧清理冲突地址。
   2026-09-25 的部分回归另完成 provision/suspend/resume/release，确认数据卷身份保持且 agent 恢复健康；
   未执行 purge、未验证文件内容持久性，也未扩大 Exec/FileCopy 权限，且部署二进制无法绑定到源码 revision；
   详见[部分回归记录](reviews/2026-09-25-qa01-proxmox-smoke.md)。

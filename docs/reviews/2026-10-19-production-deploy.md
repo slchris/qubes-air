@@ -1,9 +1,9 @@
 # 2026-10-19 生产 console 部署与当前 HEAD 复验
 
 起始基线：`origin/main` `b73cae1`（#73 completion 结果持久化、#75 cleanup 超时状态持久化、
-#76 可配置 provision 等待）。当天在同一生产 console 上又部署了两次：`87ef8c1`
-（#78 RemoteVM 调用预算）和 `66325fb`（#79 resume 可达性循环记录地址）。最终运行版本为
-`v0.1.0-224-g66325fb`，schema 6。
+#76 可配置 provision 等待）。当天在同一生产 console 上又部署了三次：`87ef8c1`
+（#78 RemoteVM 调用预算）、`66325fb`（#79 resume 可达性循环记录地址）和 `d4eb48c`
+（#82 purge 状态文案）。最终运行版本为 `v0.1.0-230-gd4eb48c`，schema 6。
 
 ## 部署内容
 
@@ -18,7 +18,7 @@
     （数据库 `.backup`、console.env、secrets.env、旧二进制、旧 web）。
   - 数据库从 schema 2 迁移到 6；迁移后 1 个 zone、13 个既有 qube、56 条 job 均保留，
     既有 released qube 与证书未改动。
-- 后续两次是二进制替换，未改前端、未改 agent 包、未迁移 schema：
+- 后续三次是二进制替换，未改前端、未改 agent 包、未迁移 schema：
   - `87ef8c1`：备份在 `/rw/config/qubesair/pre-deploy-regtimeout`
     （数据库 `.backup`、console.env、secrets.env、旧二进制）。
   - `66325fb`：备份在 `/rw/config/qubesair/pre-deploy-66325fb`（内容同上）。
@@ -26,11 +26,16 @@
     `http://10.31.0.2/local/qubes-air/qubes-air-console-66325fb`，
     SHA-256 `89c1689ed8ec750666ae8073af031286f1487eea072266421484cf141e90bd1f`；
     console 内回读校验一致后执行 stop → install → start。
-  - #78/#79 未修改 agent 源码，agent 包保持 `0.0.0+qab73cae1`。
+  - `d4eb48c`：备份在 `/rw/config/qubesair/pre-deploy-d4eb48c`（内容同上）；
+    二进制 `http://10.31.0.2/local/qubes-air/qubes-air-console-d4eb48c`，
+    SHA-256 `c7d2ae2a0c36e8f596b3f7d00bb099274bb103e626dec7c064abdee23601a9d3`，
+    console 内回读一致后 stop → install → start。
+  - #78/#79/#82 未修改 agent 源码，agent 包保持 `0.0.0+qab73cae1`。
 
 ## 部署后验证
 
-- `/health`：`status=healthy`、`revision=66325fb`、`tree=clean`、`audit_trail=ok`。
+- `/health`（最终）：`status=healthy`、`revision=d4eb48c`、`tree=clean`、
+  `audit_trail=ok`。
 - 部署前旧 console 上偶发的 `/api/v1/zones` 500（`context canceled`）在升级后不再复现。
 - `b73cae1` 上的 lifecycle（qube `qa-deploy-20261019-1`）：
   - provision 成功（约 4m13s，包含一次 30s 的 dom0 注册等待），agent healthy；
@@ -92,7 +97,30 @@ QUBES_AIR_FILECOPY_ROOTS=/data:/tmp
   持续得到 `connection refused`，直到约 08:55:5xZ 才恢复，证书在 08:55:53Z 签发。
   原因未定位，表现像桥接/DHCP 层的地址复用或 ARP 缓存；600s 的 provision 等待
   吸收了这次延迟，但说明 resume 耗时可能由 console→guest 可达性决定，而不是
-  bootstrap。建议在真实网络里复现并抓取邻居表。
+  bootstrap。qa-deploy-5 上发现的地址冲突（见下）与其表现相似，可能同源。
+
+## purge 文案修复的部署与 qa-deploy-5（`d4eb48c`）
+
+`d4eb48c` 部署后 `/health` 为 `v0.1.0-230-gd4eb48c`。为复验 #82 的 409 文案，
+创建 `qa-deploy-5-20261019`；provision 在 09:16:31Z 开始，10m0s 后失败：
+
+```
+agent did not become reachable within 10m0s ... nothing is listening on
+10.31.0.114:8443 ... connection refused (check ... whether the address is
+already used by another host)
+```
+
+- guest 内 agent 从启动起就监听 `*:8443`，eth0 为 `10.31.0.114`；
+- PVE 节点上 `ip neigh show 10.31.0.114` 指向 `6a:fb:08:dd:20:2a`，而 VM 的
+  `net0` MAC 是 `bc:24:11:6d:41:9a`；占用 MAC 不在六个 PVE 节点的 bridge FDB 中，
+  说明占用者在 PVE 桥之外（很可能是 Qubes 主机/路由器侧的其他设备）；
+- console 与 PVE 节点发往 `10.31.0.114:8443` 的连接都被错误主机拒绝，没有到达 VM。
+
+因此本轮没有得到一个 `running` 的测试 qube，**#82 的 409 文案未做生产复验**
+（单元测试覆盖错误类型、状态不变与 409 映射）。qube 已 purge，PVE、RemoteVM、
+证书均无残留。这是环境 DHCP 地址冲突，不是 console 逻辑；错误文案已经提示
+"whether the address is already used by another host"。建议在 DHCP/路由器侧排查
+`10.31.0.114` 的占用者并清理，或把该地址移出可分配池。
 
 ## 发现
 
@@ -142,27 +170,29 @@ resume 于 07:48:19Z 开始，07:48:30Z 和 07:49:30Z 两次 bootstrap 都报
 `ErrQubeNotPurgeable`（`qube is running; suspend or release it before purging`），
 handler 映射为 409；其他状态仍由原子 claim 处理，因此真正的并发状态变化依旧返回
 transition conflict。单元测试覆盖 running 拒绝、状态保持不变且不调用 provider。
+修复随 `d4eb48c` 部署到生产；**409 文案的生产复验被 qa-deploy-5 的地址冲突阻塞**
+（见上），单元测试通过。
 
 ## 重要未完成：Salt pin 尚未更新
 
-三次都是手工部署；`qubes-salt-config` 仍钉着旧 console/agent 制品。再次执行
+四次都是手工部署；`qubes-salt-config` 仍钉着旧 console/agent 制品。再次执行
 `qubesair.console` state 会用旧二进制覆盖当前 schema 6 数据库，而旧二进制无法打开
 新 schema，导致 console 无法启动。**在下次 salt apply 之前，必须先把外部仓库的
-`console_binary_*` pin 更新到 `66325fb` 的二进制；`console_web_*` 与
+`console_binary_*` pin 更新到 `d4eb48c` 的二进制；`console_web_*` 与
 `agent_package_*` 保持 `b73cae1` 的制品即可（这两部分源码未变）。**
 本仓库不复制第二套部署入口，所以没有改那个仓库。
 
 ## 未覆盖
 
 - Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
+- 发现 4 的 409 文案生产复验（被 qa-deploy-5 的地址冲突阻塞）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
 - RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）。
 
 ## 清理
 
-四个测试 qube（`qa-deploy-20261019-1`、`-2`、`-3`、`-4`）均已 purge；PVE 按名称
-匹配的 VM 为 **0**；对应 RemoteVM 均不存在；各 qube 的证书均为 revoked。
-Exec/FileCopy 测试用的 console.env 授权已从
-`/rw/config/qubesair/pre-exec-test/console.env` 还原并重启 console，`/health` 仍为
-`v0.1.0-224-g66325fb`。临时测试脚本、HTTP 转发和 PVE ticket 已清理。生产 console
-保持运行在 `66325fb`；部署前备份保留用于回滚。
+五个测试 qube（`qa-deploy-20261019-1`、`-2`、`-3`、`-4`、`-5`）均已 purge；PVE
+按名称匹配的 VM 为 **0**；对应 RemoteVM 均不存在；有证书的 qube 均为 revoked
+（`-5` 未完成 bootstrap，没有证书）。Exec/FileCopy 测试用的 console.env 授权已从
+`/rw/config/qubesair/pre-exec-test/console.env` 还原。临时测试脚本、HTTP 转发和
+PVE ticket 已清理。生产 console 保持运行在 `d4eb48c`；部署前备份保留用于回滚。
