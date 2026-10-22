@@ -50,14 +50,14 @@ dom0 的 policy 决策，并把基础设施凭据、传输身份和远端工作�
 
 | 层 | 技术 | 版本证据 |
 |---|---|---|
-| 后端语言 | Go | `console/backend/go.mod`:3 `go 1.26.9` |
+| 后端语言 | Go | `console/backend/go.mod`:3 `go 1.26.10` |
 | Web 框架 | Gin | `go.mod` gin `v1.9.1` |
 | 存储 | SQLite（cgo） | `go.mod` `mattn/go-sqlite3 v1.14.52` |
 | RPC | gRPC / protobuf | `console/backend/proto/relay_transport.proto` |
 | 前端 | Svelte 5 + TS 6.0 + Vite 8 | `console/frontend/package.json` devDependencies |
 | 前端测试 | Vitest 5 + Testing Library + jsdom；浏览器 E2E 用 Playwright（模拟 API） | `package.json`；配置 `vitest.config.ts`、`playwright.config.ts` |
 | 门禁工具 | golangci-lint 2.x / gosec / gocyclo / funlen / govulncheck / shellcheck | `Makefile`:65-98；根 `.golangci.yml` |
-| CI 运行时 | Go 1.26.9、Node 22（全部 workflow；Node 与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
+| CI 运行时 | Go 1.26.10、Node 22（全部 workflow；Node 与 `.nvmrc` 一致） | `.github/workflows/*.yml` env；`.nvmrc` |
 
 Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的分叉已消除，全部为 **22**；
 本机 Node 为 **22.14.0**。
@@ -82,7 +82,7 @@ Node 版本已统一：原先 `release.yml` 用 22、其余 workflow 用 20 的�
 ```
 qubes-air/
 ├── console/
-│   ├── backend/          Go 1.26.9 + Gin + SQLite + gRPC（35 个包，234 个 .go）
+│   ├── backend/          Go 1.26.10 + Gin + SQLite + gRPC（35 个包，234 个 .go）
 │   │   ├── cmd/          13 个入口：server / qubes-air-agent / qubes-air-mcp / relay-* / pingcheck …
 │   │   ├── internal/     22 个包：agent audit backup config database handler keyring mcp
 │   │   │                 middleware models orchestrator pki provider providerhttp qrexec

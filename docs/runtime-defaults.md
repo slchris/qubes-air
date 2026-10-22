@@ -278,9 +278,9 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 （例如 22.14）上 `npm ci` 会输出 `EBADENGINE`，Vitest 也起不来。
 以后改 Node 版本时，上表 5 处 workflow 与 `.nvmrc` 必须一起改。
 
-Go 版本统一走 `env.GO_VERSION: '1.26.9'` 或 `go-version-file: console/backend/go.mod`
-（`dependency.yml:22`、`release.yml:92`）。钉到 1.26.9 是因为 1.26.8 的标准库
-还有 govulncheck 报出的 2026-10-08 那批问题，修复在这个补丁版本里。
+Go 版本统一走 `env.GO_VERSION: '1.26.10'` 或 `go-version-file: console/backend/go.mod`
+（`dependency.yml:22`、`release.yml:92`）。钉到 1.26.10 是因为 1.26.9 的标准库
+含 GO-2026-6809（crypto/x509 对受损中间证书的处理），修复在这个补丁版本里。
 
 ## 4. 开放问题（本轮登记，不由本文件擅自"解决"）
 
