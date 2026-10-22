@@ -185,6 +185,24 @@ LAN DHCP 池的静态段排除已补齐：K8s 节点、静态 VM、Qubes 主机�
 WIN-GAMING 静态映射和 PVE 节点的地址已加入 exclude（共 14 个），随后对新客户端
 做 DHCP DISCOVER，offer 已落在排除段之外。
 
+## 2026-10-22 VLAN 4094 复验（qa-deploy-9）
+
+环境预检：console `e23265a` healthy；zone `vmbr4094` + `vlan_tag=4094`；
+LAN 路由器有 `<pxe-subnet>` 静态路由和 14 条 DHCP exclude；PXE 网关上
+`<pxe-gateway-lan-ip>` 静态地址、`qubesair-pxe-nat` oneshot 均为 active。
+
+- provision：约 2m09s 成功，guest 从 PXE DHCP 获得 `<pxe-guest-ip>`，
+  agent healthy；PVE NIC 为 `bridge=vmbr4094,tag=4094`；证书签发，
+  RemoteVM 注册成功。
+- **running 状态下直接 purge**：返回
+  `409 {"error":"Conflict","message":"qube is running; suspend or release it
+  before purging"}`，qube 仍为 running/healthy——#82 的文案在生产复验通过。
+- suspend 成功；resume 约 1m41s，guest 获得新租约，旧证书以
+  `compute instance rebuilt on resume from suspended` 撤销、新证书签发，
+  RemoteVM 仍在。
+- 再次 suspend 后 purge：qube `purged`，PVE 匹配 VM 为 0，RemoteVM 不存在，
+  两条证书均 revoked。
+
 ## 发现
 
 ### 1. RemoteVM 注册调用慢，30s 超时会留下半配置的 shell（已修，#78）
@@ -248,7 +266,6 @@ lifecycle 没有在 running 时调用 purge，下一次补做），单元测试�
 ## 未覆盖
 
 - Exec/FileCopy 的 qrexec transport/dom0 policy 路径（agent 侧脚本已验证，见上）；
-- 发现 4 的 409 文案生产复验（VLAN 路径已打通，可在下一次 running 测试时补做）；
 - 生产 console 的 Salt 状态化重放（pin 未更新，见上）；
 - RemoteVM 注册在强制超时/中断下的幂等行为（见发现 1）。
 
