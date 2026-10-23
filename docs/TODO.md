@@ -2,7 +2,7 @@
 
 更新：2026-10-23。勾选表示代码与自动化验收完成并已合入 `main`；不表示已部署或已通过真机验收。
 2026-10-23 现场修复已由 Air PR #90（`7a5fc9a`）和 Salt PR #3（`cc8c11c`）合入，合并 CI 通过；
-部分验收通过不代表整个 OPS-01/QA-01 完成。后续网络资格修复仍按本阶段状态记录。
+网络资格修复由 PR #91（`d7a9dbd`）合入，合并 CI 通过。部分验收通过不代表整个 OPS-01/QA-01 完成。
 当前能力见[路线图](roadmap-to-production.md)，历史检查见[记录索引](reviews/README.md)。
 M0–M3 里程碑与 G-* 缺口的逐项状态见[生产可用性缺口](production-readiness-gaps.md)。
 P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.md)，
@@ -56,10 +56,11 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   阻断的 Exec/FileCopy 完整 qrexec 正反例，1 MiB 往返及 suspend/resume 后原文件读取均通过。
   当前 Console/agent `eb753f4`、handler `4455409`；生命周期、证书换发及两个已授权测试对象
   purge 完成，历史资源保留，临时精确授权已撤销。见[闭环记录](reviews/2026-10-23-production-closure.md)。
-  节点网络资格修复已在当前分支补齐自动调度和 provider 分配前检查，真实只读探针证明六个
-  节点中仅一个满足 zone 网络条件；完整门禁通过，合入与部署后生命周期仍待完成，见
+  节点网络资格修复已由 PR #91 合入，覆盖自动调度和 provider 分配前检查，真实只读探针证明六个
+  节点中仅一个满足 zone 网络条件；完整门禁及合并 CI 通过，部署后生命周期仍待完成，见
   [网络资格记录](reviews/2026-10-23-network-eligibility.md)。purge 后 Console identity YAML
-  与 Relay endpoint 缓存自动回收仍待实现；上一轮残留已手动清理。
+  与 Relay endpoint 缓存自动回收的实现、回归及本地完整门禁已通过，PR/部署和真机复验仍待完成，见
+  [清理记录](reviews/2026-10-23-purge-residual-cleanup.md)；上一轮残留已手动清理。
   另待：旧盘 DEK 迁移、SSH 主机键独立带外核对、release URL 置备及 Relay 自身重启。
   历史验收见[生产部署记录](reviews/2026-10-19-production-deploy.md)与
   [当前 main 生命周期记录](reviews/2026-10-19-current-main-real-machine.md)。

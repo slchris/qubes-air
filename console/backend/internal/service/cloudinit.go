@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -875,19 +876,24 @@ func writeSnippetAtomic(dir, name, userData string) error {
 // reaping failed, and an operator should see that rather than have it papered
 // over.
 func FindSharedAgentUserData(dir, qubeName string) (string, error) {
-	entries, err := os.ReadDir(dir)
+	if err := validateQubeName(qubeName); err != nil {
+		return "", err
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", err
 	}
-	pattern := snippetNamePattern(qubeName)
+	defer root.Close()
+	files, err := collectOwnedIdentities(context.Background(), root, "", qubeName)
+	if err != nil {
+		return "", err
+	}
 	var found []string
-	for _, e := range entries {
-		if !e.IsDir() && pattern.MatchString(e.Name()) {
-			found = append(found, e.Name())
-		}
+	for _, file := range files {
+		found = append(found, file.name)
 	}
 	switch len(found) {
 	case 0:
@@ -902,61 +908,38 @@ func FindSharedAgentUserData(dir, qubeName string) (string, error) {
 	}
 }
 
-// reapSupersededSnippets removes a qube's older identity documents, keeping the
-// one named by keep.
-//
-// Content addressing means every re-render leaves a new file behind, so
-// something has to collect them or the share grows without bound. Scoped to one
-// qube's own files by construction: a pattern that could match another qube's
-// name would delete an identity belonging to a running VM.
+// reapSupersededSnippets uses the same ownership checks as purge. A filename
+// pattern alone cannot distinguish a content hash from another qube's name.
 func reapSupersededSnippets(dir, qubeName, keep string) error {
-	entries, err := os.ReadDir(dir)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
-	pattern := snippetNamePattern(qubeName)
-	var firstErr error
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || name == keep || !pattern.MatchString(name) {
-			continue
-		}
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-// RemoveAgentUserData deletes a qube's identity files from the console.
-//
-// Called when a qube is purged. On the SFTP path the copy on the Proxmox node
-// is removed by the provider along with the compute VM; this removes the console's
-// own. On the shared path there is only one copy and this is what removes it,
-// so every content-addressed version is swept, not just the current name —
-// which the caller does not know once the qube's config is gone.
-func RemoveAgentUserData(dir, qubeName string) error {
-	if dir == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(dir)
+	defer root.Close()
+	data, _, err := readIdentity(root, keep)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
-	pattern := snippetNamePattern(qubeName)
-	var firstErr error
-	for _, e := range entries {
-		if e.IsDir() || !pattern.MatchString(e.Name()) {
+	id, name, err := parseIdentityOwner(data)
+	if err != nil {
+		return err
+	}
+	if name != qubeName {
+		return fmt.Errorf("shared snippet owner does not match requested qube")
+	}
+	files, err := collectOwnedIdentities(context.Background(), root, id, name)
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if file.name == keep {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !os.IsNotExist(err) && firstErr == nil {
-			firstErr = err
+		if err := removeOwnedIdentity(context.Background(), root, file); err != nil {
+			return err
 		}
 	}
-	return firstErr
+	return nil
 }
 
 // writeAptMirror emits the apt stanza pointing the guest at a local mirror.

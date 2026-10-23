@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func writeOwnedShared(dir, name, doc string) (string, error) {
+	return WriteSharedAgentUserData(dir, name, markIdentityOwner("q-"+name, name, doc))
+}
 
 func namesIn(t *testing.T, dir string) []string {
 	t.Helper()
@@ -22,7 +27,7 @@ func namesIn(t *testing.T, dir string) []string {
 
 func TestSharedWriteIsFoundByVolumeLookup(t *testing.T) {
 	dir := t.TempDir()
-	name, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	name, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
 
 	found, err := FindSharedAgentUserData(dir, "dev-work")
@@ -40,9 +45,9 @@ func TestSharedWriteIsFoundByVolumeLookup(t *testing.T) {
 // lookup that keeps provisioning honest starts refusing.
 func TestRewriteSupersedesTheOldVersion(t *testing.T) {
 	dir := t.TempDir()
-	first, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	first, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
-	second, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 2\n")
+	second, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 2\n")
 	require.NoError(t, err)
 
 	require.NotEqual(t, first, second, "new content must produce a new name")
@@ -53,9 +58,9 @@ func TestRewriteSupersedesTheOldVersion(t *testing.T) {
 // new name, every provision would ForceNew the compute VM.
 func TestRewritingIdenticalContentIsStable(t *testing.T) {
 	dir := t.TempDir()
-	first, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	first, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
-	second, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	second, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
 
 	assert.Equal(t, first, second)
@@ -66,14 +71,14 @@ func TestRewritingIdenticalContentIsStable(t *testing.T) {
 // running VM is unrecoverable from the console's side.
 func TestReapingIsScopedToOneQube(t *testing.T) {
 	dir := t.TempDir()
-	other, err := WriteSharedAgentUserData(dir, "dev-work-2", "#cloud-config\nother\n")
+	other, err := writeOwnedShared(dir, "dev-work-2", "#cloud-config\nother\n")
 	require.NoError(t, err)
 	legacy := SnippetFileName("dev-work-2")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, legacy), []byte("legacy"), 0o644))
 
-	mine, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nmine\n")
+	mine, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nmine\n")
 	require.NoError(t, err)
-	_, err = WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nmine v2\n")
+	_, err = writeOwnedShared(dir, "dev-work", "#cloud-config\nmine v2\n")
 	require.NoError(t, err)
 
 	got := namesIn(t, dir)
@@ -86,13 +91,13 @@ func TestReapingIsScopedToOneQube(t *testing.T) {
 // "dev-work" both start with "qubes-air-dev".
 func TestPrefixSharingQubesDoNotCollide(t *testing.T) {
 	dir := t.TempDir()
-	long, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nlong\n")
+	long, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nlong\n")
 	require.NoError(t, err)
-	short, err := WriteSharedAgentUserData(dir, "dev", "#cloud-config\nshort\n")
+	short, err := writeOwnedShared(dir, "dev", "#cloud-config\nshort\n")
 	require.NoError(t, err)
 
 	// Re-render the short one; the long one must survive untouched.
-	_, err = WriteSharedAgentUserData(dir, "dev", "#cloud-config\nshort v2\n")
+	_, err = writeOwnedShared(dir, "dev", "#cloud-config\nshort v2\n")
 	require.NoError(t, err)
 
 	got := namesIn(t, dir)
@@ -109,11 +114,12 @@ func TestPrefixSharingQubesDoNotCollide(t *testing.T) {
 // can rebuild a healthy qube with an identity it never had.
 func TestAmbiguousIdentityIsRefusedNotGuessed(t *testing.T) {
 	dir := t.TempDir()
-	_, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	_, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
 	// Plant a second version behind the reaper's back.
-	stray := ContentAddressedSnippetName("dev-work", "#cloud-config\nfoo: 2\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, stray), []byte("x"), 0o644))
+	document := markIdentityOwner("q-dev-work", "dev-work", "#cloud-config\nfoo: 2\n")
+	stray := ContentAddressedSnippetName("dev-work", document)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, stray), []byte(document), 0o644))
 
 	_, err = FindSharedAgentUserData(dir, "dev-work")
 	require.Error(t, err)
@@ -135,14 +141,15 @@ func TestLookupOfAnUnknownQubeIsEmptyNotAnError(t *testing.T) {
 // current name once the qube's config is gone.
 func TestRemoveSweepsEveryVersion(t *testing.T) {
 	dir := t.TempDir()
-	_, err := WriteSharedAgentUserData(dir, "dev-work", "#cloud-config\nfoo: 1\n")
+	_, err := writeOwnedShared(dir, "dev-work", "#cloud-config\nfoo: 1\n")
 	require.NoError(t, err)
-	stray := ContentAddressedSnippetName("dev-work", "#cloud-config\nfoo: 2\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, stray), []byte("x"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, SnippetFileName("dev-work")), []byte("y"), 0o644))
-	keep, err := WriteSharedAgentUserData(dir, "other", "#cloud-config\nother\n")
+	document := markIdentityOwner("q-dev-work", "dev-work", "#cloud-config\nfoo: 2\n")
+	stray := ContentAddressedSnippetName("dev-work", document)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, stray), []byte(document), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, SnippetFileName("dev-work")), []byte(document), 0o644))
+	keep, err := writeOwnedShared(dir, "other", "#cloud-config\nother\n")
 	require.NoError(t, err)
 
-	require.NoError(t, RemoveAgentUserData(dir, "dev-work"))
+	require.NoError(t, NewCertIssuer(nil, nil, dir, "", AgentPackage{}).RemoveIdentityFor(context.Background(), "q-dev-work", "dev-work"))
 	assert.Equal(t, []string{keep}, namesIn(t, dir))
 }

@@ -53,9 +53,25 @@ Relay 不持有 console CA。首次启动或续期时：
 
 ## Endpoint 同步
 
-Console 的 `qubesair.RemoteEndpoints` 只返回名称和 `ip:port`，不返回凭据。Relay 在启动时及
-定时拉取，将结果写入自身 QubesDB `/remote-endpoint/<name>`。`GrpcProxy` 每次调用从这里解析
-目标。
+Console 的 `qubesair.RemoteEndpoints` 只返回名称和 IPv4 `ip:port`，不返回凭据。
+`list-endpoints` 以只读连接、单条 SQL 快照读取全部 running 对象；最多 10,000 个，超限报错，
+不沿用 API 列表默认的 100 条分页。输出以 `QUBES-AIR-ENDPOINTS 1` 开始，以记录数和 SHA-256
+结束；校验用于识别截断或不完整快照，来源认证仍由 qrexec policy 负责。
+
+Relay 在启动及定时刷新时验证整份快照，再写入自身专用 QubesDB
+`/remote-endpoint/remote-<bare-name>`，删除快照中不再存在的同一命名范围键。
+合法空快照可以清空该范围；读取失败、截断、重复名称、畸形或超过 1 MiB 的响应均不触发回收。
+不匹配名称规则、嵌套路径和其他命名空间保留。`GrpcProxy` 每次调用从这里解析目标。
+
+启用 Salt 的 CSR Relay 时，Console 在 release/purge 成功销毁 provider 资源后先清空数据库 IP，
+再请求 dom0 注销 RemoteVM。dom0 核对类别、remote_name、Relay、transport 和管理 tag 后移除
+寻址对象，并通过仅接受 dom0 的 `qubesair.ForgetEndpoint` 同步清理 Relay。Relay 必须证明
+该目标已从完整快照消失，返回精确确认；超时、拒绝或部分写入失败都会使 job 保持可重试错误。
+刷新与显式清理共用持久锁，取得锁后才读取快照，避免旧 timer 在清理后重放旧地址。
+
+部署顺序：先部署新版 Console/`list-endpoints`，再暂停 Relay endpoint timer/service，
+通过权威 Salt state 更新 Relay helper、dom0 register 与 policy，完成同步后恢复 timer。
+混用旧发布工具和新清理端会被拒绝，不能把失败当作空端点集合。
 
 这使 console 不进入数据面，同时允许新建 Qube 在同步周期内自动可用。
 

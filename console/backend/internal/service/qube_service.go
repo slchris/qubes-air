@@ -789,6 +789,11 @@ func (s *QubeServiceImpl) claimInline(
 			return nil, err
 		}
 	}
+	if action == orchestrator.ActionDestroy {
+		if err := s.issuer.RemoveIdentityFor(ctx, qube.ID, qube.Name); err != nil {
+			return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
+		}
+	}
 	if err := s.qubeRepo.UpdateStatus(ctx, qube.ID, terminalStatusFor(action)); err != nil {
 		return nil, errors.Join(err, s.releaseFailedClaim(ctx, qube.ID, models.QubeStatusError))
 	}
