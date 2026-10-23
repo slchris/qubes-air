@@ -52,6 +52,10 @@ if [[ ! "$target" =~ ^remote-[a-zA-Z0-9._-]+$ ]]; then
     log "拒绝: '$target' 不是 remote-* 名"
     exit 126
 fi
+# dom0 uses remote-<qube> as an addressing shell. The agent's certificate and
+# service target use the original Qube name; remove exactly one prefix while
+# retaining the local name for the QubesDB lookup below.
+remote_name="${target#remote-}"
 if [[ ! "$service" =~ ^[a-zA-Z][a-zA-Z0-9._+-]*$ ]]; then
     log "拒绝: 非法服务名 '$service'"
     exit 126
@@ -92,7 +96,7 @@ if [[ -r "$RELAY_DIR/relay.crt" && -r "$RELAY_DIR/relay.key" && -r "$RELAY_DIR/c
     fi
     exec /usr/local/bin/relay-call -timeout "$tmo" \
         -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
-        -addr "$endpoint" "$target" "$svcarg"
+        -addr "$endpoint" "$remote_name" "$svcarg"
 fi
 
 # ---- 3b. mint 模式回退: 本 qube 是 console, 现签 + 从库解析端点 ----
@@ -101,7 +105,7 @@ if [[ -r "$CONSOLE_DIR/secrets.env" ]]; then
     # shellcheck disable=SC1091
     . "$CONSOLE_DIR/secrets.env"
     set +a
-    exec /usr/local/bin/relay-call -timeout "$tmo" -db "$CONSOLE_DIR/qubes-air.db" "$target" "$svcarg"
+    exec /usr/local/bin/relay-call -timeout "$tmo" -db "$CONSOLE_DIR/qubes-air.db" "$remote_name" "$svcarg"
 fi
 
 log "既无 $RELAY_DIR 下的下发证书, 也无 $CONSOLE_DIR/secrets.env —— 本服务未正确部署"
