@@ -1,6 +1,9 @@
 # 生产可用性缺口清单
 
-整理日期：2026-09-22，基准 revision `4f52953`（`kixpower/sprint-1`，Sprint 1 收尾），之后各行随 PR 更新；2026-09-26 按当时的 `main`（`a011ce8`）加上修复 `2d409fd`（本次状态更正以它为父提交，二者一起合入）重新核对状态并重算 §2 的汇总。
+更新：2026-10-23。本轮复验并更新部署、完整 qrexec、离机恢复相关条目；证据见
+[生产闭环记录](reviews/2026-10-23-production-closure.md)。Air/Salt 的本轮修复位于
+`codex/production-closure` 分支，尚未合入或发布。未重验的项目保留各行的证据日期与边界，
+不把早期汇总数量当作当前完成率。
 本文只回答一个问题：**离"能拿它当生产用"还差什么**。所有结论附可回放命令或 `文件:行号`；
 无法证实的写在 §5，不写成结论。
 
@@ -10,13 +13,13 @@
 
 | 档 | 定义 | 当前 | 还差什么 | 粗估 |
 |---|---|---|---|---|
-| **A 受控自用生产** | 一个人在自己的 Qubes + Proxmox 环境上，长期用它跑真实工作负载：装得上、升级有契约、坏了能恢复、核心功能有真机证据 | **代码侧与部署侧都已闭环，整体仍未达标**：M1 的 15 项里 8 项完成，M1-1（白名单下发）与 M1-5（备份调度）的外部仓接线已随 `qubes-salt-config` `v0.1.0` 落地（2026-09-22，PR #1），§2.H 的 4 条 A-阻塞运行时缺陷在代码侧全部修复并合入（其中 H1–H3 仍缺真机复验）；剩下的真机项**没有一项能在本机做完**。另外 `main` 的 CI 在 2026-09-26 于直推的 `a011ce8` 回退为红（G-A1）；修复 `2d409fd` 与本次状态更正一起合入，合入后 `main` 上首轮 CI 全绿才关闭 G-A1 | ① 真机闭环（M1-2/3/4/9：provision→Exec/FileCopy→suspend/resume、离机恢复实测 RTO、DEK 迁移）；② M1-5 的真机触发与"最新归档可恢复"核对；③ 用 release URL 置备（M1-10 的剩余一半：`v0.1.0` 已于 2026-09-22 发布，5 个制品含 `qubes-air-backup` 与 `SHA256SUMS`，G-A4、G-G5 已解除）；④ M1-8 的 PVE 集群版本已带外核对（9.2.10、六节点同版本、quorate），SSH 主机键取不到于 API、仍需一条节点侧命令（`runbook-qa01.md` §2） | 不再是 Sprint 数，取决于真机窗口与发布决定 |
-| **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未开始** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
+| **A 受控自用生产** | 自有 Qubes + Proxmox 长期承载工作负载 | 本轮重复部署、完整 qrexec、持久文件、受控离机恢复通过；仍未整体达标 | 分支审查/合入、节点网络资格、退役缓存自动回收、生产规模/接管、旧盘迁移、带外 SSH 指纹、release URL 置备 | 依赖逐项验收 |
+| **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未达标** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
 
-一句话判断（M1 执行后更新）：**代码侧不再是距离，剩下的是"真机证据 + 发布 + 外部仓接线"**——
-§2.H 那 3 处会在正常路径上直接打断生产的缺陷（job 超时短于真机 provision、purge 的不可逆步骤先于入队、健康检查实际不检查数据库）已全部修复并有变异红证据；
-核心功能（Exec/FileCopy）的下发通道此前**根本不存在**（控制台侧开开关对 guest 无效，见 G-B1），现已补齐**两侧**：console 侧写 `agent.env`，部署侧由 `qubes-salt-config` `v0.1.0` 写 `console.env`——但它仍然一次都没有在真机上端到端跑通过，
-所以"能用"这句话现在缺的是证据，不是代码。逐项证据见 §0.3。
+本轮已经取得重复 Salt 部署、Console AppVM 重启、Exec/FileCopy 完整 qrexec、
+文件跨 suspend/resume、两个测试对象 purge 和真实离机恢复的证据。同时确认两项实现缺口：
+自动调度未检查节点是否具有 zone bridge，purge 未自动回收本地 identity YAML 与 Relay
+endpoint 缓存。本轮测试残留已按精确对象手动清理，不能把这两个缺口写成自动闭环。
 
 三个里程碑（详见 §3）：
 
@@ -43,16 +46,16 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-3 合并 main | 已完成 `5f0fd88` | 21/21 全绿后用 **merge commit** 合并（不能用 squash/rebase：会改写 `4f52953` 这些已被 QA 记录的 revision，已核对仍在 main 历史里）；合并后在 main 上重跑 `make audit` **rc=0** |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；M0-5 lifecycle 已通过，但未触发 45 分钟上限，长 provision 复现仍未覆盖 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
-| M0-5 / M1-2 / M1-3 / M1-4 真机项 | **M0-5、M1-3 已通过；M1-2 的 qrexec 路径与 M1-4 仍开** | 2026-10-19 在修复后的 `0d23189`（#73，合并 `24f8e0c`）上完成 provision→suspend→resume→suspend→purge、证书轮换与销毁，PVE 匹配 VM 为 0：[记录](reviews/2026-10-19-current-main-real-machine.md)。随后在生产 `66325fb` 上三次重跑 lifecycle，并验证 M1-3 数据盘文件跨 suspend/resume（G-B3 已解除）、M1-2 的 agent 侧正反例与白名单下发（**qrexec transport 仍被 dom0 policy 拒绝**）；生产 RemoteVM 注册/注销在 `87ef8c1`/`66325fb` 复验。M1-4（离机恢复）仍未覆盖 |
+| M0-5 / M1-2 / M1-3 / M1-4 真机项 | 本轮现场通过受控范围，分支待合入 | `eb753f4` lifecycle、`4455409` handler 完整 qrexec、1 MiB 持久文件、原 keyring/CA 离机恢复与只读对账；生产规模/在线接管未验证。见[记录](reviews/2026-10-23-production-closure.md) |
 
-### 0.3 M1 执行结果（本轮，2026-09-22）
+### 0.3 M1 实现来源与后续验收
 
-M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 项卡在环境或对外决定**。本轮合并一律走 PR + 全绿 CI（`--merge`，保留 QA 记录的分支 revision）。这条做法之后被打破：2026-09-26 的 `38b71c9`、`a011ce8` 直接推到 `main`，没有 PR，`a011ce8` 的 Go Lint 失败（G-A1）。
-
+下表保留实现来源；现场结果按 2026-10-23 更新。分支通过、合并完成和 release 验收
+分别记录，不据早期计数推算当前完成率。
 | 项 | PR | 关键证据 |
 |---|---|---|
 | M1-1 Exec/FileCopy 白名单下发 | [#15](https://github.com/slchris/qubes-air/pull/15) `735f8f1` | 新增 `agent_exec_allow` / `agent_filecopy_roots`（冒号分隔，与 agent 的 `split(":")` 一致），写入 `agent.env`，空则整键省略；路径规则在启动配置校验与渲染时**各校验一次**。独立复验：把校验函数中和成恒真 → 配置侧 6 个、渲染侧 7 个子用例 FAIL；删掉写入 → 投递用例 FAIL |
-| M1-5 备份留存策略 | [#16](https://github.com/slchris/qubes-air/pull/16) `a500fb9` | `prune -dir -keep [-dry-run]`：`keep<1` 在任何 I/O 前拒绝、`Lstat` 不跟随符号链接、删除前逐条记录、部分失败报明已删/失败项、空跑明确说空跑；**本仓部分完成**——unit/timer 文本属外部仓 |
+| M1-5 备份留存策略 | [#16](https://github.com/slchris/qubes-air/pull/16) `a500fb9` | prune 实现保留；本轮 Salt 修复精确 mountpoint 门禁、持久 SSHFS 与模板提交顺序，开机/受控 timer 备份及最新归档恢复通过，部署分支待合入 |
 | M1-6 升级/回滚契约 | [#14](https://github.com/slchris/qubes-air/pull/14) `e5f7f55` | 四制品 Salt 钉法、协议集合语义（零 flag day）、schema 前向单向（回滚二进制≠回滚数据）、升级顺序与回滚表 |
 | M1-7 部署硬要求 | [#12](https://github.com/slchris/qubes-air/pull/12) `25cc35d` | 13 条"默认不满足、代码不兜底"逐条给后果与核对命令（TLS/loopback、审计留存、session、share 导出、bootstrap 窗口） |
 | M1-11 job 超时 | 随 M0 | 默认 45 分钟覆盖真机 provision 长尾（G-H1） |
@@ -60,7 +63,7 @@ M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 �
 | M1-13 不信任代理 | 随 M0 | `SetTrustedProxies(nil)` + 负向测试（G-H5） |
 | M1-14 `/health` 真实语义 | [#13](https://github.com/slchris/qubes-air/pull/13) `4ba2165` | 真实读写探测 + 调度器心跳（执行 job 时预算 = 该 job 超时 + 15s）；未认证路由的写按 2s 窗口节流（UD-1g） |
 | M1-15 日志流不被 WriteTimeout 截断 | 随 M0 | 流自管每事件写截止时间（G-H6） |
-| M1-2/3/4/9 | — | **环境阻塞**：需要真机 dom0/Qubes + PVE；执行步骤已收进[真机验收清单](acceptance-real-machine.md)（M1-2/3 见该页 §B，M1-4 见 §C 步骤 28，M1-9 的 DEK 迁移不在其中，仍按 `runbook-qa01.md` §5） |
+| M1-2/3/4/9 | 现场记录 | M1-2 完整 qrexec、M1-3 文件持久性及 M1-4 小规模离机恢复已通过；M1-9 旧盘迁移仍待验收，生产规模/接管未覆盖 |
 | M1-8 带外核对 | — | **PVE 半边已核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**SSH 指纹半边仍缺**：API 取不到主机键（`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点 HTTP 501 "not implemented"），需一条节点侧命令，已写进 `runbook-qa01.md` §2 |
 | M1-10 首次 release | — | 需要对外发布的决定（打 `v*` tag），且"用 release URL 置备"需要真实 provider。**后续**：同日打了 tag `v0.1.0` 并由 `release.yml` 发布（见 G-A4 与 M1-10 条目）；用 release URL 置备仍未做 |
 
@@ -91,24 +94,10 @@ M1 的 15 项在本轮推进到：**8 项完成、1 项本仓部分完成、6 �
 
 阻塞列含义：**A-阻塞** = 不解决就不能算 A 档；**A-需要** = A 档应有、可短期绕过；**B-阻塞** = 只挡对外发布；技术债 = 不挡可用性，挡长期回归风险。
 
-**状态汇总**（2026-09-26 重算，共 59 条；按 batch-1 的九个分支——含本次状态更正——与 batch-2 已合入的八个分支（bootstrap 对端 pin、session scope 与会话时长、Xpra 截图库、QubeList 拆分与模拟 API E2E、JobLog 实时日志修复、主机与 Qube 实时指标、凭据 API 隐藏控制台自有行、桌面帧授权）全部合入 `main` 后的树计，未合并分支上的工作不计）。
-判定规则：**已解除 = 验收条件已满足，且本行没有记录任何剩余工作**（真机演练或复验、残留暴露面、未做的功能、
-待同步的引用等都算剩余工作）；验收条件满足了全部或一部分、但本行仍记有剩余工作的，记部分解除；验收条件一项都
-未满足的，记未解决。"阻塞"列的等级措辞不参与判定。G-D6 是接受风险的决定、G-H12 只登记，都记未解决。
-§3 里程碑的勾选只表示该条交付已合入，对应 G-* 行的剩余工作仍按本汇总计。
-
-- 已解除 13 条：G-A2、A3、A4、D5、E7、F4、F5、F8、F10、G2、G4、G5、H5；
-- 部分解除 28 条（括号内是剩余工作）：G-A1（修复 `2d409fd` 随本次更正合入，等合并后 `main` 上首轮 CI 全绿）、
-  B1（真机 Exec/FileCopy 正负值）、B5（TOFU 指纹未替换）、C2（真机 apply 与 timer 触发）、C3（真机升级 + 回滚演练）、
-  D2（代码默认仍可明文监听）、D3（B 档：审计异地转发或签名归档；库与控制台同机，不是防篡改记录）、D7（共享存储路径的 0644 待部署决策；SSH 上传路径的 `0600` 待真机复核；cloud-init 盘里的 token 副本只靠单次兑换与 1 小时 TTL；首次启动后删除 snippet 未做）、
-  D8（生产库上跑升级前核查的两段 SQL；更换 CA 与删除 legacy master 只能离线改库）、D9（owner 确认 zone-scoped 不能改连接字段的策略；更新无事务；解析器不拒绝控制台行）、
-  E1（2FA、邮件、webhook）、E2（Proxmox 读数的真机核对；告警、费用、其他 provider 与历史指标）、E4（真实首次 bootstrap、真实环境下的应用启动与取消场景；CI 的 `frontend-e2e` job 未在 runner 上跑过）、E5（qube 内 Xpra 监听与认证的部署、与真实 Xpra 的互通验收、输入、dom0 policy 层接管提示、MCP-02）、F1（CI 不校验覆盖率阈值、不跑入口冒烟）、F2（"副作用"所列行号引用未同步）、F6（O-5）、
-  F9（各 action 捆绑的工具版本未记进文档；本机 yamllint 版本不钉住）、
-  G3（发布演练）、H1（真机长 provision，M0-5）、H2（真机上 503 时服务管理器的反应）、H3（真机生命周期复验，M0-5）、
-  H6（未在真机长 job 上观察过整条链路）、H7（真机 systemd 重叠重启）、H8（独立复验；握手版本仍报 `dev`）、H9（告警路径；真机复验）、
-  H10（改小已有盘；per-zone 配额）、H11（新 agent 包 + 新控制台在真机上走通一次首次 bootstrap，M0-5；读到 token 即可派生同一把占位密钥，保护仍靠 G-D7 与[部署要求](deployment-requirements.md)第 8、9 条）；
-- 未解决 17 条：G-B2、B3、B4、B6、C1、C4、C5、D1、D4、D6（已决定接受风险）、E3、E6、F7、F11、
-  G1、H4、H12（只登记）。
+本轮只复验 G-B2/G-B3、G-C1/G-C2 与首次 bootstrap 相关边界，未对全部 G-* 做全量
+重新评级，因此不沿用 2026-09-26 的数量汇总。验收满足但仍有分支合入、容量/接管或其他
+明确剩余工作时，继续写“部分解除”。§3 的勾选保留原交付语义；本轮现场已通过但待合入
+的条目在正文明确标识，不能把它读成仍缺环境入口。
 
 ### 0.2 M0 收尾结果（2026-09-22）
 
@@ -121,9 +110,9 @@ M0 的产出不是"CI 绿了"，而是**第一次把积压的 24 个 commit 交�
 4. **三项登记而非抹平的东西**：G-H11（bootstrap 无可 pin 身份，对 `AGENTS.md` §5 的显式豁免；此后已由 token 派生公钥 pin 关闭，见 G-H11 行）、G-D7（snippet share 把一次性 token 落到 0644，
    转为 M1-7 的部署硬要求）、G-F10（两处 G402 校验缺负例测试）。
 
-M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/Qubes 入口，本机没有。
+当时未完成的 M0-5 已于 2026-10-19 通过，并在本轮绑定 `eb753f4` 重跑生命周期。
 **M0-6** 已于 2026-09-22 完成——`qubes-salt-config` 的 QA-01 改动提交为 `6f6d0dc`，与其上的接线改动 `9866baa` 一起经 PR #1 合并（`db1b68d`）并打 tag `v0.1.0`；
-但它带出的真机动作（apply 一次、确认 timer 触发）转入 M1-5 验收，本机同样做不了。
+M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复已在本轮验证；部署修复待合入。
 
 ### 2.A 交付链（最先做，且是其余一切的前置）
 
@@ -138,8 +127,8 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-B1 | ~~**console 的 provisioning 路径不下发 `QUBESAIR_EXEC_ALLOW` / `QUBESAIR_FILECOPY_ROOTS`**：cloud-init 只写 `QUBESAIR_REMOTE_NAME`/`LISTEN`/`ALLOW`/`REVOCATION_URL` 四个键，从 console 打开 `qubesair.Exec` 后 agent 侧仍因 allowlist 为空而拒绝全部调用~~ **两侧都已到位（2026-09-22）**：console 侧 [PR #15](https://github.com/slchris/qubes-air/pull/15) `735f8f1` 把两个键写进 cloud-init `agent.env`（空则整键省略）；部署侧 `qubes-salt-config` `v0.1.0`（`db1b68d`，PR #1）把 `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS` 写进 `console.env`（**冒号**分隔，与 guest 侧 `split(":")` 一致；空值=guest 内禁用）。**剩下的是真机记录，不是代码** | 原缺口证据：`internal/service/cloudinit.go:308`、`remote/qubes-rpc/qubesair.Exec:60-62`（空 allowlist → `reject(..., 77)`）。修复后的下发链（逐段核对）：`console.env` → 启动配置校验 `config.go:237`/`:243`（空值被 `if v := os.Getenv(...); v != ""` 守卫视为未设置，因此空值是"禁用"而不是"校验失败"）→ cloud-init `agent.env` → agent 侧二次校验 | 部分解除（原 **A-阻塞**，剩余部分仍是 A-需要：console 与部署侧的下发都已到位，真机 Exec 正值/负值记录未做，见 G-B2 / M1-2） | console 能随 qube 下发 Exec/FileCopy 白名单；真机 Exec 正值（`/usr/bin/id`）与负值（未允许程序）各有记录 —— 这一半见 G-B2 |
-| G-B2 | Exec/FileCopy 无真机正值验收——而这是本项目对用户的核心承诺 | 2026-10-19 生产测试（`qa-deploy-4-20261019`，`66325fb`）：白名单已写入 guest 的 `agent.env`；agent 侧 Exec `/usr/bin/id` 正例、`/bin/sh` 负例，FileCopy push `/data` 正例、push `/etc` 负例与 pull 回读均有记录（[记录](reviews/2026-10-19-production-deploy.md)）。**qrexec transport 仍被 dom0 policy 拒绝**：console 与 mgmt-jump 调用 `qubesair.Exec`/`qubesair.FileCopy` 返回 `Request refused`（rc 126），只有从 console 发起的 `qubesair.Ping` 成功 | **A-阻塞（范围缩小）** | 外部 `qubes-salt-config` 授予 remote-* 的 Exec/FileCopy policy 后，重跑同一组正反例（含 FileCopy push/pull 往返）并落记录 |
+| G-B1 | Console 与部署侧 Exec/FileCopy allowlist 下发已实现并验证 | Console PR #15、Salt `v0.1.0` 已接线；2026-10-19 [生产记录](reviews/2026-10-19-production-deploy.md)确认 guest 白名单，本轮完整 qrexec 正反例见[闭环记录](reviews/2026-10-23-production-closure.md) | 已解除（下发能力） | 本轮按单 guest 设置窄测试 allowlist，未扩大 fleet 默认值；传输修复合入见 G-B2 |
+| G-B2 | Exec/FileCopy 的完整 qrexec 验收已通过 | `eb753f4` agent + `4455409` handler；17 例 runner、未授权 source 拒绝、1 MiB push/pull 与 resume 后原文件 pull；临时精确 grant 已撤销，见[记录](reviews/2026-10-23-production-closure.md) | 现场解除，Air/Salt 分支待合入 | 合并对应修复；GUI/ConnectTCP 不在此结论内 |
 | G-B3 | ~~suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在）~~ **已解除（2026-10-19）** | 在生产 `qa-deploy-4-20261019`（`66325fb`）上向 `/data/qubes-air-check.txt` 写入 27 字节，suspend 后 compute 销毁、storage VM 保留；resume 后新 compute 的 `/data` 仍为 `/dev/mapper/qubesair-data`（ext4），内容仍为 `qubes-air-persist-20261019`（[记录](reviews/2026-10-19-production-deploy.md)） | 已解除（原 **A-阻塞**） | 满足：写入文件 → suspend → resume → 读出同一内容 |
 | G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
 | G-B5 | 节点 SSH known_hosts 是 `ssh-keyscan` 的 TOFU 结果，未与带外指纹核对；PVE 集群版本同样未带外核对。**PVE 版本半边已带外核对**（2026-09-22，经 PVE API）：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；同一次会话确认 console 默认 snippet datastore 在真实集群上允许 `snippets`（`internal/provider/proxmox/adapter.go`:77 的 `"local"`），置备前置成立。**指纹半边仍开**：主机键**不能**经 PVE API 取得——`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"，必须由执行者在任一节点上导出再逐条比对 | 原证据 QA-01 记录第 19、73 行；本次为 2026-09-22 的 PVE API 带外读数（本行不含任何真实主机名/节点名/地址，遵守 G-D6 的"新文档不再写真实地址"）；核对命令与做法 `docs/runbook-qa01.md` §2 | 部分解除（**A-需要**，等级不变：指纹未替换 TOFU 结果，TOFU 就还在。PVE 版本半边与带外核对方法已完成；剩余：在真机节点上导出主机键、替换 `pve_known_hosts` 里的 TOFU 键并落记录） | 带外方式与命令已成文；剩下一步是在真机任一节点上跑那条命令，用输出替换 console `pve_known_hosts` 里的 TOFU 键（并记录到 `docs/reviews/` 的执行记录） |
@@ -149,8 +138,8 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-C1 | OPS-01 剩余：离机归档、真实 keyring、provider 资源对账、agent 信任校验、生产数据量 RTO 全部未做 | [ops01 预演](reviews/2026-09-21-ops01-restore.md) 第 52-58 行；[TODO](TODO.md) OPS-01 条目 | **A-阻塞** | 归档经网络/介质到第二台机器，用真实 keyring 恢复，实测 RTO 与人工步骤 |
-| G-C2 | 备份调度**仍未在真机触发过**，但"没有触发方式"这半边已经解决：保留策略在本仓（`prune` 子命令），unit/timer 按架构约定在外部 `qubes-salt-config` 落地（`v0.1.0` `salt/qubesair/backup.sls` + `backup.top`）。该 state 默认**关闭**（`cfg.qubesair.backup.enabled: False`）：它要先有已挂载的离机介质、按摘要钉住的二进制、操作者自己创建的口令文件，三者缺一就会以失败结束 run，而不是渲染一个"什么都没备份"的绿色 timer | 实现：`internal/backup/retention.go:74`（`Prune`）、`cmd/qubes-air-backup/main.go:136`（`runPrune`）、`:162`（`-out-dir` 生成归档名，供无 shell 的 `ExecStart` 使用）；unit/timer：`qubes-salt-config` `salt/qubesair/backup.sls`（`RequiresMountsFor` 离机目录、`ExecStart` 两段 create→prune、`Persistent=true` + rc.local 每次启动补跑一次）；仍未在真机 `systemctl start` 过（本机无 Salt，只做了 Jinja 渲染与 lint） | 部分解除（原 **A-阻塞**，剩余部分为 A-需要：真机 apply 一次、确认 timer 触发与归档落盘，并核对最新归档可恢复） | 验收条件不变：备份有明确触发方式与保留策略，且被文档化为运维步骤。剩余动作是在真机 apply 一次、确认 timer 与归档落盘，并核对最新归档可恢复（与 G-C1 合并做）。它依赖的 G-G5 已解除：`qubes-air-backup` 自 `v0.1.0` 起随 release 发布，按 `SHA256SUMS` 里的摘要钉进 salt 树，不再需要手工交叉编译 |
+| G-C1 | 离机归档、原 keyring/CA、签名吊销恢复及只读 provider 对账已通过；生产规模/在线接管未覆盖 | 最新 286,900 字节归档恢复至健康 1.503 秒；4 凭据解密、27 签名吊销验证、历史 holder/volume 匹配，见[记录](reviews/2026-10-23-production-closure.md) | 部分解除 | 完整控制域重建、生产数据量 RTO、恢复 Console 到在线 agent 的接管验证 |
+| G-C2 | 备份部署、重启、实际触发与最新归档恢复通过 | 权威 Salt states：精确 mountpoint 拒绝普通本地目录、持久 SSHFS、模板关机提交；开机和受控临时 timer 均生成离机归档，常驻 daily timer 保持 waiting；见[记录](reviews/2026-10-23-production-closure.md) | 现场解除，Salt 分支待合入 | 合入部署修复；持续运维按恢复文档定期复验，未声称等到下一次 daily 日历触发 |
 | G-C3 | ~~无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过~~ **契约已成文（M1-6，PR #14 `e5f7f55`）**：[升级与回滚](upgrade-rollback.md) 给出四个制品的钉法、兼容矩阵、升级顺序与回滚路径；**仍未在真机演练过**（该文 §6） | `internal/database/database.go:232`（`SchemaVersion`）、`:293-308`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | 部分解除（原 **A-阻塞**；runbook 已成文。剩余：真机升级 + 回滚演练未做，见[升级与回滚](upgrade-rollback.md) §6） | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
 | G-C4 | 产物分发仍依赖局域网 artifact store（`10.31.0.2`），离开该网段无法 bootstrap——这正是 [release.yml](../.github/workflows/release.yml) 存在的理由。该 workflow 已在 `v0.1.0` 跑通（G-A4），但还没有用 release 制品 URL 完成过一次 provision | `release.yml` 第 1-20 行自述；`docs/bootstrap-design.md`:67-73；G-A4 | A-需要（B-阻塞） | 用 release 制品（URL + SHA256）完成一次 provision，不依赖 LAN 地址 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 136 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
@@ -224,7 +213,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 | G-H8 | ~~console 二进制从不携带构建版本：`appVersion` 是编译期常量 `"0.1.0"`，`release.yml` 与 `Makefile` 都不注入；agent 侧反而有注入~~ **已修并合入 main（PR #22，merge `5ebb687`）**：`appVersion` 常量删除，构建身份改由链接期 `-ldflags -X` 注入新包 `internal/buildinfo`——`version`＝`git describe --tags --always --dirty` 的**原样**输出、`revision`＝`git rev-parse HEAD`（完整 commit）、`build_time`＝链接时刻（RFC 3339 UTC），`tree` 由 `version` 的 `-dirty` 后缀解析成 `clean`/`dirty`/`unknown`。`/health`、`--version`、启动日志、`/status` 报的是**同一份** `buildinfo.Get()`（不是各自取值，避免再造第二个来源）。**未注入的二进制（普通 `go build ./cmd/server`）四个字段一律 `unknown`**，不再有看起来像版本的常量；工作树构建与干净构建用 `-dirty`/`tree=dirty` 区分。**边界**：`internal/transport/grpc.BuildVersion`（握手用的另一处版本面，`frames.go`:40 的 `"dev"`）与 `cmd/qubes-air-backup` 的 `buildVersion` 本轮**未动**（改前者会改 agent/relay 行为，超出 G-H8），因此 console 的 gRPC 握手仍报 `dev` | 修前：`git show origin/main:console/backend/cmd/server/main.go` 第 43 行（`appVersion = "0.1.0"`）、第 66 行（`--version` 打印该常量）、第 70 行（启动日志）、第 1237 行（`/health` 的 `version`）、第 1323 行（`/status`）；`origin/main:.github/workflows/release.yml` 第 106 行（`-ldflags="-s -w"`，不注入）；`origin/main:Makefile` 第 35 行（`go build` 不带 ldflags）；`console/frontend/src/components/Header.svelte`:11（`const version = '0.1.0'`，在 `:29` 渲染成 `v0.1.0`——页眉自带的常量，与构建无关）；对照 `packaging/agent-deb/Dockerfile`:45（agent 侧 `-X main.buildVersion=`）。修后：注入点 `Makefile`:62-64（`build-backend`）、`:86`（`dev`）、[release.yml](../.github/workflows/release.yml):120-127（Build console binary；`:132-138` 的 backup 步骤调同一脚本），其中打包前的**逐字段**校验本体在 `scripts/build-release-binary.sh`:102-122：`version` 必须等于 release 版本、`revision`/`build_time` 不得为 `unknown`、`tree` 必须是 `clean`/`dirty`，任一不满足即以同名 `FATAL: …` 失败——每个字段是独立的 `-X`，只查 `version` 会漏掉兄弟 flag 的拼写错误；取值与回退 `internal/buildinfo/buildinfo.go`:39（`Unstamped`）、`:69`（`TreeUnknown`）、`:95`（`Get`）、`:108`（`String`）；消费点 `cmd/server/main.go`:70（`--version`）、`:74`（启动日志）、`:1082`（读一次）、`:1330`（`healthHandler` 入参）、`:1302`/`:1303`（`healthBody` 的 `build_time`/`tree` 键）、`:1429`（`statusHandler`）；前端类型 `console/frontend/src/lib/types.ts`:232-244，消费方 `console/frontend/src/components/Header.svelte`（页眉从 `/health` 读同一份 `version`；`unknown`/不可达时不显示版本，而不是退回一个常量） | 部分解除（已合入 main。剩余：独立复验未做；握手用的 `internal/transport/grpc.BuildVersion` 仍未注入，console 握手报 `dev`） | ✅ 变异红（均为实现方自测，命令与输出见 M2-10 条目）：`Get()` 忽略注入值 → `TestGetReportsTheStampedValues` 5/6 子用例 FAIL；`treeState` 恒返回 `TreeClean` → 解析用例 4 个子用例 + Get 用例 2 个 + `TestGetDoesNotClaimCleanForAnUnstampedTree` FAIL；`String()` 不渲染 `revision` → 4 个格式子用例 FAIL；`healthHandler` 把 `version` 写死回 `"0.1.0"` → `/health` 用例 2 个子用例 FAIL；`orUnstamped` 回退成 `"0.1.0"` → `TestPlainGoBuildReportsUnstamped` FAIL 且不再报 `unknown`；**最承重的一条**：只把 `internal/buildinfo` 的 `version` 变量改名、`-X` 保持不变 → 真构建的 `TestBuiltBinaryReportsTheLinkerStamps` FAIL（`version=unknown`，而 `revision`/`build_time` 仍生效），这正是 `-X` 静默失效的探针。release 步骤的校验单独验过（抽出步骤全文执行，见 M2-10 条目）：把 `-X` 的包路径指向不存在的包、以及只把兄弟 flag 拼错（`.revision=`→`.revisions=`、`.buildTime=`→`.buildTimes=`）→ 都是 `exit 1` + `FATAL: console binary carries no … stamp`，而 `version` 本身仍然正确；页眉那边同样变异红：常量回归（3 个用例全红）、`unknown`/catch 分支退回 `'0.1.0'`（各 1 个用例红）。release 制品上的实测已补：`v0.1.0` 的 release 作业成功，发布制品的 `--version` 读数见[真机验收清单](acceptance-real-machine.md)步骤 1。**未验证**：`docker compose` 的开发镜像（`console/backend/Dockerfile.dev`，镜像与挂载内均无 `.git`）**故意**不注入，仍报 `unknown`；`Makefile:76` 的 `dev` 只核对了 `make -n` 展开与 `build-backend` 同源，未实际长跑 |
 | G-H9 | agent 的 systemd 单元 5 次启动失败即永久放弃，原因消失后不会自愈，需要人工 `systemctl reset-failed`（**单元行为未改，本次只做可见性与 runbook**）。已落地的部分：console 现在能区分"失败可能还在重启"与"失败已超出单元自身任何自动重启的预算"——新增列 `agent_failing_since`（当前失败连续段起点；`unreachable` 时 `COALESCE` 保留首次时间，其它判定一律清空；没有任何历史行被伪造出起点），读取时派生 `agent_recovery`（`none`/`pending`/`manual`），阈值 300s 由单元窗口导出而非另选，判据是"最后一次探测时刻 − 失败起点 ≥ 预算"且**不使用墙钟**（探测停掉不会把旧失败老化成 `manual`）；API 沿用既有认证的 qube JSON，无新端点，前端 Qubes 列表与 Dashboard 显示 `manual recovery`。**仍然看不到的部分**：console 与 guest 之间只有 agent 的 mTLS 监听端口，没有 host/guest 命令通道，也没有告警推送，所以 `manual` 的含义是"失败已超出单元自身任何自动重启的预算"，**不是**"单元命中了 start limit"——端口被过滤、包未安装、地址错误给出同一读数；是不是 start limit 只能在 guest 内判定（盲区已写进 runbook §11.1） | 单元 `packaging/agent-deb/qubes-air-agent.service`:10-11（`StartLimitIntervalSec=300`、`StartLimitBurst=5`）、`:32-33`（`Restart=on-failure`、`RestartSec=5`）；启动失败路径 `cmd/qubes-air-agent/main.go`:97-119（`:103`、`:110`、`:118` 三处 `log.Fatalf`，全部发生在 `listen` 之前）；实现 `internal/models/qube.go`:55-72（字段）、`:87-110`（三值）、`:127`（`AgentStartLimitBudget = 300 * time.Second`）、`:137-153`（`ClassifyAgentRecovery`）、`:66`/`:72`（JSON 键）；写路径 `internal/repository/qube_repo.go`:453-456（`COALESCE`）、读路径 `:199`（`scanQube`，列表与详情共用）；加列迁移 `internal/database/database.go`:278；runbook `docs/runbook-remotevm.md` §11（现象判据 / `systemctl reset-failed qubes-air-agent` + `systemctl start qubes-air-agent`（与 `packaging/agent-deb/README.md`:41-46 一致）/ `journalctl -u qubes-air-agent -b -n 50` 找原始原因 / `systemctl is-active qubes-air-agent` 确认）；测试 `internal/models/agentrecovery_test.go`（含读单元文件断言预算覆盖 `StartLimitIntervalSec` 与 `(burst−1)×RestartSec` 的一致性用例）、`internal/service/qube_agent_recovery_test.go`（真实探测路径）、`internal/repository/qube_agent_recovery_test.go`、`internal/handler/qube_agent_recovery_test.go`、`console/frontend/src/components/QubeTable.test.ts`、`Dashboard.test.ts`；登记 `docs/runtime-defaults.md` UD-9d/UD-9e 与 §2.1 `qubes` 关键列 | 部分解除（原 A-需要；放弃状态对操作者可见、runbook 写明恢复步骤。剩余：没有告警或推送路径；start limit 触发与 `systemctl reset-failed` 恢复未在真机复验） | ✅ 放弃后不自愈这一事实、以及 console 能/不能看到什么，都进了操作文档；新用例各有变异红（`>=`→`>`、去掉非失败判定、改用墙钟、JSON 键改名、`pending` 线值改名、预算改小、单元窗口改 600s、去掉 `COALESCE`、不清空连续段、探测路径写入 NULL、去掉读路径派生、去掉迁移列）。**未做/未验证**：① 仍无告警或推送路径（不引入通知集成，只有健康视图与文档）；② console 看不到单元状态，只能报"多久没人应答"，该盲区如实写在文档里，没有新增假字段；③ 本机没有 systemd，start limit 的真实触发、`systemctl reset-failed` 恢复与 `Result=start-limit-hit` 未在真机复验（属真机项）。评审者复验时把下表中的行号当契约核对 |
 | G-H10 | 置备规格**已加**上下限校验（本次提交；评审者独立复验：去掉 `max` 检查 → 6 个子用例 FAIL；`min` 改成排他（`<=`）→ 6 个 FAIL；校验整体跳过 → service+cmd/server 共 21 个 FAIL；`WithSpecBounds` 改成"只警告仍然应用" → `TestWithSpecBounds_UnusableSetKeepsTheDefaults` 的 4 个子用例 FAIL）：`Create`/`Update` 的每个尺寸在写库、入队与 provider 调用**之前**校验，越界返回 400，错误带上字段、取值、上限与可调的配置键。默认 vCPU 1..32、内存 512..262144 MB、根盘 10..16384 GB、数据盘 1..16384 GB、GPU 卡数 1..8；**0 不是尺寸而是"未设置"**（create 落类型默认值，provider 对未设置的数据盘落 `defaultDataDiskGB=10`），所以下限只作用于真正给了值的字段。其中**内存/磁盘/GPU 的上限没有仓库依据、是判断值**（已写在注释里），因此做成 `qube_spec.*` 可调键。PVE 磁盘**不能缩回**这一约束没有改变：本改动只拦"新请求越界"，**不拦"把已有盘改小"**，per-zone 配额也仍然没有 | 校验 `internal/service/specbounds.go`:146（`validateSpec`）、`:82`（`DefaultSpecBounds`）；调用点 `internal/service/qube_service.go`:404（create）、`:516`（update）、`:535`（共用校验器）；配置 `internal/config/config.go`:340（`QubeSpecConfig`）、`:673-683`（默认值）、`:403`（`Validate`）、`:1026`（启动拒绝非法 bounds）；仍存在的既有约束 `internal/provider/proxmox/adapter.go`:227（`growDisk`：PVE 不能缩回） | 部分解除（原 A-需要 / B-阻塞；越界在 API 层拒绝已合入 main（PR #20，已独立复验）。剩余："改小已有盘"未拦截，per-zone 配额未做） | 上下限校验（或 per-zone 配额），越界在 API 层拒绝 |
-| G-H11 | ~~bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免~~ **已修（本次提交，schema v3）**：占位证书的密钥改由一次性 token 经 HKDF 派生（`pki.NewBootstrapPlaceholderCertificate`），console 签发 token 时把对应公钥的 SPKI SHA-256 pin 写进 `bootstrap_tokens.placeholder_spki_sha256`；拨号时 `pki.BootstrapDialTLSConfig` 的 `VerifyConnection` 在发出任何请求**之前**校验 pin、目标 CN（`bootstrap-<qube>`）、有效期、仅 digitalSignature + ServerAuth 用途、自签名与 agent 角色。取不到 pin（未装配 pin provider、没有未兑换且未过期的 token、升级前签发的旧 token）时**拒绝拨号**（`not_configured`），不回退到不认证的握手；`AGENTS.md` §5 的豁免随之撤销。剩余边界：能读到 token 的人仍能派生同一把占位密钥——这与他能兑换 token 是同一个能力，保护仍靠 G-D7 / 部署要求 8 | `internal/pki/bootstrap_pin.go`:90（签发）、:133（校验，先比 pin）、:209（拨号配置）；`internal/service/agentbootstrap.go`:247（先取 pin 再拨号）、:315（兑换前要求交出的 token 正是派生会话 pin 的那一枚）、:402（`peerPin`，按原因分 `not_configured` / `console_failed`）、:484；`internal/repository/bootstrap_token_repository.go`:73（`Issue` 写 pin）、:98（`PendingPlaceholderSPKIFingerprint`，fail closed）；`internal/agent/bootstrap.go`:415（agent 侧占位证书）；`internal/database/bootstrappin.go`（schema 3）。测试：`internal/pki/bootstrap_pin_test.go`（另一 token 的占位 / 错 pin / 缺 pin / 畸形 pin / 错 target / 过期 / 未生效 / 他 CA 签发 / 同名他钥签名 / 错角色 / 无角色 / 双角色 / 错用途，及真 TLS 握手）、`internal/service/agentbootstrap_pin_test.go`（真 agent 走通；另一 token 派生的冒充者**收不到任何调用**、issuer 收不到 token）、`internal/repository/bootstrap_pin_test.go`、`internal/database/database_upgrade_test.go`、`cmd/server/bootstrap_wiring_test.go` | 部分解除（原 A-需要；代码已修：占位证书密钥由 token 经 HKDF 派生、console 按 SPKI pin 认证对端，`AGENTS.md` §5 的豁免撤销。剩余：新 agent deb + 新 console 在真机上走通一次首次 bootstrap（M0-5）；读到 token 的人仍能派生同一把占位密钥，这一步的保护仍靠 G-D7 与[部署要求](deployment-requirements.md)第 8、9 条） | ✅ 负例覆盖 `AGENTS.md` §5 要求的错 CA / 错角色 / 错 target / 过期；剩余：新 agent deb + 新 console 在真机上走通一次首次 bootstrap（M0-5）。升级顺序与在途 token 的处理见[升级与回滚](upgrade-rollback.md) §3 |
+| G-H11 | ~~bootstrap 路径不认证对端，且这是对 `AGENTS.md` 规则的显式豁免~~ **已修（本次提交，schema v3）**：占位证书的密钥改由一次性 token 经 HKDF 派生（`pki.NewBootstrapPlaceholderCertificate`），console 签发 token 时把对应公钥的 SPKI SHA-256 pin 写进 `bootstrap_tokens.placeholder_spki_sha256`；拨号时 `pki.BootstrapDialTLSConfig` 的 `VerifyConnection` 在发出任何请求**之前**校验 pin、目标 CN（`bootstrap-<qube>`）、有效期、仅 digitalSignature + ServerAuth 用途、自签名与 agent 角色。取不到 pin（未装配 pin provider、没有未兑换且未过期的 token、升级前签发的旧 token）时**拒绝拨号**（`not_configured`），不回退到不认证的握手；`AGENTS.md` §5 的豁免随之撤销。剩余边界：能读到 token 的人仍能派生同一把占位密钥——这与他能兑换 token 是同一个能力，保护仍靠 G-D7 / 部署要求 8 | `internal/pki/bootstrap_pin.go`:90（签发）、:133（校验，先比 pin）、:209（拨号配置）；`internal/service/agentbootstrap.go`:247（先取 pin 再拨号）、:315（兑换前要求交出的 token 正是派生会话 pin 的那一枚）、:402（`peerPin`，按原因分 `not_configured` / `console_failed`）、:484；`internal/repository/bootstrap_token_repository.go`:73（`Issue` 写 pin）、:98（`PendingPlaceholderSPKIFingerprint`，fail closed）；`internal/agent/bootstrap.go`:415（agent 侧占位证书）；`internal/database/bootstrappin.go`（schema 3）。测试：`internal/pki/bootstrap_pin_test.go`（另一 token 的占位 / 错 pin / 缺 pin / 畸形 pin / 错 target / 过期 / 未生效 / 他 CA 签发 / 同名他钥签名 / 错角色 / 无角色 / 双角色 / 错用途，及真 TLS 握手）、`internal/service/agentbootstrap_pin_test.go`（真 agent 走通；另一 token 派生的冒充者**收不到任何调用**、issuer 收不到 token）、`internal/repository/bootstrap_pin_test.go`、`internal/database/database_upgrade_test.go`、`cmd/server/bootstrap_wiring_test.go` | 部分解除：token 派生 SPKI pin 的代码和新 Console/agent 首次 bootstrap 已在本轮验证；持有 token 的人仍有派生能力，token custody 属 G-D7 与部署要求 | 自动化负例与 `eb753f4` 真机首次 bootstrap/resume 换发通过；见[记录](reviews/2026-10-23-production-closure.md)。保留 token 暴露边界 |
 | G-H12 | **回滚边界（低；本次只登记，不改分类逻辑或迁移）**：`agent_failing_since` 只由新代码维护，旧二进制（`a70df74` 及更早）的 `UpdateAgentHealth` 语句里根本没有这一列，所以回滚运行期间它会写下 `agent_health=healthy` 而**不清空**残留的连续段；再升级回新代码后，下一次失败探测的 `COALESCE` 会保留那段陈旧起点，于是"0 秒大的失败"可能立刻读成 `agent_recovery=manual`（假 `manual`，一直到某次非失败判定把它清掉）。反向不成立：新代码写过的行回滚后只是这一列被忽略，健康读数仍由 `agent_health` 决定 | 写路径 `internal/repository/qube_repo.go`:453-456（`CASE WHEN ? = ? THEN COALESCE(agent_failing_since, ?) ELSE NULL END`）；旧语句对照 `git show a70df74:console/backend/internal/repository/qube_repo.go`（`UpdateAgentHealth` 中该列出现 0 次）；派生 `internal/models/qube.go`:137-153 只看行内记录的两个时刻，因此无法分辨起点是本代新观测还是陈留 | C-记录（低，不阻塞；本里程碑的验收是可见性，现在动分类逻辑会作废已完成的独立复验） | 若将来把"回滚到旧 console"当受支持路径：①回滚前或升级后清空该列，或②给写入加 generation/版本戳、派生只信本代写下的起点；也可以选择接受并在 runbook 写明"回滚再升级后第一次失败可能提前显示 `manual`"。**同轮记录的另外两处验证缺口**：F4 = ~~单元一致性用例只单向（`internal/models/agentrecovery_test.go`:204-209 断言预算 ≥ `StartLimitIntervalSec` 与 `(burst−1)×RestartSec`；把预算从 300s **放宽**到 3600s 不会被抓，只有改小或改单元文件才会红）~~ **已修（2026-10-19）**：现在断言预算**精确等于** `StartLimitIntervalSec`（`internal/models/agentrecovery_test.go`:204-210），并保留 `(burst−1)×RestartSec` 的上界检查；变异验证：300s→3600s 后测试报 `expected: 5m0s / actual: 1h0m0s`；F5 = 没有 fixture 跨越 JSON seam（前端 `console/frontend/src/components/QubeTable.test.ts`:8 起的手写 fixture 直接给 `agent_recovery`，后端 `internal/handler/qube_agent_recovery_test.go` 断言真实响应体的字符串，两边各自都紧，但没有一条测试把后端响应体直接喂给组件） |
 
 ## 3. TODO List
@@ -237,7 +226,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 - [x] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 已完成：gitleaks 按值放行 `fa2b8a4`、deb 版本排序 `3afbcd7`、gosec 29 条 `a118c3c` + 门禁等价 `5f1bf72`；第二轮 CI 复验（G-A1）
 - [x] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 已完成：`5f0fd88`（merge commit，保留 QA 记录的 revision），`main` 上 `make audit` rc=0（G-A2）
 - [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
-- [x] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 已完成（2026-10-19）：在修复后的 `0d23189`（#73 / `24f8e0c`）上走通 provision→suspend→resume→suspend→purge，job 成功、证书轮换、PVE 匹配 VM 为 0；[记录](reviews/2026-10-19-current-main-real-machine.md)。随后在生产 `66325fb` 上三次重跑 lifecycle，并复验 RemoteVM 注册/注销、Exec/FileCopy agent 侧正反例与数据盘持久性（M1-3 已完成；M1-2 的 qrexec transport 仍被 dom0 policy 拒绝）
+- [x] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 已完成（2026-10-19）：在修复后的 `0d23189`（#73 / `24f8e0c`）上走通 provision→suspend→resume→suspend→purge，job 成功、证书轮换、PVE 匹配 VM 为 0；[记录](reviews/2026-10-19-current-main-real-machine.md)。随后在生产 `66325fb` 上三次重跑 lifecycle，并复验 RemoteVM 注册/注销、Exec/FileCopy agent 侧正反例与数据盘持久性（M1-3 已完成；M1-2 的完整 qrexec 已于 2026-10-23 补验通过，修复待合入）
 - [x] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 2026-09-22 完成：`6f6d0dc`（清 terraform 时代）+ `9866baa`（白名单 env + 备份 state），PR [#1](https://github.com/slchris/qubes-salt-config/pull/1) `--merge` → `db1b68d`，tag `v0.1.0`；该仓 CI（yamllint / salt-lint / top-pairing）三项 pass —— 依赖：无（G-G4）
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
@@ -246,10 +235,10 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 失败含义（M1-2/3 见 §B，M1-4、M1-5 见 §C，M1-8 的指纹半边见 §D）。
 
 - [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败；**部署侧也已到位**（2026-09-22）：`qubes-salt-config` `v0.1.0` 把两个键写进 `console.env`（冒号分隔，空=未设置=guest 内禁用），此前该 state 从不写这两个键，于是控制台无论怎么配都会下发空白名单 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
-- [ ] **M1-2** 真机补跑 Exec 正值/负值、FileCopy push/pull 往返 —— **agent 侧已完成（2026-10-19，`66325fb`）**：白名单写入 guest `agent.env`，Exec `/usr/bin/id` 正例与 `/bin/sh` 负例、FileCopy push `/data` 正例与 push `/etc` 负例及 pull 回读均有记录；**qrexec transport 仍被 dom0 policy 拒绝**（`Request refused`，rc 126），需外部 `qubes-salt-config` 授权后补端到端记录 —— 依赖：M1-1（G-B2）；命令与预期输出见[真机验收清单](acceptance-real-machine.md) 步骤 10-13
+- [ ] **M1-2** 完整 qrexec Exec/FileCopy 正反例——**本轮真机通过，Air/Salt 分支待合入**：17 例 runner 与未授权 source 拒绝，1 MiB push/pull 及 suspend/resume 后原文件 pull；G-B2，见[记录](reviews/2026-10-23-production-closure.md)。
 - [x] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 已完成（2026-10-19，`66325fb`，生产 `qa-deploy-4-20261019`）：`/data/qubes-air-check.txt` 的 27 字节内容在 suspend/resume 后原样读出，`/data` 仍为 `/dev/mapper/qubesair-data`（ext4）；[记录](reviews/2026-10-19-production-deploy.md)（G-B3 已解除）
-- [ ] **M1-4** 离机恢复演练：归档经网络/介质到另一台机器，真实 keyring，记录实测 RTO 与人工步骤 —— 依赖：M0-6（G-C1）；见[真机验收清单](acceptance-real-machine.md) 步骤 27-28
-- [ ] **M1-5** 备份调度与保留策略落地（timer/cron + 文档化）—— **本仓已完成**：`prune` 保留策略（不可逆删除的显式目标/幂等/部分失败报告，逐条变异红）与运维步骤（unit/timer 文本、启用与核对命令、以密钥寿命而非磁盘为界的留存论证）；**外部仓已完成**：`qubes-salt-config` `v0.1.0` 的 `salt/qubesair/backup.sls`+`backup.top`（`RequiresMountsFor` 离机目录、create→prune 两段 `ExecStart`、`Persistent=true` + rc.local 每次启动补跑一次，因为 timer 的补跑戳存在根卷上、随 AppVM 关机丢失；默认关闭，需操作者挂载介质/钉二进制摘要/自建口令文件）；**剩余**：真机 apply 一次并确认 timer 触发与"最新归档可恢复"（G-G5 已解除：`qubes-air-backup` 自 `v0.1.0` 起随 release 发布）—— 依赖：无（G-C2）；真机步骤见[真机验收清单](acceptance-real-machine.md) 步骤 21-28
+- [ ] **M1-4** 离机恢复——**本轮受控范围通过**：真实离机归档、原 keyring/CA、签名吊销、只读 provider 对账与 1.503 秒服务恢复；生产规模 RTO、控制域重建与在线接管仍开（G-C1），见[记录](reviews/2026-10-23-production-closure.md)。
+- [ ] **M1-5** 备份调度与留存——**本轮真机通过，Salt 分支待合入**：精确挂载门禁、开机自动备份、受控 timer 触发、最新归档恢复及恢复文档；常驻 daily timer waiting，不宣称已等待到下一次日历触发（G-C2）。
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出四个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）；**注**：该限制已由 M2-10 解除，`docs/upgrade-rollback.md` §3.1/§3.2 已同步为"构建身份 + 摘要两条都看"
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— **PVE 半边已带外核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**指纹半边未核对，且不能经 API 取得**：`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"；只能在任一节点上跑 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done`，把输出与 console 的 `pve_known_hosts` 逐条比对（命令与做法已写进 `docs/runbook-qa01.md` §2），所以本项**仍不勾选** —— 依赖：无（G-B5）；完整比对与替换步骤见[真机验收清单](acceptance-real-machine.md) 步骤 29-33
@@ -294,7 +283,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
 | 本文 ID | 既有 ID | 说明 |
 |---|---|---|
 | G-B1..G-B4 | QA-01 剩余项 | 本文把 G-B1（下发能力）从 QA-01 里拆出来单列，因为它是**代码缺口**而非环境缺口 |
-| G-C1 | OPS-01 | 同一条，本文补了"备份无调度"与"升级无契约"两条相邻缺口 |
+| G-C1 | OPS-01 | 同一条：本轮小规模离机恢复通过，容量与在线接管仍待验收 |
 | G-C2/C3 | 新增 | 原清单没有独立的备份调度与升级回滚条目 |
 | G-A1..A4、G-G1..G4 | PUB-01 + 本文新增 | PUB-01 只覆盖发布材料，交付链状态此前散落在 sprint 文档里 |
 | G-E1..E6 | UI-01 / OBS-01 / GUI-01 / QA-02 / MCP-01/02 / CLOUD-01/02 | 一一对应 |
@@ -311,7 +300,7 @@ M0 **只剩一项没闭合**：**M0-5**（真机 lifecycle 冒烟）需要 dom0/
   （`go-sqlite3@v1.14.22`、`gin@v1.9.1`）确认。但除库行为本身外，**均未在真机复现**——
   尤其 G-H1 是否真的触发取决于真实 provision 时长（代码自述 15-25 分钟，与 15 分钟超时重叠，属"有时会中"）。
   建议先按 M1-11 复现再修，不要把"应该会超时"当成已证实的故障。
-- **G-B2/G-B3 的工作量**取决于 M1-1 的下发设计（配置放在 Zone 还是 Qube 层），尚未定；本文按"先在 Zone 层给默认值 + Qube 层可覆盖"估算为 M 级。
+- G-B2/G-B3 的现场路径已在本轮完成；剩余自动回收与网络调度属于实现修复，不能继续归类成缺环境。
 - 本文的 Sprint 数估算（A 档 2 个、B 档再 3+）是**排序用的粗估**，不是承诺；实际取决于真机环境可用性与 M0 暴露的 CI 问题数量。
 - **外部仓（`qubes-salt-config`）的改动一次都没真正 apply 过**：本机没有 Salt（它只在 dom0 跑），所以
   `qubesair.backup` 与两个白名单 env 键的结论只来自两处：①该仓自身 CI 的三项检查（yamllint / salt-lint / top-pairing，全 pass，

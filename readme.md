@@ -8,24 +8,27 @@ agent。
 
 ## 当前状态
 
-状态整理于 2026-09-26，以 `main` 上的代码和已有真机验收记录为准；本次整理没有重跑真机。
-已发布 `v0.1.0`（2026-09-22），但目前没有真机记录能绑定到该发布构建或之后的 `main`；
-验收边界见[路线图](docs/roadmap-to-production.md)，逐项缺口见[生产可用性缺口](docs/production-readiness-gaps.md)。
+状态更新于 2026-10-23。本轮在 `codex/production-closure` 分支完成 Salt 重复部署、
+Console 重启、完整 qrexec Exec/FileCopy、数据持久性与离机恢复验收；
+Console/agent 构建为 `eb753f4`，Relay handler 修复为 `4455409`。
+详见[本轮记录](docs/reviews/2026-10-23-production-closure.md)。这些分支变更尚未合入或发布，
+不能代替 `v0.1.0` 的发布验收；剩余事项见[路线图](docs/roadmap-to-production.md)与
+[生产可用性缺口](docs/production-readiness-gaps.md)。
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
 | Web 控制台 | 已实现 | Go + Svelte；Zone、Qube、凭据、任务与设置管理，日志流式输出 |
 | Proxmox 置备 | 已真机验证 | 从 UI 创建 VM，cloud-init 安装 agent，健康状态最终变为 `healthy` |
-| 无私钥 bootstrap | 已真机验证 | cloud-init 只携带 CA 和单次 token；agent 在 guest 内生成私钥并提交 CSR。首次连接按 token 派生公钥 pin 认证 agent 是之后加入的，尚未上真机 |
+| 无私钥 bootstrap | 已真机验证 | cloud-init 只携带 CA 和单次 token；agent 在 guest 内生成私钥并提交 CSR。本轮新 Console/agent 已走通 token 派生公钥 pin 的首次 bootstrap 与 resume 换发 |
 | 存算分离 | 已真机验证 | suspend 释放计算实例，resume 挂回持久数据盘；支持 LUKS 数据盘 |
 | RemoteVM + qrexec | 已真机验证 | 自动注册 RemoteVM、同步端点，经独立 Relay 调用远端 agent |
-| gRPC 传输 | 部分真机验证 | mTLS、零额外公网入站、证书续期、断线重连已实现；2026-09-22 回归中控制台的健康探测经 mTLS 隧道跑通 `Ping`，证书续期与断线重连只有[历史记录](docs/reviews/validation-history.md)（当前代码的断线重连与取消有自动化回归） |
-| 远端操作 | 部分真机验证 | `Ping` 随控制台健康探测在 2026-09-22 回归中验证；`ConnectTCP` 流式转发只有[历史记录](docs/reviews/validation-history.md)；当前协议（JSON argv）的 `Exec` 与 `FileCopy` 尚无真机正/负例（M1-2） |
+| gRPC 传输 | 部分真机验证 | 本轮完整 qrexec 的 mTLS 调用通过；证书定时续期与断线重连未在本轮复验，另有[历史记录](docs/reviews/validation-history.md)及断线/取消自动化回归 |
+| 远端操作 | 部分真机验证 | `Ping`、JSON argv `Exec`、`FileCopy` 已通过完整 qrexec 正反例及 1 MiB 往返；`ConnectTCP` 只有[历史记录](docs/reviews/validation-history.md) |
 | 无缝桌面 | 进行中 | Xpra、appmenu 与 `StartApp` 原语已加入，完整桌面体验仍在收尾 |
 | GCP / AWS / Azure | 未完成 | 未注册适配器，不能用于置备；API 拒绝创建这类 zone，UI 标为不可选 |
 | 控制台安全 | 已实现基础控制 | 短期 session、读写 scope、请求边界与结构化审计；命名 token 可按 zone 限制可见和可操作的对象，不是完整多租户；zone-scoped session 在 UI 上置灰 fleet-only 视图（仅显示层，服务端判定不变） |
-| 备份 / 恢复 | 已实现工具 | 加密归档和 schema 检查；离机恢复演练尚未完成 |
-| 监控 / 账单 | 部分实现 | Console 主机指标（仅 Linux）与 Proxmox 运行中 Qube 的实时 CPU/内存/I/O 已接真实数据，缺失值带原因、不显示为零；告警已接持久化健康数据、确认/历史与加密 webhook 投递；Qube 读数未在真机 PVE 上核对；前端确认/历史视图与云账单尚未接入 |
+| 备份 / 恢复 | 已完成受控演练 | 离机挂载、开机/受控 timer 备份、原 keyring/CA/吊销恢复与只读 provider 对账通过；小规模隔离服务恢复耗时 1.503 秒，不代表完整灾难接管 |
+| 监控 / 账单 | 部分实现 | Console 主机指标（仅 Linux）与 Proxmox 运行中 Qube 的实时 CPU/内存/I/O 已接真实数据，缺失值带原因、不显示为零；告警已接持久化健康数据、确认/历史视图与加密 webhook 投递；Qube 读数未在真机 PVE 上核对，云账单尚未接入 |
 
 Qubes 侧的 Salt states 以
 [qubes-salt-config](https://github.com/slchris/qubes-salt-config) 为唯一来源。
@@ -135,8 +138,9 @@ npm run build
 - 收尾无缝桌面：菜单同步、单击启动、断线恢复与多窗口验收。
 - 实现并验收 GCP/AWS 原生适配器及其网络可达性。
 - 把告警和账单页接到真实数据源；其他 provider 的 Qube 运行指标随适配器补齐。
-- 补齐恢复/销毁演练、崩溃恢复回归和多租户边界；按 zone 的对象级授权与 UI 可见性降级已实现。
-- 在当前 `main` 的构建上重跑真机生命周期并绑定 revision（M0-5），补齐 Exec/FileCopy、数据持久性与离机恢复的真机验收（M1-2/3/4）。
+- 补齐生产规模恢复/接管、旧盘 DEK 迁移、SSH 主机键带外核对与 release URL 置备。
+- 修复调度遗漏节点网络条件，以及 purge 后本地 identity YAML、Relay 端点缓存的自动回收。
+- 完成本轮分支审查与合并；Relay 自身重启、多租户边界和 GUI/ConnectTCP 仍需独立验收。
 
 具体优先级与验收条件见 [TODO](docs/TODO.md)。
 
