@@ -7,16 +7,21 @@
 // console being in the per-call path. The relay refreshes on a short timer, so a
 // newly provisioned qube becomes reachable within one interval.
 //
-// Output is one "<name> <ip>:<port>" per line. Only names and addresses cross
-// this channel — never credentials — so unlike issue-relay-cert it needs no
-// encryption key, only the database.
+// Output is a complete, versioned snapshot with a count and SHA-256 trailer.
+// Only names and addresses cross this channel, never credentials. The receiver
+// must validate the whole snapshot before using its absence to prune a cache.
 package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"log"
+	"net/netip"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,34 +41,65 @@ func main() {
 // run executes the command. Errors are returned so main's log.Fatal runs only
 // after the deferred context cancel and database close have completed.
 func run() error {
-	dsn := flag.String("db", "", "console sqlite DSN")
+	dsn := flag.String("db", "./qubes-air.db", "existing console sqlite file")
 	port := flag.String("port", "8443", "agent mTLS port")
 	flag.Parse()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	db, err := database.New(&database.Config{DSN: *dsn})
+	db, err := database.OpenReadOnly(ctx, *dsn)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
 
-	qubes, err := repository.NewQubeRepository(db).List(ctx, repository.DefaultQubeListOptions())
+	snapshot, err := endpointSnapshot(ctx, db, *port)
 	if err != nil {
 		return err
 	}
+	_, err = fmt.Fprint(os.Stdout, snapshot)
+	return err
+}
+
+const maxEndpoints = 10000
+
+var endpointNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,23}$`)
+
+func endpointSnapshot(ctx context.Context, db *database.DB, port string) (string, error) {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+		return "", fmt.Errorf("invalid agent port")
+	}
+	// One SQL statement is one SQLite read snapshot. Never page across changing
+	// rows or truncate silently: absence authorizes Relay cache removal.
+	qubes, err := repository.NewQubeRepository(db).List(ctx, repository.QubeListOptions{
+		Status: string(models.QubeStatusRunning), Limit: maxEndpoints + 1,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(qubes) > maxEndpoints {
+		return "", fmt.Errorf("endpoint snapshot exceeds %d running qubes", maxEndpoints)
+	}
 
 	var b strings.Builder
+	count := 0
+	seen := make(map[string]bool)
 	for _, q := range qubes {
 		// Only running qubes with an address are reachable; a released or
 		// pending row has nothing to forward to and must not shadow a live one.
 		if q.Status != models.QubeStatusRunning || q.IPAddress == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s %s:%s\n", q.Name, q.IPAddress, *port)
+		ip, err := netip.ParseAddr(q.IPAddress)
+		if !endpointNameRE.MatchString(q.Name) || seen[q.Name] || err != nil || !ip.Is4() {
+			return "", fmt.Errorf("invalid or duplicate running endpoint record")
+		}
+		seen[q.Name] = true
+		count++
+		fmt.Fprintf(&b, "%s %s:%s\n", q.Name, ip.String(), port)
 	}
-	// One write, so a caller reading line by line never sees a half-line.
-	fmt.Print(b.String())
-	return nil
+	records := b.String()
+	return fmt.Sprintf("QUBES-AIR-ENDPOINTS 1\n%sEND %d %x\n", records, count, sha256.Sum256([]byte(records))), nil
 }

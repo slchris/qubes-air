@@ -96,10 +96,9 @@ func (r *RemoteVMRegistrar) Register(ctx context.Context, qubeName string) error
 
 // Deregister removes the addressing shell for a qube that is gone.
 //
-// Called when the fleet no longer contains the qube, not when its compute is
-// merely parked: a suspended or released qube still exists and can be resumed,
-// and dropping its registration would mean every resume needs a re-register to
-// become addressable again.
+// Release and purge call this after clearing the authoritative endpoint. A
+// current dom0 service acknowledges both shell removal and configured Relay
+// reconciliation; an old service's generic success is not enough.
 func (r *RemoteVMRegistrar) Deregister(ctx context.Context, qubeName string) error {
 	local := RemoteVMLocalName(qubeName)
 	if !remoteVMLocalNameRE.MatchString(local) {
@@ -132,6 +131,12 @@ func (r *RemoteVMRegistrar) call(ctx context.Context, verb string, args ...strin
 	body := strings.TrimSpace(string(out))
 	if strings.Contains(body, "REFUSED") || strings.Contains(body, "FAILED") {
 		return fmt.Errorf("%s %v refused by dom0: %s", verb, args, body)
+	}
+	if verb == "deregister" {
+		prefix := "OK RETIRED " + args[0] + " relay="
+		if body != prefix+"verified" && body != prefix+"disabled" {
+			return fmt.Errorf("retirement was not acknowledged for %s; deploy the current mgmt.remotevm.register and Relay cleanup states", args[0])
+		}
 	}
 	return nil
 }

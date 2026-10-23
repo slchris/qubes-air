@@ -81,3 +81,27 @@ func TestCheckFileReadsLiveWALAndHonorsContext(t *testing.T) {
 	_, err = CheckFile(ctx, path)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
+
+func TestReadOnlyConnectionDoesNotMigrateWriteOrInterpretPathOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "read?literal.db")
+	// Use a literal URL through the regular test fixture's default path first;
+	// OpenReadOnly must not interpret the question mark as a URI option.
+	plain := filepath.Join(t.TempDir(), "db")
+	db, err := sql.Open("sqlite3", plain)
+	require.NoError(t, err)
+	_, err = db.Exec("CREATE TABLE proof (value TEXT); INSERT INTO proof VALUES ('kept')")
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	require.NoError(t, os.Rename(plain, path))
+	ro, err := OpenReadOnly(context.Background(), path)
+	require.NoError(t, err)
+	defer ro.Close()
+	var count int
+	require.NoError(t, ro.DB().QueryRow("SELECT count(*) FROM sqlite_master WHERE type = 'table'").Scan(&count))
+	require.Equal(t, 1, count, "opening for publication must not run migrations")
+	_, err = ro.DB().Exec("DELETE FROM proof")
+	require.ErrorContains(t, err, "readonly")
+	var value string
+	require.NoError(t, ro.DB().QueryRow("SELECT value FROM proof").Scan(&value))
+	require.Equal(t, "kept", value)
+}

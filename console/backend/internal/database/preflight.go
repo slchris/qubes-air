@@ -14,30 +14,48 @@ import (
 // incompatible candidate before replacing the running binary. It does not
 // certify data integrity or the success of subsequent migrations.
 func CheckFile(ctx context.Context, path string) (int, error) {
+	db, err := openReadOnlyFile(path)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	return checkSchema(ctx, db)
+}
+
+// OpenReadOnly opens an existing database without migrations or journal changes.
+// It sees the live WAL, refuses unsupported schemas and never creates a file.
+func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
+	db, err := openReadOnlyFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := checkSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return &DB{db: db}, nil
+}
+
+func openReadOnlyFile(path string) (*sql.DB, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return 0, fmt.Errorf("database preflight: %w", err)
+		return nil, fmt.Errorf("database preflight: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("database preflight: expected a regular database file")
+		return nil, fmt.Errorf("database preflight: expected a regular database file")
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return 0, fmt.Errorf("database preflight: resolve path: %w", err)
+		return nil, fmt.Errorf("database preflight: resolve path: %w", err)
 	}
 	// Treat the supplied path literally; '?' and '#' must never become SQLite
 	// URI options. Do not use immutable=1: that would ignore the running WAL.
 	uri := url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro&_query_only=1&_busy_timeout=1000"}
 	db, err := sql.Open("sqlite3", uri.String())
 	if err != nil {
-		return 0, fmt.Errorf("database preflight: open: %w", err)
+		return nil, fmt.Errorf("database preflight: open: %w", err)
 	}
-	defer db.Close()
-	version, err := checkSchema(ctx, db)
-	if err != nil {
-		return version, fmt.Errorf("database preflight: %w", err)
-	}
-	return version, nil
+	return db, nil
 }
 
 func checkSchema(ctx context.Context, db *sql.DB) (int, error) {

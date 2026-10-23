@@ -41,7 +41,7 @@ func TestRegisterSendsOneLineToDom0(t *testing.T) {
 }
 
 func TestDeregisterSendsName(t *testing.T) {
-	f := &fakeQrexec{out: "deregister: DONE"}
+	f := &fakeQrexec{out: "OK RETIRED remote-dev-1 relay=verified"}
 	r := NewRemoteVMRegistrar(f, true)
 
 	if err := r.Deregister(context.Background(), "dev-1"); err != nil {
@@ -49,6 +49,19 @@ func TestDeregisterSendsName(t *testing.T) {
 	}
 	if f.input != "deregister remote-dev-1\n" {
 		t.Errorf("input = %q", f.input)
+	}
+}
+
+func TestDeregisterRequiresCurrentRetirementAcknowledgement(t *testing.T) {
+	for _, body := range []string{"", "OK", "deregister: DONE", "OK RETIRED remote-other relay=verified", "OK RETIRED remote-dev-1 relay=unknown"} {
+		r := NewRemoteVMRegistrar(&fakeQrexec{out: body}, true)
+		if err := r.Deregister(context.Background(), "dev-1"); err == nil {
+			t.Errorf("unverified retirement response %q was accepted", body)
+		}
+	}
+	r := NewRemoteVMRegistrar(&fakeQrexec{out: "OK RETIRED remote-dev-1 relay=disabled"}, true)
+	if err := r.Deregister(context.Background(), "dev-1"); err != nil {
+		t.Fatalf("a deployment without CSR endpoint caching should acknowledge that explicitly: %v", err)
 	}
 }
 

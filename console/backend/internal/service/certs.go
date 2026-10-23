@@ -49,6 +49,10 @@ type CertIssuer struct {
 	// staging directory the adapter uploads FROM over SSH; with it set, this is
 	// a mount of the shared storage the PVE nodes read snippets from directly.
 	identityDir string
+	// identityGate serializes issuance and cleanup, with cancelable acquisition.
+	// An in-flight render cannot recreate a document after this Console purges it.
+	identityOnce sync.Once
+	identityGate chan struct{}
 	// snippetDatastore names the Proxmox datastore backing identityDir, and
 	// switching it on is what removes node SSH from the provisioning path.
 	//
@@ -192,6 +196,16 @@ func (c *CertIssuer) IdentityVolumeID(qubeName string) string {
 // not remain claimable with a token minted for an earlier attempt, and the
 // order matters: mint-then-invalidate would spend the token it just created.
 func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
+	if qube == nil {
+		return errors.New("issue identity: no qube given")
+	}
+	if err := validateIdentityOwner(qube.ID, qube.Name); err != nil {
+		return err
+	}
+	if err := c.lockIdentity(ctx); err != nil {
+		return err
+	}
+	defer c.unlockIdentity()
 	if c.tokens == nil {
 		return fmt.Errorf("no bootstrap token store configured; qube %q cannot be given a way to obtain an identity", qube.Name)
 	}
@@ -225,25 +239,30 @@ func (c *CertIssuer) IssueFor(ctx context.Context, qube *models.Qube) error {
 		if err != nil {
 			return fmt.Errorf("render identity for %q: %w", qube.Name, err)
 		}
-		if c.snippetDatastore != "" {
-			// Shared storage: the console writes where the nodes already read,
-			// so the adapter uploads nothing and needs no SSH to a hypervisor.
-			name, err := WriteSharedAgentUserData(c.identityDir, qube.Name, userData)
-			if err != nil {
-				return fmt.Errorf("persist identity for %q on the share: %w", qube.Name, err)
-			}
-			log.Printf("pki: wrote agent identity for %q to %s",
-				qube.Name, SnippetVolumeID(c.snippetDatastore, name))
-		} else {
-			path, err := WriteAgentUserData(c.identityDir, qube.Name, userData)
-			if err != nil {
-				return fmt.Errorf("persist identity for %q: %w", qube.Name, err)
-			}
-			log.Printf("pki: wrote agent identity for %q to %s", qube.Name, path)
+		userData = markIdentityOwner(qube.ID, qube.Name, userData)
+		if err := c.persistIdentity(qube.Name, userData); err != nil {
+			return err
 		}
 	}
 
 	log.Printf("pki: qube %q can now bootstrap; its certificate is issued when the console reaches its agent", qube.Name)
+	return nil
+}
+
+func (c *CertIssuer) persistIdentity(qubeName, userData string) error {
+	if c.snippetDatastore != "" {
+		name, err := WriteSharedAgentUserData(c.identityDir, qubeName, userData)
+		if err != nil {
+			return fmt.Errorf("persist identity for %q on the share: %w", qubeName, err)
+		}
+		log.Printf("pki: wrote agent identity for %q to %s", qubeName, SnippetVolumeID(c.snippetDatastore, name))
+		return nil
+	}
+	path, err := WriteAgentUserData(c.identityDir, qubeName, userData)
+	if err != nil {
+		return fmt.Errorf("persist identity for %q: %w", qubeName, err)
+	}
+	log.Printf("pki: wrote agent identity for %q to %s", qubeName, path)
 	return nil
 }
 

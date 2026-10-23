@@ -29,13 +29,19 @@ resume。部分失败保留 purge 意图，状态回到 error；Start、Release 
 | holder 缺失但数据盘仍在 | 保留 infra 并报告残留；核对该盘的所有权及引用后单独处置，再重试核验 |
 | 资源所有权不符、节点变更或任务仍锁定 | 停止操作；人工对账或等待任务结束，不创建替代数据盘、不删除未知资源 |
 | provider 核验失败 | 不删除 infra 行，不报告 purged；恢复查询能力后重试 |
-| RemoteVM 或端点清理失败 | job failed、Qube error；provider 清理已完成也可重试，直到后续清理成功 |
+| RemoteVM、Relay 端点或 Console 身份文件清理失败 | job failed、Qube error；provider 清理已完成也可重试，直到后续清理成功；未知文件先核对所有权 |
 | 最终结果写库失败 | 保留未完成 job 供启动对账；日志明确报告无法持久化，不伪造成功记录 |
 
 provider 先确认 compute 已不存在，再清除 ComputeVMID。purge 分别检查 holder、数据盘和
 记录的 cloud-init snippet；当前 snippet 在上传前记录，销毁时仅删除该精确文件。
-资源均已消失才删除 infra 行，端点和 RemoteVM 清理成功后才写 purged。
-历史替换过的 snippet、外部复制/快照及备份不属于当前 infra 清单，不能据此宣称它们都已删除。
+资源均已消失才删除 infra 行，配置的 Relay 端点、RemoteVM 和 Console 身份文件清理成功后
+才写 purged。Console 新生成的 YAML 含公开 Qube ID/name 所有权标记；清理核对标记和文件名，
+共享文件还核对内容哈希。符号链接、非普通文件、超量内容、缺标记或 ID 不符时停止并保留，
+目录必须是同一 Console 管理的受信任存储；标记本身不是签名，也不证明恶意文件系统中的所有权。
+旧的无标记文件需要人工对账，不能仅凭 glob 自动删除。
+Console 配置目录内属于该对象的文件会一并回收；宿主历史替换 snippet、外部复制/快照及备份
+不属于当前 infra 清单，不能据此宣称它们都已删除。Relay 同步契约见
+[传输设计](grpc-transport-design.md#endpoint-同步)。
 
 存储列表必须成功返回且具备完整可见性。Proxmox 会过滤无权访问的卷，因此核验前后检查
 该 datastore 的有效 `Datastore.Allocate` 权限，缺少权限或空/错误响应明确失败。

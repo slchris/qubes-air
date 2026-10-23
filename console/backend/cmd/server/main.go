@@ -437,7 +437,7 @@ func initDependencies(cfg *config.Config) (*Dependencies, error) {
 
 	jobRepo := repository.NewJobRepository(db)
 	qubeSvc, runner, agents, jobLogs := startOrchestration(
-		cfg.Orchestrator, cfg.JobLogDir(), jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts)
+		cfg.Orchestrator, cfg.JobLogDir(), jobRepo, qubeRepo, zoneRepo, exec, qubeSvcOpts, certIssuer)
 	jobLogRetentionCancel, jobLogRetentionDone := startBackgroundMaintenance(
 		jobLogs, jobRepo, bootstrapTokenRepo, qubeRepo)
 
@@ -690,6 +690,7 @@ func startOrchestration(
 	zoneRepo repository.ZoneRepository,
 	exec orchestrator.Executor,
 	qubeSvcOpts []service.QubeServiceOption,
+	identities identityCleaner,
 ) (service.QubeService, *orchestrator.Runner, *service.AgentHealthMonitor, *orchestrator.JobLogStore) {
 	// agents is assigned below, once the service it probes through exists, but
 	// the completion hook has to be handed to the runner before that. The hook
@@ -749,7 +750,7 @@ func startOrchestration(
 			Executor: exec,
 			Store:    jobRepo,
 			OnDone: makeCompletionHook(qubeRepo,
-				func() *service.AgentHealthMonitor { return agents }, registrar),
+				func() *service.AgentHealthMonitor { return agents }, registrar, identities),
 			Logs: jobLogs,
 			// Bounds one job end to end. Wiring it explicitly keeps the
 			// configured value and the runner's fallback from drifting apart,
@@ -849,9 +850,14 @@ func terminalStatusForJob(j *orchestrator.Job) models.QubeStatus {
 // terminal state at all.
 const completionStatusTimeout = 5 * time.Second
 
+type identityCleaner interface {
+	RemoveIdentityFor(context.Context, string, string) error
+}
+
 func makeCompletionHook(
 	qubeRepo repository.QubeRepository, agents func() *service.AgentHealthMonitor,
 	registrar *service.RemoteVMRegistrar,
+	identities identityCleaner,
 ) orchestrator.Completion {
 	return func(ctx context.Context, j *orchestrator.Job) (result error) {
 		// A cleanup failure must leave a retryable error, never a terminal purge.
@@ -862,15 +868,9 @@ func makeCompletionHook(
 				result = errors.Join(result, qubeRepo.UpdateStatus(statusCtx, j.QubeID, models.QubeStatusError))
 			}
 		}()
-		if j.State == orchestrator.JobSucceeded && service.ComputeDestroyingAction(j.Action) {
-			if err := qubeRepo.UpdateIPAddress(ctx, j.QubeID, ""); err != nil {
-				return fmt.Errorf("clear endpoint: %w", err)
-			}
-		}
-		if j.State == orchestrator.JobSucceeded && registrar.Enabled() &&
-			(j.Action == orchestrator.ActionRelease || j.Action == orchestrator.ActionDestroy) {
-			if err := registrar.Deregister(ctx, j.QubeName); err != nil {
-				return fmt.Errorf("remove RemoteVM: %w", err)
+		if j.State == orchestrator.JobSucceeded {
+			if err := cleanupCompletedAction(ctx, j, qubeRepo, registrar, identities); err != nil {
+				return err
 			}
 		}
 		statusCtx, statusCancel := context.WithTimeout(context.WithoutCancel(ctx), completionStatusTimeout)
@@ -885,6 +885,30 @@ func makeCompletionHook(
 		}
 		return nil
 	}
+}
+
+func cleanupCompletedAction(ctx context.Context, j *orchestrator.Job, qubes repository.QubeRepository,
+	registrar *service.RemoteVMRegistrar, identities identityCleaner,
+) error {
+	if !service.ComputeDestroyingAction(j.Action) {
+		return nil
+	}
+	// Clear the authoritative endpoint before asking Relay to reconcile. Its
+	// completion acknowledgement proves the retiring target was absent.
+	if err := qubes.UpdateIPAddress(ctx, j.QubeID, ""); err != nil {
+		return fmt.Errorf("clear endpoint: %w", err)
+	}
+	if registrar.Enabled() && (j.Action == orchestrator.ActionRelease || j.Action == orchestrator.ActionDestroy) {
+		if err := registrar.Deregister(ctx, j.QubeName); err != nil {
+			return fmt.Errorf("remove RemoteVM: %w", err)
+		}
+	}
+	if j.Action == orchestrator.ActionDestroy && identities != nil {
+		if err := identities.RemoveIdentityFor(ctx, j.QubeID, j.QubeName); err != nil {
+			return fmt.Errorf("remove identity delivery files: %w", err)
+		}
+	}
+	return nil
 }
 
 // reconcileStrandedQubes clears transient statuses left behind by a process
