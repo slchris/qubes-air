@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-23 节点网络资格检查](2026-10-23-network-eligibility.md) | 调度筛选 bridge/VLAN、provider 分配前复查；失败关闭回归、完整门禁与六节点只读探针通过 | 待合入；部署后生命周期复验尚未完成 |
 | [2026-10-23 生产闭环修复](2026-10-23-production-closure.md) | schema 只读预检、Salt 重复部署与 Console 重启；完整 qrexec 正反例、持久文件与已授权 purge；原 keyring/CA 离机恢复、只读对账与实测 RTO | 分支验收；生产规模/接管、节点网络调度、退役缓存自动回收、Relay 重启及 GUI 未闭环 |
 | [2026-10-19 生产 console 部署与复验](2026-10-19-production-deploy.md) | 五次部署（`b73cae1`→`87ef8c1`→`66325fb`→`d4eb48c`→`e23265a`），schema 2→6，数据保留；四次完整 lifecycle；RemoteVM 注册预算（#78）、resume 地址落库（#79）、purge 状态文案（#82）与 Proxmox zone VLAN 标签（#85）；Exec/FileCopy agent 侧正反例、数据盘跨 resume 持久性；VLAN 4094 隔离与 qa-deploy-8 真机通过；LAN DHCP 静态段已排除；qa-deploy-9（2026-10-22）复验含 running purge 409 文案 | 手工部署；Salt pin 未更新；Exec/FileCopy 的 qrexec transport/dom0 policy 未验证；强制超时幂等未覆盖 |
 | [2026-10-19 当前 main 真机测试](2026-10-19-current-main-real-machine.md) | 当前 HEAD 构建、独立实例、PVE credential/zone/capacity、job 日志写入与保留/过期、完整 lifecycle（provision→suspend→resume→suspend→purge）、证书轮换与销毁；定位并修复 completion 上下文 bug | 独立实例测试；Exec/FileCopy、数据持久性、生产部署升级与 RemoteVM 注册未覆盖 |

@@ -13,12 +13,16 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // NodeCapacity is a point-in-time view of one cluster node.
 type NodeCapacity struct {
 	Name   string
 	Online bool
+	// NetworkIssue is empty only when placement's network preflight passed.
+	// Capacity-only callers do not populate this field.
+	NetworkIssue string
 	// MaxCPU is the core count. CPUUsage is the current load as a fraction
 	// (0..1) — Proxmox reports usage, not reservation, so it says nothing about
 	// what other guests are entitled to burst to.
@@ -72,6 +76,8 @@ var (
 	// hard failure: Proxmox would happily overcommit, and discovering that at
 	// runtime means guests thrashing rather than a clear refusal up front.
 	ErrInsufficientCapacity = errors.New("no node has enough free memory")
+	// ErrNetworkUnavailable prevents default-node fallback after a network refusal.
+	ErrNetworkUnavailable = errors.New("no eligible node satisfies zone network and capacity requirements")
 )
 
 // DefaultHeadroomFraction is the share of a node's memory kept unused.
@@ -119,6 +125,8 @@ func (s *Scheduler) Select(_ context.Context, nodes []NodeCapacity, req Requirem
 		switch {
 		case !n.Online:
 			c.Reason = "node is offline"
+		case n.NetworkIssue != "":
+			c.Reason = "network unavailable: " + n.NetworkIssue
 		case n.MemTotalBytes <= 0:
 			c.Reason = "node reported no memory"
 		default:
@@ -137,7 +145,7 @@ func (s *Scheduler) Select(_ context.Context, nodes []NodeCapacity, req Requirem
 	}
 
 	if len(eligible) == 0 {
-		return &Placement{Considered: considered}, fmt.Errorf("%w: %d MB requested", ErrInsufficientCapacity, req.MemoryMB)
+		return &Placement{Considered: considered}, placementFailure(nodes, considered, req)
 	}
 
 	// Most free memory wins. Ties break on name so the choice is deterministic —
@@ -158,6 +166,20 @@ func (s *Scheduler) Select(_ context.Context, nodes []NodeCapacity, req Requirem
 			len(eligible), len(considered)),
 		Considered: considered,
 	}, nil
+}
+
+func placementFailure(nodes []NodeCapacity, considered []Candidate, req Requirements) error {
+	reason := ErrInsufficientCapacity
+	for _, node := range nodes {
+		if node.NetworkIssue != "" {
+			reason = ErrNetworkUnavailable
+		}
+	}
+	details := make([]string, 0, len(considered))
+	for _, candidate := range considered {
+		details = append(details, candidate.Node+": "+candidate.Reason)
+	}
+	return fmt.Errorf("%w: %d MB requested; %s", reason, req.MemoryMB, strings.Join(details, "; "))
 }
 
 func maxInt64(a, b int64) int64 {

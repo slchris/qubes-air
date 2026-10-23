@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -122,17 +123,12 @@ func (p *ProxmoxProvider) get(ctx context.Context, path string) ([]byte, error) 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("proxmox %s: unexpected status %s", path, resp.Status)
 	}
-	buf := make([]byte, 0, 64*1024)
-	tmp := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(tmp)
-		buf = append(buf, tmp[:n]...)
-		if err != nil {
-			break
-		}
-		if len(buf) > 8*1024*1024 {
-			return nil, fmt.Errorf("proxmox %s: response too large", path)
-		}
+	buf, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("proxmox %s: read response: %w", path, err)
+	}
+	if len(buf) > 8<<20 {
+		return nil, fmt.Errorf("proxmox %s: response too large", path)
 	}
 	return buf, nil
 }

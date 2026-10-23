@@ -91,6 +91,18 @@ Proxmox zone 可设置 `vlan_tag`（1–4094，空/0 表示不打标签）。设
 不可达。修改 `vlan_tag` 不会热改运行中的 VM：新 provision 或下一次 resume（重建
 compute）时才写到 `net0`；已经运行的 qube 需要 suspend/resume 才会换到新 VLAN。
 
+自动调度在比较内存前逐节点读取 `/nodes/<node>/network`。必须有且只有一个同名、active
+的 Linux/OVS bridge；Linux bridge 的非零 `vlan_tag` 还要求 `bridge_vlan_aware` 开启，
+并在明确的 `bridge_vids` 单值/范围列表内。没有明确 VLAN 列表时拒绝猜测；OVS 使用自身的
+端口 tag 机制。存在待应用网络配置时排除该节点，避免把 API 中的候选配置当成运行状态。
+读取失败的节点同样不参与调度；全部不满足时返回排除原因，不回退到 zone 默认节点。
+
+provider 在每次 EnsureStorage/EnsureCompute 开始时独立复查，覆盖显式 pin、默认节点、
+重试和 resume，在取得新 VMID 或修改资源之前拒绝。检查不能锁住宿主网络：检查后配置仍
+可能变化，后续失败继续按既有 checkpoint 记录处理，不把部分创建写成成功。它也不证明
+DHCP、上游端口、路由或跨节点存储可用；这些仍由实际置备、agent 探针及真机验收确认。
+实现和验收见[节点网络资格检查](reviews/2026-10-23-network-eligibility.md)。
+
 ## 信任边界与已知限制
 
 - zone 凭据按调用从加密库解析，SSH key 也在调用时读取；不能把凭据写入日志或文档。

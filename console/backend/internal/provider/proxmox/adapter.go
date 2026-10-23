@@ -310,6 +310,9 @@ func (a *Adapter) EnsureStorage(ctx context.Context, q *models.Qube, zone *model
 	if in.Node != "" && in.Node != node {
 		return in, errors.New("proxmox: recorded node differs from requested placement; explicit reconciliation required")
 	}
+	if err := a.checkNetwork(ctx, node, pc); err != nil {
+		return in, err
+	}
 	in.QubeID = q.ID
 	in.Provider = string(models.ZoneTypeProxmox)
 	in.Node = node
@@ -416,6 +419,9 @@ func (a *Adapter) EnsureCompute(ctx context.Context, q *models.Qube, zone *model
 	}
 	if in.Node != "" && in.Node != node {
 		return in, errors.New("proxmox: recorded node differs from requested placement; explicit reconciliation required")
+	}
+	if err := a.checkNetwork(ctx, node, pc); err != nil {
+		return in, err
 	}
 	in.QubeID = q.ID
 	in.Provider = string(models.ZoneTypeProxmox)

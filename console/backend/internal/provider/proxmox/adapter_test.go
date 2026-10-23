@@ -29,6 +29,22 @@ func (f fakeIdentity) IdentityVolumeID(string) string { return f.vol }
 
 func newTestAdapter(t *testing.T, h http.HandlerFunc, opts Options) (*Adapter, *fakeCalls) {
 	t.Helper()
+	return newRawTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/network") {
+			writeData(w, []map[string]any{{
+				"iface": "vmbr0", "type": "bridge", "active": 1,
+				"bridge_vlan_aware": 1, "bridge_vids": "2-4094",
+			}})
+			return
+		}
+		h(w, r)
+	}, opts)
+}
+
+// Network boundary tests use the raw helper so no implicit eligible fixture can
+// hide a missing or incorrect preflight request.
+func newRawTestAdapter(t *testing.T, h http.HandlerFunc, opts Options) (*Adapter, *fakeCalls) {
+	t.Helper()
 	rec := &fakeCalls{}
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.add(r)

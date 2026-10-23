@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
 	"github.com/slchris/qubes-air/console/internal/models"
+	"github.com/slchris/qubes-air/console/internal/proxmoxnetwork"
 	"github.com/slchris/qubes-air/console/internal/repository"
 	"github.com/slchris/qubes-air/console/internal/scheduler"
 )
@@ -227,6 +229,13 @@ func NewClusterScheduler(zones repository.ZoneRepository, resolve scheduler.Cred
 // Capacity is read fresh on every call rather than cached: a stale view is how
 // a scheduler piles several guests onto the node it last saw as empty.
 func (c *ClusterScheduler) Place(ctx context.Context, zoneID string, req scheduler.Requirements) (*scheduler.Placement, error) {
+	zone, err := c.zones.GetByID(ctx, zoneID)
+	if err != nil {
+		return nil, err
+	}
+	if zone.Config.Proxmox == nil {
+		return nil, fmt.Errorf("%w: zone has no Proxmox network configuration", scheduler.ErrNetworkUnavailable)
+	}
 	creds, err := c.resolve(ctx, zoneID)
 	if err != nil {
 		return nil, err
@@ -235,9 +244,11 @@ func (c *ClusterScheduler) Place(ctx context.Context, zoneID string, req schedul
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := provider.Nodes(ctx)
+	nodes, err := provider.PlacementNodes(ctx, proxmoxnetwork.Requirement{
+		Bridge: zone.Config.Proxmox.NetworkBridge, VLANTag: zone.Config.Proxmox.VLANTag,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read cluster capacity: %w", err)
+		return nil, fmt.Errorf("read cluster placement: %w", err)
 	}
 	return c.sched.Select(ctx, nodes, req)
 }
@@ -256,16 +267,16 @@ func (s *QubeServiceImpl) resolvePlacement(ctx context.Context, qube *models.Qub
 			MemoryMB: qube.Spec.Memory,
 			VCPU:     qube.Spec.VCPU,
 		})
-		if err == nil && placement.Node != "" {
+		if err == nil && placement != nil && placement.Node != "" {
 			return placement.Node, placement.Reason, nil
 		}
-		// A cluster with genuinely no room must fail rather than silently fall
-		// back to a default node that cannot fit the qube either.
-		if err != nil && isCapacityError(err) {
+		// A capacity or network refusal must not fall back to an ineligible
+		// default node. Canceled requests must not proceed to record a qube.
+		if err != nil && (isCapacityError(err) || errors.Is(err, scheduler.ErrNetworkUnavailable) || ctx.Err() != nil) {
 			return "", "", err
 		}
-		// Anything else (unreachable cluster, missing credential) degrades to the
-		// zone default: scheduling is an optimisation, not a prerequisite.
+		// Capacity reads can still degrade to the zone default. The provider
+		// independently checks that node's network before allocating resources.
 		//
 		// Logged rather than swallowed. The degraded path looks identical to a
 		// zone that was simply never configured, so without this line a broken
