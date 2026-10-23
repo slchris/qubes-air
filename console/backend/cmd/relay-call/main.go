@@ -280,6 +280,8 @@ func resolveAgent(ctx context.Context, repo repository.QubeRepository, target, p
 // (console-as-relay) or loaded from disk (separate relay) — dialing does not
 // care which.
 func dialAndCall(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string, in []byte) (transport.Result, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cli, err := newClient(pair, pool, endpoint, remoteName)
 	if err != nil {
 		return transport.Result{}, err
@@ -332,6 +334,8 @@ func newClient(pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName s
 // qubesair.StreamTCP+<port>). This is how GUI rides mTLS with no port exposed on
 // the remote's LAN. Waits for the tunnel, then streams until either side closes.
 func dialAndStream(ctx context.Context, pair tls.Certificate, pool *x509.CertPool, endpoint, remoteName, service string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cli, err := newClient(pair, pool, endpoint, remoteName)
 	if err != nil {
 		return err
