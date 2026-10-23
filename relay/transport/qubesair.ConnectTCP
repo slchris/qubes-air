@@ -31,6 +31,9 @@ fi
 if [[ ! "$remote" =~ ^remote-[a-zA-Z0-9._-]+$ ]]; then
     log "拒绝: '$remote' 不是 remote-* 名"; exit 126
 fi
+# QubesDB addresses the local RemoteVM shell. The agent certificate binds the
+# original Qube name, so strip exactly one prefix for the TLS target only.
+remote_name="${remote#remote-}"
 if [[ ! "$port" =~ ^[0-9]{1,5}$ ]]; then
     log "拒绝: 非法端口 '$port'"; exit 126
 fi
@@ -56,4 +59,4 @@ log "隧道(mTLS): ${QREXEC_REMOTE_DOMAIN:-?} -> $remote agent($ep) -> 127.0.0.1
 # 经 agent mTLS gRPC 流,agent 端代理到远端 127.0.0.1:$port。-timeout 长一点给交互式 GUI。
 exec /usr/local/bin/relay-call -stream -timeout 12h \
     -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
-    -addr "$ep" "$remote" "$port"
+    -addr "$ep" "$remote_name" "$port"

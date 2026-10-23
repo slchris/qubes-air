@@ -655,8 +655,19 @@ tcp_run() {
 }
 
 tcp_relay_call() { # PORT
-    printf 'relay-call [-stream] [-timeout] [12h] [-cert] [%s] [-key] [%s] [-ca] [%s] [-addr] [%s] [remote-a] [%s]' \
-        "$C/relay/relay.crt" "$C/relay/relay.key" "$C/relay/ca.crt" "$EP" "$1"
+    printf 'relay-call [-stream] [-timeout] [12h] [-cert] [%s] [-key] [%s] [-ca] [%s] [-addr] [%s] [%s] [%s]' \
+        "$C/relay/relay.crt" "$C/relay/relay.key" "$C/relay/ca.crt" "$EP" "${2:-a}" "$1"
+}
+
+t_connecttcp_remote_prefix_exactly_once() {
+    case_begin "ConnectTCP: local prefix is removed once for the agent identity" || return 0
+    tcp_setup
+    put "$C/qubesdb/remote-endpoint/remote-remote-a" "$EP"
+    tcp_run 'remote-remote-a+10000'
+    expect_rc 0
+    expect_calls "qubesdb-read [/remote-endpoint/remote-remote-a]
+$(tcp_relay_call 10000 remote-a)"
+    case_end
 }
 
 t_connecttcp_usage_errors() {
