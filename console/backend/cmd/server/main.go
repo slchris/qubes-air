@@ -61,6 +61,14 @@ func main() {
 	// Parse command line flags
 	configPath := flag.String("config", "", "Path to configuration file (YAML)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
+	var checkDatabase string
+	flag.Func("check-database", "Check an existing database schema read-only and exit", func(path string) error {
+		if path == "" {
+			return errors.New("database preflight: a database path is required")
+		}
+		checkDatabase = path
+		return nil
+	})
 	flag.Parse()
 
 	// The build reports its own provenance (internal/buildinfo), from the linker
@@ -69,6 +77,12 @@ func main() {
 	if *showVersion {
 		fmt.Printf("%s %s\n", appName, buildinfo.Get())
 		os.Exit(0)
+	}
+	if checkDatabase != "" {
+		if err := preflightDatabase(checkDatabase); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 
 	log.Printf("%s starting: %s", appName, buildinfo.Get())

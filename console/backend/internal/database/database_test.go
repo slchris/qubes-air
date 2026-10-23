@@ -206,7 +206,7 @@ func TestBuildDSN(t *testing.T) {
 	dsn := buildDSN("/tmp/test.db")
 
 	assert.Contains(t, dsn, "/tmp/test.db")
-	assert.Contains(t, dsn, "_journal_mode=WAL")
+	assert.NotContains(t, dsn, "_journal_mode", "opening must not write before the version check")
 	assert.Contains(t, dsn, "_foreign_keys=on")
 }
 
@@ -222,6 +222,9 @@ func TestSchemaVersionStamped(t *testing.T) {
 	got, err := db.UserVersion()
 	require.NoError(t, err)
 	assert.Equal(t, SchemaVersion, got)
+	var journal string
+	require.NoError(t, db.DB().QueryRow("PRAGMA journal_mode").Scan(&journal))
+	assert.Equal(t, "wal", journal)
 }
 
 // TestRefusesNewerSchema is the downgrade guard: an older console must not open

@@ -91,8 +91,8 @@ var auditEventsColumns = []string{
 // index with "no such column" or, worse, being written in two formats.
 //
 // Columns after step 4's are allowed: a later schema step may only add
-// columns at the end, and a database that has them is newer than this build,
-// which applySchemaVersion then refuses with the message that says so.
+// columns at the end. New has already refused a newer user_version before any
+// migration runs.
 func (d *DB) migrateAudit() error {
 	ctx := context.Background()
 	if _, err := d.db.ExecContext(ctx, createAuditEventsTable); err != nil {
