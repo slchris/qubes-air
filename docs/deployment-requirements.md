@@ -58,3 +58,20 @@
 - 要求 12 的探测强度依赖 M1-14（`/health` 真实读写探测 + 调度器心跳）合入；在那之前恢复判据只看进程是否起来。
 - 真机验收（真机 lifecycle 冒烟、Exec/FileCopy 往返、suspend/resume 持久性）在本机没有 dom0 入口，
   因此本文清单目前只在"代码行为"层面可核对，未在真机复核。
+
+## Console 制品替换前检查
+
+先验证候选程序的 SHA256 和 `--version`，再以 Console 服务用户执行：
+
+```bash
+/path/to/candidate/qubes-air-console --check-database /rw/config/qubesair/qubes-air.db
+```
+
+该入口只读检查已有 SQLite 数据库（包含当前 WAL），输出 `database_schema` 与
+`supported_schema` 后退出，不加载配置、不迁移、不初始化 CA、不启动编排。路径缺失、
+无法读取、损坏或 schema 超过候选版本时返回非零；不能将检查失败当作首次安装。
+这只验证 schema 版本兼容性，不能替代备份、完整性检查或迁移验收。
+
+Qubes 部署应由 `qubes-salt-config` 的 `qubesair.console` state 完成：先放置候选程序，
+检查成功后才替换活动程序、配置与 Web。仅在相关服务文件有变化时重启，再验证健康接口。
+Console 正常启动也在任何迁移及 WAL 模式变更前拒绝过新 schema，避免不兼容回退先修改数据库。

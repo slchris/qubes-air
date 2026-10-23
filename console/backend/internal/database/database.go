@@ -53,14 +53,21 @@ func New(cfg *Config) (*DB, error) {
 
 	configurePool(db, cfg)
 
-	// Background: this runs at startup, before any request context exists.
-	if err := db.PingContext(context.Background()); err != nil {
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+	// Check before WAL activation or any migration. Even changing journal mode
+	// writes the file header, which a refused downgrade must leave alone.
+	if _, err := checkSchema(context.Background(), db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.ExecContext(context.Background(), "PRAGMA journal_mode = WAL"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("enable database WAL: %w", err)
 	}
 
 	wrapper := &DB{db: db}
 
 	if err := wrapper.migrate(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
@@ -69,7 +76,7 @@ func New(cfg *Config) (*DB, error) {
 
 // buildDSN constructs the SQLite DSN with options.
 func buildDSN(path string) string {
-	return fmt.Sprintf("%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000", path)
+	return fmt.Sprintf("%s?_foreign_keys=on&_busy_timeout=5000", path)
 }
 
 // configurePool sets connection pool parameters.
@@ -328,14 +335,9 @@ func (d *DB) migrate() error {
 // are upgraded to SchemaVersion. A file with a HIGHER version is refused: see
 // SchemaVersion.
 func (d *DB) applySchemaVersion() error {
-	have, err := d.UserVersion()
+	have, err := checkSchema(context.Background(), d.db)
 	if err != nil {
 		return err
-	}
-	if have > SchemaVersion {
-		return fmt.Errorf(
-			"database schema version %d is newer than this console supports (%d); upgrade the console before opening this database",
-			have, SchemaVersion)
 	}
 	if have == SchemaVersion {
 		return nil

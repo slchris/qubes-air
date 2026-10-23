@@ -65,84 +65,39 @@ qubes-air-backup create \
 备份是**两个动作，必须成对**：`create` 产出一份新归档，`prune` 把归档总数收敛到保留上限
 （`console/backend/internal/backup/retention.go:74` 的 `Prune`，CLI 在
 `console/backend/cmd/qubes-air-backup/main.go:136` 的 `runPrune`）。只做前者会让存放点悄悄写满，
-只做后者会删到没有可恢复的副本，所以下面把它们放进同一个 unit 的两次 `ExecStart`。
+只做后者会删到没有可恢复的副本；权威 Salt state 把二者放进同一个 unit，先创建成功再 prune。
 
-### systemd unit 与 timer（文本要落在 `qubes-salt-config`，不在本仓库）
+### Qubes 上的调度与离机挂载
 
-控制台是 Qubes AppVM 里的 systemd 服务，由外部仓库
-[qubes-salt-config](https://github.com/slchris/qubes-salt-config) 的 `salt/qubesair` 状态部署
-（见[架构](architecture.md)第 23 行）。本仓库**不复制第二套 Qubes 侧部署入口**（`AGENTS.md` 第 10 行），
-因此下面两个单元是**要加到那个仓库的文本**，本仓库里没有对应文件；文件路径与属主按该仓库
-`salt/qubesair` 的现有约定放置。
+实际单元由 [qubes-salt-config](https://github.com/slchris/qubes-salt-config) 的
+`salt/qubesair/backup.sls` 部署，本仓库不复制另一套部署入口。程序、`backup.env` 和
+systemd 单元都按 AppVM 的持久化目录规则存放；口令文件位于
+`/rw/config/qubesair/backup.env`，权限 `0600`，Salt 不替换它的内容。
 
-`qubes-air-backup.service`：
+- `RequiresMountsFor` 负责挂载顺序；`ExecStartPre=mountpoint -q` 还要验证归档目录本身
+  是挂载点。只写前者会把普通本地目录误认为可用的备份目的地。
+- 单元先 `create -out-dir`，成功后才 `prune -keep`；创建失败不裁剪旧备份。
+- `Persistent=true` 只能补跑当前 AppVM 启动周期内错过的触发。Salt 的 `rc.local`
+  还会在每次启动后执行一次备份，覆盖根卷重置导致 timer 时间戳丢失的情况。
+- 可选 `qubesair.backup-mount` 使用 SSHFS。模板和当前 AppVM 都需安装其前置包，
+  并持久化挂载单元。SSH 必须验证已知主机密钥；NAS 账号限制在归档目录，禁止 shell
+  和转发。私钥、可信 `known_hosts` 与归档口令单独配置，不进入 Salt 清单。
 
-```ini
-[Unit]
-Description=Qubes Air console backup (snapshot -> encrypt -> prune)
-After=qubes-air-console.service
-# 归档必须落在离机介质上：挂载点不在时宁可让这次备份失败，也不要只留本机副本。
-RequiresMountsFor=/secure/offhost
-
-[Service]
-Type=oneshot
-# 0600，内容只有一行 QUBES_AIR_BACKUP_PASSPHRASE=...（下面给出创建命令）。
-EnvironmentFile=/etc/qubes-air/backup.env
-# 与 console 服务相同的用户；console 若以非 root 运行，这里与口令文件属主要一起调整。
-User=root
-# 归档名由 CLI 生成：unit 里没有 shell，systemd 的 unit specifier 也没有日期/时间项。
-ExecStart=/usr/bin/qubes-air-backup create -db /rw/config/qubesair/qubes-air.db -out-dir /secure/offhost
-ExecStart=/usr/bin/qubes-air-backup prune -dir /secure/offhost -keep 14
-```
-
-`qubes-air-backup.timer`：
-
-```ini
-[Unit]
-Description=Daily Qubes Air console backup
-
-[Timer]
-OnCalendar=*-*-* 03:30:00
-# 关机/休眠期间错过的触发，开机后补跑一次；否则"每天备份"会随机器状态静默断档。
-Persistent=true
-Unit=qubes-air-backup.service
-
-[Install]
-WantedBy=timers.target
-```
-
-口令文件（一次性创建，口令另存离机介质——它丢了归档就解不开）：
+启用后从 Console 核对：
 
 ```bash
-install -m 0600 -o root -g root /dev/null /etc/qubes-air/backup.env
-# 只跑一次：再次执行会替换口令，而用它写出的旧归档只能用旧口令解开。
-printf 'QUBES_AIR_BACKUP_PASSPHRASE=%s\n' "$(head -c 32 /dev/urandom | base64)" \
-  > /etc/qubes-air/backup.env
+mountpoint /secure/offhost
+systemctl cat qubes-air-backup.service
+systemctl list-timers qubes-air-backup.timer
+systemctl start qubes-air-backup.service
+journalctl -u qubes-air-backup -n 50
 ```
 
-启用与核对（由 Salt 状态执行，以下是人工核对命令）：
+口令与原 keyring 必须保存到归档之外的受限位置，并通过独立目录恢复实际验证。不要重新生成
+已有口令文件；旧归档仍需旧口令。`User=`、挂载点、备份与恢复程序的构建版本都应在现场记录。
 
-```bash
-systemctl enable --now qubes-air-backup.timer
-systemctl list-timers qubes-air-backup.timer     # NEXT 应为下一个 03:30
-systemctl start qubes-air-backup.service         # 先手动跑一次，不要等到明天
-journalctl -u qubes-air-backup -n 50             # 应同时看到 create 与 prune 的输出
-ls -lt /secure/offhost/*.qab | head              # 归档数量与 mtime
-```
-
-要点：
-
-- **`-out-dir` 而不是 `-out`**：`ExecStart` 不经 shell，`$(date …)` 不会被展开，而 systemd 的 unit
-  specifier 里**没有**日期/时间项（`%Y` 是"unit 文件所在目录"，见 systemd.unit(5) 的 Specifiers 表），
-  所以时间戳名字由 `create` 自己生成：`qubesair-<UTC 时间戳>.qab`。同一秒内跑第二次会因 `O_EXCL`
-  明确失败，而不是覆盖刚写好的归档。
-- **新旧按 mtime 判定，搬回归档要用 `cp -p`**：`prune` 以修改时间排序（同秒并列时按文件名定序，见 `internal/backup/retention.go:160-166`）。从离机介质把归档搬回该目录时，`cp` 不带 `-p` 会让副本的 mtime 变成"现在"，于是它们被当成最新的一批，下次 timer 反而会把真正最新的备份挤出保留窗口——用 `cp -p`（或 `rsync -t`）保留原始时间戳，搬回后先 `ls -lt` 核对顺序再交给 timer。
-- 一个 unit 里的多个 `ExecStart=` 按书写顺序执行：`create` 失败时 `prune` 不会运行，
-  因此不会出现"没备份成功却把旧归档删了"。
-- 口令只经 `EnvironmentFile` 进进程环境：不进 argv（`ps` 可见），也不写在 unit 文件里。
-- `User=` 与 `RequiresMountsFor=` 是**待按部署核对的项**：以 `qubes-salt-config` 中 console 服务的
-  实际用户和离机介质挂载点为准；两者写错会表现为备份读不到库、或读不到挂载点而直接失败
-  （失败比"只留本机副本"好，但要在启用后按上面的 `journalctl` 确认一次）。
+归档名由 CLI 生成：`qubesair-<UTC 时间戳>.qab`。同秒重复执行会拒绝覆盖。留存按 mtime
+排序，搬运归档时使用 `cp -p` 或 `rsync -t` 保留原时间，防止旧文件被误当作最新备份。
 
 ### 保留策略建议值：每日一次，留最近 14 份
 
@@ -245,7 +200,7 @@ CA 私钥在 `credentials` 表中，随数据库备份一起被保存（再被�
 keyring 版本被清掉、某天的归档写到一半就损坏——所以它需要重复，而且重复的成本很低：
 
 ```bash
-# 1. 复制一份最新的归档到临时目录；restore 会替换目标库，绝不能指向生产库。
+# 1. 复制一份最新归档到独立目录；restore 默认拒绝已有目标，绝不能指向生产库。
 d="$(mktemp -d)"
 cp /secure/offhost/qubesair-<最新时间戳>.qab "$d/"
 # 2. 用产生这份归档的那一代口令（轮换过就用旧的）
@@ -267,3 +222,15 @@ rm -rf "$d"
   每季度一次，并记录耗时（RTO 依据）。
 - 轻量检查需要读到归档口令，所以在持有口令的机器上执行；临时目录事后删除，不要把恢复出来的库
   留在归档目录里。
+
+### 2026-10-23 离机验收
+
+本轮已从独立备份主机上的真实归档恢复到隔离目录，使用原 keyring 解密全部凭据，
+核对原 CA 指纹、验证签名吊销清单，并以只读 provider 查询核对保留的 storage holder、
+ownership 标记与数据卷。恢复 Console 以禁用编排、网络隔离方式启动。
+错误口令、错误 keyring、已有恢复目标及未挂载的备份目录均已验证拒绝。
+
+最新 286,900 字节归档在 Console AppVM 重启、模板根卷提交和受控 timer 触发后生成，
+两端读回摘要一致；恢复开始到隔离健康服务耗时 1.503 秒，27 条签名吊销记录验证通过。
+此数值只代表恢复主机、工具和密钥已就绪时的小规模演练，不包含重建 Qubes 控制域、
+寻找密钥、恢复数据盘或在线接管 agent。详细证据见[生产闭环记录](reviews/2026-10-23-production-closure.md)。

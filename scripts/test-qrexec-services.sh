@@ -399,7 +399,7 @@ grpc_run() {
 }
 
 grpc_relay_call() { # TIMEOUT SERVICE-ARG: the provisioned-mode relay-call line
-    printf 'relay-call [-timeout] [%s] [-cert] [%s] [-key] [%s] [-ca] [%s] [-addr] [%s] [remote-a] [%s]' \
+    printf 'relay-call [-timeout] [%s] [-cert] [%s] [-key] [%s] [-ca] [%s] [-addr] [%s] [a] [%s]' \
         "$1" "$C/relay/relay.crt" "$C/relay/relay.key" "$C/relay/ca.crt" "$EP" "$2"
 }
 
@@ -530,6 +530,17 @@ $(grpc_relay_call 20s qubesair.Ping)"
     case_end
 }
 
+t_grpcproxy_nested_remote_name() {
+    case_begin "GrpcProxy: remove only the addressing prefix before TLS identity verification" || return 0
+    grpc_setup
+    put "$C/qubesdb/remote-endpoint/remote-remote-a" "$EP"
+    grpc_run 'remote-remote-a+qubesair.Ping+'
+    expect_rc 0
+    expect_calls "qubesdb-read [/remote-endpoint/remote-remote-a]
+relay-call [-timeout] [20s] [-cert] [$C/relay/relay.crt] [-key] [$C/relay/relay.key] [-ca] [$C/relay/ca.crt] [-addr] [$EP] [remote-a] [qubesair.Ping]"
+    case_end
+}
+
 t_grpcproxy_service_argument_and_timeouts() {
     local spec arg want tmo
     for spec in 'remote-a+qubes.StartApp+org.gnome.Calculator|qubes.StartApp+org.gnome.Calculator|180s' \
@@ -610,7 +621,7 @@ t_grpcproxy_mint_mode() {
     put "$C/console/secrets.env" 'QUBES_AIR_ENCRYPTION_KEY=unit-test-key'
     grpc_run 'remote-a+qubesair.Ping+'
     expect_rc 0
-    expect_calls "relay-call [-timeout] [20s] [-db] [$C/console/qubes-air.db] [remote-a] [qubesair.Ping]"
+    expect_calls "relay-call [-timeout] [20s] [-db] [$C/console/qubes-air.db] [a] [qubesair.Ping]"
     expect_got_env relay-call 'QUBES_AIR_ENCRYPTION_KEY=unit-test-key'
     case_end
 }
