@@ -2,8 +2,9 @@
 
 更新日期：2026-10-23。本文区分已合入实现、本轮分支部署与剩余验收；逐项状态见
 [生产可用性缺口](production-readiness-gaps.md)。本轮现场使用 Console/agent `eb753f4` 与
-GrpcProxy `4455409`，变更仍在 `codex/production-closure` 分支；未用 `v0.1.0` release URL
-置备，也未发布新的版本。
+GrpcProxy `4455409`，已通过 Air PR #90 与 Salt PR #3 合入，合并 CI 全绿；未用 `v0.1.0`
+release URL 置备，也未发布新的版本。后续节点网络资格修复的分支状态见
+[网络资格记录](reviews/2026-10-23-network-eligibility.md)。
 
 项目已具备 Proxmox 核心闭环，仍适合受控实验与开发，尚不是通用生产发行版。
 

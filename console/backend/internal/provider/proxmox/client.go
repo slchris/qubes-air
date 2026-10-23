@@ -147,38 +147,9 @@ func (c *Client) delete(ctx context.Context, path string, out any) error {
 // request is the single authenticated call path, so authentication and envelope
 // decoding cannot be bypassed.
 func (c *Client) request(ctx context.Context, method, path string, form url.Values, out any) error {
-	var body io.Reader
-	if form != nil {
-		body = strings.NewReader(form.Encode())
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, body)
-	if err != nil {
-		return fmt.Errorf("proxmox: build %s %s: %w", method, path, err)
-	}
-	if form != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	}
-	if err := c.authorize(ctx, req, method); err != nil {
+	raw, err := c.requestRaw(ctx, method, path, form)
+	if err != nil || out == nil {
 		return err
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("proxmox %s %s: %w", method, path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Cap the body: an unexpected error page should not be able to exhaust
-	// memory. 8 MiB is far above any API response this client expects.
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return fmt.Errorf("proxmox %s %s: read body: %w", method, path, err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &apiError{Method: method, Path: path, Status: resp.Status, Body: truncate(raw, 512)}
-	}
-	if out == nil {
-		return nil
 	}
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
@@ -193,6 +164,44 @@ func (c *Client) request(ctx context.Context, method, path string, form url.Valu
 		return fmt.Errorf("proxmox %s %s: decode data: %w", method, path, err)
 	}
 	return nil
+}
+
+// requestRaw retains envelope metadata needed to detect pending network changes.
+func (c *Client) requestRaw(ctx context.Context, method, path string, form url.Values) ([]byte, error) {
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, body)
+	if err != nil {
+		return nil, fmt.Errorf("proxmox: build %s %s: %w", method, path, err)
+	}
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	if err := c.authorize(ctx, req, method); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("proxmox %s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Cap the body: an unexpected error page should not be able to exhaust
+	// memory. 8 MiB is far above any API response this client expects.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("proxmox %s %s: read body: %w", method, path, err)
+	}
+	if len(raw) > 8<<20 {
+		return nil, errors.New("proxmox: response exceeds 8 MiB")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &apiError{Method: method, Path: path, Status: resp.Status, Body: truncate(raw, 512)}
+	}
+	return raw, nil
 }
 
 // authorize attaches either the API token or a session ticket. The ticket path
