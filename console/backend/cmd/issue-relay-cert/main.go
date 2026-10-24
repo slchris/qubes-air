@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/pki"
@@ -57,9 +58,14 @@ func main() {
 // main's log.Fatal runs only after every deferred cleanup (the context cancel
 // and the database close) has completed.
 func run() error {
+	showVersion := flag.Bool("version", false, "show build identity and exit")
 	dsn := flag.String("db", "", "console sqlite DSN")
 	lifetime := flag.Duration("lifetime", relayCertLifetime, "certificate lifetime")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("issue-relay-cert %s\n", buildinfo.Get())
+		return nil
+	}
 
 	encKey := os.Getenv("QUBES_AIR_ENCRYPTION_KEY")
 	if encKey == "" {

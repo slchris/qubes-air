@@ -35,6 +35,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/pki"
 )
 
@@ -44,10 +45,15 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("relay-bootstrap: ")
 
+	showVersion := flag.Bool("version", false, "show build identity and exit")
 	console := flag.String("console", "qubesair-console", "console qube to request the certificate from")
 	dir := flag.String("dir", "/rw/config/qubesair-relay", "identity directory to write into")
 	name := flag.String("name", "", "this relay's qube name (default: QubesDB /name)")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("relay-bootstrap %s\n", buildinfo.Get())
+		return
+	}
 
 	ctx := context.Background()
 
