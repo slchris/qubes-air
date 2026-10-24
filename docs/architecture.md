@@ -80,6 +80,7 @@ RemoteVM 不是一台本地 VM，而是一条包含 `relayvm`、`transport_rpc` 
 | `qubesair.Exec` | 在 agent 沙箱内执行允许程序 | dom0 默认 `ask`；agent 侧默认**关闭**，需在 agent.env 设 `QUBESAIR_EXEC_ALLOW`（允许的可执行文件列表） |
 | `qubesair.FileCopy` | 在 agent 沙箱内 push/pull 文件 | dom0 默认 `ask`；agent 侧默认**关闭**，需设 `QUBESAIR_FILECOPY_ROOTS`（允许的绝对目录列表，经 realpath 校验） |
 | `qubesair.ConnectTCP` | 在 mTLS 通道内流式转发 TCP | 只允许显式目标/端口 |
+| `qubesair.ConnectDesktop` | 经 mTLS 连接固定 Xpra Unix socket | Relay/专用 Console 身份、UID 1000 对端检查；待 Salt 与生产会话部署 |
 | `qubes.GetAppmenus` | 枚举远端桌面应用 | 无私密参数 |
 | `qubes.StartApp` | 在 Xpra display 启动应用 | app id 严格校验 |
 | `qubesair.UnlockData` | 解锁/初始化 LUKS 数据盘 | 控制台读取该 Qube 自己的数据密钥（DEK）经 mTLS 下发；**没有解锁用的回退路径**——缺 DEK 即走一次性迁移，用 legacy master 派生密钥把盘 rekey 到该 DEK，派生密钥只是迁移凭据 |

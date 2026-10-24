@@ -128,21 +128,16 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
   30 分钟，设置页也显示 30；在设置页保存一个 5–1440 的值即消除告警。
 - 重启仍会清空所有 session（session 只存在内存里）。
 
-### 2.6 桌面帧端口：两侧可任意先后，限制只在新 agent 上生效
+### 2.6 桌面流：Console、Relay 与 agent 使用同一固定 service
 
-本版本的 agent 只把桌面端口 `qubesair.StreamTCP+10005` 开给 Relay 与 CN 为 `console-desktop` 的
-console 证书（[安全控制](security-controls.md)“Agent 身份与吊销”）。它不像 §2.4 那样会让一侧失败：
+桌面流使用 `qubesair.StreamDesktop`，agent 只连接 UID 1000 所有的
+`/run/qubes-air-desktop/xpra.sock`。Relay 入口为 `qubesair.ConnectDesktop+<remote-name>`，
+其 `relay-call` 必须支持 `-stream <target> desktop`。旧 TCP 10005 在 Relay 与 agent 两端均被拒绝。
 
-| 控制台 | guest 里的 agent 包 | 结果 |
-|---|---|---|
-| 新（按批准取帧，出示 `console-desktop`） | 新 | 正常；其它 console 证书打不开桌面端口 |
-| 旧（没有取帧功能） | 新 | 正常：旧控制台从不以 console 证书打开这个端口 |
-| 新 | 旧 | 取帧照常，但 agent **不检查**是哪张 console 证书——任何 CA 签发的 console 证书都能打开桌面端口，直到该 qube 换上新 agent 包 |
-
-所以没有硬性先后，但只有换上新 agent 包（重建 compute，见 §3 第 4 步）的 qube 才有这条限制；
-建议与 §2.4 一样让 agent 包不晚于控制台。另外，qube 里需要有监听该端口的 Xpra 服务端，
-取帧才可能成功；本仓库与 qubes-salt-config 都还没有部署它的状态（见
-[MCP 接入](mcp-design.md#桌面能力)），没有监听时取帧失败关闭。
+升级时先交付新 agent 与已认证的 Xpra 会话，再同步 Console、relay-call 和 Salt 的 Relay 入口与
+dom0 policy；版本不一致或会话未就绪时桌面流失败关闭，没有 TCP 回退。单独回滚任一侧不会恢复桌面，
+回滚必须使用同一套已验收版本。现有包仍默认禁用桌面，生产 Xpra 会话与持久 HOME 尚未交付，见
+[Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。
 
 ## 3. 升级顺序
 

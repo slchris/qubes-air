@@ -21,6 +21,7 @@ import (
 
 	"sync"
 
+	"github.com/slchris/qubes-air/console/internal/desktop"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/repository"
 
@@ -96,6 +97,9 @@ type Server struct {
 	pb.UnimplementedRelayTransportServer
 	cfg     ServerConfig
 	invoker QrexecInvoker
+	// Tests inject a local stream here; production always uses the fixed,
+	// peer-verified desktop socket, with no configurable path or destination.
+	desktopDialer func(context.Context) (net.Conn, error)
 
 	mu   sync.Mutex
 	grpc *grpc.Server
@@ -548,7 +552,7 @@ func (t *tunnelSession) handleRequestHeader(frame *pb.Frame, k *pb.Frame_Request
 	reqID := frame.GetRequestId()
 	switch k.RequestHeader.GetDirection() {
 	case pb.Direction_LOCAL_TO_REMOTE:
-		if strings.HasPrefix(k.RequestHeader.GetQrexecService(), streamServicePrefix) {
+		if isStreamService(k.RequestHeader.GetQrexecService()) {
 			t.openStream(reqID, k.RequestHeader.GetQrexecService())
 			return nil
 		}
@@ -578,18 +582,17 @@ func (t *tunnelSession) handleRequestHeader(frame *pb.Frame, k *pb.Frame_Request
 //
 // A stream-prefixed request with a port outside the allowed range is REFUSED
 // here — never routed to qrexec — so the tunnel can only reach the whitelisted
-// loopback GUI ports.
+// loopback GUI ports or the fixed authenticated desktop socket.
 func (t *tunnelSession) openStream(reqID, service string) {
-	port, ok := streamLocalPort(service)
-	if !ok {
-		_ = t.send(errorFrame(reqID, codeInvalid, "stream port not allowed"))
+	if !validStreamService(service) {
+		_ = t.send(errorFrame(reqID, codeInvalid, "stream destination not allowed"))
 		return
 	}
-	if err := authorizeStreamCaller(t.ctx, port); err != nil {
+	if err := authorizeStreamCaller(t.ctx, service); err != nil {
 		_ = t.send(errorFrame(reqID, codeDenied, err.Error()))
 		return
 	}
-	ss, derr := t.server.startStream(t.ctx, reqID, port, t.send)
+	ss, derr := t.server.startStream(t.ctx, reqID, service, t.send)
 	if derr != nil {
 		_ = t.send(errorFrame(reqID, codeUnavailable, "stream dial: "+derr.Error()))
 		return
@@ -837,27 +840,19 @@ func verifiedClientLeaf(ctx context.Context) (*x509.Certificate, error) {
 	return info.State.VerifiedChains[0][0], nil
 }
 
-// DesktopStreamPort is the loopback port a qube's Xpra desktop server listens
-// on, and DesktopStreamService the stream request that reaches it. The console
-// reads desktop frames through it; the agent opens it only for a Relay (the
-// operator's own GUI path) or for the console-desktop identity.
-//
-// Both sides use these two constants, so the port the console asks for and the
-// port the agent guards cannot drift apart.
-const (
-	DesktopStreamPort    = 10005
-	DesktopStreamService = streamServicePrefix + "10005"
-)
+// DesktopStreamService opens the one fixed, peer-verified Xpra Unix socket.
+// Both Console and Relay use this service; no caller supplies a socket path.
+const DesktopStreamService = "qubesair.StreamDesktop"
 
-// authorizeStreamCaller guards the desktop port. Any CA-signed Relay may open a
+// authorizeStreamCaller guards the desktop socket. Any CA-signed Relay may open a
 // GUI stream, as before: that is the operator's own desktop, reached through
 // dom0 policy on the local side. A console certificate, though, is minted by
 // the console for one purpose each, and only the one minted to capture a frame
 // for an approved request may read the screen; a probe, renewal, unlock or
-// bootstrap certificate is refused before the port is dialed. Other GUI ports
+// bootstrap certificate is refused before the socket is dialed. Other GUI ports
 // keep their existing rule.
-func authorizeStreamCaller(ctx context.Context, port int) error {
-	if port != DesktopStreamPort {
+func authorizeStreamCaller(ctx context.Context, service string) error {
+	if service != DesktopStreamService {
 		return nil
 	}
 	leaf, err := verifiedClientLeaf(ctx)
@@ -868,8 +863,8 @@ func authorizeStreamCaller(ctx context.Context, port int) error {
 	if err == nil && (role == pki.RoleRelay || (role == pki.RoleConsole && leaf.Subject.CommonName == pki.ConsoleDesktopCN)) {
 		return nil
 	}
-	log.Printf("grpc server: refusing desktop stream port %d to caller CN=%q: restricted to relays and the %s console identity",
-		port, leaf.Subject.CommonName, pki.ConsoleDesktopCN)
+	log.Printf("grpc server: refusing desktop stream to caller CN=%q: restricted to relays and the %s console identity",
+		leaf.Subject.CommonName, pki.ConsoleDesktopCN)
 	return fmt.Errorf("desktop stream is restricted to relays and the %s console identity", pki.ConsoleDesktopCN)
 }
 
@@ -878,6 +873,18 @@ func authorizeStreamCaller(ctx context.Context, port int) error {
 // the '+', e.g. "qubesair.StreamTCP+5900". This is how GUI (VNC/Xpra) rides the
 // agent's mTLS Tunnel without any port exposed on the remote's LAN.
 const streamServicePrefix = "qubesair.StreamTCP+"
+
+func isStreamService(service string) bool {
+	return strings.HasPrefix(service, streamServicePrefix) || strings.HasPrefix(service, DesktopStreamService)
+}
+
+func validStreamService(service string) bool {
+	if service == DesktopStreamService {
+		return true
+	}
+	_, ok := streamLocalPort(service)
+	return ok
+}
 
 // streamLocalPort parses a stream service into its loopback port, if the service
 // is one and the port is in an allowed GUI range. The server dials only
@@ -892,7 +899,7 @@ func streamLocalPort(service string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	if (p >= 5900 && p <= 5910) || (p >= 10000 && p <= 10010) {
+	if p != 10005 && ((p >= 5900 && p <= 5910) || (p >= 10000 && p <= 10010)) {
 		return p, true
 	}
 	return 0, false
@@ -904,11 +911,10 @@ type serverStream struct {
 	conn net.Conn
 }
 
-// startStream dials 127.0.0.1:<port> and starts pumping its output back as
+// startStream dials the validated local endpoint and pumps its output back as
 // streamResponse frames. Request bytes arrive later via serverStream.conn.Write.
-func (s *Server) startStream(ctx context.Context, reqID string, port int, send func(*pb.Frame) error) (*serverStream, error) {
-	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(port))
+func (s *Server) startStream(ctx context.Context, reqID, service string, send func(*pb.Frame) error) (*serverStream, error) {
+	conn, err := s.dialStream(ctx, service)
 	if err != nil {
 		return nil, err
 	}
@@ -930,4 +936,19 @@ func (s *Server) startStream(ctx context.Context, reqID string, port int, send f
 		}
 	}()
 	return &serverStream{conn: conn}, nil
+}
+
+func (s *Server) dialStream(ctx context.Context, service string) (net.Conn, error) {
+	if service == DesktopStreamService {
+		if s.desktopDialer != nil {
+			return s.desktopDialer(ctx)
+		}
+		return desktop.DialXpra(ctx)
+	}
+	port, ok := streamLocalPort(service)
+	if !ok {
+		return nil, errors.New("stream destination not allowed")
+	}
+	d := net.Dialer{Timeout: 10 * time.Second}
+	return d.DialContext(ctx, "tcp", "127.0.0.1:"+strconv.Itoa(port))
 }

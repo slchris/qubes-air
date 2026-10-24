@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"io"
 	"net"
-	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,42 +18,56 @@ import (
 	"google.golang.org/grpc/peer"
 )
 
-// The console asks for the desktop port by the service name and the agent
-// guards it by the port number; both must describe the same port.
-func TestDesktopStreamServiceNamesTheGuardedPort(t *testing.T) {
-	port, ok := streamLocalPort(DesktopStreamService)
-	require.True(t, ok, "the desktop service must be an allowed stream port")
-	assert.Equal(t, DesktopStreamPort, port)
-	assert.Equal(t, streamServicePrefix+strconv.Itoa(DesktopStreamPort), DesktopStreamService)
+func TestDesktopStreamIsAFixedService(t *testing.T) {
+	require.Equal(t, "qubesair.StreamDesktop", DesktopStreamService)
+	require.True(t, validStreamService(DesktopStreamService))
+	for _, service := range []string{DesktopStreamService + "+path", DesktopStreamService + "Extra", "qubesair.StreamTCP+10005", "qubesair.StreamTCP+22"} {
+		require.False(t, validStreamService(service), service)
+	}
+}
+
+func TestInvalidDesktopStreamNeverFallsThroughToQrexec(t *testing.T) {
+	for _, service := range []string{DesktopStreamService + "+path", DesktopStreamService + "Extra", "qubesair.StreamTCP+10005"} {
+		var sent []*pb.Frame
+		sess := &tunnelSession{ctx: context.Background(),
+			send: func(f *pb.Frame) error { sent = append(sent, f); return nil }}
+		err := sess.handleRequestHeader(&pb.Frame{RequestId: "invalid"}, &pb.Frame_RequestHeader{
+			RequestHeader: &pb.RequestHeader{Direction: pb.Direction_LOCAL_TO_REMOTE, QrexecService: service},
+		})
+		require.NoError(t, err)
+		require.Len(t, sent, 1, service)
+		require.Equal(t, codeInvalid, sent[0].GetError().GetCode(), service)
+		require.Empty(t, sess.streams)
+	}
 }
 
 func TestAuthorizeStreamCaller(t *testing.T) {
 	desktop := serviceCallerCert(pki.ConsoleDesktopCN, "console")
 	tests := []struct {
-		name string
-		port int
-		ctx  context.Context
-		want string // "" means allowed
+		name    string
+		service string
+		ctx     context.Context
+		want    string // "" means allowed
 	}{
-		{name: "desktop identity on the desktop port", port: DesktopStreamPort, ctx: verifiedPeer(desktop)},
-		{name: "relay on the desktop port", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert("relay-dom0", "relay"))},
-		{name: "other GUI ports keep their rule", port: 5900, ctx: context.Background()},
-		{name: "adjacent port is not the desktop port", port: DesktopStreamPort + 1, ctx: verifiedPeer(serviceCallerCert("console-probe", "console"))},
+		{name: "desktop identity on the desktop socket", service: DesktopStreamService, ctx: verifiedPeer(desktop)},
+		{name: "relay on the desktop socket", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert("relay-dom0", "relay"))},
+		{name: "other GUI ports keep their rule", service: "qubesair.StreamTCP+5900", ctx: context.Background()},
+		{name: "adjacent port is not the desktop socket", service: "qubesair.StreamTCP+10006", ctx: verifiedPeer(serviceCallerCert("console-probe", "console"))},
 
-		{name: "probe identity refused", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert("console-probe", "console")), want: "restricted"},
-		{name: "unlock identity refused", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleUnlockCN, "console")), want: "restricted"},
-		{name: "bootstrap identity refused", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleBootstrapCN, "console")), want: "restricted"},
-		{name: "desktop name with the agent role", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN, "agent")), want: "restricted"},
-		{name: "desktop name with no role", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN)), want: "restricted"},
-		{name: "desktop name with two roles", port: DesktopStreamPort, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN, "console", "relay")), want: "restricted"},
-		{name: "missing peer", port: DesktopStreamPort, ctx: context.Background(), want: "requires a verified client certificate"},
-		{name: "peer without a verified chain", port: DesktopStreamPort,
+		{name: "probe identity refused", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert("console-probe", "console")), want: "restricted"},
+		{name: "unlock identity refused", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleUnlockCN, "console")), want: "restricted"},
+		{name: "bootstrap identity refused", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleBootstrapCN, "console")), want: "restricted"},
+		{name: "desktop name with the agent role", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN, "agent")), want: "restricted"},
+		{name: "desktop name with no role", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN)), want: "restricted"},
+		{name: "desktop name with two roles", service: DesktopStreamService, ctx: verifiedPeer(serviceCallerCert(pki.ConsoleDesktopCN, "console", "relay")), want: "restricted"},
+		{name: "missing peer", service: DesktopStreamService, ctx: context.Background(), want: "requires a verified client certificate"},
+		{name: "peer without a verified chain", service: DesktopStreamService,
 			ctx:  peer.NewContext(context.Background(), &peer.Peer{AuthInfo: credentials.TLSInfo{}}),
 			want: "requires a verified client certificate"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := authorizeStreamCaller(tt.ctx, tt.port)
+			err := authorizeStreamCaller(tt.ctx, tt.service)
 			if tt.want == "" {
 				require.NoError(t, err)
 				return
@@ -64,53 +77,36 @@ func TestAuthorizeStreamCaller(t *testing.T) {
 	}
 }
 
-// listenDesktopPort binds the desktop port on loopback, or skips when another
-// process holds it. handle serves each accepted connection.
-func listenDesktopPort(t *testing.T, handle func(net.Conn)) {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(DesktopStreamPort))
-	if err != nil {
-		t.Skipf("cannot bind the desktop port: %v", err)
-	}
-	t.Cleanup(func() { _ = lis.Close() })
-	go func() {
-		for {
-			c, err := lis.Accept()
-			if err != nil {
-				return
-			}
-			go handle(c)
-		}
-	}()
+func echoDesktopStream(context.Context) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() { _, _ = io.Copy(server, server); _ = server.Close() }()
+	return client, nil
 }
 
-// A refused desktop stream is answered with a denial and never dials the port.
-func TestOpenStreamRefusesDesktopPortBeforeDialing(t *testing.T) {
+// A refused desktop stream is answered with a denial and never dials the socket.
+func TestOpenStreamRefusesDesktopBeforeDialing(t *testing.T) {
 	var accepted atomic.Int32
-	listenDesktopPort(t, func(c net.Conn) {
+	srv := &Server{desktopDialer: func(context.Context) (net.Conn, error) {
 		accepted.Add(1)
-		_ = c.Close()
-	})
+		return nil, nil
+	}}
 
 	var sent []*pb.Frame
 	ctx, cancel := context.WithCancel(verifiedPeer(serviceCallerCert("console-probe", "console")))
 	defer cancel()
-	sess := &tunnelSession{ctx: ctx, server: &Server{}, streams: map[string]*serverStream{},
+	sess := &tunnelSession{ctx: ctx, server: srv, streams: map[string]*serverStream{},
 		send: func(f *pb.Frame) error { sent = append(sent, f); return nil }}
 	sess.openStream("request-1", DesktopStreamService)
 
 	require.Len(t, sent, 1)
 	assert.Equal(t, codeDenied, sent[0].GetError().GetCode())
 	assert.Empty(t, sess.streams)
-	time.Sleep(50 * time.Millisecond)
-	assert.Zero(t, accepted.Load(), "a refused caller must not reach the desktop port")
+	assert.Zero(t, accepted.Load(), "a refused caller must not reach the desktop socket")
 }
 
 // Over real mTLS: the handshake fills VerifiedChains, so the check sees the
 // certificate the console actually minted.
-func TestDesktopStreamOverMTLSNeedsTheDesktopIdentity(t *testing.T) {
-	listenDesktopPort(t, func(c net.Conn) { _, _ = io.Copy(c, c); _ = c.Close() })
-
+func TestDesktopUnixStreamOverMTLSNeedsTheDesktopIdentity(t *testing.T) {
 	ca, err := pki.NewCA("qubes-air-console", 0)
 	require.NoError(t, err)
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -118,6 +114,7 @@ func TestDesktopStreamOverMTLSNeedsTheDesktopIdentity(t *testing.T) {
 	addr := lis.Addr().String()
 	require.NoError(t, lis.Close())
 	srv := NewServer(ServerConfig{Listen: addr, TLS: mkServerTLSFromCA(t, ca)}, &recordingInvoker{})
+	srv.desktopDialer = echoDesktopStream
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = srv.Serve(ctx) }()
@@ -166,6 +163,6 @@ func TestDesktopStreamOverMTLSNeedsTheDesktopIdentity(t *testing.T) {
 	assert.Equal(t, "frame?", string(got))
 
 	got, err = stream("relay-dom0")
-	require.NoError(t, err, "a relay's GUI path to the desktop port is unchanged")
+	require.NoError(t, err, "a relay's GUI path to the desktop socket is unchanged")
 	assert.Equal(t, "frame?", string(got))
 }

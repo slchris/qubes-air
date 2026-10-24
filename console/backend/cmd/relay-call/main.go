@@ -83,10 +83,9 @@ func run() error {
 	// `apt-get install` easily outruns a short deadline. The deadline is
 	// propagated to the agent, which caps a single call at its own timeout.
 	timeout := flag.Duration("timeout", 180*time.Second, "overall deadline")
-	// Stream mode: a raw bidirectional TCP proxy to a loopback port on the remote
-	// (qubesair.ConnectTCP uses this for GUI). The positional service becomes the
-	// PORT, and stdin/stdout are piped live rather than buffered.
-	stream := flag.Bool("stream", false, "raw TCP stream to a remote loopback port (service arg is the port)")
+	// Stream mode pipes bytes to a permitted loopback port or the fixed desktop
+	// socket. The positional argument selects the port or the word "desktop".
+	stream := flag.Bool("stream", false, "raw stream to a GUI port or desktop (service arg: port|desktop)")
 	flag.Parse()
 
 	streamMode := *stream
@@ -153,16 +152,18 @@ func run() error {
 }
 
 // parseRelayTarget derives the target device and the remote service from the
-// positional arguments. In stream mode the positional service argument is the
-// remote loopback port, rewritten into the StreamTCP service form the agent
-// dials; the agent side then dials 127.0.0.1:<port>.
+// positional arguments. Stream mode selects either a loopback GUI port or the
+// fixed "desktop" destination. Only the agent knows the desktop socket path.
 func parseRelayTarget(stream bool, args []string) (target, service string, err error) {
-	if len(args) < 2 {
-		return "", "", errors.New("usage: relay-call [flags] <target> <service>   (or -stream <target> <port>)")
+	if len(args) != 2 {
+		return "", "", errors.New("usage: relay-call [flags] <target> <service>   (or -stream <target> <port|desktop>)")
 	}
 	target, service = args[0], args[1]
 	if stream {
 		service = "qubesair.StreamTCP+" + args[1]
+		if args[1] == "desktop" {
+			service = transportgrpc.DesktopStreamService
+		}
 	}
 	return target, service, nil
 }

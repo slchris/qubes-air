@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-24 固定桌面流与 Xpra 互通](2026-10-24-xpra-session.md) | 固定 Unix endpoint、内核 UID/peercred、真实包与窗口、PNG/mTLS 互通 | 容器证据；生产依赖/mmap 策略、持久 HOME、Salt/dom0 与真机验收未闭环 |
 | [2026-10-24 应用启动契约](2026-10-24-app-launch-contract.md) | 应用 ID 跨入口校验、非零失败、输出上限与 stdin 隔离 | 本地自动化；未部署 agent，桌面会话/权限、Xpra 与完整 GUI 仍开放 |
 | [2026-10-23 ConnectTCP 身份与断线](2026-10-23-connecttcp-identity.md) | 目标映射、交付摘要、已派发请求不重放；旧流非零退出、新调用真实回包 | 已合入部署；未覆盖 dom0 GUI policy、Xpra、完整桌面或 Relay 整机重启 |
 | [2026-10-23 恢复后在线 agent Ping](2026-10-23-restored-agent-probe.md) | 真实离机归档、原信任材料、恢复副本 mTLS Ping、当前规模耗时 | 原 Console 仍提供吊销服务；非完整控制域重建或单写入方接管 |
@@ -28,7 +29,7 @@
 | [已有真机验收汇总](validation-history.md) | 从原有文档整理的 Proxmox/RemoteVM 现场记录 | 非新验收；缺少统一源码版本和完整原始日志 |
 | [2026-09-25 OPS-01 环境只读预检](2026-09-25-ops01-environment-preflight.md) | 只读检查 Console、离机备份路径和 Qubes 配置 | 无真实离机归档/keyring，不能执行真实恢复 |
 | [2026-09-25 QA-01 Proxmox 部分回归](2026-09-25-qa01-proxmox-smoke.md) | 专用 Qube 的 provision/suspend/resume/release 与资源身份核对 | 未 purge；文件内容持久性、Exec/FileCopy、源码版本绑定未完成 |
-| [2026-09-23 MCP-01 截图客户端与经批准的取帧](2026-09-23-mcp-xpra-screenshot.md) | Xpra 单次截图客户端、consent 状态机与 API、`console-desktop` 取帧身份、MCP 工具与审批页（2026-09-26 按本仓库实现重写） | 只有自动化测试；qube 内没有部署 Xpra 监听，真实 Xpra 互通未验证；输入仍未实现 |
+| [2026-09-23 MCP-01 截图客户端与经批准的取帧](2026-09-23-mcp-xpra-screenshot.md) | Xpra 单次截图客户端、consent 状态机与 API、`console-desktop` 取帧身份、MCP 工具与审批页（2026-09-26 按本仓库实现重写） | 原记录为协议/批准自动化测试；后续真实互通见上方 Xpra 记录，生产会话与输入仍未交付 |
 
 2026-09-21 把记录对应的未提交工作区按独立意图分组提交到本地 `main`，2026-09-22 经 PR #9
 （`5f0fd88`）合入 `origin/main`；记录正文保留当时的结论，提交事实以补充说明为准。

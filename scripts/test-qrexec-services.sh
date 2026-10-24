@@ -644,6 +644,115 @@ t_grpcproxy_undeployed() {
 }
 
 # =====================================================================================
+# relay/transport/qubesair.ConnectDesktop — one fixed authenticated Xpra endpoint.
+# =====================================================================================
+desktop_stream_setup() {
+    install_svc relay/transport/qubesair.ConnectDesktop "/usr/local/bin/=$CUR/abs/"
+    put "$C/relay/relay.crt" 'cert'
+    link_stub qubesdb qubesdb-read
+    stub_abs relay-call
+    put "$C/qubesdb/remote-endpoint/remote-a" "$EP"
+}
+
+t_connectdesktop_bad_target() {
+    local arg
+    for arg in '' 'a' 'remote-a+10005' 'remote-../a' 'remote-a b' 'remote-é'; do
+        case_begin "ConnectDesktop: invalid target is refused" || continue
+        desktop_stream_setup
+        tcp_run "$arg"
+        expect_rc 126
+        expect_no_calls
+        case_end
+    done
+}
+
+t_connectdesktop_extra_argument() {
+    case_begin "ConnectDesktop: caller cannot supply a destination" || return 0
+    desktop_stream_setup
+    tcp_run remote-a /tmp/other.sock
+    expect_rc 126
+    expect_no_calls
+    case_end
+}
+
+t_connectdesktop_stream() {
+    case_begin "ConnectDesktop: fixed desktop selector and byte-exact stream" || return 0
+    desktop_stream_setup
+    cp "$BLOB" "$C/stdin"
+    cp "$BLOB" "$C/ctl/relay-call.stdout"
+    put "$C/ctl/relay-call.capture-stdin" ''
+    tcp_run remote-a
+    expect_rc 0
+    expect_stdout_file "$BLOB"
+    cmp -s "$BLOB" "$C/got/relay-call.stdin" || fail 'stdin changed'
+    expect_calls "qubesdb-read [/remote-endpoint/remote-a]
+$(tcp_relay_call desktop)"
+    case_end
+}
+
+t_connectdesktop_failure() {
+    case_begin "ConnectDesktop: helper failure remains nonzero" || return 0
+    desktop_stream_setup
+    put "$C/ctl/relay-call.rc" 17
+    tcp_run remote-a
+    expect_rc 17
+    case_end
+}
+
+t_connectdesktop_missing_endpoint() {
+    case_begin "ConnectDesktop: missing endpoint never dials" || return 0
+    desktop_stream_setup
+    rm "$C/qubesdb/remote-endpoint/remote-a"
+    tcp_run remote-a
+    expect_rc 1
+    expect_not_called relay-call
+    case_end
+}
+
+t_connectdesktop_invalid_endpoint() {
+    local endpoint
+    for endpoint in 'host:8443' '999.1.2.3:8443' '192.0.2.1:0' '192.0.2.1:65536' '192.0.2.1:8443/extra'; do
+        case_begin "ConnectDesktop: invalid endpoint is refused" || continue
+        desktop_stream_setup
+        put "$C/qubesdb/remote-endpoint/remote-a" "$endpoint"
+        tcp_run remote-a
+        expect_rc 1
+        expect_not_called relay-call
+        case_end
+    done
+}
+
+t_connectdesktop_identity_mapping() {
+    case_begin "ConnectDesktop: removes exactly one local prefix" || return 0
+    desktop_stream_setup
+    put "$C/qubesdb/remote-endpoint/remote-remote-a" "$EP"
+    tcp_run remote-remote-a
+    expect_rc 0
+    expect_calls "qubesdb-read [/remote-endpoint/remote-remote-a]
+$(tcp_relay_call desktop remote-a)"
+    case_end
+}
+
+t_connectdesktop_missing_identity() {
+    case_begin "ConnectDesktop: missing relay identity never dials" || return 0
+    desktop_stream_setup
+    rm "$C/relay/relay.crt"
+    tcp_run remote-a
+    expect_rc 1
+    expect_not_called relay-call
+    case_end
+}
+
+t_connectdesktop_missing_argument() {
+    case_begin "ConnectDesktop: missing argument is refused" || return 0
+    desktop_stream_setup
+    tcp_run
+    expect_rc 126
+    expect_no_calls
+    case_end
+}
+
+# =====================================================================================
 # relay/transport/qubesair.ConnectTCP — raw GUI tunnel to a remote loopback port.
 # $1 = "<remote>+<port>"; execs relay-call -stream.
 # =====================================================================================
@@ -719,7 +828,7 @@ t_connecttcp_illegal_port() {
 
 t_connecttcp_port_outside_gui_range() {
     local port
-    for port in 0 22 5899 5911 9999 10011 65535 99999; do
+    for port in 0 22 5899 5911 9999 10005 10011 65535 99999; do
         case_begin "ConnectTCP: port $port is outside the GUI allowlist" || continue
         tcp_setup
         tcp_run "remote-a+$port"
@@ -1532,7 +1641,7 @@ t_unlockdata_trailing_newline() {
 # =====================================================================================
 # Inventory: every file in the service directories belongs to exactly one suite.
 # =====================================================================================
-SHELL_SUITE='qubes.GetAppmenus qubes.StartApp qubesair.ConnectTCP qubesair.GrpcProxy
+SHELL_SUITE='qubesair.ConnectDesktop qubes.GetAppmenus qubes.StartApp qubesair.ConnectTCP qubesair.GrpcProxy
 qubesair.IssueRelayCert qubesair.RemoteEndpoints qubesair.UnlockData'
 # <service>:<Go test that executes the real script>
 GO_SUITE='qubesair.Exec:console/backend/internal/agent/exec_service_test.go

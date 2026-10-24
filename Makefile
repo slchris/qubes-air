@@ -7,7 +7,7 @@
 	lint-new lint-whole-module gosec-new gosec-ci-new \
 	complexity-new vuln-check frontend-check frontend-e2e shellcheck-new docs-check \
 	frontend-audit-new frontend-audit lint-all gosec-all gosec-ci complexity-all shellcheck-all \
-	yaml-lint agent-deb-test qrexec-test
+	yaml-lint agent-deb-test qrexec-test xpra-integration
 
 # 默认目标
 help:
@@ -25,6 +25,7 @@ help:
 	@echo ""
 	@echo "  agent-deb         构建 qubes-air-agent .deb (Docker 内交叉编译 amd64)"
 	@echo "  agent-deb-test    旧包安装 + 当前包升级冒烟 (Docker, 需网络装依赖)"
+	@echo "  xpra-integration  固定版本 Xpra 认证、真实窗口与 mTLS 截图互通 (amd64 Docker)"
 	@echo "  publish-agent-deb 上传 .deb 到 artifact store, 回读校验, 打印 console 配置"
 	@echo "  release-agent     agent-deb + publish-agent-deb 一条龙"
 	@echo ""
@@ -386,6 +387,9 @@ agent-deb:
 # 在 agent 打包/发布相关改动前手动运行, CI 也跑同一脚本。
 agent-deb-test:
 	scripts/test-agent-deb.sh
+
+xpra-integration:
+	scripts/test-xpra-session.sh
 
 publish-agent-deb:
 	scripts/publish-agent-deb.sh $(DEB)

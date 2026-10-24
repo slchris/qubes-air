@@ -42,9 +42,11 @@ its runtime directories, including Xauthority; Xpra activation must coordinate t
 The broker refuses an existing socket instead of unlinking it. Package upgrades keep an existing
 desktop session running; apply the updated broker during an explicit maintenance restart.
 
-The encrypted data disk HOME mapping and Xpra authentication/deployment are still pending. The
+The encrypted data disk HOME mapping and production Xpra session deployment are still pending. The
 package's Linux/Xvfb tests do not establish RemoteVM GUI availability. See the
-[desktop broker record](../../docs/reviews/2026-10-24-desktop-broker.md) for current evidence.
+[desktop broker record](../../docs/reviews/2026-10-24-desktop-broker.md) for package evidence. The agent's
+fixed peer-verified Xpra socket and real Xpra integration checks are documented in the
+[Xpra record](../../docs/reviews/2026-10-24-xpra-session.md); these do not enable a production session.
 
 ## Identity on first boot
 

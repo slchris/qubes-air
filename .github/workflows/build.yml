@@ -147,3 +147,23 @@ jobs:
 
       - name: Build and smoke-test the .deb
         run: scripts/test-agent-deb.sh
+
+  xpra-integration:
+    name: Xpra authenticated desktop integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: console/backend/go.sum
+
+      - name: Real Xpra, kernel peers and mTLS PNG exchange
+        run: make xpra-integration

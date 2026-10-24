@@ -58,10 +58,10 @@ image 内容块返回。Deny、超时、Stop、没有桌面传输或 qube 不就
 [安全控制](security-controls.md#mcp-桌面帧授权)与[运行期默认值](runtime-defaults.md) UD-26 系列。
 
 Console 取帧时经该 qube 自己的 agent 连接（短期 `console-desktop` 证书，对端钉在 `agent-<qube>`），
-由 agent 代理到 qube 内 `127.0.0.1:10005` 的 Xpra 服务端，用 `console/backend/internal/xpra` 的
-单次截图客户端（`GetScreenshot`）读一帧。**qube 内的 Xpra TCP 监听目前没有部署**：本仓库与
-qubes-salt-config 都没有创建它的状态（`remote/qubes-rpc/qubes.StartApp` 仅设置默认 display
-`:100`），没有监听时取帧以 502 失败关闭。输入不在该包范围内。
+由 `qubesair.StreamDesktop` 连接 qube 内固定 `/run/qubes-air-desktop/xpra.sock`，验证
+Unix 服务端 UID 1000，再用 `console/backend/internal/xpra.GetScreenshot` 读一帧。Xpra 必须
+验证本机调用方 UID，旧 TCP 10005 已被拒绝。生产会话仍未部署，没有监听时取帧以 502 失败关闭。
+`qubes.StartApp` 经非 root broker 在固定 display `:100` 启动应用；输入不在截图包范围内。
 
 交换过程按 Xpra 上游源码编写，读过的是 v5.0、v6.2、v6.3、v6.4 与 master 下 `xpra/server/` 的
 hello 处理（`core.py`，v5.0 为 `server_core.py`/`server_base.py`）、截图处理（`mixins/display.py`
@@ -74,7 +74,8 @@ hello 处理（`core.py`，v5.0 为 `server_core.py`/`server_base.py`）、截�
 选编码器）与 `encoders` 列表、`compression_level: 0`、`chunks: false`；6.3 起服务端据此把 PNG
 内联进包里。v5.0 与 v6.2 不读 `chunks`，超过 32 KiB 的 PNG 会作为 raw chunk 发送而被拒绝；v5.0
 只认旧的 `screenshot_request` 标志（不发送），会把连接当作普通客户端处理而失败，`ui_client: false`
-使它不会因此断开已连接的桌面客户端。以上只来自阅读源码，**尚未对真实 Xpra 服务端做过互通验证**。
+使它不会因此断开已连接的桌面客户端。固定 Xpra 6.5.5 包的真实互通与其限制见
+[Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。
 
 对端数据的上限：单个 record 4 MiB，缓冲随实际收到的字节增长而不按声明长度预分配；嵌套 64 层；
 每个包合计 65,536 个集合元素；十进制整数 20 字符；PNG 2 MiB、单边 8192、总像素 4 Mi；整个会话
@@ -84,7 +85,7 @@ hello 处理（`core.py`，v5.0 为 `server_core.py`/`server_base.py`）、截�
 覆盖。该包只依赖 Go 标准库，不包含 Xpra 或 rencode 的源码。
 
 已提供的是逐帧的人工批准与随时中断（Console 的 Desktop access 页：Allow / Deny / Stop）。输入授权、
-dom0 policy 层面的桌面接管提示、与真实 Xpra 服务端的互通验收仍待完成，见 [MCP-01](TODO.md) 与 GUI-01。
+dom0 policy 层面的桌面接管提示与生产桌面验收仍待完成，见 [MCP-01](TODO.md) 与 GUI-01。
 
 ## 验收
 
