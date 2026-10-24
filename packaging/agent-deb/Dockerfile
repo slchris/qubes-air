@@ -76,7 +76,7 @@ COPY packaging/agent-deb/qubes-air-desktop-home.service pkg/lib/systemd/system/q
 COPY packaging/agent-deb/data.mount pkg/lib/systemd/system/data.mount
 COPY remote/lib/desktop-worker.py pkg/usr/lib/qubes-air/desktop-worker.py
 COPY remote/lib/xpra-session.py pkg/usr/lib/qubes-air/xpra-session.py
-COPY remote/lib/data-mount.py pkg/usr/lib/qubes-air/data-mount.py
+COPY console/backend/internal/guestassets/data-mount.py pkg/usr/lib/qubes-air/data-mount.py
 COPY remote/lib/data-home.py pkg/usr/lib/qubes-air/data-home.py
 COPY remote/bin/qubes-desktop-run pkg/usr/bin/qubes-desktop-run
 COPY remote/qubes-rpc/ pkg/etc/qubes-rpc/

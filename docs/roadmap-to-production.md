@@ -35,6 +35,7 @@ Console 重启、Exec/FileCopy 完整 qrexec 正反例、1 MiB 文件跨 suspend
 | 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并自动清理身份文件、端点/RemoteVM | 新专用对象无残留、重复请求不新增 destroy job；部分失败只允许继续 purge，历史备份里的密钥不随之删除 |
 | 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘首次解锁原子迁移到 DEK，master 只读且仅用于迁移 | 迁移完成前旧盘仍依赖 master；agent 需先允许 RekeyData，按盘真机核验归 QA-01 |
 | 重启对账 | queued → failed、running → unknown，Qube → error；保留资源 checkpoint 及 purge 意图 | 显式重试原动作；不自动重放队列或跨进程接管 |
+| 未加密数据盘 | cloud-init 共享身份检查；仅完整全零的新盘初始化，实际挂载身份通过后才允许 agent 启动 | [DATA-02](reviews/2026-10-25-plain-data-mount-identity.md) 的 QEMU、包回归与完整门禁通过；既有 cloud-init 不会自动更新，生产部署另验 |
 | 传输结果 | stdout/stderr/exit code 独立传输；stdout 有界；已派发调用断线明确失败，不重放或跨连接续发旧帧 | 自动化覆盖取消/超时/重连，真机活跃流断线非零退出及新调用恢复通过；Relay 整机重启仍缺备用管理入口 |
 | 备份恢复 | SQLite 一致快照、scrypt/AES-256-GCM 归档、覆盖保护与 schema 版本校验 | 离机恢复、只读对账、备份触发与恢复副本真实 agent Ping 通过；完整控制域/入口/吊销服务与单写入方接管仍未覆盖 |
 | 工程门禁 | race、lint/gosec、复杂度、依赖扫描、前端、ShellCheck、文档与 workflow 检查 | 传输阶段 `make pre-commit` / `make audit` 通过，覆盖率 75.1%；Salt 56 个合约测试与全量 lint 通过，两仓合并 CI 全绿 |

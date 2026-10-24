@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-SOURCE = Path(__file__).resolve().parents[1] / "lib/data-mount.py"
+SOURCE = Path(__file__).resolve().parents[2] / "console/backend/internal/guestassets/data-mount.py"
 if not SOURCE.is_file():
     SOURCE = Path("/usr/lib/qubes-air/data-mount.py")
 SPEC = importlib.util.spec_from_file_location("data_mount", SOURCE)
@@ -48,6 +48,7 @@ class MountIdentityTests(unittest.TestCase):
         self.mountinfo.write_text(self.valid_mount)
         self.block = True
         self.owner = 0
+        self.device_owner = 0
         self.data_dev = os.makedev(120, 0)
         patches = [patch.multiple(MOUNT, BY_PATH=self.by_path, MAPPER=self.mapper, DATA=self.data,
                                   SYSFS=self.sysfs, MOUNTINFO=self.mountinfo),
@@ -63,7 +64,7 @@ class MountIdentityTests(unittest.TestCase):
         info = os.stat(path, *args, **kwargs)
         if path in (self.raw, self.mapper) and self.block and not stat.S_ISLNK(info.st_mode):
             device = os.makedev(8, 16) if path == self.raw else os.makedev(120, 0)
-            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=device, st_uid=0)
+            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_rdev=device, st_uid=self.device_owner)
         if path == self.data:
             return SimpleNamespace(st_mode=info.st_mode, st_dev=self.data_dev, st_uid=self.owner)
         return info
@@ -209,6 +210,100 @@ class MountIdentityTests(unittest.TestCase):
                 MOUNT.check("probe-raw")
                 self.assertEqual(output.getvalue(), "ext4\n")
             probe.assert_called_once_with(self.raw)
+
+    def plain_fixture(self):
+        self.mapper.unlink()
+        self.data_dev = os.makedev(8, 16)
+        self.valid_mount = self.valid_mount.replace("120:0", "8:16")
+        self.mountinfo.write_text(self.valid_mount)
+
+    def test_plain_mount_and_ready_require_raw_device_identity(self):
+        self.plain_fixture()
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            MOUNT.check("plain-preflight")
+            self.assertEqual(output.getvalue(), "mounted\n")
+        for stage in ("plain-mounted", "plain-ready"):
+            MOUNT.check(stage)
+        self.reject("plain-unmounted")
+        self.probe.assert_not_called()
+        self.mountinfo.write_text("")
+        for stage in ("plain-mounted", "plain-ready"):
+            self.reject(stage)
+        for stage in ("plain-preflight", "plain-unmounted"):
+            with patch("sys.stdout", new_callable=io.StringIO) as output:
+                MOUNT.check(stage)
+                self.assertEqual(output.getvalue(), str(self.raw) + "\n")
+
+    def test_plain_refuses_foreign_subtree_readonly_and_overlapping_mounts(self):
+        self.plain_fixture()
+        cases = [self.valid_mount.replace("8:16", "8:32"),
+                 self.valid_mount.replace("ext4", "tmpfs"),
+                 self.valid_mount.replace(" / /data ", " /subdir /data "),
+                 self.valid_mount.replace(" rw,relatime ", " ro,relatime "),
+                 self.valid_mount.replace("qubesair-data rw", "qubesair-data ro"),
+                 self.valid_mount * 2,
+                 self.valid_mount + "42 41 0:99 / /data/home rw - tmpfs tmpfs rw\n",
+                 self.valid_mount + "42 20 8:16 / /elsewhere rw - ext4 /dev/sdb rw\n",
+                 "42 20 8:16 / /elsewhere rw - ext4 /dev/sdb rw\n"]
+        for record in cases:
+            for stage in ("plain-preflight", "plain-unmounted", "plain-mounted", "plain-ready"):
+                with self.subTest(record=record, stage=stage):
+                    self.mountinfo.write_text(record)
+                    self.reject(stage)
+        self.mountinfo.write_text(self.valid_mount)
+        self.data_dev = os.makedev(8, 32)
+        self.reject("plain-preflight")
+
+    def test_plain_missing_disk_can_wait_but_never_authorizes_startup(self):
+        self.plain_fixture()
+        next(self.by_path.iterdir()).unlink()
+        self.mountinfo.write_text("")
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            MOUNT.check("plain-preflight")
+            self.assertEqual(output.getvalue(), "absent\n")
+        self.reject("plain-ready")
+        self.reject("plain-unmounted")
+        self.reject("plain-mounted")
+        self.mountinfo.write_text(self.valid_mount)
+        self.reject("plain-preflight")
+        self.reject("plain-ready")
+        self.mountinfo.write_text("")
+        self.owner = 1000
+        self.reject("plain-ready")
+
+    def test_plain_preflight_requires_root_block_device_and_safe_directory(self):
+        self.plain_fixture()
+        for field, value in (("block", False), ("device_owner", 1000), ("owner", 1000)):
+            original = getattr(self, field)
+            setattr(self, field, value)
+            self.reject("plain-preflight")
+            setattr(self, field, original)
+        self.data.chmod(0o777)
+        self.reject("plain-preflight")
+        self.data.rmdir()
+        self.data.symlink_to(self.by_path, target_is_directory=True)
+        self.reject("plain-preflight")
+
+    def test_plain_preflight_refuses_ambiguous_and_dangling_scsi_paths(self):
+        self.plain_fixture()
+        extra = self.by_path / "pci-other-scsi-0:0:0:1"
+        extra.symlink_to(self.raw)
+        MOUNT.check("plain-ready")
+        extra.unlink()
+        extra.symlink_to(self.data)
+        self.reject("plain-preflight")
+        extra.unlink()
+        extra.symlink_to(self.by_path / "missing")
+        self.reject("plain-preflight")
+
+    def test_plain_entry_is_fixed_and_requires_root(self):
+        with patch.object(MOUNT, "check") as check:
+            with patch.object(MOUNT.os, "geteuid", return_value=1000):
+                for stage in ("plain-preflight", "plain-unmounted", "plain-mounted", "plain-ready"):
+                    self.assertEqual(MOUNT.main([stage]), 77)
+            for args in (["plain-mounted", "/arbitrary"], ["plain-unknown"], ["plain-ready", "--device"]):
+                self.assertEqual(MOUNT.main(args), 64)
+            check.assert_not_called()
 
 
 class SignatureProbeTests(unittest.TestCase):

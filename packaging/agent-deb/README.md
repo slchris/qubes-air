@@ -15,7 +15,7 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/bin/qubes-desktop-run` | Thin app-ID wrapper for menu entries |
 | `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
 | `/usr/lib/qubes-air/xpra-session.py` | Fixed non-root Xpra/broker session supervisor |
-| `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData |
+| `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData; shared source is also delivered by cloud-init for plain data before package installation |
 | `/usr/lib/qubes-air/data-home.py` | Fixed root preparation of verified encrypted HOME and desktop prerequisite checks |
 | `/lib/systemd/system/data.mount` | Tracks UnlockData's mount and orders desktop termination before unmount |
 | `/lib/systemd/system/qubes-air-desktop-home.service` | Short root preparation outside the desktop's device isolation; runs on each activation |

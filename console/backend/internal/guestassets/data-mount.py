@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Read-only proof of the fixed encrypted data device and mount. No key input."""
+"""Read-only proof of the fixed plain or encrypted data mount. No key input."""
 import ctypes
 import os
 from pathlib import Path
@@ -28,8 +28,10 @@ def device_number(number):
     return f"{os.major(number)}:{os.minor(number)}"
 
 
-def data_device():
+def data_device(required=True):
     candidates = {path.resolve(strict=True) for path in BY_PATH.glob("*-scsi-0:0:0:1")}
+    if not candidates and not required:
+        return None, None
     if len(candidates) != 1:
         raise RuntimeError("data device absent or ambiguous")
     device = candidates.pop()
@@ -99,16 +101,32 @@ def check_mount(mapping, required):
         if mapping is not None and record[0] == device_number(mapping) and record[2] != "/data":
             raise RuntimeError("data mapping mounted elsewhere")
     if not mounts and not required:
-        return
+        return False
     if len(mounts) != 1 or directory is None or mapping is None:
         raise RuntimeError("data mount absent or ambiguous")
     device, root, _, options, filesystem, super_options = mounts[0]
     if device != device_number(mapping) or directory.st_dev != mapping or root != "/" \
             or filesystem != "ext4" or "rw" not in options or "rw" not in super_options:
-        raise RuntimeError("data is not the writable encrypted filesystem root")
+        raise RuntimeError("data is not the verified writable filesystem root")
+    return True
+
+
+def check_plain(stage):
+    device, backing = data_device(stage != "plain-preflight")
+    required = stage in ("plain-mounted", "plain-ready")
+    mounted = check_mount(backing, required)
+    if stage == "plain-unmounted":
+        if mounted:
+            raise RuntimeError("data device is already mounted")
+        print(device)
+    elif stage == "plain-preflight":
+        print("mounted" if mounted else (str(device) if device is not None else "absent"))
 
 
 def check(stage):
+    if stage in ("plain-preflight", "plain-unmounted", "plain-mounted", "plain-ready"):
+        check_plain(stage)
+        return
     device, backing = data_device()
     mapping = mapping_device(device, backing, stage not in ("preflight", "probe-raw"))
     check_mount(mapping, stage == "mounted")
@@ -167,14 +185,15 @@ def probe_signature(device):
 
 
 def main(args):
-    if len(args) != 1 or args[0] not in ("preflight", "mapped", "mounted", "probe-raw", "probe-mapped"):
+    if len(args) != 1 or args[0] not in ("preflight", "mapped", "mounted", "probe-raw", "probe-mapped",
+                                       "plain-preflight", "plain-unmounted", "plain-mounted", "plain-ready"):
         return 64
     if os.geteuid() != 0:
         return 77
     try:
         check(args[0])
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-        print("qubes-air: encrypted data identity could not be verified", file=sys.stderr)
+        print("qubes-air: data identity could not be verified", file=sys.stderr)
         return 69
     return 0
 

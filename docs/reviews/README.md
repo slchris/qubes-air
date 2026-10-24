@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-25 未加密盘挂载身份](2026-10-25-plain-data-mount-identity.md) | 共享只读检查、格式化前和挂载后校验、缺盘拒绝及 agent 启动依赖；QEMU、包回归与完整门禁通过 | 隔离 QEMU 不替代生产部署与 provider 生命周期；既有 cloud-init 不自动更新 |
 | [2026-10-24 固定桌面流与 Xpra 互通](2026-10-24-xpra-session.md) | 固定 Unix endpoint、内核 UID/peercred、真实包与窗口、PNG/mTLS 互通 | 容器证据；生产依赖/mmap 策略、持久 HOME、Salt/dom0 与真机验收未闭环 |
 | [2026-10-24 应用启动契约](2026-10-24-app-launch-contract.md) | 应用 ID 跨入口校验、非零失败、输出上限与 stdin 隔离 | 本地自动化；未部署 agent，桌面会话/权限、Xpra 与完整 GUI 仍开放 |
 | [2026-10-23 ConnectTCP 身份与断线](2026-10-23-connecttcp-identity.md) | 目标映射、交付摘要、已派发请求不重放；旧流非零退出、新调用真实回包 | 已合入部署；未覆盖 dom0 GUI policy、Xpra、完整桌面或 Relay 整机重启 |

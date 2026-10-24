@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/slchris/qubes-air/console/internal/guestassets"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/slchris/qubes-air/console/internal/qrexec"
 )
@@ -36,11 +37,12 @@ const (
 // root and vanishes on the next resume, which defeats the entire
 // storage/compute split.
 const (
-	dataMountScriptPath = "/usr/local/sbin/qubes-air-mount-data"
-	dataMountUnitPath   = "/etc/systemd/system/qubes-air-data.service"
-	dataMountService    = "qubes-air-data.service"
-	dataMountPoint      = "/data"
-	dataDiskLabel       = "qubesair-data"
+	dataMountScriptPath  = "/usr/local/sbin/qubes-air-mount-data"
+	dataMountUnitPath    = "/etc/systemd/system/qubes-air-data.service"
+	dataMountService     = "qubes-air-data.service"
+	dataMountPoint       = "/data"
+	dataMountCheckerPath = "/usr/local/lib/qubes-air/data-mount.py"
+	dataMountDropinPath  = "/etc/systemd/system/qubes-air-agent.service.d/20-data-mount.conf"
 )
 
 // AgentPackage pins the .deb that puts the agent binary on a booting qube.
@@ -274,6 +276,7 @@ func writeHostnameAndPackages(b *strings.Builder, remoteName string, pkg AgentPa
 	} else {
 		// The plaintext first-use guard requires cmp's complete zero read.
 		b.WriteString("  - diffutils\n")
+		b.WriteString("  - python3\n")
 	}
 }
 
@@ -328,6 +331,8 @@ func writeIdentityFiles(b *strings.Builder, id AgentIdentityDoc, remoteName, lis
 	// mistake the ciphertext for a blank disk). The console opens it via
 	// qubesair.UnlockData after bootstrap instead.
 	if !encryptData {
+		writeFile(b, dataMountCheckerPath, "0644", guestassets.DataMountChecker())
+		writeFile(b, dataMountDropinPath, "0644", guestassets.PlainDataAgentDependency())
 		writeFile(b, dataMountScriptPath, "0700", dataDiskMountScript())
 		writeFile(b, dataMountUnitPath, "0644", dataDiskMountUnit())
 	}
@@ -395,100 +400,14 @@ func agentInstallerScript(pkg AgentPackage) string {
 // A signature probe's empty output does not distinguish blank data from I/O
 // failure. Existing ext4 is mounted without that scan or any formatting.
 func dataDiskMountScript() string {
-	return strings.NewReplacer(
-		"@BYPATH@", "/dev/disk/by-path/*-scsi-0:0:0:1",
-		"@MOUNT@", dataMountPoint,
-		"@LABEL@", dataDiskLabel,
-	).Replace(dataDiskMountTemplate)
+	return guestassets.PlainDataMountScript()
 }
 
-// dataDiskMountUnit renders the systemd unit that runs the mount script. It is a
-// oneshot with RemainAfterExit so cloud-init's "enable --now" both arms it for
-// future reboots and runs it now, and Before=qubes-air-agent.service keeps /data
-// present before the agent (and anything it launches) can write there.
+// dataDiskMountUnit runs the mount at boot and before agent startup. The plain
+// cloud-init also supplies a Requires dependency and a check on every agent start.
 func dataDiskMountUnit() string {
-	return strings.NewReplacer("@SCRIPT@", dataMountScriptPath).Replace(dataDiskMountUnitTemplate)
+	return guestassets.PlainDataMountUnit()
 }
-
-// dataDiskMountTemplate is the mount script body. Placeholders are substituted by
-// dataDiskMountScript; none of the substituted values are attacker-controlled
-// (they are compile-time constants), so no quoting dance is required.
-const dataDiskMountTemplate = `#!/bin/sh
-# qubes-air-mount-data — format-if-blank and mount the persistent data disk.
-# Managed by the Qubes Air console; delivered via cloud-init. See cloudinit.go.
-set -eu
-
-# Resolve the data disk by its stable scsi address (scsi1). Wait briefly for the
-# by-path symlink in case udev has not settled; a genuinely diskless qube falls
-# through the loop and the script becomes a no-op.
-dev=""
-i=0
-while [ "$i" -lt 15 ]; do
-    for p in @BYPATH@; do
-        [ -e "$p" ] || continue
-        dev="$(readlink -f "$p")"
-        break
-    done
-    [ -n "$dev" ] && break
-    i=$((i + 1))
-    sleep 1
-done
-if [ -z "$dev" ]; then
-    echo "qubes-air-mount-data: no data disk (scsi1) attached; nothing to mount" >&2
-    exit 0
-fi
-
-# Exit 2 also means blkid could not read the device. It is never sufficient
-# to authorize formatting: require a complete, successful all-zero comparison.
-# Whole-disk ext4 resumes skip this scan; partitions and other signatures fail.
-probe_status=0
-fstype="$(blkid -p -o value -s TYPE -s PTTYPE "$dev" 2>/dev/null)" || probe_status=$?
-case "$probe_status:$fstype" in
-    0:ext4) ;;
-    2:)
-        bytes="$(blockdev --getsize64 "$dev")"
-        case "$bytes" in
-            ''|*[!0-9]*|0*)
-                echo "qubes-air-mount-data: cannot verify data disk size" >&2
-                exit 1 ;;
-        esac
-        if ! cmp -s -n "$bytes" "$dev" /dev/zero; then
-            echo "qubes-air-mount-data: data disk is not readable as all zeros; refusing initialization" >&2
-            exit 1
-        fi
-        echo "qubes-air-mount-data: verified zero disk; creating ext4 (first boot)" >&2
-        mkfs.ext4 -q -L @LABEL@ "$dev"
-        ;;
-    *)
-        echo "qubes-air-mount-data: unsupported signature or failed probe; refusing initialization" >&2
-        exit 1
-        ;;
-esac
-
-mkdir -p @MOUNT@
-if mountpoint -q @MOUNT@; then
-    echo "qubes-air-mount-data: @MOUNT@ already mounted" >&2
-else
-    mount "$dev" @MOUNT@
-    echo "qubes-air-mount-data: mounted $dev at @MOUNT@" >&2
-fi
-`
-
-// dataDiskMountUnitTemplate is the systemd unit body. @SCRIPT@ is a compile-time
-// constant path, so it needs no escaping.
-const dataDiskMountUnitTemplate = `[Unit]
-Description=Mount the Qubes Air persistent data disk
-After=local-fs.target
-Before=qubes-air-agent.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=@SCRIPT@
-
-[Install]
-WantedBy=multi-user.target
-`
 
 // dropShellQuoting strips characters that would break out of the single quotes
 // the installer wraps these values in. Only the advisory version string needs

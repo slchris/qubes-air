@@ -37,12 +37,12 @@ def verify_image(path, expected):
         raise ValueError("image SHA512 mismatch")
 
 
-def write_seed(root, desktop_binary):
+def write_seed(root, desktop_binary, plain_data):
     seed = root / "seed"
     seed.mkdir()
     files = []
     sources = [
-            ("remote/lib/data-mount.py", "/usr/lib/qubes-air/data-mount.py", "0644"),
+            ("console/backend/internal/guestassets/data-mount.py", "/usr/lib/qubes-air/data-mount.py", "0644"),
             ("remote/qubes-rpc/qubesair.UnlockData", "/etc/qubes-rpc/qubesair.UnlockData", "0755"),
             ("remote/tests/run_data_mount_guest.py", "/root/run_data_mount_guest.py", "0600")]
     if desktop_binary:
@@ -57,13 +57,26 @@ def write_seed(root, desktop_binary):
             ("packaging/agent-deb/qubes-air-desktop-home.service", "/etc/systemd/system/qubes-air-desktop-home.service", "0644"),
             ("packaging/xpra-test/packages.sha256", "/root/desktop-packages.sha256", "0600"),
             (desktop_binary, "/usr/bin/qubes-air-desktop", "0755")])
+    if plain_data:
+        sources[-1] = ("remote/tests/run_plain_data_mount_guest.py", "/root/run_data_mount_guest.py", "0600")
+        sources.extend([
+            ("remote/tests/run_data_mount_guest.py", "/root/data_mount_support.py", "0600"),
+            ("console/backend/internal/guestassets/data-mount.py", "/usr/local/lib/qubes-air/data-mount.py", "0644"),
+            ("console/backend/internal/guestassets/mount-plain-data.sh", "/usr/local/sbin/qubes-air-mount-data", "0700"),
+            ("console/backend/internal/guestassets/qubes-air-data.service", "/etc/systemd/system/qubes-air-data.service", "0644"),
+            ("console/backend/internal/guestassets/20-data-mount.conf",
+             "/etc/systemd/system/qubes-air-agent.service.d/20-data-mount.conf", "0644")])
     for source, target, mode in sources:
         files.append({"path": target, "permissions": mode, "encoding": "b64",
                       "content": base64.b64encode((REPO / source).read_bytes()).decode("ascii")})
     files.append({"path": "/etc/qubes-air-mount-test", "permissions": "0600",
                   "content": "disposable-qemu-data-identity\n"})
+    if plain_data:
+        files.extend([
+            {"path": "/etc/systemd/system/qubes-air-agent.service", "permissions": "0644",
+             "content": "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/touch /run/qubes-air-fixture-agent-started\n"}])
     config = {"hostname": "qubes-air-mount-test", "disable_root": True, "ssh_pwauth": False,
-              "package_update": True, "packages": ["cryptsetup", "python3", "libblkid1", "dmsetup"], "write_files": files,
+              "package_update": True, "packages": ["cryptsetup", "python3", "libblkid1", "dmsetup", "diffutils"], "write_files": files,
               "runcmd": [["/usr/bin/python3", "-u", "/root/run_data_mount_guest.py"], ["/sbin/poweroff"]]}
     (seed / "user-data").write_text("#cloud-config\n" + json.dumps(config, indent=2) + "\n")
     (seed / "meta-data").write_text("instance-id: qubes-air-mount-fixture\n")
@@ -101,7 +114,7 @@ def run(args):
     if not re.fullmatch(r"/[A-Za-z0-9/._+-]+", str(root)):
         raise RuntimeError("TMPDIR must have a simple absolute path")
     print("Fixture artifacts: " + str(root), flush=True)
-    write_seed(root, args.desktop_binary)
+    write_seed(root, args.desktop_binary, args.plain_data)
     shutil.copyfile(args.firmware_vars, root / "uefi-vars.fd")
     command("qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(args.image), str(root / "root.qcow2"))
     command("qemu-img", "resize", str(root / "root.qcow2"), "8G")
@@ -125,8 +138,11 @@ def main():
     parser.add_argument("--sha512", required=True, help="image digest from the trusted Debian manifest")
     parser.add_argument("--firmware-code", type=checked_path, required=True, help="x86_64 UEFI code image")
     parser.add_argument("--firmware-vars", type=checked_path, required=True, help="matching UEFI variables template")
-    parser.add_argument("--desktop-binary", type=checked_path,
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--desktop-binary", type=checked_path,
                         help="current linux/amd64 broker binary; also test encrypted HOME and systemd/Xpra")
+    mode.add_argument("--plain-data", action="store_true",
+                      help="test the cloud-init plain data script and systemd startup dependency")
     run(parser.parse_args())
 
 
