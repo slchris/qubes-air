@@ -1,5 +1,5 @@
 # Run with --platform linux/amd64: the signed upstream packages are amd64.
-ARG DEBIAN_IMAGE=debian:bookworm-slim
+ARG DEBIAN_IMAGE=debian:trixie-slim
 FROM ${DEBIAN_IMAGE}
 COPY *.deb packages.sha256 /tmp/xpra-debs/
 WORKDIR /tmp/xpra-debs

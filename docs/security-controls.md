@@ -709,4 +709,6 @@ PNG。实现：`internal/desktopaccess`（状态机）、`internal/handler/deskt
 
 限制：qube 里需要有监听固定 Unix socket、运行于 UID 1000 且启用 peercred 的 Xpra 服务端。
 生产会话与持久 HOME 尚未部署；没有会话时取帧以 502 失败关闭。真实包的认证、窗口与 PNG
-互通验证范围见 [Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。
+互通验证范围见 [Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。默认禁用的桌面 unit 现共管
+Xpra、认证文件与 broker；服务端关闭 mmap/文件传输/剪贴板/任意命令，拒绝控制请求。
+固定依赖与失败停止边界见 [会话策略记录](reviews/2026-10-24-desktop-session-policy.md)。

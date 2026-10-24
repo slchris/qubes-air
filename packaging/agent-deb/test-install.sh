@@ -60,6 +60,7 @@ for f in /usr/bin/qubes-air-agent \
     /usr/bin/qubes-air-desktop \
     /usr/bin/qubes-desktop-run \
     /usr/lib/qubes-air/desktop-worker.py \
+    /usr/lib/qubes-air/xpra-session.py \
     /lib/systemd/system/qubes-air-desktop.service \
     /lib/systemd/system/qubes-air-agent.service \
     /etc/qubes-rpc/qubesair.Ping \

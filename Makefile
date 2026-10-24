@@ -344,6 +344,7 @@ shellcheck-all:
 # 本地与 CI 的 qrexec-services job 走同一入口; 与改动范围无关, 增量与完整门禁都全量跑 (本机约 20 秒)。
 qrexec-test:
 	scripts/test-qrexec-services.sh
+	python3 -m unittest discover -s remote/tests -p test_xpra_session.py
 
 # 清理
 clean:

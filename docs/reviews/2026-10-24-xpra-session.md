@@ -3,6 +3,9 @@
 本阶段在已合并的非 root broker 上交付固定 Xpra Unix 通道及可复现的真实互通测试。
 生产会话、持久 HOME、Salt/dom0 接线与真机 GUI 验收仍属项目后续工作。
 
+后续[会话策略阶段](2026-10-24-desktop-session-policy.md)已用共用非 root 启动器替换测试专用
+启动参数，验证 Debian 13 依赖、服务端 mmap 拒绝与进程故障停止；本记录的 Bookworm 发现是该阶段输入。
+
 ## 行为与信任边界
 
 - Console 与 Relay 使用 `qubesair.StreamDesktop`。agent 只连接

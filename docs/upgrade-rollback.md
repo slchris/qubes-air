@@ -136,8 +136,9 @@ it”，并且不会拨号。处理方式是重新 provision（resume 或重建 
 
 升级时先交付新 agent 与已认证的 Xpra 会话，再同步 Console、relay-call 和 Salt 的 Relay 入口与
 dom0 policy；版本不一致或会话未就绪时桌面流失败关闭，没有 TCP 回退。单独回滚任一侧不会恢复桌面，
-回滚必须使用同一套已验收版本。现有包仍默认禁用桌面，生产 Xpra 会话与持久 HOME 尚未交付，见
-[Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。
+回滚必须使用同一套已验收版本。桌面 unit 现包含非 root Xpra/broker 会话管理，要求 Xpra 6.5.5
+与 PyGObject ≥3.44.2；实际验收依赖为 Debian 13 的固定上游包。现有包仍默认禁用桌面，生产部署
+与持久 HOME 尚未交付，见 [会话策略记录](reviews/2026-10-24-desktop-session-policy.md)。
 
 ## 3. 升级顺序
 
