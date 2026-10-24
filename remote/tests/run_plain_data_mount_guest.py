@@ -177,6 +177,9 @@ def stop_agent():
 
 def check_systemd_gate():
     command("systemctl", "daemon-reload")
+    for name, expected in (("User", "root"), ("NoNewPrivileges", "yes"),
+                           ("PrivateTmp", "yes"), ("ProtectSystem", "full")):
+        assert command("systemctl", "show", "qubes-air-agent.service", "--property=" + name, "--value") == expected
     start_agent(True)
     stop_agent()
     # The data oneshot remains active, so this failure proves ExecStartPre
@@ -193,7 +196,7 @@ def check_systemd_gate():
     start_agent(True)
     stop_agent()
     command("systemctl", "stop", "qubes-air-data.service")
-    print("systemd dependency and repeat-start identity gate passed", flush=True)
+    print("packaged sandbox, data.mount, dependency and repeat-start identity gate passed", flush=True)
 
 
 def main():

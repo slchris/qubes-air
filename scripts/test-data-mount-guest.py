@@ -65,7 +65,9 @@ def write_seed(root, desktop_binary, plain_data):
             ("console/backend/internal/guestassets/mount-plain-data.sh", "/usr/local/sbin/qubes-air-mount-data", "0700"),
             ("console/backend/internal/guestassets/qubes-air-data.service", "/etc/systemd/system/qubes-air-data.service", "0644"),
             ("console/backend/internal/guestassets/20-data-mount.conf",
-             "/etc/systemd/system/qubes-air-agent.service.d/20-data-mount.conf", "0644")])
+             "/etc/systemd/system/qubes-air-agent.service.d/20-data-mount.conf", "0644"),
+            ("packaging/agent-deb/qubes-air-agent.service", "/etc/systemd/system/qubes-air-agent.service", "0644"),
+            ("packaging/agent-deb/data.mount", "/etc/systemd/system/data.mount", "0644")])
     for source, target, mode in sources:
         files.append({"path": target, "permissions": mode, "encoding": "b64",
                       "content": base64.b64encode((REPO / source).read_bytes()).decode("ascii")})
@@ -73,8 +75,10 @@ def write_seed(root, desktop_binary, plain_data):
                   "content": "disposable-qemu-data-identity\n"})
     if plain_data:
         files.extend([
-            {"path": "/etc/systemd/system/qubes-air-agent.service", "permissions": "0644",
-             "content": "[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/bin/touch /run/qubes-air-fixture-agent-started\n"}])
+            {"path": "/etc/qubes-air/fixture.env", "permissions": "0600", "content": "# Disposable fixture only\n"},
+            {"path": "/etc/systemd/system/qubes-air-agent.service.d/99-fixture.conf", "permissions": "0644",
+             "content": "[Service]\nType=oneshot\nRemainAfterExit=yes\nRestart=no\nEnvironmentFile=\n"
+                        "ExecStart=\nExecStart=/usr/bin/touch /run/qubes-air-fixture-agent-started\n"}])
     config = {"hostname": "qubes-air-mount-test", "disable_root": True, "ssh_pwauth": False,
               "package_update": True, "packages": ["cryptsetup", "python3", "libblkid1", "dmsetup", "diffutils"], "write_files": files,
               "runcmd": [["/usr/bin/python3", "-u", "/root/run_data_mount_guest.py"], ["/sbin/poweroff"]]}

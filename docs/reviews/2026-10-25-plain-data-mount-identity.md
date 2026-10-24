@@ -37,7 +37,9 @@
   以及盘尾非零字节和真实 EIO。错误目录检查前后的空盘完整摘要一致。
 - 同一 QEMU 中，正确零盘初始化成功，重复调用与卸载重挂载保持 UUID 和文件；真实
   systemd 验证了数据 unit 失败和已成功 oneshot 之后挂载变坏两条启动拒绝路径，修复挂载
-  后可恢复。agent 主程序在此用固定 marker unit 替代，只验证 systemd 依赖与 ExecStartPre。
+  后可恢复。进一步使用包内真实 agent unit 的 root、NoNewPrivileges、PrivateTmp 和
+  ProtectSystem 沙箱及 `data.mount` 重验通过；fixture drop-in 只替换 agent 主程序为
+  marker、去掉身份环境依赖并关闭自动重启，以同步断言启动结果，不代表 agent bootstrap。
 - 最终 Debian 包安装、升级、conffile 保留、校验和、原加密 checker 与卸载测试通过。
   包继续把共享 checker 安装到原 `/usr/lib/qubes-air/data-mount.py`；plain cloud-init 的
   `/usr/local/lib` 副本由 Console 交付，在 agent 安装前可用，包升级不会覆盖它。
