@@ -1,7 +1,8 @@
 # 2026-10-23 purge 残留自动清理
 
-阶段基线：节点网络资格检查由 PR #91 合入 `d7a9dbd`。本阶段实现与本地门禁已完成，
-尚未合入或部署；真机生命周期验收待完成。
+阶段基线：节点网络资格检查由 PR #91 合入 `d7a9dbd`。自动清理由 Air PR #92
+（`07b5856`）与 Salt PR #4（`6a389d8`）合入，Salt PR #5（`23d688d`）同步制品 pin。
+部署和真机复验于 2026-10-23 至 24 日完成；对应合并提交的 CI 通过。
 
 ## 行为与验收条件
 
@@ -47,4 +48,31 @@
   dom0 RPC/policy，最后恢复刷新。旧 shell 不认识新锁，不能与新 helper 同时运行。
 - 未迁移既有未知所有权文件；它们会保留并要求人工对账。未重启 Relay，未清理历史对象。
 
-待完成：两仓库 PR/合入、源码绑定制品部署，以及新专用对象的自动调度与 purge 残留验收。
+## 真机生命周期与自动清理结果
+
+用户明确授权对象 `qa-cleanup-20261023`，ID `cc8bb396-a05d-491c-b2f1-2300aeecb1dd`，
+包括 holder 105、compute 106、该对象 resume 重建的 compute、2 GiB 数据卷及身份/端点。
+历史 holder 107 不在清理范围。Console 初始使用 `06cfff3`，最终清理使用完成传输修复的
+`2b62128`；lister 为 `06cfff3`，agent 为 `eb753f4`。
+
+- 自动调度选中唯一具有合格 bridge/VLAN 的节点。首次 provision 因 Console 入站规则
+  未持久化而失败，任务 `414c2243-4262-409d-9765-c4d304ac5dbb` 的失败记录保留。
+  [入站修复](2026-10-23-console-ingress.md)部署和重启验证后，resume 成功并取得正式证书。
+- 完整 qrexec Exec/FileCopy 17 项正反例通过，覆盖 argv、程序拒绝、空/畸形/超量输入、
+  退出码、路径逃逸、符号链接以及失败替换保留原文件。
+- 1,048,576 字节文件在 suspend/resume 后只读 pull，未重写；SHA256 保持
+  `fbbab289f7f94b25736c58be46a994c441fd02552cc6022352e3d86d2fab7c83`，数据盘已挂载、
+  外部 sentinel 未变。后续无效中断探针曾正常改写测试文件，未计作持久性或在途失败证据，
+  说明见[传输记录](2026-10-23-connecttcp-identity.md)。
+- 最终 suspend 任务 `06e610d2-aad5-4439-b1d3-72f0718f6441` 成功，随后 destroy 任务
+  `bc18138c-91c6-4b22-8a69-109ebcaad8c7` 成功，Qube 状态为 `purged`、endpoint 为空。
+- 只读核对：测试 VM、数据卷、provider snippet、Console identity YAML、dom0 RemoteVM、
+  Relay endpoint 均不存在；infra 行、当前 DEK、未兑换 token、有效证书和活动 job 均为 0。
+  两张 agent 证书已吊销，历史 holder 107 仍存在。未手动删除 identity 或 endpoint。
+- 重复 purge 返回成功且状态保持 `purged`，destroy job 总数仍为 1；相同残留检查再次通过。
+
+归档和隔离恢复副本内的历史密钥不随 purge 消除，继续遵循既有备份留存与销毁策略。
+临时 Exec/FileCopy grant 已通过无测试 grant 的 scoped bundle 撤销，dom0 apply 为 3 成功、
+0 失败，实际 diff 删除了指定对象的四条 allow/deny 规则。随后对相同 policy 运行 Salt
+`test=True`，已安装文件处于正确状态且无待变更；默认 Exec/FileCopy 仍为 `ask`。
+Console 最终健康、活动 job 为 0、离机挂载及备份 timer 正常。
