@@ -20,7 +20,7 @@ def main():
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     os.chown(auth, 1000, 1000)
     os.chmod(auth, 0o600)
-    env = dict(os.environ, DISPLAY=":100", XAUTHORITY=str(auth), HOME="/home/desktop")
+    env = dict(os.environ, DISPLAY=":100", XAUTHORITY=str(auth), HOME="/data/home")
     server = subprocess.Popen(["Xvfb", ":100", "-screen", "0", "800x600x24", "-nolisten", "tcp", "-auth", str(auth)],
                               env=env, user=1000, group=1000, extra_groups=[],
                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

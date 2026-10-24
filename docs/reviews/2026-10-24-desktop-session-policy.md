@@ -1,7 +1,8 @@
 # 桌面会话运行策略
 
 本阶段目标是交付固定、非 root 的 Xpra 会话启动与停止入口，并验证服务端主动禁用共享内存。
-生产部署、数据盘 HOME 与 Qubes/Salt 接线仍由后续验收完成。
+该阶段未包含生产部署、数据盘 HOME 或 Qubes/Salt 接线；后续 HOME 与 systemd 证据见
+[加密 HOME 记录](2026-10-24-encrypted-desktop-home.md)。
 
 ## 本阶段验收条件
 
@@ -44,8 +45,9 @@ Trixie 的 InRelease 由先前核验的官方指纹
 版本或 PyGObject <3.44.2。
 此依赖下未再出现 Bookworm 的 GLib callback 泄漏提示；短测试不等于长期运行稳定性验收。
 
-完整 GUI 仍未闭环：HOME 仍在系统盘，没有验证加密数据盘挂载、持久性或卸载顺序；没有真机
-systemd 会话启停、Relay/qrexec 原生客户端、Salt/dom0 policy 验收。容器原生客户端连接 Unix socket，
+完整 GUI 仍未闭环：本记录的容器阶段没有验证加密盘 HOME，后续隔离 QEMU 已补其持久性与停止
+顺序，见[加密 HOME 记录](2026-10-24-encrypted-desktop-home.md)。生产 RemoteVM 会话启停、
+Relay/qrexec 原生客户端、Salt/dom0 policy 仍待验收。容器原生客户端连接 Unix socket，
 仅 Go 截图经 mTLS。桌面 unit 默认禁用，本阶段没有部署生产会话。
 
 ## 验证结果

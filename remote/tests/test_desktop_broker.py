@@ -29,7 +29,7 @@ class DesktopBrokerTest(unittest.TestCase):
         # The daemon itself must never unlink a live, stale or replaced socket.
         if SOCKET.exists():
             SOCKET.unlink()
-        self.entries = Path("/home/desktop/.local/share/applications")
+        self.entries = Path("/data/home/.local/share/applications")
         self.entries.mkdir(parents=True, exist_ok=True)
         self.entry = self.entries / "air-fixture.desktop"
         self.entry.write_text("[Desktop Entry]\nType=Application\nName=Air fixture\nExec=/usr/bin/xclock -name air-broker-fixture\n")
@@ -38,7 +38,7 @@ class DesktopBrokerTest(unittest.TestCase):
         self.process = subprocess.Popen(["dbus-run-session", "--", CLIENT, "daemon"],
                                         user=1000, group=1000, extra_groups=[],
                                         stdin=subprocess.DEVNULL, stdout=self.log, stderr=self.log,
-                                        start_new_session=True, env={"PATH": "/usr/bin:/bin", "HOME": "/home/desktop"})
+                                        start_new_session=True, env={"PATH": "/usr/bin:/bin", "HOME": "/data/home"})
         for _ in range(100):
             if SOCKET.exists():
                 return

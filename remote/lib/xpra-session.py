@@ -12,6 +12,7 @@ import threading
 import time
 
 UID = 1000
+DESKTOP_HOME = "/data/home"
 RUNTIME = Path("/run/qubes-air-desktop")
 BROKER = Path("/run/qubes-air-desktop-broker")
 
@@ -25,8 +26,7 @@ def check_versions():
 
 def session_environment(account, bus):
     home = account.pw_dir
-    if account.pw_uid != UID or not home.startswith("/") or str(Path(home)) != home or home == "/" \
-            or ".." in Path(home).parts:
+    if account.pw_uid != UID or home != DESKTOP_HOME:
         raise RuntimeError("invalid desktop home")
     if not bus.startswith("unix:path=/") or any(char in bus for char in "\r\n\x00"):
         raise RuntimeError("private desktop D-Bus session unavailable")
@@ -155,6 +155,7 @@ def main(args):
     try:
         check_versions()
         env = session_environment(pwd.getpwuid(UID), os.environ.get("DBUS_SESSION_BUS_ADDRESS", ""))
+        os.chdir(DESKTOP_HOME)
         os.umask(0o077)
         prepare_runtime()
         supervise(env, stopping)

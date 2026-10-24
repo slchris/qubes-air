@@ -37,14 +37,27 @@ def verify_image(path, expected):
         raise ValueError("image SHA512 mismatch")
 
 
-def write_seed(root):
+def write_seed(root, desktop_binary):
     seed = root / "seed"
     seed.mkdir()
     files = []
-    for source, target, mode in [
+    sources = [
             ("remote/lib/data-mount.py", "/usr/lib/qubes-air/data-mount.py", "0644"),
             ("remote/qubes-rpc/qubesair.UnlockData", "/etc/qubes-rpc/qubesair.UnlockData", "0755"),
-            ("remote/tests/run_data_mount_guest.py", "/root/run_data_mount_guest.py", "0600")]:
+            ("remote/tests/run_data_mount_guest.py", "/root/run_data_mount_guest.py", "0600")]
+    if desktop_binary:
+        sources[-1] = ("remote/tests/run_desktop_home_guest.py", "/root/run_data_mount_guest.py", "0600")
+        sources.extend([
+            ("remote/tests/run_data_mount_guest.py", "/root/data_mount_support.py", "0600"),
+            ("remote/lib/data-home.py", "/usr/lib/qubes-air/data-home.py", "0644"),
+            ("remote/lib/xpra-session.py", "/usr/lib/qubes-air/xpra-session.py", "0644"),
+            ("remote/lib/desktop-worker.py", "/usr/lib/qubes-air/desktop-worker.py", "0644"),
+            ("packaging/agent-deb/data.mount", "/etc/systemd/system/data.mount", "0644"),
+            ("packaging/agent-deb/qubes-air-desktop.service", "/etc/systemd/system/qubes-air-desktop.service", "0644"),
+            ("packaging/agent-deb/qubes-air-desktop-home.service", "/etc/systemd/system/qubes-air-desktop-home.service", "0644"),
+            ("packaging/xpra-test/packages.sha256", "/root/desktop-packages.sha256", "0600"),
+            (desktop_binary, "/usr/bin/qubes-air-desktop", "0755")])
+    for source, target, mode in sources:
         files.append({"path": target, "permissions": mode, "encoding": "b64",
                       "content": base64.b64encode((REPO / source).read_bytes()).decode("ascii")})
     files.append({"path": "/etc/qubes-air-mount-test", "permissions": "0600",
@@ -88,7 +101,7 @@ def run(args):
     if not re.fullmatch(r"/[A-Za-z0-9/._+-]+", str(root)):
         raise RuntimeError("TMPDIR must have a simple absolute path")
     print("Fixture artifacts: " + str(root), flush=True)
-    write_seed(root)
+    write_seed(root, args.desktop_binary)
     shutil.copyfile(args.firmware_vars, root / "uefi-vars.fd")
     command("qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(args.image), str(root / "root.qcow2"))
     command("qemu-img", "resize", str(root / "root.qcow2"), "8G")
@@ -112,6 +125,8 @@ def main():
     parser.add_argument("--sha512", required=True, help="image digest from the trusted Debian manifest")
     parser.add_argument("--firmware-code", type=checked_path, required=True, help="x86_64 UEFI code image")
     parser.add_argument("--firmware-vars", type=checked_path, required=True, help="matching UEFI variables template")
+    parser.add_argument("--desktop-binary", type=checked_path,
+                        help="current linux/amd64 broker binary; also test encrypted HOME and systemd/Xpra")
     run(parser.parse_args())
 
 

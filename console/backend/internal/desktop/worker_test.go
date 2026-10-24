@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,13 @@ func TestWorkerProcess(t *testing.T) {
 	case "failure":
 		_ = json.NewEncoder(os.Stdout).Encode(failure(69))
 		os.Exit(69)
+	case "cwd":
+		cwd, err := os.Getwd()
+		if err != nil || cwd != os.Getenv("DESKTOP_TEST_DIR") {
+			_ = json.NewEncoder(os.Stdout).Encode(failure(69))
+			os.Exit(69)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(Response{OK: true, App: "editor", Display: ":100"})
 	case "mismatch":
 		_ = json.NewEncoder(os.Stdout).Encode(Response{OK: true, App: "editor", Display: ":100"})
 		os.Exit(70)
@@ -71,4 +79,16 @@ func TestWorkerDeadlineAndInvalidRequest(t *testing.T) {
 	require.Equal(t, 64, w.run(context.Background(), Request{}).Code)
 	w.program = "/nonexistent/worker"
 	require.Equal(t, 69, w.run(context.Background(), Request{Operation: "menus"}).Code)
+}
+
+func TestWorkerHomeIsRequiredWithoutDirectoryFallback(t *testing.T) {
+	program, err := os.Executable()
+	require.NoError(t, err)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	w := worker{program: program, args: []string{"-test.run=^TestWorkerProcess$", "--"}, dir: dir,
+		env: []string{"DESKTOP_TEST_WORKER=cwd", "DESKTOP_TEST_DIR=" + dir}}
+	require.True(t, w.run(t.Context(), Request{Operation: "launch", App: "editor"}).OK)
+	w.dir = filepath.Join(dir, "unavailable")
+	require.Equal(t, 69, w.run(t.Context(), Request{Operation: "launch", App: "editor"}).Code)
 }

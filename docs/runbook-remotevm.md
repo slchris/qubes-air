@@ -160,6 +160,14 @@ UnlockData 会核对 scsi1、LUKS UUID、mapper backing device 和 `/data` 挂�
 不会触发格式化。出现身份错误时保留磁盘与当前挂载，先只读检查设备及 mountinfo；不要删除目录、
 重建文件系统或关闭检查来让重试成功。具体验收范围见[挂载身份记录](reviews/2026-10-24-encrypted-data-mount.md)。
 
+桌面使用固定加密 HOME `/data/home`，要求已有 UID/GID 1000 账户的 NSS HOME 与之相同；
+包不创建账户或搬迁旧目录。只有通过挂载与目录身份检查后才启动桌面，并在卸载 `/data` 前停止
+整个桌面 cgroup。上游 Xpra 的独立代理 socket/service 必须在安装前屏蔽、保持 inactive，
+否则桌面启动拒绝。`unlocked:true` 只表示盘成功解锁；已启用桌面的异步启动结果另查
+`journalctl -u qubes-air-desktop -u qubes-air-desktop-home`。部署前置与验证范围见
+[加密 HOME 记录](reviews/2026-10-24-encrypted-desktop-home.md)及
+[包部署说明](../packaging/agent-deb/README.md#encrypted-home-and-mount-lifecycle)。
+
 旧盘（per-qube DEK 之前创建）首次解锁会经 `qubesair.RekeyData` 迁移到独立密钥：日志应出现
 `migrated ... removed the legacy keyslot`，远端 `cryptsetup luksDump` 只剩一个 keyslot。
 agent 需在 `QUBESAIR_ALLOW` 中允许该服务，否则迁移失败并在下次 resume 重试。逐项步骤见

@@ -49,10 +49,10 @@ def main():
     Path("/tmp/.X11-unix").mkdir(mode=0o1777)
     os.chmod("/tmp/.X11-unix", 0o1777)
     # Caller configuration must not add a listener to the fixed session.
-    config = Path("/home/desktop/.xpra")
+    config = Path("/data/home/.xpra")
     config.mkdir()
     (config / "xpra.conf").write_text("bind-tcp=127.0.0.1:10055\n")
-    env = {"PATH": "/usr/bin:/bin", "HOME": "/home/desktop", "LANG": "C.UTF-8",
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/data/home", "LANG": "C.UTF-8",
            "XDG_RUNTIME_DIR": str(RUNTIME), "XAUTHORITY": str(RUNTIME / "Xauthority"),
            "XPRA_DEFAULT_CONF_DIRS": "", "XPRA_SYSTEM_CONF_DIRS": "", "XPRA_USER_CONF_DIRS": ""}
     with open("/tmp/xpra-fixture.log", "wb") as log:
@@ -75,7 +75,7 @@ def main():
 
 
 def start_session(env, log):
-    caller_env = dict(env, XPRA_USER_CONF_DIRS="/home/desktop/.xpra")
+    caller_env = dict(env, XPRA_USER_CONF_DIRS="/data/home/.xpra")
     return subprocess.Popen(SESSION_ARGS, env=caller_env, user=1000, group=1000, extra_groups=[],
                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
@@ -185,7 +185,7 @@ def verify_control_denied(env):
 
 
 def launch_and_test(env, server):
-    entries = Path("/home/desktop/.local/share/applications")
+    entries = Path("/data/home/.local/share/applications")
     entries.mkdir(parents=True)
     for index, name in enumerate(WINDOWS):
         (entries / (name + ".desktop")).write_text(

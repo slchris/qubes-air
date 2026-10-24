@@ -1205,7 +1205,7 @@ unlock_setup() {
     : >"$DEV"
     ln -s ../../sdb "$C/root/dev/disk/by-path/pci-0000:00:05.0-scsi-0:0:0:1"
     local tool
-    for tool in cryptsetup mkfs.ext4 mountpoint mount systemd-run python3; do
+    for tool in cryptsetup mkfs.ext4 mountpoint mount systemd-run python3 systemctl; do
         link_stub unlock "$tool"
     done
 }
@@ -1236,6 +1236,15 @@ EOF
 make_stub unlock mount <<'EOF'
 if [ -f "$C/ctl/mount.rc" ]; then echo 'mount: scripted failure' >&2; exit "$(cat "$C/ctl/mount.rc")"; fi
 : >"$C/disk/mounted"
+EOF
+make_stub unlock systemctl <<'EOF'
+case "$*" in
+    'is-enabled --quiet qubes-air-desktop.service') [ -f "$C/ctl/desktop-enabled" ]; exit $? ;;
+    'start --no-block qubes-air-desktop.service')
+        if [ -f "$C/ctl/desktop-start.rc" ]; then exit "$(cat "$C/ctl/desktop-start.rc")"; fi
+        exit 0 ;;
+esac
+exit 99
 EOF
 make_stub unlock python3 <<'EOF'
 if [ "$#" -ne 3 ] || [ "$1" != -I ] || [ "$2" != /usr/lib/qubes-air/data-mount.py ]; then
@@ -1498,7 +1507,8 @@ mkfs.ext4 [-q] [-L] [qubesair-data] [$MAPPED]
 mountpoint [-q] [$DATA]
 mount [$MAPPED] [$DATA]
 mountpoint [-q] [$DATA]
-python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]"
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]
+systemctl [is-enabled] [--quiet] [qubes-air-desktop.service]"
     expect_key_off_argv "$KEY"
     expect_disk_key "$KEY"
     [ -d "$DATA" ] || fail "the mount point was not created"
@@ -1523,7 +1533,8 @@ python3 [-I] [/usr/lib/qubes-air/data-mount.py] [probe-mapped]
 mountpoint [-q] [$DATA]
 mount [$MAPPED] [$DATA]
 mountpoint [-q] [$DATA]
-python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]"
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]
+systemctl [is-enabled] [--quiet] [qubes-air-desktop.service]"
     expect_key_off_argv "$KEY"
     case_end
 }
@@ -1582,7 +1593,8 @@ t_unlockdata_idempotent() {
     expect_stdout '{"unlocked":true,"detail":"already unlocked and mounted"}'
     expect_calls "$(unlock_inner_call)
 python3 [-I] [/usr/lib/qubes-air/data-mount.py] [preflight]
-mountpoint [-q] [$DATA]"
+mountpoint [-q] [$DATA]
+systemctl [is-enabled] [--quiet] [qubes-air-desktop.service]"
     case_end
 }
 
@@ -1607,6 +1619,7 @@ t_unlockdata_identity_failure_retains_disk() {
         mounted) expect_stdout '{"unlocked":false,"detail":"mounted data identity invalid"}' ;;
         esac
         expect_not_called mkfs.ext4
+        expect_not_called systemctl
         if [ "$phase" != mounted ]; then expect_not_called mount; fi
         if [ "$phase" = preflight ]; then expect_not_called cryptsetup; fi
         expect_disk_key "$KEY"
@@ -1634,6 +1647,36 @@ t_unlockdata_failed_probe_never_formats() {
         expect_not_called mkfs.ext4
         expect_not_called mount
         if calls | grep -q 'luksFormat'; then fail "luksFormat ran after a failed probe"; fi
+        case_end
+    done
+}
+
+t_unlockdata_starts_only_enabled_desktop_after_mount_proof() {
+    local state
+    for state in mounted already-mounted start-failed; do
+        case_begin "UnlockData: enabled desktop request after $state retains disk success" || continue
+        unlock_setup
+        put "$C/disk/luks-key" "$KEY"
+        put "$C/disk/mapped-fstype" 'ext4'
+        put "$C/ctl/desktop-enabled" 1
+        if [ "$state" = already-mounted ]; then
+            : >"$MAPPED"
+            : >"$C/disk/mounted"
+        fi
+        if [ "$state" = start-failed ]; then put "$C/ctl/desktop-start.rc" 1; fi
+        put "$C/stdin" "$KEY"
+        unlock_run
+        expect_rc 0
+        case "$state" in
+        mounted) expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}' ;;
+        already-mounted) expect_stdout '{"unlocked":true,"detail":"already unlocked and mounted"}' ;;
+        start-failed) expect_stdout '{"unlocked":true,"detail":"unlocked and mounted; desktop start request failed"}' ;;
+        esac
+        if ! calls | grep -qF 'systemctl [start] [--no-block] [qubes-air-desktop.service]'; then
+            fail "enabled desktop did not receive the fixed start request"
+        fi
+        expect_not_called mkfs.ext4
+        expect_disk_key "$KEY"
         case_end
     done
 }

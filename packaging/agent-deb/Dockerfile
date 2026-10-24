@@ -72,9 +72,12 @@ COPY --from=build /out/qubes-air-agent pkg/usr/bin/qubes-air-agent
 COPY --from=build /out/qubes-air-desktop pkg/usr/bin/qubes-air-desktop
 COPY packaging/agent-deb/qubes-air-agent.service pkg/lib/systemd/system/qubes-air-agent.service
 COPY packaging/agent-deb/qubes-air-desktop.service pkg/lib/systemd/system/qubes-air-desktop.service
+COPY packaging/agent-deb/qubes-air-desktop-home.service pkg/lib/systemd/system/qubes-air-desktop-home.service
+COPY packaging/agent-deb/data.mount pkg/lib/systemd/system/data.mount
 COPY remote/lib/desktop-worker.py pkg/usr/lib/qubes-air/desktop-worker.py
 COPY remote/lib/xpra-session.py pkg/usr/lib/qubes-air/xpra-session.py
 COPY remote/lib/data-mount.py pkg/usr/lib/qubes-air/data-mount.py
+COPY remote/lib/data-home.py pkg/usr/lib/qubes-air/data-home.py
 COPY remote/bin/qubes-desktop-run pkg/usr/bin/qubes-desktop-run
 COPY remote/qubes-rpc/ pkg/etc/qubes-rpc/
 COPY packaging/agent-deb/README.md pkg/usr/share/doc/qubes-air-agent/README.md
@@ -86,7 +89,7 @@ RUN set -eu; \
     chmod 0755 pkg/usr/bin/*; \
     chmod 0644 pkg/usr/lib/qubes-air/*.py; \
     chmod 0644 pkg/usr/share/doc/qubes-air-agent/README.md; \
-    chmod 0644 pkg/lib/systemd/system/*.service; \
+    chmod 0644 pkg/lib/systemd/system/*.service pkg/lib/systemd/system/*.mount; \
     chmod 0755 pkg/etc/qubes-rpc/*; \
     \
     install -m 0755 meta/postinst meta/prerm meta/postrm pkg/DEBIAN/; \

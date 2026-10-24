@@ -18,6 +18,7 @@ const (
 	SocketPath       = "/run/qubes-air-desktop-broker/control.sock"
 	WorkerPath       = "/usr/lib/qubes-air/desktop-worker.py"
 	DesktopUID       = 1000
+	DesktopHome      = "/data/home"
 	MaxRequestBytes  = 512
 	MaxResponseBytes = 1 << 20
 	MaxApps          = 256

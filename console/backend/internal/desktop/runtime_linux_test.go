@@ -78,13 +78,13 @@ func TestRuntimeDirectoryAndRootRefusal(t *testing.T) {
 }
 
 func TestSessionEnvironmentDoesNotInheritCallerConfiguration(t *testing.T) {
-	account := &user.User{Uid: "1000", Username: "desktop", HomeDir: "/home/desktop"}
+	account := &user.User{Uid: "1000", Username: "desktop", HomeDir: "/data/home"}
 	t.Setenv("DISPLAY", "other:1")
 	t.Setenv("PYTHONPATH", "/unexpected")
 	t.Setenv("HOME", "/root")
 	env, err := sessionEnvironment(account, "unix:path=/tmp/dbus-fixture")
 	require.NoError(t, err)
-	require.Contains(t, env, "HOME=/home/desktop")
+	require.Contains(t, env, "HOME=/data/home")
 	require.Contains(t, env, "DISPLAY=:100")
 	require.NotContains(t, env, "PYTHONPATH=/unexpected")
 	_, err = sessionEnvironment(account, "tcp:host=localhost")
@@ -92,4 +92,7 @@ func TestSessionEnvironmentDoesNotInheritCallerConfiguration(t *testing.T) {
 	account.HomeDir = "/"
 	_, err = sessionEnvironment(account, "unix:path=/tmp/dbus-fixture")
 	require.Error(t, err)
+	account.HomeDir = "/home/desktop"
+	_, err = sessionEnvironment(account, "unix:path=/tmp/dbus-fixture")
+	require.Error(t, err, "the ephemeral system disk must not become the desktop HOME")
 }

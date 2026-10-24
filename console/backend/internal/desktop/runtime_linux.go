@@ -31,14 +31,14 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w := worker{program: "/usr/bin/python3", args: []string{"-I", WorkerPath}, env: env}
+	w := worker{program: "/usr/bin/python3", args: []string{"-I", WorkerPath}, env: env, dir: DesktopHome}
 	s := server{peer: peerUID, handle: w.run, timeout: requestTimeout, maxClients: 4}
 	return s.serve(ctx, listener)
 }
 
 func sessionEnvironment(account *user.User, bus string) ([]string, error) {
 	home := account.HomeDir
-	if account.Uid != "1000" || !filepath.IsAbs(home) || filepath.Clean(home) != home || home == "/" {
+	if account.Uid != "1000" || home != DesktopHome {
 		return nil, errors.New("invalid desktop home")
 	}
 	if !strings.HasPrefix(bus, "unix:path=/") || strings.ContainsAny(bus, "\r\n\x00") {
