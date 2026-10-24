@@ -1192,7 +1192,7 @@ DATA=''
 # mapped-fstype (the open container holds a filesystem) and mounted.
 unlock_setup() {
     install_svc remote/qubes-rpc/qubesair.UnlockData \
-        "/data=$CUR/root/data" \
+        " /data= $CUR/root/data" \
         "/etc/qubes-rpc/qubesair.UnlockData=$SVCDIR/qubesair.UnlockData" \
         "/dev/disk/by-path/=$CUR/root/dev/disk/by-path/" \
         "/dev/mapper/=$CUR/root/dev/mapper/"
@@ -1205,7 +1205,7 @@ unlock_setup() {
     : >"$DEV"
     ln -s ../../sdb "$C/root/dev/disk/by-path/pci-0000:00:05.0-scsi-0:0:0:1"
     local tool
-    for tool in cryptsetup blkid mkfs.ext4 mountpoint mount systemd-run; do
+    for tool in cryptsetup mkfs.ext4 mountpoint mount systemd-run python3; do
         link_stub unlock "$tool"
     done
 }
@@ -1226,12 +1226,8 @@ esac
 echo "cryptsetup stub: unexpected $1" >&2
 exit 99
 EOF
-make_stub unlock blkid <<'EOF'
-case "${!#}" in */dev/mapper/*) f="$C/disk/mapped-fstype" ;; *) f="$C/disk/raw-fstype" ;; esac
-if [ -s "$f" ]; then cat "$f"; exit 0; fi
-exit 2
-EOF
 make_stub unlock mkfs.ext4 <<'EOF'
+if [ -f "$C/ctl/mkfs.rc" ]; then exit "$(cat "$C/ctl/mkfs.rc")"; fi
 printf 'ext4\n' >"$C/disk/mapped-fstype"
 EOF
 make_stub unlock mountpoint <<'EOF'
@@ -1240,6 +1236,27 @@ EOF
 make_stub unlock mount <<'EOF'
 if [ -f "$C/ctl/mount.rc" ]; then echo 'mount: scripted failure' >&2; exit "$(cat "$C/ctl/mount.rc")"; fi
 : >"$C/disk/mounted"
+EOF
+make_stub unlock python3 <<'EOF'
+if [ "$#" -ne 3 ] || [ "$1" != -I ] || [ "$2" != /usr/lib/qubes-air/data-mount.py ]; then
+    echo 'unexpected mount identity check' >&2
+    exit 99
+fi
+case "$3" in
+preflight|mapped|mounted) ;;
+probe-raw|probe-mapped)
+    kind="${3#probe-}"
+    f="$C/disk/$kind-fstype"
+    if [ -f "$C/ctl/probe.$kind.rc" ]; then
+        if [ -f "$f" ]; then cat "$f"; fi
+        exit "$(cat "$C/ctl/probe.$kind.rc")"
+    fi
+    if [ -s "$f" ]; then cat "$f"; else printf 'unrecognized\n'; fi
+    exit 0 ;;
+*) exit 99 ;;
+esac
+if [ -f "$C/ctl/mount-check.$3.rc" ]; then exit "$(cat "$C/ctl/mount-check.$3.rc")"; fi
+exit 0
 EOF
 # A transient unit starts from PID 1's environment, not the caller's; model
 # that so a case cannot pass on a variable that leaked through.
@@ -1470,15 +1487,18 @@ t_unlockdata_first_boot() {
     expect_rc 0
     expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}'
     expect_calls "$(unlock_inner_call)
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [preflight]
 cryptsetup [isLuks] [$DEV]
-blkid [-o] [value] [-s] [TYPE] [$DEV]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [probe-raw]
 cryptsetup [luksFormat] [--type] [luks2] [--batch-mode] [--pbkdf] [pbkdf2] [--pbkdf-force-iterations] [1000] [--key-file=/dev/fd/N] [$DEV]
 cryptsetup [luksOpen] [--key-file=/dev/fd/N] [$DEV] [qubesair-data]
-blkid [-o] [value] [-s] [TYPE] [$MAPPED]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mapped]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [probe-mapped]
 mkfs.ext4 [-q] [-L] [qubesair-data] [$MAPPED]
 mountpoint [-q] [$DATA]
 mount [$MAPPED] [$DATA]
-mountpoint [-q] [$DATA]"
+mountpoint [-q] [$DATA]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]"
     expect_key_off_argv "$KEY"
     expect_disk_key "$KEY"
     [ -d "$DATA" ] || fail "the mount point was not created"
@@ -1495,12 +1515,15 @@ t_unlockdata_existing_container() {
     expect_rc 0
     expect_stdout '{"unlocked":true,"detail":"unlocked and mounted"}'
     expect_calls "$(unlock_inner_call)
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [preflight]
 cryptsetup [isLuks] [$DEV]
 cryptsetup [luksOpen] [--key-file=/dev/fd/N] [$DEV] [qubesair-data]
-blkid [-o] [value] [-s] [TYPE] [$MAPPED]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mapped]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [probe-mapped]
 mountpoint [-q] [$DATA]
 mount [$MAPPED] [$DATA]
-mountpoint [-q] [$DATA]"
+mountpoint [-q] [$DATA]
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [mounted]"
     expect_key_off_argv "$KEY"
     case_end
 }
@@ -1526,10 +1549,11 @@ t_unlockdata_refuses_plaintext_disk() {
     put "$C/stdin" "$KEY"
     unlock_run
     expect_rc 0
-    expect_stdout '{"unlocked":false,"detail":"disk carries a ext4 filesystem, not LUKS; refusing to overwrite"}'
+    expect_stdout '{"unlocked":false,"detail":"data disk is not blank or could not be inspected"}'
     expect_calls "$(unlock_inner_call)
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [preflight]
 cryptsetup [isLuks] [$DEV]
-blkid [-o] [value] [-s] [TYPE] [$DEV]"
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [probe-raw]"
     [ ! -e "$C/disk/luks-key" ] || fail "the plaintext disk was formatted"
     case_end
 }
@@ -1557,8 +1581,99 @@ t_unlockdata_idempotent() {
     expect_rc 0
     expect_stdout '{"unlocked":true,"detail":"already unlocked and mounted"}'
     expect_calls "$(unlock_inner_call)
+python3 [-I] [/usr/lib/qubes-air/data-mount.py] [preflight]
 mountpoint [-q] [$DATA]"
     case_end
+}
+
+t_unlockdata_identity_failure_retains_disk() {
+    local phase
+    for phase in preflight mapped mounted; do
+        case_begin "UnlockData: identity failure at $phase never reports success" || continue
+        unlock_setup
+        put "$C/disk/luks-key" "$KEY"
+        put "$C/disk/mapped-fstype" 'ext4'
+        put "$C/ctl/mount-check.$phase.rc" 1
+        put "$C/stdin" "$KEY"
+        if [ "$phase" = preflight ]; then
+            : >"$MAPPED"
+            : >"$C/disk/mounted"
+        fi
+        unlock_run
+        expect_rc 0
+        case "$phase" in
+        preflight) expect_stdout '{"unlocked":false,"detail":"data device or mount identity invalid"}' ;;
+        mapped) expect_stdout '{"unlocked":false,"detail":"data mapping identity invalid"}' ;;
+        mounted) expect_stdout '{"unlocked":false,"detail":"mounted data identity invalid"}' ;;
+        esac
+        expect_not_called mkfs.ext4
+        if [ "$phase" != mounted ]; then expect_not_called mount; fi
+        if [ "$phase" = preflight ]; then expect_not_called cryptsetup; fi
+        expect_disk_key "$KEY"
+        case_end
+    done
+}
+
+t_unlockdata_failed_probe_never_formats() {
+    local spec stage status
+    for spec in raw:2 mapped:2 raw:4 mapped:4; do
+        stage="${spec%:*}"
+        status="${spec#*:}"
+        case_begin "UnlockData: failed $stage signature probe (exit $status) never formats or mounts" || continue
+        unlock_setup
+        if [ "$stage" = mapped ]; then put "$C/disk/luks-key" "$KEY"; fi
+        put "$C/ctl/probe.$stage.rc" "$status"
+        put "$C/stdin" "$KEY"
+        unlock_run
+        expect_rc 0
+        if [ "$stage" = raw ]; then
+            expect_stdout '{"unlocked":false,"detail":"data disk is not blank or could not be inspected"}'
+        else
+            expect_stdout '{"unlocked":false,"detail":"data filesystem is unsupported or could not be inspected"}'
+        fi
+        expect_not_called mkfs.ext4
+        expect_not_called mount
+        if calls | grep -q 'luksFormat'; then fail "luksFormat ran after a failed probe"; fi
+        case_end
+    done
+}
+
+t_unlockdata_failed_mkfs_never_mounts() {
+    case_begin "UnlockData: failed filesystem creation never mounts" || return 0
+    unlock_setup
+    put "$C/disk/luks-key" "$KEY"
+    put "$C/ctl/mkfs.rc" 1
+    put "$C/stdin" "$KEY"
+    unlock_run
+    expect_rc 0
+    expect_stdout '{"unlocked":false,"detail":"data filesystem creation failed"}'
+    expect_not_called mount
+    case_end
+}
+
+t_unlockdata_unsupported_signature_never_formats() {
+    local spec stage signature
+    for spec in 'raw:other' 'raw:ext4' 'raw:' 'mapped:other' 'mapped:' 'mapped:ext4 extra'; do
+        stage="${spec%%:*}"
+        signature="${spec#*:}"
+        case_begin "UnlockData: $stage signature '$signature' with successful probe is not blank" || continue
+        unlock_setup
+        if [ "$stage" = mapped ]; then put "$C/disk/luks-key" "$KEY"; fi
+        put "$C/ctl/probe.$stage.rc" 0
+        put "$C/disk/$stage-fstype" "$signature"
+        put "$C/stdin" "$KEY"
+        unlock_run
+        expect_rc 0
+        if [ "$stage" = raw ]; then
+            expect_stdout '{"unlocked":false,"detail":"data disk is not blank or could not be inspected"}'
+        else
+            expect_stdout '{"unlocked":false,"detail":"data filesystem is unsupported or could not be inspected"}'
+        fi
+        expect_not_called mkfs.ext4
+        expect_not_called mount
+        if calls | grep -q 'luksFormat'; then fail "known signatures were overwritten"; fi
+        case_end
+    done
 }
 
 t_unlockdata_format_failure() {

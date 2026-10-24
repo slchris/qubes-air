@@ -345,6 +345,7 @@ shellcheck-all:
 qrexec-test:
 	scripts/test-qrexec-services.sh
 	python3 -m unittest discover -s remote/tests -p test_xpra_session.py
+	python3 -m unittest discover -s remote/tests -p test_data_mount.py
 
 # 清理
 clean:

@@ -15,6 +15,7 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/bin/qubes-desktop-run` | Thin app-ID wrapper for menu entries |
 | `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
 | `/usr/lib/qubes-air/xpra-session.py` | Fixed non-root Xpra/broker session supervisor |
+| `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData |
 | `/lib/systemd/system/qubes-air-desktop.service` | Opt-in desktop unit, never enabled or started by package hooks |
 
 On upgrade, postinst uses `try-restart` for an already running unit. Cloud-init's installer starts the
@@ -111,6 +112,18 @@ UnlockData opens the encrypted data disk and RekeyData migrates a legacy disk to
 inherit the agent sandbox. The unit requires `QUBESAIR_REVOCATION_URL` for CA-signed revocation
 status. Deployment requirements and failure behavior are documented in
 [security controls](../../docs/security-controls.md).
+
+UnlockData checks the encrypted volume before mutation, after opening its mapper and after mounting.
+Only one scsi1 block device is accepted. An existing mapper must name the same LUKS UUID and backing
+device and must not be suspended. `/data` must be a root-owned directory without group/other write
+permission, mounted from that mapper as the writable ext4 filesystem root. Foreign, nested, duplicate,
+read-only and symlink mounts fail. The `libblkid1` dependency provides a read-only probe API that
+distinguishes read failures from no recognized signature (the `blkid` CLI's exit 2 cannot).
+A failed signature probe cannot trigger formatting, partition
+signatures are preserved, and failed filesystem creation stops before mounting. Unknown data without
+a recognized signature is still subject to the existing first-use initialization contract; this check
+does not identify arbitrary unformatted user data as valuable or authorize overwriting it.
+See the [mount identity record](../../docs/reviews/2026-10-24-encrypted-data-mount.md) for validation scope.
 
 ## Build
 

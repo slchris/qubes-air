@@ -151,6 +151,11 @@ purge 的 compute 清理使用同一正常关机边界。关机失败、超时�
 对启用加密的 Qube，确认远端只看到已打开的 mapper，持久盘静态内容是 LUKS 密文；console
 日志不得打印密钥。首次初始化与 resume 解锁都应通过 agent mTLS 服务完成。
 
+UnlockData 会核对 scsi1、LUKS UUID、mapper backing device 和 `/data` 挂载身份；只接受 root
+持有、普通用户不可替换的可写 ext4 根，错误来源、子挂载、只读挂载或符号链接均失败。签名探测失败
+不会触发格式化。出现身份错误时保留磁盘与当前挂载，先只读检查设备及 mountinfo；不要删除目录、
+重建文件系统或关闭检查来让重试成功。具体验收范围见[挂载身份记录](reviews/2026-10-24-encrypted-data-mount.md)。
+
 旧盘（per-qube DEK 之前创建）首次解锁会经 `qubesair.RekeyData` 迁移到独立密钥：日志应出现
 `migrated ... removed the legacy keyslot`，远端 `cryptsetup luksDump` 只剩一个 keyslot。
 agent 需在 `QUBESAIR_ALLOW` 中允许该服务，否则迁移失败并在下次 resume 重试。逐项步骤见
