@@ -2,9 +2,11 @@
 
 更新日期：2026-10-25。本文区分已合入实现、发布制品与真机验收；逐项状态见
 [生产可用性缺口](production-readiness-gaps.md)。生产闭环修复已合入，
-[v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布八项部署制品与
-`SHA256SUMS`，包括 release URL 安装和 Proxmox 取消处理修复。主干另已合入
-[DATA-02](reviews/2026-10-25-plain-data-mount-identity.md)，完成隔离挂载与启动门禁验收。
+[v0.2.3](https://github.com/slchris/qubes-air/releases/tag/v0.2.3) 已发布八项部署制品与
+`SHA256SUMS`，包括 release URL 安装、Proxmox 取消处理、
+[DATA-02](reviews/2026-10-25-plain-data-mount-identity.md)及
+[旧盘换钥身份与完成判定](reviews/2026-10-25-rekey-data-validation.md)修复。
+后两项已通过隔离 QEMU、包回归与完整门禁；既有 guest 需另行升级 agent 包。
 当前 release URL 的完整 provider 生命周期仍需独立真机验证。
 
 项目已具备 Proxmox 核心闭环，仍适合受控实验与开发，尚不是通用生产发行版。
@@ -35,7 +37,7 @@ Console 重启、Exec/FileCopy 完整 qrexec 正反例、1 MiB 文件跨 suspend
 | 请求与认证 | 浏览器用 HttpOnly、SameSite=Strict session；Bearer 保留给 CLI/MCP；变更请求要求 control scope；命名 token 可按 zones 限制对象，session 继承 | session TTL 默认 30 分钟，设置页可改为 5–1440 分钟并即时生效；webhook 目标加密存储并受精确 HTTPS 主机白名单约束，事件经 outbox 重试投递；2FA 与邮件通知尚未接入；zone token 不可用 fleet 端点 |
 | API 安全基线 | 安全响应头、CORS、生产配置拒绝不安全默认值、请求体上限、限流、结构化操作者审计 | 不代表完整多租户身份体系或审计归档系统 |
 | 数据销毁 | purge 原子记录永久意图并撤销身份，删除当前 key，逐资源核验并自动清理身份文件、端点/RemoteVM | 新专用对象无残留、重复请求不新增 destroy job；部分失败只允许继续 purge，历史备份里的密钥不随之删除 |
-| 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘首次解锁原子迁移到 DEK，master 只读且仅用于迁移 | 迁移完成前旧盘仍依赖 master；agent 需先允许 RekeyData，按盘真机核验归 QA-01 |
+| 数据密钥 | 独立随机 256-bit DEK 是唯一解锁路径；旧盘换钥前核验固定设备/挂载身份，探测或 runner 失败保留未确认状态与迁移标记，master 只读且仅用于迁移 | agent 需交付配套 RekeyData/checker 并允许该服务；保留原键重试，不能把执行错误当作旧键失效；按盘生产核验仍归 QA-01 |
 | 重启对账 | queued → failed、running → unknown，Qube → error；保留资源 checkpoint 及 purge 意图 | 显式重试原动作；不自动重放队列或跨进程接管 |
 | 未加密数据盘 | cloud-init 共享身份检查；仅完整全零的新盘初始化，实际挂载身份通过后才允许 agent 启动 | [DATA-02](reviews/2026-10-25-plain-data-mount-identity.md) 的 QEMU、包回归与完整门禁通过；既有 cloud-init 不会自动更新，生产部署另验 |
 | 传输结果 | stdout/stderr/exit code 独立传输；stdout 有界；已派发调用断线明确失败，不重放或跨连接续发旧帧 | 自动化覆盖取消/超时/重连，真机活跃流断线非零退出及新调用恢复通过；Relay 整机重启仍缺备用管理入口 |

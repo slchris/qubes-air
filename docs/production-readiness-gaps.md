@@ -5,9 +5,10 @@
 [清理验收](reviews/2026-10-23-purge-residual-cleanup.md)、
 [传输验收](reviews/2026-10-23-connecttcp-identity.md)与
 [恢复后在线 Ping](reviews/2026-10-23-restored-agent-probe.md)。
-[v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布八项部署制品与摘要，
-包含 Air #104/#105 的 release URL 安装和 Proxmox 取消处理修复；#106 的未加密挂载身份
-校验已合入主干。制品可下载、隔离验收通过均不替代新版本的真机生命周期验收。
+[v0.2.3](https://github.com/slchris/qubes-air/releases/tag/v0.2.3) 已发布八项部署制品与摘要，
+包含 Air #104/#105 的 release URL 安装和 Proxmox 取消处理、#106 的未加密挂载身份，
+以及 #108 的旧盘换钥身份/完成判定修复；Salt #14 已合入对应制品 pin。
+制品可下载、隔离验收通过均不替代新版本的生产旧盘迁移或 provider 生命周期验收。
 未重验项目保留各行的证据日期与边界，不把早期汇总数量当作当前完成率。
 本文只回答一个问题：**离"能拿它当生产用"还差什么**。所有结论附可回放命令或 `文件:行号`；
 无法证实的写在 §5，不写成结论。
