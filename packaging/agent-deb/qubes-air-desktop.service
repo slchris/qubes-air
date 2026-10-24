@@ -1,0 +1,40 @@
+# Installed but never enabled or started by package hooks. Activation requires
+# an existing uid 1000 account and an authenticated local X11 session on :100.
+[Unit]
+Description=Qubes Air unprivileged desktop broker
+Documentation=file:///usr/share/doc/qubes-air-agent/README.md
+After=local-fs.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=exec
+User=1000
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/qubes-air-desktop daemon
+RuntimeDirectory=qubes-air-desktop-broker qubes-air-desktop
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=no
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+PrivateDevices=yes
+# GUI applications need the desktop user's home and the same local X server.
+# This unit is separate from the unchanged ProtectHome/PrivateTmp agent unit.
+PrivateTmp=no
+ProtectHome=no
+KillMode=control-group
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+TasksMax=256
+MemoryMax=2G
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

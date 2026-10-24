@@ -45,6 +45,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     -ldflags "-s -w -X main.buildVersion=${VERSION}" \
     -o /out/qubes-air-agent ./cmd/qubes-air-agent
 
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags "-s -w" -o /out/qubes-air-desktop ./cmd/qubes-air-desktop
+
 # Fail the build here rather than ship a binary that dies with "exec format
 # error" on the target. cloud-init's runcmd swallows that failure, so without
 # this check the first sign of trouble is a qube that boots clean with a dead
@@ -66,7 +69,11 @@ ARG VERSION=dev
 WORKDIR /work
 
 COPY --from=build /out/qubes-air-agent pkg/usr/bin/qubes-air-agent
+COPY --from=build /out/qubes-air-desktop pkg/usr/bin/qubes-air-desktop
 COPY packaging/agent-deb/qubes-air-agent.service pkg/lib/systemd/system/qubes-air-agent.service
+COPY packaging/agent-deb/qubes-air-desktop.service pkg/lib/systemd/system/qubes-air-desktop.service
+COPY remote/lib/desktop-worker.py pkg/usr/lib/qubes-air/desktop-worker.py
+COPY remote/bin/qubes-desktop-run pkg/usr/bin/qubes-desktop-run
 COPY remote/qubes-rpc/ pkg/etc/qubes-rpc/
 COPY packaging/agent-deb/README.md pkg/usr/share/doc/qubes-air-agent/README.md
 COPY packaging/agent-deb/control.in packaging/agent-deb/postinst packaging/agent-deb/prerm packaging/agent-deb/postrm ./meta/
@@ -74,9 +81,10 @@ COPY packaging/agent-deb/control.in packaging/agent-deb/postinst packaging/agent
 RUN set -eu; \
     install -d pkg/DEBIAN; \
     \
-    chmod 0755 pkg/usr/bin/qubes-air-agent; \
+    chmod 0755 pkg/usr/bin/*; \
+    chmod 0644 pkg/usr/lib/qubes-air/desktop-worker.py; \
     chmod 0644 pkg/usr/share/doc/qubes-air-agent/README.md; \
-    chmod 0644 pkg/lib/systemd/system/qubes-air-agent.service; \
+    chmod 0644 pkg/lib/systemd/system/*.service; \
     chmod 0755 pkg/etc/qubes-rpc/*; \
     \
     install -m 0755 meta/postinst meta/prerm meta/postrm pkg/DEBIAN/; \

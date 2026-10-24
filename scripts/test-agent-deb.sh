@@ -57,8 +57,11 @@ done < <(packages_in)
 
 echo "testing install/upgrade/failure paths in debian:bookworm-slim..."
 docker run --rm \
+    --platform linux/amd64 \
+    -e QUBESAIR_DESKTOP_TEST_CONTAINER=1 \
     -v "$OLD_DEB:/tmp/old.deb:ro" \
     -v "$NEW_DEB:/tmp/new.deb:ro" \
     -v "$REPO_ROOT/packaging/agent-deb/test-install.sh:/tmp/test-install.sh:ro" \
+    -v "$REPO_ROOT/remote/tests:/tmp/desktop-tests:ro" \
     debian:bookworm-slim \
     bash /tmp/test-install.sh

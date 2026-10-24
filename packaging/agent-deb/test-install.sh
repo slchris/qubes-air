@@ -49,13 +49,18 @@ NEW_VERSION="$(dpkg-deb -f "$NEW_DEB" Version)"
 
 note "install dependency resolution and package contents"
 apt-get update -qq
-apt-get install -y -qq openssl >/dev/null
+apt-get install -y -qq openssl xvfb xauth x11-apps >/dev/null
+useradd -m -u 1000 desktop
 apt-get install -y -qq "$OLD_DEB" >/dev/null
 
 installed="$(dpkg-query -W -f='${Version}' qubes-air-agent)"
 [ "$installed" = "$OLD_VERSION" ] || fail "installed version is $installed, want $OLD_VERSION"
 
 for f in /usr/bin/qubes-air-agent \
+    /usr/bin/qubes-air-desktop \
+    /usr/bin/qubes-desktop-run \
+    /usr/lib/qubes-air/desktop-worker.py \
+    /lib/systemd/system/qubes-air-desktop.service \
     /lib/systemd/system/qubes-air-agent.service \
     /etc/qubes-rpc/qubesair.Ping \
     /etc/qubes-rpc/qubesair.Exec \
@@ -70,6 +75,13 @@ dpkg-deb -c "$OLD_DEB" | grep -q 'usr/share/doc/qubes-air-agent/README.md' \
     || fail "package does not ship the agent README"
 [ -x /usr/bin/qubes-air-agent ] || fail "agent binary is not executable"
 command -v python3 >/dev/null || fail "python3 dependency was not installed"
+/usr/bin/python3 -c 'from gi.repository import Gio; assert Gio.DesktopAppInfo' || fail "GIO dependency was not installed"
+if systemctl is-enabled --quiet qubes-air-desktop.service; then
+    fail "desktop broker was enabled without opt-in"
+fi
+systemd-analyze verify /lib/systemd/system/qubes-air-desktop.service
+expect_failure "root desktop broker" "desktop session unavailable" /usr/bin/qubes-air-desktop daemon
+expect_failure "unavailable desktop broker" "desktop session unavailable" /usr/bin/qubes-air-desktop menus
 
 version_out="$(/usr/bin/qubes-air-agent --version)"
 printf '%s' "$version_out" | grep -qF "$installed" || fail "--version does not report $installed: $version_out"
@@ -111,9 +123,17 @@ grep -qF '# local operator edit' /etc/qubes-rpc/qubesair.Ping \
 new_version_out="$(/usr/bin/qubes-air-agent --version)"
 printf '%s' "$new_version_out" | grep -qF "$upgraded" || fail "--version after upgrade does not report $upgraded"
 
+note "installed desktop broker and GIO integration"
+/usr/bin/python3 /tmp/desktop-tests/run_desktop_integration.py
+if systemctl is-enabled --quiet qubes-air-desktop.service; then
+    fail "upgrade enabled the desktop broker"
+fi
+
 note "removal"
 dpkg -r qubes-air-agent >/dev/null
 [ ! -e /usr/bin/qubes-air-agent ] || fail "binary survived removal"
+[ ! -e /usr/bin/qubes-air-desktop ] || fail "desktop binary survived removal"
+[ ! -e /usr/lib/qubes-air/desktop-worker.py ] || fail "desktop worker survived removal"
 
 if [ "$FAIL" -ne 0 ]; then
     printf '\nagent package smoke test FAILED\n' >&2

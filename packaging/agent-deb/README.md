@@ -11,9 +11,40 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/bin/qubes-air-agent` | Agent binary |
 | `/lib/systemd/system/qubes-air-agent.service` | Unit enabled on installation; a stopped unit is not started by postinst |
 | `/etc/qubes-rpc/` | Service implementations |
+| `/usr/bin/qubes-air-desktop` | Fixed Unix-socket desktop client and non-root broker |
+| `/usr/bin/qubes-desktop-run` | Thin app-ID wrapper for menu entries |
+| `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
+| `/lib/systemd/system/qubes-air-desktop.service` | Opt-in desktop unit, never enabled or started by package hooks |
 
 On upgrade, postinst uses `try-restart` for an already running unit. Cloud-init's installer starts the
 unit after preparing its configuration. The package default service allowlist contains only Ping.
+
+## Desktop boundary and deployment prerequisites
+
+GetAppmenus, StartApp and qubes-desktop-run use only the fixed local broker socket. The broker runs
+as the existing UID 1000 account and uses GIO for menu visibility, user overrides, nested desktop IDs
+and argv expansion. The root agent never parses Desktop Entry Exec values. Its ProtectHome and
+PrivateTmp settings remain enabled. The package declares Python GI, GLib introspection, D-Bus and
+X11 utility dependencies; it does not create a user, install Xpra, open a port or enable desktop.
+
+Activation requires an authenticated local X11 session on `:100`, a UID 1000 owned regular
+`/run/qubes-air-desktop/Xauthority` file with mode 0600, and an accessible desktop HOME. The service
+creates private runtime directories and a private D-Bus session. Menu enumeration can run before
+the display is ready; launching fails closed until `xdpyinfo` verifies access. Worker/child stdin,
+stdout and stderr are disconnected from RPC data. Successful launch acknowledges GIO acceptance,
+not window visibility. Result 75 means dispatch may have happened: never retry automatically.
+
+The socket is private to root and UID 1000, with kernel peer verification in both directions. One
+request has a 10 second deadline, 512 byte input and 1 MiB output limit; four requests can run at
+once. Menus have at most 256 applications. Desktop applications share the broker unit's UID and
+cgroup and can outlive an RPC. Stopping/restarting the unit terminates those applications and removes
+its runtime directories, including Xauthority; Xpra activation must coordinate their recreation.
+The broker refuses an existing socket instead of unlinking it. Package upgrades keep an existing
+desktop session running; apply the updated broker during an explicit maintenance restart.
+
+The encrypted data disk HOME mapping and Xpra authentication/deployment are still pending. The
+package's Linux/Xvfb tests do not establish RemoteVM GUI availability. See the
+[desktop broker record](../../docs/reviews/2026-10-24-desktop-broker.md) for current evidence.
 
 ## Identity on first boot
 
@@ -83,9 +114,11 @@ make agent-deb-test            # or: scripts/test-agent-deb.sh
 ```
 
 Builds an old and the current package, then inside `debian:bookworm-slim` installs the old one
-(resolving the `python3` dependency), checks the installed layout and version output, exercises the
+(resolving Python/GIO/D-Bus/X11 dependencies), checks the installed layout and version output, exercises the
 startup refusals (missing mTLS paths, no identity and no bootstrap token, missing revocation URL,
 empty allowlist), upgrades to the current build and verifies an operator conffile edit survives,
-then removes the package. It needs Docker and network access for apt and is deliberately not part of
+then runs real kernel peer, GIO and authenticated Xvfb tests through the installed desktop helpers,
+and removes the package. Desktop remains disabled throughout. The container has no published ports;
+Xvfb listens locally with a temporary authentication file. It needs Docker and network access for apt and is deliberately not part of
 `make pre-commit`; CI runs it in the `agent-package` job. First bootstrap against a real console
 remains a QA-01 item.

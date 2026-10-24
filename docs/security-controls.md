@@ -625,6 +625,7 @@ AGENTS.md §6 要求每个 shell/qrexec 服务覆盖空输入、非法 service/p
 |---|---|
 | `qubesair.GrpcProxy`、`qubesair.ConnectTCP`、`qubesair.IssueRelayCert`、`qubesair.RemoteEndpoints`、`qubesair.UnlockData`、`qubes.GetAppmenus`、`qubes.StartApp` | `make qrexec-test`（`scripts/test-qrexec-services.sh`） |
 | `qubesair.Exec`、`qubesair.FileCopy`、`qubesair.Ping`、`qubesair.RekeyData` | `console/backend/internal/agent/*_service_test.go`、`invoker_test.go` |
+| 桌面 broker、`qubes-desktop-run` 与 GIO | `internal/desktop` 的 Go 测试；`make agent-deb-test` 运行已安装包的 Linux peer UID、GIO 与 Xvfb 集成测试（`remote/tests/`） |
 | `qubesair.SSHProxy` | **未覆盖**：它对 target 和 service 不做字符白名单（只靠 qrexec 自身的参数字符限制），service 经 ssh 在远端由 shell 解析；删除还是加固尚未决定 |
 
 shell 套件在 `env -i` 与只含桩命令和少量无害工具的 PATH 下执行服务副本，宿主机上真实的
@@ -635,6 +636,16 @@ cryptsetup、mount、systemd-run、qubesdb-read 不可达。桩命令记录每�
 
 包装脚本不读 stdin 时，输入上限由它调用的程序负责：`relay-call`、`issue-relay-cert` 目前用
 `io.ReadAll` 读取 stdin，没有自己的上限。
+
+桌面包装脚本直接断开 stdin。固定 broker 的 Unix 协议只允许 `menus` 或 `launch` 加应用 ID，
+请求上限 512 字节、响应上限 1 MiB、最多 256 项菜单、4 个并发请求、单请求 10 秒。
+客户端在发送前验证 broker 的内核 UID 为 1000，broker 仅接受 root 与 UID 1000。root 进程
+只验证受限协议，不读取用户 Desktop Entry；GIO worker 与应用运行在 UID 1000、无新增权限的
+独立持久 unit 中。该账户及其应用共享桌面权限，broker 不隔离同 UID 的不同应用。
+失败后不自动重放。socket 所在目录必须为该 UID 所有、0700 且非 symlink；已有端点一律拒绝，
+daemon 不 unlink socket，停止后的清理由 systemd RuntimeDirectory 管理。
+包默认不启用桌面，升级也不自动重启桌面应用；部署限制见
+[broker 阶段记录](reviews/2026-10-24-desktop-broker.md)。
 
 ## Proxmox 管理连接
 

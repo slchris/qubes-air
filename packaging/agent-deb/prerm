@@ -9,8 +9,10 @@ set -e
 case "$1" in
 remove | deconfigure)
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl stop qubes-air-agent.service || true
-        systemctl disable qubes-air-agent.service || true
+        if [ -d /run/systemd/system ]; then
+            systemctl stop qubes-air-desktop.service qubes-air-agent.service
+        fi
+        systemctl disable qubes-air-desktop.service qubes-air-agent.service
     fi
     ;;
 

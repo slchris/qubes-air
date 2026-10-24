@@ -4,8 +4,8 @@ set -e
 
 case "$1" in
 remove | purge)
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload || true
+    if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
     fi
     # /etc/qubes-air is intentionally left alone even on purge: this package
     # does not create it and does not own it. It holds the agent's private key,
