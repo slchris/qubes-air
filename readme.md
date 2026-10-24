@@ -24,7 +24,7 @@ Console/agent 构建为 `eb753f4`，Relay handler 修复为 `4455409`。
 | RemoteVM + qrexec | 已真机验证 | 自动注册 RemoteVM、同步端点，经独立 Relay 调用远端 agent |
 | gRPC 传输 | 部分真机验证 | 本轮完整 qrexec 的 mTLS 调用通过；证书定时续期与断线重连未在本轮复验，另有[历史记录](docs/reviews/validation-history.md)及断线/取消自动化回归 |
 | 远端操作 | 部分真机验证 | `Ping`、JSON argv `Exec`、`FileCopy` 已通过完整 qrexec 正反例及 1 MiB 往返；`ConnectTCP` 只有[历史记录](docs/reviews/validation-history.md) |
-| 无缝桌面 | 进行中 | broker/GIO 已打包；固定认证 Unix 桌面流与真实 Xpra 容器互通已有证据，生产会话、持久 HOME 和 dom0 GUI 仍未闭环 |
+| 无缝桌面 | 进行中 | broker/GIO、固定认证桌面流和非 root Xpra 会话已有容器验收；桌面默认禁用，生产部署、持久 HOME 和 dom0 GUI 仍未闭环 |
 | GCP / AWS / Azure | 未完成 | 未注册适配器，不能用于置备；API 拒绝创建这类 zone，UI 标为不可选 |
 | 控制台安全 | 已实现基础控制 | 短期 session、读写 scope、请求边界与结构化审计；命名 token 可按 zone 限制可见和可操作的对象，不是完整多租户；zone-scoped session 在 UI 上置灰 fleet-only 视图（仅显示层，服务端判定不变） |
 | 备份 / 恢复 | 已完成受控演练 | 离机挂载、开机/受控 timer 备份、原 keyring/CA/吊销恢复与只读 provider 对账通过；小规模隔离服务恢复耗时 1.503 秒，不代表完整灾难接管 |

@@ -75,7 +75,8 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   统一应用 ID 的 113 字节边界与点段拒绝，StartApp 失败返回非零；尚未部署本轮 agent 修复。
   [broker 阶段](reviews/2026-10-24-desktop-broker.md)已替换动态 systemd-run 和 shell Exec
   解释，接入默认禁用的 UID 1000 unit 与 GIO；[Xpra 阶段](reviews/2026-10-24-xpra-session.md)
-  加入固定认证 Unix 桌面流及真实包互通测试。剩余生产依赖/mmap 策略、持久 HOME、会话生命周期、
+  加入固定认证 Unix 桌面流及真实包互通测试；[会话策略](reviews/2026-10-24-desktop-session-policy.md)
+  交付默认禁用的非 root 会话、固定依赖和服务端 mmap 拒绝。剩余生产部署、持久 HOME、
   Salt/dom0 接线和真机桌面验收。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建/编辑 Qube、purge 确认、应用菜单、zone 创建只提供已实现 provider
   及后端拒绝的组件测试（2026-09-26 合并树上 vitest 20 个测试文件、238 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge

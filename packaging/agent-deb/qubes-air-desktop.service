@@ -1,7 +1,7 @@
 # Installed but never enabled or started by package hooks. Activation requires
-# an existing uid 1000 account and an authenticated local X11 session on :100.
+# an existing uid 1000 account and the pinned Xpra/PyGObject dependencies.
 [Unit]
-Description=Qubes Air unprivileged desktop broker
+Description=Qubes Air unprivileged Xpra session and desktop broker
 Documentation=file:///usr/share/doc/qubes-air-agent/README.md
 After=local-fs.target
 StartLimitIntervalSec=300
@@ -10,7 +10,7 @@ StartLimitBurst=3
 [Service]
 Type=exec
 User=1000
-ExecStart=/usr/bin/dbus-run-session -- /usr/bin/qubes-air-desktop daemon
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/python3 -I /usr/lib/qubes-air/xpra-session.py
 RuntimeDirectory=qubes-air-desktop-broker qubes-air-desktop
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=no
@@ -29,7 +29,7 @@ PrivateDevices=yes
 PrivateTmp=no
 ProtectHome=no
 KillMode=control-group
-TimeoutStopSec=10
+TimeoutStopSec=25
 Restart=on-failure
 RestartSec=5
 TasksMax=256

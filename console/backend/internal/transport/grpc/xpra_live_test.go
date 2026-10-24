@@ -53,6 +53,33 @@ func TestXpraLiveSessionUnavailable(t *testing.T) {
 	require.Nil(t, conn)
 }
 
+func TestXpraLiveSessionPolicy(t *testing.T) {
+	requireXpraContainer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := desktop.DialXpra(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, conn.SetDeadline(time.Now().Add(10*time.Second)))
+	caps := map[string]any{
+		"version": "6.5.5", "uuid": "air-session-policy-test", "ui_client": false,
+		"rencodeplus": true, "encoders": []any{"rencodeplus"}, "compressors": []any{},
+		"compression_level": int64(0), "chunks": false, "wants": []any{"features"},
+		"clipboard": true, "notifications": true, "file-transfer": true, "printing": true, "shell": true,
+	}
+	require.NoError(t, xpra.WriteRecord(conn, []any{"hello", caps}))
+	packet, err := xpra.ReadRecord(conn)
+	require.NoError(t, err)
+	require.Len(t, packet, 2)
+	require.Equal(t, "hello", packet[0])
+	server, ok := packet[1].(map[string]any)
+	require.True(t, ok)
+	for _, key := range []string{"clipboard", "notifications", "file-transfer", "printing", "shell",
+		"start-new-commands", "mmap", "audio", "client-shutdown"} {
+		require.Empty(t, server[key], "server unexpectedly offers %s", key)
+	}
+}
+
 func TestXpraLiveScreenshotOverMTLS(t *testing.T) {
 	requireXpraContainer(t)
 	require.Zero(t, os.Getuid(), "the production agent connects as root")

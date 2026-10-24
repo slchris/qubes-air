@@ -14,6 +14,7 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/bin/qubes-air-desktop` | Fixed Unix-socket desktop client and non-root broker |
 | `/usr/bin/qubes-desktop-run` | Thin app-ID wrapper for menu entries |
 | `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
+| `/usr/lib/qubes-air/xpra-session.py` | Fixed non-root Xpra/broker session supervisor |
 | `/lib/systemd/system/qubes-air-desktop.service` | Opt-in desktop unit, never enabled or started by package hooks |
 
 On upgrade, postinst uses `try-restart` for an already running unit. Cloud-init's installer starts the
@@ -27,26 +28,39 @@ and argv expansion. The root agent never parses Desktop Entry Exec values. Its P
 PrivateTmp settings remain enabled. The package declares Python GI, GLib introspection, D-Bus and
 X11 utility dependencies; it does not create a user, install Xpra, open a port or enable desktop.
 
-Activation requires an authenticated local X11 session on `:100`, a UID 1000 owned regular
-`/run/qubes-air-desktop/Xauthority` file with mode 0600, and an accessible desktop HOME. The service
-creates private runtime directories and a private D-Bus session. Menu enumeration can run before
-the display is ready; launching fails closed until `xdpyinfo` verifies access. Worker/child stdin,
+Activation requires Xpra **6.5.5**, PyGObject **3.44.2 or newer**, an existing UID 1000 account and its
+accessible HOME. The tested desktop dependency profile is Debian 13 with the six upstream packages
+pinned in [packages.sha256](../xpra-test/packages.sha256); the base agent package still supports its
+Bookworm installation test and does not install Xpra. The service creates private runtime directories
+and a private D-Bus session. Its supervisor exclusively creates the fixed mode-0600 Xauthority,
+starts UID 1000 Xpra on `:100`, and waits for a listening private socket and authenticated X11 probe
+before starting the broker. An existing authentication file, unsafe runtime directory, wrong dependency
+version or failed child refuses the session. Worker/child stdin,
 stdout and stderr are disconnected from RPC data. Successful launch acknowledges GIO acceptance,
 not window visibility. Result 75 means dispatch may have happened: never retry automatically.
 
 The socket is private to root and UID 1000, with kernel peer verification in both directions. One
 request has a 10 second deadline, 512 byte input and 1 MiB output limit; four requests can run at
 once. Menus have at most 256 applications. Desktop applications share the broker unit's UID and
-cgroup and can outlive an RPC. Stopping/restarting the unit terminates those applications and removes
-its runtime directories, including Xauthority; Xpra activation must coordinate their recreation.
+cgroup and can outlive an RPC. The supervisor stops the broker before Xpra; either child exiting
+fails the whole session. Stopping/restarting the unit terminates those applications and removes
+its runtime directories, including Xauthority; a cold start creates a new cookie.
 The broker refuses an existing socket instead of unlinking it. Package upgrades keep an existing
 desktop session running; apply the updated broker during an explicit maintenance restart.
+
+The server refuses mmap negotiation, control on its sole socket, clipboard, file transfer, shell,
+new commands and client shutdown. Its fixed environment ignores external Xpra configuration. Xpra
+6.5.5 needs `XPRA_ENFORCE_FEATURES=0` to import encoder helpers while `--mmap=no` disables the actual
+subsystem. The control handler stays loaded to return a refusal with `control=no` on the socket.
+These choices are covered by real-client capability and negative negotiation tests.
 
 The encrypted data disk HOME mapping and production Xpra session deployment are still pending. The
 package's Linux/Xvfb tests do not establish RemoteVM GUI availability. See the
 [desktop broker record](../../docs/reviews/2026-10-24-desktop-broker.md) for package evidence. The agent's
 fixed peer-verified Xpra socket and real Xpra integration checks are documented in the
-[Xpra record](../../docs/reviews/2026-10-24-xpra-session.md); these do not enable a production session.
+[Xpra record](../../docs/reviews/2026-10-24-xpra-session.md). The shared supervisor and dependency
+profile are covered by the [session record](../../docs/reviews/2026-10-24-desktop-session-policy.md);
+these container checks do not prove a production systemd/Qubes GUI deployment.
 
 ## Identity on first boot
 
