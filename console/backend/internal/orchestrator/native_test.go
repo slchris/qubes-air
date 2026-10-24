@@ -229,6 +229,30 @@ func TestNativeExecutor_SuspendClearsCompute(t *testing.T) {
 	assert.Equal(t, 100, inf.StorageVMID)
 }
 
+func TestNativeExecutor_SuspendRetainsComputeAfterShutdownFailure(t *testing.T) {
+	ad := &fakeAdapter{stopCompute: func(context.Context, provider.Infra) error { return context.DeadlineExceeded }}
+	exec, store := newNativeTestExecutor(t, ad)
+	in := provider.Infra{
+		QubeID: "q1", Provider: "proxmox", StorageVMID: 100, ComputeVMID: 101,
+		DataVolume: "ceph:vm-100-disk-0", ObservedState: "running", Protected: true,
+	}
+	require.NoError(t, store.Save(context.Background(), &in))
+	require.ErrorIs(t, exec.Suspend(context.Background(), "remote-1"), context.DeadlineExceeded)
+	retained, err := store.Get(context.Background(), "q1")
+	require.NoError(t, err)
+	require.Equal(t, &in, retained)
+
+	// A later retry uses the same identities, including after executor restart.
+	ad.stopCompute = nil
+	restarted, _ := newNativeTestExecutor(t, ad)
+	restarted.store = store
+	require.NoError(t, restarted.Suspend(context.Background(), "remote-1"))
+	retained, err = store.Get(context.Background(), "q1")
+	require.NoError(t, err)
+	assert.Zero(t, retained.ComputeVMID)
+	assert.Equal(t, in.DataVolume, retained.DataVolume)
+}
+
 func TestNativeExecutor_DestroyRefusesProtected(t *testing.T) {
 	destroyed := false
 	ad := &fakeAdapter{}
