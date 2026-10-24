@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/keyring"
 	"github.com/slchris/qubes-air/console/internal/models"
@@ -68,6 +69,7 @@ func (e exitCodeError) Error() string { return e.msg }
 // that main's log.Fatal runs only after every deferred cleanup (the context
 // cancel and, in mint mode, the database close) has completed.
 func run() error {
+	showVersion := flag.Bool("version", false, "show build identity and exit")
 	dsn := flag.String("db", "", "console sqlite DSN (mint mode)")
 	port := flag.String("port", "8443", "agent mTLS port")
 	// The address may be given explicitly; in provisioned mode it is required,
@@ -87,6 +89,10 @@ func run() error {
 	// socket. The positional argument selects the port or the word "desktop".
 	stream := flag.Bool("stream", false, "raw stream to a GUI port or desktop (service arg: port|desktop)")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("relay-call %s\n", buildinfo.Get())
+		return nil
+	}
 
 	streamMode := *stream
 	target, service, err := parseRelayTarget(streamMode, flag.Args())

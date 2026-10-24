@@ -155,7 +155,7 @@ smoke-entrypoints:
 	@bindir="$$(mktemp -d)" || exit 1; trap 'rm -rf "$$bindir"' EXIT; \
 	(cd console/backend && go build -o "$$bindir/" ./cmd/...) || { echo "smoke: 构建 cmd/... 失败" >&2; exit 1; }; \
 	"$$bindir/grpc-smoke" -addr 127.0.0.1:0 || { echo "smoke: grpc-smoke 本机 mTLS 往返失败" >&2; exit 1; }; \
-	for entry in qubes-air-agent server; do \
+	for entry in qubes-air-agent server relay-call relay-bootstrap issue-relay-cert list-endpoints; do \
 		"$$bindir/$$entry" -version || { echo "smoke: $$entry -version 失败" >&2; exit 1; }; \
 	done; \
 	for path in "$$bindir"/*; do \

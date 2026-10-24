@@ -1,6 +1,6 @@
 # 升级与回滚 runbook
 
-更新：2026-09-26。本文回答一个问题：**手上有一套跑着的 Qubes Air，怎么换到新版本，怎么退回来。**
+更新：2026-10-24。本文回答一个问题：**手上有一套跑着的 Qubes Air，怎么换到新版本，怎么退回来。**
 它同时补上 [G-C3](../docs/production-readiness-gaps.md) 缺的升级契约和 [G-G2](../docs/production-readiness-gaps.md)
 缺的兼容矩阵。
 
@@ -8,17 +8,26 @@
 [明确不是部署方式](local-dev.md)（第 40 行）；真正的控制台是 `qubes-salt-config` 的 `salt/qubesair`
 部署的 systemd 服务，本仓库不复制第二份部署入口。
 
-## 1. 四个制品与它们的钉法
+## 1. 制品与它们的钉法
 
-发布产物（[release.yml](../.github/workflows/release.yml) 第 10-15 行）与它们在 Salt 里的键：
+发布产物（[release.yml](../.github/workflows/release.yml)）与它们在 Salt 里的键。
+前四项位于 `cfg.qubesair`，四个 transport helper 位于 `cfg.remotevm.grpc.csr`：
 
-| 制品 | 装在哪 | 钉在 `salt/config.jinja` 的 `qubesair` 块 |
+| 制品 | 装在哪 | `salt/config.jinja` 的配置键 |
 |---|---|---|
 | `qubes-air-console`（linux/amd64，cgo） | 控制台 AppVM 的 `bin_dir` | `console_binary_source` + `console_binary_sha256` |
 | `qubes-air-backup`（linux/amd64，cgo） | 备份 timer 所在的机器（由 `qubes-salt-config` 的 `salt/qubesair/backup.sls` 落盘） | `backup.binary_source` + `backup.binary_sha256` |
 | `qubes-air-console-web.tar.gz`（vite `dist/` 的单个归档） | 控制台 AppVM 的 `web_root` | `console_web_source` + `console_web_sha256` |
 | `qubes-air-agent_<version>_amd64.deb` | 每个 provision 出来的远端 qube | `agent_package_url` + `agent_package_sha256` + `agent_package_version` |
+| `relay-call`（linux/amd64） | 独立 Relay 的持久 runtime | `relay_call_source` + `relay_call_sha256` |
+| `relay-bootstrap`（linux/amd64） | 独立 Relay 的持久 runtime | `relay_bootstrap_source` + `relay_bootstrap_sha256` |
+| `issue-relay-cert`（linux/amd64） | Console 的 CSR 签发入口 | `issue_bin_source` + `issue_bin_sha256` |
+| `list-endpoints`（linux/amd64） | Console 的 endpoint 快照入口 | `list_endpoints_source` + `list_endpoints_sha256` |
 | `SHA256SUMS` | 不作为制品安装 | 上面这些摘要的来源 |
+
+当前工作流已包含四个 helper；历史 `v0.1.0` release 不包含它们。应在同一新版本的
+文件和 `SHA256SUMS` 都实际发布后更新 pin，不得推测历史 URL 已有新文件。
+helper 的构建身份查询和验证范围见[发布制品记录](reviews/2026-10-24-transport-release-artifacts.md)。
 
 `SHA256SUMS` 不是形式主义：投递到 guest 的是**无认证的明文 HTTP**，钉在 cloud-init 身份文档里的
 摘要是那条链路上唯一的完整性控制（[bootstrap-design](bootstrap-design.md) §6）。
@@ -30,7 +39,7 @@
 绿色 timer。在它之前，这个二进制没有任何发布产物，只能手工交叉编译（G-G5），而它正是灾难恢复时
 唯一能读出归档的程序。
 
-升级的动作就是把这两处（控制台、agent）的 pin 换成新值，然后应用状态：
+控制台与 agent 升级先更新各自 pin，再应用状态：
 
 ```bash
 sudo qubesctl --skip-dom0 --targets=<cfg.qubesair.qube> state.apply qubesair.console
@@ -40,6 +49,12 @@ sudo qubesctl --skip-dom0 --targets=<cfg.qubesair.qube> state.apply qubesair.con
 `console.sls` 第 33 行说明了这一点）；二进制经 `file.managed` + `source_hash: sha256=<pin>`
 落地（同文件第 260-263 行），所以 pin 写错或制品被换掉会**拒绝写入**，而不是装上一个不明二进制。
 web 归档同理（第 301-329 行），并且只在归档内容变化时才重新解包。
+
+独立 Relay 使用 helper 的精确版本和摘要，不能依赖 Console 升级顺带替换。
+更新四个 helper 的 pin 后，按 Salt 的
+[桌面通道部署说明](https://github.com/slchris/qubes-salt-config/blob/main/docs/qubesair-desktop.md)
+预览并应用对应 Console/Relay 状态，再核对实际文件的摘要和 `--version`。
+已有流会继续持有旧的 `relay-call` 进程；新调用读取新文件，不能把文件更新视为已有流已升级。
 
 ## 2. 兼容边界（兼容矩阵）
 
@@ -194,7 +209,8 @@ dom0 policy；版本不一致或会话未就绪时桌面流失败关闭，没有
 注入点是 `Makefile` 的 `build-backend` 与 [release.yml](../.github/workflows/release.yml) 的
 Build console binary 步骤），`/health` 与 `--version` 报的是同一组。`qubes-air-backup` 走**同一份**
 注入（`Makefile` 的 `build-backup`、release.yml 的 Build backup binary 步骤），`--version` 报同样
-四个字段：
+四个字段。`relay-call`、`relay-bootstrap`、`issue-relay-cert`、`list-endpoints` 也通过
+同一脚本注入并提供 `--version`；查询在 stdin、数据库、凭据和 qrexec 处理之前返回：
 
 | 字段 | 来源 | 读法 |
 |---|---|---|
@@ -229,11 +245,11 @@ qubes-air-console version=v1.2.3 revision=a70df74c78ee729aedc1eedeb59f0c5cb1811c
 用同样的命令读同一份构建身份：它既说明那个二进制是发布制品，也是和 `backup.binary_sha256` 钉的
 文件对上的读数。
 
-发布流程自己会校验这件事：release.yml 的两个构建步骤都调用同一个
+发布流程自己会校验这件事：release.yml 的 Console、backup 和四个 helper 都调用同一个
 `scripts/build-release-binary.sh`，它在打包前把制品的 `--version` 读回来，**逐字段**检查——`version`
 必须等于本次 release 版本、`revision` 与 `build_time` 不得是 `unknown`、`tree` 必须是 `clean` 或
 `dirty`，任一不满足就 `FATAL` 失败、不发版（每个字段是独立的 `-X`，只查 `version` 会漏掉兄弟 flag
-的拼写错误）。console 与 backup 走同一份校验，所以它不可能只覆盖其中一个；"制品四个字段齐全"
+的拼写错误）。这些二进制走同一份校验；"制品四个字段齐全"
 不是靠人记得。
 
 页眉（Header）显示的版本就是同一份 `version`：它启动时读 `/health`，`unknown` 或服务不可达时**不显示**任何版本，而不是退回一个常量。

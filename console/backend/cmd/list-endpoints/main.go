@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slchris/qubes-air/console/internal/buildinfo"
 	"github.com/slchris/qubes-air/console/internal/database"
 	"github.com/slchris/qubes-air/console/internal/models"
 	"github.com/slchris/qubes-air/console/internal/repository"
@@ -41,9 +42,14 @@ func main() {
 // run executes the command. Errors are returned so main's log.Fatal runs only
 // after the deferred context cancel and database close have completed.
 func run() error {
+	showVersion := flag.Bool("version", false, "show build identity and exit")
 	dsn := flag.String("db", "./qubes-air.db", "existing console sqlite file")
 	port := flag.String("port", "8443", "agent mTLS port")
 	flag.Parse()
+	if *showVersion {
+		fmt.Printf("list-endpoints %s\n", buildinfo.Get())
+		return nil
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
