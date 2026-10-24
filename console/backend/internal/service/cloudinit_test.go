@@ -122,15 +122,9 @@ func TestDataDiskMountIsDelivered(t *testing.T) {
 	assert.NotContains(t, script, "/dev/sdb",
 		"hard-coding /dev/sdb would eventually reformat the OS disk")
 
-	// The data-safety linchpin: mkfs only when blkid reports no filesystem.
-	assert.Contains(t, script, "blkid -o value -s TYPE",
-		"the script must probe for an existing filesystem before formatting")
-	assert.Contains(t, script, "mkfs.ext4",
-		"a blank disk must be formatted on first boot")
-	before := strings.Index(script, `if [ -z "$fstype" ]`)
-	mkfs := strings.Index(script, "mkfs.ext4")
-	require.Positive(t, before, "the blank-disk guard must be present")
-	assert.Less(t, before, mkfs, "mkfs must sit INSIDE the blank-disk guard, never unconditional")
+	// Execution tests in cloudinit_datamount_test.go cover the actual first-use
+	// guard, including failed reads and nonzero data without a known signature.
+	assert.Contains(t, out, "  - diffutils\n", "the complete zero-read dependency must be delivered")
 
 	unit := fileContent(t, cc, "qubes-air-data.service")
 	require.NotEmpty(t, unit, "the data-mount systemd unit must be delivered")

@@ -271,6 +271,9 @@ func writeHostnameAndPackages(b *strings.Builder, remoteName string, pkg AgentPa
 		// cryptsetup is what qubesair.UnlockData drives. Named here so a blank
 		// image can still open its LUKS disk; the console pushes the key later.
 		b.WriteString("  - cryptsetup\n")
+	} else {
+		// The plaintext first-use guard requires cmp's complete zero read.
+		b.WriteString("  - diffutils\n")
 	}
 }
 
@@ -388,10 +391,9 @@ func agentInstallerScript(pkg AgentPackage) string {
 // by-path glob matches only the whole data disk — the OS disk (…0:0:0:0) and any
 // partition (…-part*) never match.
 //
-// It formats the disk ONLY when it carries no filesystem yet — its first ever
-// boot. On every resume thereafter the reattached disk already holds ext4, so
-// mkfs is skipped and the data is mounted untouched. That one guard is what makes
-// "the data disk is retained" mean anything to a user.
+// It formats only an unrecognized disk that can be read completely as zeros.
+// A signature probe's empty output does not distinguish blank data from I/O
+// failure. Existing ext4 is mounted without that scan or any formatting.
 func dataDiskMountScript() string {
 	return strings.NewReplacer(
 		"@BYPATH@", "/dev/disk/by-path/*-scsi-0:0:0:1",
@@ -436,14 +438,32 @@ if [ -z "$dev" ]; then
     exit 0
 fi
 
-# Format ONLY a blank disk. blkid prints an existing filesystem's type and
-# nothing for a blank disk, so an empty result — and only an empty result —
-# triggers mkfs. Whole-disk ext4 (no partition table) keeps reattach trivial.
-fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
-if [ -z "$fstype" ]; then
-    echo "qubes-air-mount-data: $dev is blank; creating ext4 (first boot)" >&2
-    mkfs.ext4 -q -L @LABEL@ "$dev"
-fi
+# Exit 2 also means blkid could not read the device. It is never sufficient
+# to authorize formatting: require a complete, successful all-zero comparison.
+# Whole-disk ext4 resumes skip this scan; partitions and other signatures fail.
+probe_status=0
+fstype="$(blkid -p -o value -s TYPE -s PTTYPE "$dev" 2>/dev/null)" || probe_status=$?
+case "$probe_status:$fstype" in
+    0:ext4) ;;
+    2:)
+        bytes="$(blockdev --getsize64 "$dev")"
+        case "$bytes" in
+            ''|*[!0-9]*|0*)
+                echo "qubes-air-mount-data: cannot verify data disk size" >&2
+                exit 1 ;;
+        esac
+        if ! cmp -s -n "$bytes" "$dev" /dev/zero; then
+            echo "qubes-air-mount-data: data disk is not readable as all zeros; refusing initialization" >&2
+            exit 1
+        fi
+        echo "qubes-air-mount-data: verified zero disk; creating ext4 (first boot)" >&2
+        mkfs.ext4 -q -L @LABEL@ "$dev"
+        ;;
+    *)
+        echo "qubes-air-mount-data: unsupported signature or failed probe; refusing initialization" >&2
+        exit 1
+        ;;
+esac
 
 mkdir -p @MOUNT@
 if mountpoint -q @MOUNT@; then

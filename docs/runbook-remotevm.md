@@ -151,6 +151,10 @@ purge 的 compute 清理使用同一正常关机边界。关机失败、超时�
 对启用加密的 Qube，确认远端只看到已打开的 mapper，持久盘静态内容是 LUKS 密文；console
 日志不得打印密钥。首次初始化与 resume 解锁都应通过 agent mTLS 服务完成。
 
+未加密盘首次初始化要求完整读取且全零，探测空输出本身不构成格式化依据；未知非零内容、
+分区表或读取失败都会停止。已有 whole-disk ext4 直接复用。首次读取耗时取决于盘大小与吞吐，
+失败时保留原盘排查，不要清零后重试。见[未加密盘初始化记录](reviews/2026-10-24-plain-data-initialization.md)。
+
 UnlockData 会核对 scsi1、LUKS UUID、mapper backing device 和 `/data` 挂载身份；只接受 root
 持有、普通用户不可替换的可写 ext4 根，错误来源、子挂载、只读挂载或符号链接均失败。签名探测失败
 不会触发格式化。出现身份错误时保留磁盘与当前挂载，先只读检查设备及 mountinfo；不要删除目录、
