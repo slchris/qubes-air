@@ -15,6 +15,7 @@ type worker struct {
 	program string
 	args    []string
 	env     []string
+	dir     string
 }
 
 func (w worker) run(ctx context.Context, request Request) Response {
@@ -31,6 +32,7 @@ func (w worker) run(ctx context.Context, request Request) Response {
 	// request arguments are the allowlisted operation and validated app ID.
 	cmd := exec.CommandContext(ctx, w.program, args...)
 	cmd.Env = w.env
+	cmd.Dir = w.dir
 	cmd.WaitDelay = 200 * time.Millisecond
 	output := &responseBuffer{cancel: cancel}
 	cmd.Stdout = output

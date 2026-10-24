@@ -16,6 +16,9 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
 | `/usr/lib/qubes-air/xpra-session.py` | Fixed non-root Xpra/broker session supervisor |
 | `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData |
+| `/usr/lib/qubes-air/data-home.py` | Fixed root preparation of verified encrypted HOME and desktop prerequisite checks |
+| `/lib/systemd/system/data.mount` | Tracks UnlockData's mount and orders desktop termination before unmount |
+| `/lib/systemd/system/qubes-air-desktop-home.service` | Short root preparation outside the desktop's device isolation; runs on each activation |
 | `/lib/systemd/system/qubes-air-desktop.service` | Opt-in desktop unit, never enabled or started by package hooks |
 
 On upgrade, postinst uses `try-restart` for an already running unit. Cloud-init's installer starts the
@@ -29,8 +32,8 @@ and argv expansion. The root agent never parses Desktop Entry Exec values. Its P
 PrivateTmp settings remain enabled. The package declares Python GI, GLib introspection, D-Bus and
 X11 utility dependencies; it does not create a user, install Xpra, open a port or enable desktop.
 
-Activation requires Xpra **6.5.5**, PyGObject **3.44.2 or newer**, an existing UID 1000 account and its
-accessible HOME. The tested desktop dependency profile is Debian 13 with the six upstream packages
+Activation requires Xpra **6.5.5**, PyGObject **3.44.2 or newer**, and an existing UID/GID 1000 account
+whose NSS HOME is exactly `/data/home`. The tested desktop dependency profile is Debian 13 with the six upstream packages
 pinned in [packages.sha256](../xpra-test/packages.sha256); the base agent package still supports its
 Bookworm installation test and does not install Xpra. The service creates private runtime directories
 and a private D-Bus session. Its supervisor exclusively creates the fixed mode-0600 Xauthority,
@@ -55,13 +58,58 @@ new commands and client shutdown. Its fixed environment ignores external Xpra co
 subsystem. The control handler stays loaded to return a refusal with `control=no` on the socket.
 These choices are covered by real-client capability and negative negotiation tests.
 
-The encrypted data disk HOME mapping and production Xpra session deployment are still pending. The
-package's Linux/Xvfb tests do not establish RemoteVM GUI availability. See the
+Production Xpra deployment and Qubes GUI acceptance remain pending. The package's Linux/Xvfb tests
+do not establish RemoteVM GUI availability. See the
 [desktop broker record](../../docs/reviews/2026-10-24-desktop-broker.md) for package evidence. The agent's
 fixed peer-verified Xpra socket and real Xpra integration checks are documented in the
 [Xpra record](../../docs/reviews/2026-10-24-xpra-session.md). The shared supervisor and dependency
 profile are covered by the [session record](../../docs/reviews/2026-10-24-desktop-session-policy.md);
 these container checks do not prove a production systemd/Qubes GUI deployment.
+
+## Encrypted HOME and mount lifecycle
+
+The opt-in desktop unit binds to `data.mount`. UnlockData alone validates and mounts the encrypted
+device; the mount unit's `ConditionPathIsMountPoint=/data` prevents desktop activation from mounting
+an unverified mapper. The mount's start job has a 5 second limit and does not precede `local-fs.target`,
+so an absent mapper cannot block boot before the networked agent can unlock it.
+The fixed root oneshot `qubes-air-desktop-home.service` runs outside the desktop's device cgroup/namespace,
+rechecks the LUKS/mapper/mount identity and the deployment prerequisites, then creates only a missing
+`/data/home` with UID/GID 1000 and mode 0700. Existing entries must already have that owner, mode
+and filesystem identity. It never follows a symlink, repairs permissions, recursively changes owners,
+migrates an old HOME or alters NSS. A partially created directory after failure is retained for
+operator inspection. The supervisor and worker require the same HOME and working directory;
+an unavailable directory fails instead of falling back to the system disk.
+The preparation unit has only `CAP_CHOWN` in its capability set and a 35 second start limit; it becomes
+inactive after success so the next activation checks again. The desktop keeps `PrivateDevices=yes`.
+
+The pinned upstream `xpra-server` package enables a separate socket on TCP 14500 and `/run/xpra/system`.
+The deployment must mask **both** upstream proxy units before installing Xpra. On an existing image,
+inspect those services before stopping them as part of its maintenance plan:
+
+```bash
+systemctl mask --now xpra-server.socket xpra-server.service
+```
+
+Every desktop activation requires both units to be masked and inactive; missing or unreadable state
+fails closed. The preparation helper only reads their status, and the agent package neither installs
+Xpra nor changes those units. This gate is not a continuous network listener monitor.
+
+Package hooks keep the desktop disabled. When an operator has enabled it, successful UnlockData calls
+request an idempotent asynchronous start after validating the mount. `unlocked:true` reports the disk
+result, not GUI readiness; a rejected start request appends `desktop start request failed` to `detail`,
+while later startup failures are visible in both unit journals:
+
+```bash
+journalctl -u qubes-air-desktop -u qubes-air-desktop-home -n 80
+```
+
+After correcting the underlying account, mount or dependency problem, clear any start limit on both
+units before retrying the desktop start. Never replace an existing HOME just to make a check pass.
+Stopping `data.mount` stops the desktop cgroup first; applications receive SIGTERM and the unit's
+25 second limit applies before remaining processes are killed. This allows applications to flush
+files, but cannot save unsaved documents or guarantee graceful application exit. See the
+[encrypted HOME record](../../docs/reviews/2026-10-24-encrypted-desktop-home.md) for isolated systemd validation
+and the remaining production acceptance work.
 
 ## Identity on first boot
 

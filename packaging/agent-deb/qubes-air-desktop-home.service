@@ -1,0 +1,21 @@
+# Fixed root preparation runs outside the desktop's device cgroup/namespace.
+# It stays inactive after success so every desktop start checks again.
+[Unit]
+Description=Qubes Air encrypted desktop HOME preparation
+BindsTo=data.mount
+After=data.mount
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 -I /usr/lib/qubes-air/data-home.py
+TimeoutStartSec=35
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+TasksMax=16
+MemoryMax=64M
+LimitNOFILE=64

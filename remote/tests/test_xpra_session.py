@@ -41,22 +41,36 @@ class SessionPolicyTests(unittest.TestCase):
                             SESSION.check_versions()
 
     def test_environment_discards_caller_configuration(self):
-        account = SimpleNamespace(pw_uid=1000, pw_name="desktop", pw_dir="/home/desktop")
+        account = SimpleNamespace(pw_uid=1000, pw_name="desktop", pw_dir="/data/home")
         with patch.dict(os.environ, {"HOME": "/root", "PYTHONPATH": "/tmp/inject", "XPRA_MMAP_DIR": "/tmp"}):
             env = SESSION.session_environment(account, "unix:path=/tmp/private-bus")
-        self.assertEqual(env["HOME"], "/home/desktop")
+        self.assertEqual(env["HOME"], "/data/home")
         self.assertEqual(env["XPRA_ENFORCE_FEATURES"], "0")
         self.assertEqual(env["XPRA_USER_CONF_DIRS"], "")
         self.assertNotIn("PYTHONPATH", env)
         self.assertNotIn("XPRA_MMAP_DIR", env)
-        for home in ["/", "relative", "/home/../root", "/home/desktop/"]:
+        for home in ["/", "relative", "/home/../root", "/home/desktop/", "/home/desktop"]:
             account.pw_dir = home
             with self.subTest(home=home), self.assertRaises(RuntimeError):
                 SESSION.session_environment(account, "unix:path=/tmp/private-bus")
-        account.pw_dir = "/home/desktop"
+        account.pw_dir = "/data/home"
         for bus in ["", "tcp:host=example", "unix:path=/tmp/bus\n", "unix:path=/tmp/bus\x00"]:
             with self.subTest(bus=bus), self.assertRaises(RuntimeError):
                 SESSION.session_environment(account, bus)
+
+    def test_unavailable_home_never_starts_a_session(self):
+        with patch.object(SESSION.os, "getuid", return_value=1000), \
+                patch.object(SESSION.os, "geteuid", return_value=1000), \
+                patch.object(SESSION.signal, "signal"), patch.object(SESSION, "check_versions"), \
+                patch.object(SESSION.pwd, "getpwuid", return_value=SimpleNamespace(pw_uid=1000)), \
+                patch.object(SESSION.os, "umask"), \
+                patch.object(SESSION, "session_environment", return_value={"HOME": "/data/home"}), \
+                patch.object(SESSION.os, "chdir", side_effect=FileNotFoundError), \
+                patch.object(SESSION, "prepare_runtime") as prepare, \
+                patch.object(SESSION, "supervise") as supervise:
+            self.assertEqual(SESSION.main([]), 69)
+            prepare.assert_not_called()
+            supervise.assert_not_called()
 
     def test_runtime_files_are_exclusive_and_private(self):
         with tempfile.TemporaryDirectory() as temp:

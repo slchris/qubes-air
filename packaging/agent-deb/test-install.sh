@@ -50,7 +50,8 @@ NEW_VERSION="$(dpkg-deb -f "$NEW_DEB" Version)"
 note "install dependency resolution and package contents"
 apt-get update -qq
 apt-get install -y -qq openssl xvfb xauth x11-apps >/dev/null
-useradd -m -u 1000 desktop
+useradd -m -u 1000 -d /data/home desktop
+chmod 0700 /data/home
 apt-get install -y -qq "$OLD_DEB" >/dev/null
 
 installed="$(dpkg-query -W -f='${Version}' qubes-air-agent)"
@@ -62,7 +63,10 @@ for f in /usr/bin/qubes-air-agent \
     /usr/lib/qubes-air/desktop-worker.py \
     /usr/lib/qubes-air/xpra-session.py \
     /usr/lib/qubes-air/data-mount.py \
+    /usr/lib/qubes-air/data-home.py \
+    /lib/systemd/system/data.mount \
     /lib/systemd/system/qubes-air-desktop.service \
+    /lib/systemd/system/qubes-air-desktop-home.service \
     /lib/systemd/system/qubes-air-agent.service \
     /etc/qubes-rpc/qubesair.Ping \
     /etc/qubes-rpc/qubesair.Exec \

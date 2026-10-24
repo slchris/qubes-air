@@ -50,6 +50,18 @@ MOUNT_CHECK="/usr/lib/qubes-air/data-mount.py"
 # the same reason); a longer passphrase is refused, never truncated.
 MAX_KEY_BYTES=4096
 
+report_unlocked() {
+    local detail="$1"
+    # Package hooks leave desktop disabled. An enabled unit rechecks encrypted
+    # HOME as root before starting its unprivileged session; start is idempotent.
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet qubes-air-desktop.service; then
+        if ! systemctl start --no-block qubes-air-desktop.service >&2; then
+            detail="$detail; desktop start request failed"
+        fi
+    fi
+    printf '{"unlocked":true,"detail":"%s"}\n' "$detail"
+}
+
 # ---- privileged inner half: runs under systemd-run, key on its stdin ----
 if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
     key="$(cat)"
@@ -76,7 +88,7 @@ if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
 
     # Preflight proves an existing mount is this disk's writable filesystem.
     if [ -e "$mapped" ] && mountpoint -q /data; then
-        printf '{"unlocked":true,"detail":"already unlocked and mounted"}\n'
+        report_unlocked 'already unlocked and mounted'
         exit 0
     fi
 
@@ -142,7 +154,7 @@ if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
 
     if mountpoint -q /data; then
         if python3 -I "$MOUNT_CHECK" mounted; then
-            printf '{"unlocked":true,"detail":"unlocked and mounted"}\n'
+            report_unlocked 'unlocked and mounted'
         else
             printf '{"unlocked":false,"detail":"mounted data identity invalid"}\n'
         fi
