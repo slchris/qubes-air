@@ -132,8 +132,16 @@ printf '%s\n' '["/usr/bin/id"]' |
 
 通过控制台 start/stop（suspend/resume）流程操作。底层由 provider 适配器实现：
 
-- suspend：停止并删除计算实例，`qube_infra` 保留 storage VM 与数据盘；
+- suspend/release：对非 HA compute 请求正常关机（guest 超时 60 秒、`forceStop=0`），
+  Console 等待与关机后复核最多 90 秒；确认所有权、无 provider lock、非 HA 且已停止后才删除计算实例，
+  `qube_infra` 保留 storage VM 与数据盘；
 - resume：从模板重建计算实例，挂回同一数据盘。
+
+purge 的 compute 清理使用同一正常关机边界。关机失败、超时、取消、未知状态或 HA 状态无法确认时，
+任务失败并保留 compute 记录，不自动硬停或继续删除数据盘。先检查 guest 关机与 provider 状态，
+问题解决后重试；若管理员已经正常停止该 VM，重试会复核后删除。不要在关机操作期间改变 VM 所有权
+或 HA 配置。正常关机为应用退出和文件系统刷盘提供机会，不会自动保存未保存的文档。
+控制逻辑的回归范围见[正常关机记录](reviews/2026-10-24-graceful-compute-stop.md)。
 
 确认 suspend 后持久数据盘仍在，resume 后挂回同一盘，agent 恢复 healthy，RemoteVM endpoint
 更新，测试文件仍可读。数据盘有 `protected` 保护，purge 需显式确认。

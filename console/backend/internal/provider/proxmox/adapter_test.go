@@ -402,6 +402,7 @@ func TestEnsureCompute_RequiresDataVolume(t *testing.T) {
 
 func TestStopCompute_StopsAndDeletes(t *testing.T) {
 	deleted := false
+	stopped := false
 	ad, rec := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/qemu/106/status/current"):
@@ -409,10 +410,15 @@ func TestStopCompute_StopsAndDeletes(t *testing.T) {
 				http.NotFound(w, r)
 				return
 			}
-			writeData(w, map[string]any{"status": vmStatusRunning, "vmid": 106})
+			status := vmStatusRunning
+			if stopped {
+				status = vmStatusStopped
+			}
+			writeData(w, map[string]any{"status": status, "vmid": 106, "ha": map[string]int{"managed": 0}})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/qemu/106/config"):
 			writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/qemu/106/status/stop"):
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/qemu/106/status/shutdown"):
+			stopped = true
 			writeData(w, testUPID)
 		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/qemu/106"):
 			deleted = true
@@ -426,8 +432,10 @@ func TestStopCompute_StopsAndDeletes(t *testing.T) {
 
 	in := provider.Infra{Node: "infra-node1", StorageVMID: 105, ComputeVMID: 106}
 	require.NoError(t, ad.StopCompute(context.Background(), testQube(), in))
-	assert.True(t, rec.has("POST", "/api2/json/nodes/infra-node1/qemu/106/status/stop"))
+	assert.False(t, rec.has("POST", "/api2/json/nodes/infra-node1/qemu/106/status/stop"))
+	assert.Equal(t, "forceStop=0&timeout=60", rec.body("POST", "/api2/json/nodes/infra-node1/qemu/106/status/shutdown"))
 	assert.True(t, rec.has("DELETE", "/api2/json/nodes/infra-node1/qemu/106"))
+	require.NoError(t, ad.StopCompute(context.Background(), testQube(), in), "retry after deletion is idempotent")
 }
 
 func TestStopCompute_NoComputeIsNoop(t *testing.T) {

@@ -129,6 +129,7 @@
 | UD-8b | 任务轮询间隔 | **2s**（调度器构造 provider 时另传 15s REST 超时：`internal/scheduler/proxmox.go:58`） | `internal/provider/proxmox/client.go:281`、`internal/provider/proxmox/adapter.go:80` |
 | UD-8c | 默认 cloud-init snippet datastore | `local` | `internal/provider/proxmox/adapter.go:77` |
 | UD-8d | provider HTTP 客户端的空闲连接超时 | **30s**（Proxmox 适配器与调度器共用；此前为 0，即空闲 keep-alive 连接一直保留到 provider 断开） | `internal/providerhttp/client.go:20`（`IdleConnTimeout`） |
+| UD-8e | compute 正常关机预算 | guest **60s**，Console 关机等待与复核合计 **90s**；更短调用方 deadline 优先，`forceStop=0`，无硬停回退；仅非 HA VM | `internal/provider/proxmox/shutdown.go`（`guestShutdownSeconds`、`computeShutdownWait`） |
 
 ### 1.5 MCP 接入
 

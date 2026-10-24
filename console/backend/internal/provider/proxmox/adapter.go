@@ -583,8 +583,8 @@ func (a *Adapter) ensureStarted(ctx context.Context, node string, vmid int) erro
 	return a.postTask(ctx, node, startPath, url.Values{})
 }
 
-// StopCompute stops and deletes the compute instance, leaving the persistent
-// disk untouched (it is owned by the storage VM, so it survives this delete).
+// StopCompute gracefully shuts down and deletes a non-HA compute instance,
+// leaving the persistent disk untouched (it belongs to the storage VM).
 func (a *Adapter) StopCompute(ctx context.Context, q *models.Qube, in provider.Infra) error {
 	if in.ComputeVMID == 0 {
 		return nil
@@ -602,8 +602,8 @@ func (a *Adapter) StopCompute(ctx context.Context, q *models.Qube, in provider.I
 	if _, err := a.ownedConfig(ctx, q, in.Node, in.ComputeVMID, "compute"); err != nil {
 		return err
 	}
-	if err := a.stopIfRunning(ctx, in.Node, in.ComputeVMID); err != nil {
-		return err
+	if err := a.prepareComputeDeletion(ctx, q, in); err != nil {
+		return fmt.Errorf("proxmox: compute VM %d retained: %w", in.ComputeVMID, err)
 	}
 	a.logf(ctx, "deleting compute VM %d on %s", in.ComputeVMID, in.Node)
 	delPath := fmt.Sprintf("/api2/json/nodes/%s/qemu/%d", url.PathEscape(in.Node), in.ComputeVMID)
@@ -611,22 +611,6 @@ func (a *Adapter) StopCompute(ctx context.Context, q *models.Qube, in provider.I
 		return err
 	}
 	return a.requireVMAbsent(ctx, in.Node, in.ComputeVMID)
-}
-
-// stopIfRunning issues a hard stop for a running VM. suspend/release only needs
-// the instance gone; a graceful shutdown would block on a guest that may be
-// wedged.
-func (a *Adapter) stopIfRunning(ctx context.Context, node string, vmid int) error {
-	var st vmStatus
-	path := fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/current", url.PathEscape(node), vmid)
-	if err := a.client.get(ctx, path, &st); err != nil {
-		return err
-	}
-	if st.Status != vmStatusRunning {
-		return nil
-	}
-	stopPath := fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/stop", url.PathEscape(node), vmid)
-	return a.postTask(ctx, node, stopPath, url.Values{})
 }
 
 // DestroyStorage deletes the storage-holder VM and, with it, the persistent
