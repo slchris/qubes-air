@@ -40,12 +40,13 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   补齐数据库重开、并发 claim、保存失败、超时及恢复测试，修复编辑覆盖在途状态的问题。
   完整约束见[恢复契约](reliability-design.md)；不包含跨 Console 进程接管。
 - [x] **DATA-01：独立密钥与备份销毁边界。** 已移除静默派生：DEK 是唯一解锁路径，旧盘
-  首次解锁经 `qubesair.RekeyData` 原子迁移（先存 DEK、后换键，失败保留旧键可重试），
+  首次解锁经 `qubesair.RekeyData` 迁移（先存 DEK、后换键，未确认完成时保留标记并用同一键重试），
   master 只读且仅用于迁移，不再自动创建。删除、快照与备份副本的保留/销毁影响见
   [凭据销毁](credential-destruction.md)与[灾难恢复](disaster-recovery.md)。
   验收边界：自动化覆盖迁移成功、部分失败、标记重试与拒绝路径；按盘真机核验密钥来源
   仍归 QA-01，未迁移盘不能宣称 crypto-shred。证据见
-  [数据密钥迁移记录](reviews/2026-09-21-data-keys.md)。
+  [数据密钥迁移记录](reviews/2026-09-21-data-keys.md)及后续
+  [换钥身份与完成判定](reviews/2026-10-25-rekey-data-validation.md)。
 - [x] **DATA-02：未加密数据盘挂载身份。** 已实现唯一 scsi1 root 块设备、安全目录、
   ext4 来源/根/可写属性检查和 agent 启动门禁；保留完整零读保护。红回归、真实 QEMU
   格式化/挂载/缺盘/启动拒绝、包回归与完整门禁通过；对应 G-H13，既有实例的部署另验，见

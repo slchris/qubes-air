@@ -37,7 +37,7 @@ def verify_image(path, expected):
         raise ValueError("image SHA512 mismatch")
 
 
-def write_seed(root, desktop_binary, plain_data):
+def write_seed(root, desktop_binary, plain_data, rekey_data):
     seed = root / "seed"
     seed.mkdir()
     files = []
@@ -68,6 +68,12 @@ def write_seed(root, desktop_binary, plain_data):
              "/etc/systemd/system/qubes-air-agent.service.d/20-data-mount.conf", "0644"),
             ("packaging/agent-deb/qubes-air-agent.service", "/etc/systemd/system/qubes-air-agent.service", "0644"),
             ("packaging/agent-deb/data.mount", "/etc/systemd/system/data.mount", "0644")])
+    if rekey_data:
+        sources[-1] = ("remote/tests/run_rekey_data_guest.py", "/root/run_data_mount_guest.py", "0600")
+        sources.extend([
+            ("remote/tests/run_data_mount_guest.py", "/root/data_mount_support.py", "0600"),
+            ("remote/qubes-rpc/qubesair.RekeyData", "/etc/qubes-rpc/qubesair.RekeyData", "0755"),
+            ("packaging/agent-deb/qubes-air-agent.service", "/etc/systemd/system/qubes-air-agent.service", "0644")])
     for source, target, mode in sources:
         files.append({"path": target, "permissions": mode, "encoding": "b64",
                       "content": base64.b64encode((REPO / source).read_bytes()).decode("ascii")})
@@ -118,7 +124,7 @@ def run(args):
     if not re.fullmatch(r"/[A-Za-z0-9/._+-]+", str(root)):
         raise RuntimeError("TMPDIR must have a simple absolute path")
     print("Fixture artifacts: " + str(root), flush=True)
-    write_seed(root, args.desktop_binary, args.plain_data)
+    write_seed(root, args.desktop_binary, args.plain_data, args.rekey_data)
     shutil.copyfile(args.firmware_vars, root / "uefi-vars.fd")
     command("qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", str(args.image), str(root / "root.qcow2"))
     command("qemu-img", "resize", str(root / "root.qcow2"), "8G")
@@ -147,6 +153,8 @@ def main():
                         help="current linux/amd64 broker binary; also test encrypted HOME and systemd/Xpra")
     mode.add_argument("--plain-data", action="store_true",
                       help="test the cloud-init plain data script and systemd startup dependency")
+    mode.add_argument("--rekey-data", action="store_true",
+                      help="test real LUKS key migration through the packaged agent unit sandbox")
     run(parser.parse_args())
 
 

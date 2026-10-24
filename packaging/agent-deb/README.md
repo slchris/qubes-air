@@ -15,7 +15,7 @@ See the [agent design](../../docs/remote-agent-design.md) and
 | `/usr/bin/qubes-desktop-run` | Thin app-ID wrapper for menu entries |
 | `/usr/lib/qubes-air/desktop-worker.py` | Unprivileged GIO Desktop Entry worker |
 | `/usr/lib/qubes-air/xpra-session.py` | Fixed non-root Xpra/broker session supervisor |
-| `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData; shared source is also delivered by cloud-init for plain data before package installation |
+| `/usr/lib/qubes-air/data-mount.py` | Read-only scsi1, LUKS/mapper and mount identity checks used by UnlockData and RekeyData; shared source is also delivered by cloud-init for plain data before package installation |
 | `/usr/lib/qubes-air/data-home.py` | Fixed root preparation of verified encrypted HOME and desktop prerequisite checks |
 | `/lib/systemd/system/data.mount` | Tracks UnlockData's mount and orders desktop termination before unmount |
 | `/lib/systemd/system/qubes-air-desktop-home.service` | Short root preparation outside the desktop's device isolation; runs on each activation |
@@ -172,6 +172,13 @@ signatures are preserved, and failed filesystem creation stops before mounting. 
 a recognized signature is still subject to the existing first-use initialization contract; this check
 does not identify arbitrary unformatted user data as valuable or authorize overwriting it.
 See the [mount identity record](../../docs/reviews/2026-10-24-encrypted-data-mount.md) for validation scope.
+
+RekeyData uses the same fixed checker before any key probe or keyslot change. Deploy both files from
+the same package. It validates complete JSON key fields and refuses duplicate or extra fields.
+Probe errors and failed/empty privileged-runner responses leave migration completion unconfirmed;
+preserve the stored DEK and migration marker and retry with the same keys after resolving the error.
+The old key may already be gone. Real LUKS/systemd fixture results and production limits are in the
+[migration record](../../docs/reviews/2026-10-25-rekey-data-validation.md).
 
 ## Build
 

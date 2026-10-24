@@ -176,9 +176,13 @@ UnlockData 会核对 scsi1、LUKS UUID、mapper backing device 和 `/data` 挂�
 [包部署说明](../packaging/agent-deb/README.md#encrypted-home-and-mount-lifecycle)。
 
 旧盘（per-qube DEK 之前创建）首次解锁会经 `qubesair.RekeyData` 迁移到独立密钥：日志应出现
-`migrated ... removed the legacy keyslot`，远端 `cryptsetup luksDump` 只剩一个 keyslot。
+`migrated ... removed the legacy keyslot`；核对远端 keyslot，并确认新键可用、旧键明确拒绝。
 agent 需在 `QUBESAIR_ALLOW` 中允许该服务，否则迁移失败并在下次 resume 重试。逐项步骤见
 [Proxmox 回归 runbook](runbook-qa01.md) §5。
+RekeyData 与 UnlockData 共用固定身份 checker；缺盘、歧义或错误挂载返回 `identity_invalid`，
+在 key probe 前停止。`probe_failed`、`runner_failed` 或 `change_failed` 表示迁移完成状态未确认，
+并不证明旧键仍有效；保留原 DEK、legacy master 与迁移标记，排查后用同一对键重试。
+完整字段、错误 probe 与真实 LUKS 的验证范围见[换钥记录](reviews/2026-10-25-rekey-data-validation.md)。
 
 ## 10. 回滚与删除
 

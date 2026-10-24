@@ -128,8 +128,10 @@ def check(stage):
         check_plain(stage)
         return
     device, backing = data_device()
-    mapping = mapping_device(device, backing, stage not in ("preflight", "probe-raw"))
+    mapping = mapping_device(device, backing, stage not in ("preflight", "probe-raw", "rekey-device"))
     check_mount(mapping, stage == "mounted")
+    if stage == "rekey-device":
+        print(device)
     if stage in ("probe-raw", "probe-mapped"):
         print(probe_signature(device if stage == "probe-raw" else MAPPER))
 
@@ -185,7 +187,7 @@ def probe_signature(device):
 
 
 def main(args):
-    if len(args) != 1 or args[0] not in ("preflight", "mapped", "mounted", "probe-raw", "probe-mapped",
+    if len(args) != 1 or args[0] not in ("preflight", "mapped", "mounted", "probe-raw", "probe-mapped", "rekey-device",
                                        "plain-preflight", "plain-unmounted", "plain-mounted", "plain-ready"):
         return 64
     if os.geteuid() != 0:

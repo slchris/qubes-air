@@ -26,14 +26,15 @@ type rekeyReply struct {
 // rekeyFixture runs the real service script against a stub cryptsetup whose
 // keyslots live in one state file: old key, old-valid, new key, new-valid.
 type rekeyFixture struct {
-	t      *testing.T
-	binDir string
-	state  string
-	disk   string
-	script string
-	oldKey string
-	newKey string
-	env    []string
+	t        *testing.T
+	binDir   string
+	state    string
+	disk     string
+	script   string
+	commands string
+	oldKey   string
+	newKey   string
+	env      []string
 }
 
 const (
@@ -48,13 +49,19 @@ func newRekeyFixture(t *testing.T, oldValid, newValid bool) *rekeyFixture {
 	script, err := os.ReadFile("../../../../remote/qubes-rpc/qubesair.RekeyData")
 	require.NoError(t, err)
 	path := filepath.Join(dir, "RekeyData")
-	require.NoError(t, os.WriteFile(path, script, 0o700))
+	checker := filepath.Join(dir, "data-mount.py")
+	source := strings.Replace(string(script), `SELF="/etc/qubes-rpc/qubesair.RekeyData"`, `SELF="`+path+`"`, 1)
+	source = strings.Replace(source, `MOUNT_CHECK="/usr/lib/qubes-air/data-mount.py"`, `MOUNT_CHECK="`+checker+`"`, 1)
+	require.NoError(t, os.WriteFile(path, []byte(source), 0o700))
+	require.NoError(t, os.WriteFile(checker, []byte(rekeyIdentityStub), 0o600))
 
 	state := filepath.Join(dir, "state")
 	writeState(t, state, testOldKey, oldValid, testNewKey, newValid)
 
 	disk := filepath.Join(dir, "disk.img")
 	require.NoError(t, os.WriteFile(disk, make([]byte, 4096), 0o600))
+	commands := filepath.Join(dir, "commands")
+	require.NoError(t, os.WriteFile(commands, nil, 0o600))
 
 	binDir := filepath.Join(dir, "bin")
 	require.NoError(t, os.Mkdir(binDir, 0o700))
@@ -62,20 +69,29 @@ func newRekeyFixture(t *testing.T, oldValid, newValid bool) *rekeyFixture {
 	writeStub(t, filepath.Join(binDir, "systemd-run"), systemdRunStub)
 
 	return &rekeyFixture{
-		t:      t,
-		binDir: binDir,
-		state:  state,
-		disk:   disk,
-		script: path,
-		oldKey: testOldKey,
-		newKey: testNewKey,
+		t:        t,
+		binDir:   binDir,
+		state:    state,
+		disk:     disk,
+		script:   path,
+		commands: commands,
+		oldKey:   testOldKey,
+		newKey:   testNewKey,
 		env: []string{
 			"PATH=" + binDir + ":/usr/bin:/bin",
 			"QUBESAIR_TEST_STATE=" + state,
-			"QUBESAIR_DATA_DISK=" + disk,
+			"QUBESAIR_TEST_DISK=" + disk,
+			"QUBESAIR_TEST_COMMANDS=" + commands,
 		},
 	}
 }
+
+const rekeyIdentityStub = `import os, pathlib, sys
+assert sys.argv[1:] == ["rekey-device"]
+if os.environ.get("QUBESAIR_TEST_BAD_IDENTITY") or not pathlib.Path(os.environ["QUBESAIR_TEST_DISK"]).exists():
+    sys.exit(69)
+print(os.environ["QUBESAIR_TEST_DISK"])
+`
 
 // withoutSystemd points PATH at a directory holding only the tools the script and
 // the cryptsetup stub use. A CI runner's /usr/bin carries a real systemd-run, so
@@ -183,6 +199,7 @@ for a in "$@"; do
     *) if [ -z "$dev" ]; then dev="$a"; elif [ -z "$newfile" ]; then newfile="$a"; fi ;;
   esac
 done
+printf '%s\n' "$cmd" >> "${QUBESAIR_TEST_COMMANDS:?}"
 key="$(cat "$keyfile" 2>/dev/null)"
 
 rewrite() { printf '%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "$4" > "$state"; }
@@ -192,9 +209,13 @@ case "$cmd" in
     [ "${QUBESAIR_TEST_NOT_LUKS:-}" = "1" ] && exit 1
     exit 0 ;;
   open)
+    if [ "$key" = "$old" ] && [ -n "${QUBESAIR_TEST_OLD_PROBE_ERROR:-}" ]; then
+      exit "$QUBESAIR_TEST_OLD_PROBE_ERROR"
+    fi
+    [ "${QUBESAIR_TEST_PROBE_AFTER_CHANGE:-}" = "1" ] && [ "$newok" = "1" ] && exit 4
     [ "$key" = "$old" ] && [ "$oldok" = "1" ] && exit 0
     [ "$key" = "$new" ] && [ "$newok" = "1" ] && exit 0
-    exit 1 ;;
+    exit 2 ;;
   luksChangeKey)
     [ "${QUBESAIR_TEST_FAIL_CHANGE:-}" = "1" ] && exit 1
     [ "$key" = "$old" ] && [ "$oldok" = "1" ] || exit 1
@@ -280,11 +301,11 @@ func TestRekeyDataRefusesNonLuksDisk(t *testing.T) {
 
 func TestRekeyDataRefusesMissingDisk(t *testing.T) {
 	f := newRekeyFixture(t, true, false)
-	f.env = append(f.env[:len(f.env):len(f.env)], "QUBESAIR_DATA_DISK=/nonexistent/qubesair-data")
+	require.NoError(t, os.Remove(f.disk))
 	reply := f.run(f.request())
 
 	require.False(t, reply.Rekeyed)
-	require.Equal(t, "no_disk", reply.Reason)
+	require.Equal(t, "identity_invalid", reply.Reason)
 }
 
 func TestRekeyDataKeepsOldKeyWhenChangeFails(t *testing.T) {
@@ -456,4 +477,97 @@ func TestRekeyDataRejectsMalformedRequests(t *testing.T) {
 			require.Equal(t, "1", f.stateLine(2), "a rejected request must not touch the container")
 		})
 	}
+}
+
+func TestRekeyDataValidatesCompleteKeyFieldsBeforeSplitting(t *testing.T) {
+	cases := map[string]map[string]any{
+		"line break in old":   {"old": testOldKey + "\n" + testNewKey, "new": "invalid"},
+		"line break in new":   {"old": testOldKey, "new": testNewKey + "\ninvalid"},
+		"trailing line break": {"old": testOldKey, "new": testNewKey + "\n"},
+		"extra field":         {"old": testOldKey, "new": testNewKey, "disk": "/fixture/unused"},
+	}
+	for name, request := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newRekeyFixture(t, true, false)
+			payload, err := json.Marshal(request)
+			require.NoError(t, err)
+			reply := f.run(string(payload))
+			require.False(t, reply.Rekeyed)
+			require.Equal(t, "1", f.stateLine(2))
+			commands, err := os.ReadFile(f.commands)
+			require.NoError(t, err)
+			require.Empty(t, commands, "invalid fields must not reach cryptsetup")
+		})
+	}
+}
+
+func TestRekeyDataRefusesDuplicateKeyFields(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	reply := f.run(`{"old":"ignored","old":"` + testOldKey + `","new":"` + testNewKey + `"}`)
+	require.False(t, reply.Rekeyed)
+	require.Equal(t, "malformed", reply.Reason)
+	require.Equal(t, "1", f.stateLine(2))
+}
+
+func TestRekeyDataRefusesUnverifiedDataIdentity(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withEnv("QUBESAIR_TEST_BAD_IDENTITY=1")
+	reply := f.run(f.request())
+	require.False(t, reply.Rekeyed)
+	require.Equal(t, "identity_invalid", reply.Reason)
+	require.Equal(t, "1", f.stateLine(2))
+	commands, err := os.ReadFile(f.commands)
+	require.NoError(t, err)
+	require.Empty(t, commands, "identity refusal must precede cryptsetup")
+}
+
+func TestRekeyDataReportsPrivilegedRunnerFailure(t *testing.T) {
+	for name, body := range map[string]string{
+		"nonzero": "exit 1",
+		"empty":   "exit 0",
+		"partial": "printf '{\"rekeyed\":true,\"old_key_removed\":true}\\n'\nexit 1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newRekeyFixture(t, true, false)
+			writeStub(t, filepath.Join(f.binDir, "systemd-run"), "#!/bin/bash\n"+body+"\n")
+			reply := f.run(f.request())
+			require.False(t, reply.Rekeyed)
+			require.False(t, reply.OldKeyRemoved)
+			require.Equal(t, "runner_failed", reply.Reason)
+			require.Equal(t, "1", f.stateLine(2))
+		})
+	}
+}
+
+func TestRekeyDataDoesNotTreatProbeErrorsAsRemovedKeys(t *testing.T) {
+	for _, status := range []string{"1", "3", "4", "5", "127"} {
+		t.Run(status, func(t *testing.T) {
+			f := newRekeyFixture(t, true, true)
+			f.withEnv("QUBESAIR_TEST_OLD_PROBE_ERROR=" + status)
+			reply := f.run(f.request())
+			require.False(t, reply.Rekeyed)
+			require.False(t, reply.OldKeyRemoved)
+			require.Equal(t, "probe_failed", reply.Reason)
+			require.Equal(t, "1", f.stateLine(2), "probe failure must not change the old slot")
+			commands, err := os.ReadFile(f.commands)
+			require.NoError(t, err)
+			require.NotContains(t, string(commands), "luks", "probe failure must precede mutation")
+		})
+	}
+}
+
+func TestRekeyDataReportsUnknownCompletionAfterProbeFailure(t *testing.T) {
+	f := newRekeyFixture(t, true, false)
+	f.withEnv("QUBESAIR_TEST_PROBE_AFTER_CHANGE=1")
+	reply := f.run(f.request())
+	require.False(t, reply.Rekeyed)
+	require.False(t, reply.OldKeyRemoved)
+	require.Equal(t, "probe_failed", reply.Reason)
+	require.Equal(t, "0", f.stateLine(2), "the operation may already have removed the old key")
+	require.Equal(t, "1", f.stateLine(4), "the new key was installed before the probe failed")
+	f.env = f.env[:len(f.env)-1]
+	retry := f.run(f.request())
+	require.True(t, retry.Rekeyed)
+	require.True(t, retry.OldKeyRemoved)
+	require.Equal(t, "already", retry.Reason)
 }
