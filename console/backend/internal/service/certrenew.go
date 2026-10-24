@@ -999,10 +999,12 @@ func (r *CertRenewer) dial(ctx context.Context, qube *models.Qube, addr string, 
 	return &agentSession{cli: cli, addr: addr, cancel: cancel}, nil
 }
 
+const certificatePEMType = "CERTIFICATE"
+
 // parseCertPEM decodes a single PEM certificate.
 func parseCertPEM(certPEM string) (*x509.Certificate, error) {
 	block, _ := pem.Decode([]byte(certPEM))
-	if block == nil || block.Type != "CERTIFICATE" {
+	if block == nil || block.Type != certificatePEMType {
 		return nil, errors.New("not a PEM certificate")
 	}
 	return x509.ParseCertificate(block.Bytes)

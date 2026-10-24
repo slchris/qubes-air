@@ -558,28 +558,34 @@ if [ -z "$PKG_URL" ] || [ -z "$PKG_SHA" ]; then
 fi
 
 fetch() {
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsS --retry 3 --retry-delay 2 --max-time 120 -o "$DEB" "$PKG_URL"
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -t 3 -O "$DEB" "$PKG_URL"
-    else
-        say "neither curl nor wget is available"
+    # cloud-init installs curl explicitly. Keep one redirect/TLS contract.
+    if ! command -v curl >/dev/null 2>&1; then
+        say "curl is unavailable; cloud-init must install it before the agent"
         return 1
     fi
+    curl --disable -fsS --location --max-redirs 5 \
+        --proto '=http,https' --proto-redir '=https' \
+        --connect-timeout 15 --retry 3 --retry-delay 2 --retry-max-time 180 \
+        --max-time 120 -o "$DEB" "$PKG_URL"
 }
 
 fetch || fail "download failed: $PKG_URL"
 
-# Fail closed, before dpkg ever sees the file. The artifact store has no
-# authentication and delivers over plain HTTP, so anyone on the LAN can replace
-# this package; the digest below arrived over the trusted console -> snippet
-# path and is the only thing that makes the download safe to run.
+# The digest arrives through the trusted console -> snippet path. A redirect
+# or a successful HTTPS request never substitutes for the reviewed package pin.
 if ! printf '%s  %s\n' "$PKG_SHA" "$DEB" | sha256sum -c - >/dev/null 2>&1; then
     GOT=$(sha256sum < "$DEB" 2>/dev/null | cut -d ' ' -f 1)
     fail "SHA256 mismatch for $PKG_URL (expected $PKG_SHA, got ${GOT:-unreadable}); refusing to install"
 fi
 
-dpkg -i "$DEB" >/dev/null 2>&1 || fail "dpkg -i failed for $PKG_URL"
+# Clean cloud images need the package's declared dependencies too. APT verifies
+# repository metadata; never let it see this local package before its digest
+# passes. Bound both repository waits and the complete install operation.
+timeout --kill-after=10s 300s env DEBIAN_FRONTEND=noninteractive \
+    apt-get install --yes --no-install-recommends \
+    -o DPkg::Lock::Timeout=30 -o Acquire::Retries=2 \
+    -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 "$DEB" >&2 ||
+    fail "package installation failed; dependencies may be partially configured"
 rm -f "$DEB"
 
 # The package ships the unit under /lib/systemd/system; reload so systemd sees
