@@ -395,7 +395,8 @@ func TestToolsCall_DesktopAppLaunch_InvalidApp(t *testing.T) {
 		"a/b",                    // separator
 		"a b",                    // space
 		"a\nb",                   // newline
-		strings.Repeat("a", 129), // over-long
+		strings.Repeat("a", 114), // prefix plus id exceeds the transport limit
+		".", "..", "a..b", "é", " firefox.desktop ",
 	}
 	for _, app := range badApps {
 		args := `{"id":"qube-1","app":` + jsonQuote(app) + `}`

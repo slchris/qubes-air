@@ -29,7 +29,7 @@ describe('parseAppMenus', () => {
       '../launch.desktop:Name=Unsafe',
       'bad name.desktop:Name=Unsafe',
       'semi;colon.desktop:Name=Unsafe',
-      `${'a'.repeat(129)}:Name=Too long`,
+      `${'a'.repeat(114)}:Name=Too long`,
       'hidden.desktop:Exec=qubes-desktop-run hidden.desktop',
       'blank.desktop:Name=   ',
       ':Name=No id',
@@ -41,10 +41,10 @@ describe('parseAppMenus', () => {
     expect(apps).toEqual([{ id: 'safe.desktop', name: 'Safe' }])
   })
 
-  it('never offers a dot-segment id that the browser would rewrite into another path', () => {
-    const apps = parseAppMenus(['.:Name=Dot', '..:Name=Up', '...:Name=Dots', 'a..b:Name=Fine'].join('\n'))
+  it('never offers a dot-segment or an id the remote transport rejects', () => {
+    const apps = parseAppMenus(['.:Name=Dot', '..:Name=Up', '...:Name=Dots', 'a..b:Name=Invalid', 'a.b:Name=Fine'].join('\n'))
 
-    expect(apps).toEqual([{ id: 'a..b', name: 'Fine' }])
+    expect(apps).toEqual([{ id: 'a.b', name: 'Fine' }])
   })
 
   it('caps the number of listed applications', () => {
@@ -62,7 +62,7 @@ describe('parseAppMenus', () => {
 })
 
 describe('isLaunchableAppId', () => {
-  it.each(['firefox.desktop', 'org.gnome.Terminal', 'c++-ide', 'a'.repeat(128)])('accepts %s', (id) => {
+  it.each(['firefox.desktop', 'org.gnome.Terminal', 'c++-ide', 'a'.repeat(113)])('accepts %s', (id) => {
     expect(isLaunchableAppId(id)).toBe(true)
   })
 
@@ -70,7 +70,7 @@ describe('isLaunchableAppId', () => {
   // allowlist, so an id cannot smuggle a slash or a dot-segment past it and
   // have the server decode it later.
   it.each([
-    '', '.', '..', 'a/b', 'a b', 'a\nb', '$(id)', 'a'.repeat(129),
+    '', '.', '..', 'a..b', 'a/b', 'a b', 'a\nb', 'a\n', 'a\r', 'a\u2028', '$(id)', 'a'.repeat(114), 'a'.repeat(128),
     '%2e%2e', 'a%2fb', '%', 'a:b', 'é',
   ])('refuses %j', (id) => {
     expect(isLaunchableAppId(id)).toBe(false)
@@ -85,23 +85,16 @@ describe('readLaunchReply', () => {
     })
   })
 
-  // The remote script always exits 0, so these arrive as HTTP 200.
-  it.each([
-    "qubes.StartApp: failed to launch 'x.desktop' on :100: no such file",
-    "qubes.StartApp: refusing suspicious app id 'x y'",
-    'qubes.StartApp: missing app id (pass it as the qrexec service argument)',
-  ])('reads %j as refused', (reply) => {
-    expect(readLaunchReply(reply, 'x.desktop').result).toBe('refused')
-  })
-
   // Only the known success line counts as a launch. Anything else is reported
   // as not understood, never as started.
   it.each([
     ['an empty reply', ''],
     ['another program', 'OK'],
+    ['a diagnostic in stdout', 'qubes.StartApp: failed to launch'],
     ['a success line for a different app', "qubes.StartApp: launched 'other.desktop' on :100"],
     ['a success line with trailing output', "qubes.StartApp: launched 'x.desktop' on :100\nand more"],
     ['a success line missing its display', "qubes.StartApp: launched 'x.desktop'"],
+    ['a non-local display', "qubes.StartApp: launched 'x.desktop' on host:100"],
     ['a prefix the service does not print', 'qubes.StartApp: launching x.desktop'],
   ])('reads %s as unrecognised', (_name, reply) => {
     expect(readLaunchReply(reply, 'x.desktop').result).toBe('unrecognised')

@@ -428,6 +428,8 @@ func TestQubeHandler_LaunchApp_InvalidAppID(t *testing.T) {
 	rejected400 := []struct{ name, app string }{
 		{"space", "a%20b"},
 		{"newline", "a%0Ab"},
+		{"transport traversal guard", "a..b"},
+		{"transport byte limit", strings.Repeat("a", 114)},
 	}
 	for _, tt := range rejected400 {
 		t.Run(tt.name, func(t *testing.T) {
@@ -457,7 +459,7 @@ func TestQubeHandler_LaunchApp_InvalidAppID_Direct(t *testing.T) {
 	defer cleanup()
 	h := NewQubeHandler(svc)
 
-	for _, bad := range []string{"", "../firefox", "a/b", "a b", "a\nb", strings.Repeat("a", service.MaxAppIDLen+1)} {
+	for _, bad := range []string{"", ".", "..", "a..b", "../firefox", "a/b", "a b", "a\nb", strings.Repeat("a", 114)} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Request = httptest.NewRequest("POST", "/api/v1/qubes/x/apps/x/launch", nil)

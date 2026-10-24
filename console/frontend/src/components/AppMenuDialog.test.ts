@@ -58,18 +58,17 @@ describe('AppMenuDialog', () => {
     expect(onclose).not.toHaveBeenCalled()
   })
 
-  it('treats a refusal in the remote reply as a failed launch', async () => {
-    // qubes.StartApp exits 0 on failure, so the endpoint answers 200 and the
-    // failure is only in the reply text.
+  it('reports a nonzero remote launch as an error and allows an explicit retry', async () => {
     getQubeAppMenus.mockResolvedValue('firefox.desktop:Name=Firefox')
-    launchQubeApp.mockResolvedValue("qubes.StartApp: failed to launch 'firefox.desktop' on :100: no display")
+    launchQubeApp.mockRejectedValue(new api.ApiException(502, 'UPSTREAM_ERROR', 'Remote operation failed'))
 
     render(AppMenuDialog, { props: { qubeId: 'q1', qubeName: 'work', onclose: vi.fn() } })
     await userEvent.click(await screen.findByRole('button', { name: 'Launch Firefox' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/firefox did not start: .*no display/i)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Remote operation failed')
     expect(screen.queryByText(/launch request sent/i)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Launch Firefox' })).toBeEnabled()
+    expect(launchQubeApp).toHaveBeenCalledTimes(1)
   })
 
   it('does not claim a launch for a reply it does not recognise', async () => {

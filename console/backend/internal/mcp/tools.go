@@ -72,14 +72,14 @@ func pathID(args map[string]any, key string) (string, error) {
 // bar is tight on purpose: no slashes, no spaces, no length explosion. A
 // crafted id must not be able to redirect the request onto another route or to
 // forge a different service name.
-var computerUseAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,128}$`)
+var computerUseAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,113}$`)
 
 // appPathID reads the required "app" argument and allowlists it for use in the
 // {app} path segment; it is the MCP-side twin of the allowlist the Console API
 // re-enforces at the service boundary.
 func appPathID(args map[string]any) (string, error) {
-	app := queryString(args, "app")
-	if app == "" || !computerUseAppIDRe.MatchString(app) {
+	app, ok := args["app"].(string)
+	if !ok || !computerUseAppIDRe.MatchString(app) || app == "." || strings.Contains(app, "..") {
 		return "", ErrInvalidParams
 	}
 	return app, nil

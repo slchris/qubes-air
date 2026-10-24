@@ -71,8 +71,10 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 
 - [ ] **GUI-01：无缝桌面闭环。** 验收 appmenu、单击启动、多窗口、退出状态、断线恢复，
   明确 Xpra 与 RemoteVM 权限边界；ConnectTCP handler/mTLS 流已复验，但 dom0 GUI policy、
-  Xpra 部署/认证与完整桌面仍未通过。当前 StartApp 仍把失败当成功并经 systemd-run 脱离
-  agent 沙箱，desktop launcher 仍使用 shell 解释 Exec；下一阶段先修这些启动边界。
+  Xpra 部署/认证与完整桌面仍未通过。[启动契约修复](reviews/2026-10-24-app-launch-contract.md)
+  统一应用 ID 的 113 字节边界与点段拒绝，StartApp 失败返回非零；尚未部署本轮 agent 修复。
+  systemd-run 仍脱离 agent 沙箱，desktop launcher 仍使用 shell 解释 Exec；下一阶段替换
+  这些启动边界并接入独立的非 root 桌面会话。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建/编辑 Qube、purge 确认、应用菜单、zone 创建只提供已实现 provider
   及后端拒绝的组件测试（2026-09-26 合并树上 vitest 20 个测试文件、238 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge
   （`make frontend-e2e`、CI `frontend-e2e` job）；agent deb 的安装、依赖解析、升级 conffile 保留、完整性、卸载与启动拒绝路径

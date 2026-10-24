@@ -59,12 +59,10 @@
     try {
       const outcome = readLaunchReply(await launchQubeApp(qubeId, app.id, controller.signal), app.id);
       if (controller.signal.aborted) return;
-      // A 200 only means the request reached the qube; the remote service's
-      // reply says whether the app started, and only its success line counts.
+      // Nonzero service exits are HTTP errors. Even a recognised success
+      // acknowledges the launch request only; it cannot prove window visibility.
       if (outcome.result === 'launched') {
         launchNotice = { tone: 'success', text: `Launch request sent for ${app.name}. Check the remote desktop for its window.` };
-      } else if (outcome.result === 'refused') {
-        launchError = `${app.name} did not start: ${outcome.detail}`;
       } else {
         launchNotice = {
           tone: 'neutral',
