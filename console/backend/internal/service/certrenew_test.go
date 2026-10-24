@@ -190,7 +190,7 @@ func issueTestCert(cn string, lifetime time.Duration) (string, time.Time) {
 		NotAfter:     notAfter,
 	}
 	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), notAfter
+	return string(pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: der})), notAfter
 }
 
 func fingerprintOfPEM(certPEM string) string {

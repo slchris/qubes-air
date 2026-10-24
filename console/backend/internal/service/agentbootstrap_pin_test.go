@@ -103,7 +103,7 @@ func startPendingAgent(t *testing.T, ca *pki.CA, qubeName, token string) (string
 	t.Helper()
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.pem")
-	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: ca.Cert.Raw}), 0o600))
 	identity, err := agent.NewPendingIdentity(filepath.Join(dir, "agent.pem"), filepath.Join(dir, "agent-key.pem"), caPath)
 	require.NoError(t, err)
 
@@ -264,7 +264,7 @@ func TestBootstrapRefusesAStolenTokenOverThePinnedSession(t *testing.T) {
 
 	dir := t.TempDir()
 	caPath := filepath.Join(dir, "ca.pem")
-	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: certificatePEMType, Bytes: ca.Cert.Raw}), 0o600))
 	identity, err := agent.NewPendingIdentity(filepath.Join(dir, "agent.pem"), filepath.Join(dir, "agent-key.pem"), caPath)
 	require.NoError(t, err)
 	// The placeholder comes from the qube's own token ...

