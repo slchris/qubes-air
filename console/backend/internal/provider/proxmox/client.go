@@ -192,6 +192,11 @@ func (c *Client) requestRaw(ctx context.Context, method, path string, form url.V
 	// Cap the body: an unexpected error page should not be able to exhaust
 	// memory. 8 MiB is far above any API response this client expects.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	// A response can reach EOF while the transport is observing cancellation.
+	// Preserve the caller's reason before any decoding or eligibility decision.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("proxmox %s %s: read body: %w", method, path, ctxErr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("proxmox %s %s: read body: %w", method, path, err)
 	}
