@@ -593,20 +593,27 @@ ProtectHome 或 PrivateTmp。允许的程序自身若支持执行代码或修改
 
 ## 数据盘迁移：RekeyData
 
-`qubesair.RekeyData` 把仍由旧 master 派生密钥加密的数据盘原子换成该 Qube 自己的随机
-DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 密钥的 JSON
+`qubesair.RekeyData` 把仍由旧 master 派生密钥加密的数据盘换成该 Qube 自己的随机
+DEK。它在旧盘首次解锁及未完成迁移重试时由 Console 调用，请求是两个 base64 密钥的 JSON
 （`{"old":...,"new":...}`），经与 UnlockData 相同的、按 `agent-<qube>` 固定对端的验证通道
 下发；密钥只经 stdin 和进程替换传递，不进入 argv、不写盘，特权部分同样经 systemd-run。
 
-- 不格式化、不覆盖：非 LUKS 盘、缺盘、两把钥匙都打不开时拒绝并上报原因。
+- 不格式化文件系统：非 LUKS 盘、缺盘、两把钥匙都打不开时拒绝并上报原因。
+- 固定安装路径与唯一 scsi1，不接受设备环境覆盖。任何 key probe/修改前，调用共享只读
+  checker 核对 root 块设备、已有 mapper 的 LUKS UUID/backing 及安全、可写的 `/data` 根；
+  身份无法证明时返回 `identity_invalid`。guest root、内核与 provider 管理员仍受信任。
 - 顺序不可逆：先 `luksChangeKey` 原子替换；失败才退回“先 add 新键、验证新键可开、再
-  remove 旧键”。任何失败路径都保留旧键可用，不会把数据锁死。
+  remove 旧键”。执行或探测失败时完成状态可能未知，不能承诺旧键仍可用或操作已回滚。
 - 幂等：新键可用且旧键已不可用时直接报告成功，不碰容器。
-- 旧 keyslot 未能移除时报告 `old_key_removed:false`，Console 写入迁移标记，之后每次解锁
-  都重试删除；在删除成功前该盘仍可被 master 打开。
+- Console 在请求前保存 DEK 和迁移标记，只有确认新键有效且旧键拒绝才清除标记。
+  旧 keyslot 未能移除时报告 `old_key_removed:false`，之后每次解锁重试删除；旧槽仍在时
+  该盘仍可被 master 打开。`probe_failed`、`runner_failed` 或 `change_failed` 保留标记并
+  使用同一对键重试；一般执行错误不能证明旧键失效。
 - 服务与 UnlockData 一样必须在 `QUBESAIR_ALLOW` 中显式启用，并新增 Python 3 解析依赖。
 - 请求按原始字节计数，连同末尾换行最多 8192 字节，超出报 `oversize`，含 NUL 报 `malformed`；
   不会先去掉换行或 NUL 再计数，因而超量请求不会被截短后照常使用。
+- JSON 必须恰好包含 `old`、`new` 两个字符串，拒绝重复/额外字段。完整字段通过字符与长度
+  校验后才转为内部两行输入，换行不能被截掉后用于换钥。runner 非零或无响应返回失败 JSON。
 - 两个服务都拒绝 `+argument`（RekeyData 报 `bad_argument`），特权半段还要求外层经
   `systemd-run --setenv` 传入的标记（`QUBESAIR_REKEY_INNER` / `QUBESAIR_UNLOCK_INNER`），
   调用方无法设置它。此前 `qubesair.RekeyData+__rekey` 会跳过外层全部校验，持有有效密钥的
@@ -617,6 +624,8 @@ DEK。它只在首次解锁旧盘时由 Console 调用，请求是两个 base64 
 数据保持加密并在下次 resume 重试。迁移完成后 `qubes-air-luks-master` 只是只读的迁移材料，
 可核验无未迁移盘后删除（凭据 API 看不到这一行，删除只能离线操作数据库，见上文“Console API
 凭据”）；master 丢失会使未迁移盘无法解锁，也不会自动重建。
+升级包必须同时交付 RekeyData 和共享 checker；隔离真实 LUKS/systemd 验收及生产边界见
+[换钥记录](reviews/2026-10-25-rekey-data-validation.md)。
 
 ## qrexec 服务脚本的测试
 

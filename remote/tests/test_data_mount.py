@@ -91,6 +91,25 @@ class MountIdentityTests(unittest.TestCase):
         self.reject("mapped")
         self.reject("mounted")
 
+    def test_rekey_returns_only_the_verified_device_with_or_without_a_mapping(self):
+        for mapped in (True, False):
+            with self.subTest(mapped=mapped), patch("sys.stdout", new_callable=io.StringIO) as output:
+                if not mapped:
+                    self.mountinfo.write_text("")
+                    self.mapper.unlink()
+                    self.data.rmdir()
+                MOUNT.check("rekey-device")
+                self.assertEqual(output.getvalue(), str(self.raw) + "\n")
+
+    def test_rekey_refuses_foreign_mount_and_ambiguous_device(self):
+        self.mountinfo.write_text(self.valid_mount.replace("120:0", "0:99"))
+        self.reject("rekey-device")
+        self.mountinfo.write_text(self.valid_mount)
+        other = self.raw.parent / "other"
+        other.touch()
+        (self.by_path / "second-scsi-0:0:0:1").symlink_to(other)
+        self.reject("rekey-device")
+
     def test_open_mapping_without_mount_requires_final_check(self):
         self.mountinfo.write_text("")
         MOUNT.check("preflight")

@@ -89,14 +89,21 @@ agent 包用 `make release-agent VERSION=<version>` 发布，记录输出的
 
 ## 5. 数据盘迁移核验（DATA-01）
 
-仅当环境里有 per-qube DEK 之前创建的加密盘时需要：
+仅当环境里有 per-qube DEK 之前创建的加密盘与原 master 时执行，先确认精确 Qube/卷目标并备份：
 
 - console 日志应出现该 Qube 的 `migrated ... removed the legacy keyslot`；
-- 远端 `cryptsetup luksDump <dev>` 只剩一个 keyslot，用旧派生键执行
-  `cryptsetup open --test-passphrase` 应失败；
+- 远端 `cryptsetup luksDump <dev>` 核对 keyslot，确认新 DEK 能打开，旧派生键的
+  `cryptsetup open --test-passphrase` 明确返回 passphrase 拒绝；一般执行错误不等于旧键失效；
+- 比较迁移前后文件与 LUKS UUID，确认 Console 的迁移标记只在验证成功后清除；
 - 日志报告旧 keyslot 未能移除时，记录迁移标记仍在并在下次 resume 复测；
+- `probe_failed`、`runner_failed` 或 `change_failed` 时保留原 DEK/标记；实际 keyslot 可能已改变，
+  不要生成替代键，排除错误后以同一对键重试确认状态；
 - master 缺失导致迁移失败记录为 blocker，不重建 master；
 - 迁移完成后再走 purge，确认 crypto-shred 路径。
+
+密钥只经受保护的输入通道传递，不写 argv、shell history 或日志。guest 需升级同时交付
+RekeyData 与共享 checker 的 agent 包；[隔离换钥验收](reviews/2026-10-25-rekey-data-validation.md)
+覆盖真实 cryptsetup/systemd，但不替代上述生产对象与 Console 标记核验。
 
 ## 6. 吊销与秘密检查
 
