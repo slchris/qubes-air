@@ -238,8 +238,8 @@ func TestClearStreamFailsInflightCallAndPendingStream(t *testing.T) {
 	}
 	select {
 	case res := <-pc.done:
-		if !errors.Is(res.err, ErrNotConnected) {
-			t.Errorf("in-flight call result err = %v, want ErrNotConnected", res.err)
+		if !errors.Is(res.err, ErrDisconnected) || errors.Is(res.err, ErrNotConnected) {
+			t.Errorf("in-flight call result err = %v, want non-retryable ErrDisconnected", res.err)
 		}
 	default:
 		t.Error("clearStream did not fail the in-flight call: it would wait across the reconnect")
@@ -247,8 +247,8 @@ func TestClearStreamFailsInflightCallAndPendingStream(t *testing.T) {
 	if _, ok := <-ps.recv; ok {
 		t.Error("clearStream did not close the pending stream's recv channel")
 	}
-	if !errors.Is(ps.err, ErrNotConnected) {
-		t.Errorf("pending stream err = %v, want ErrNotConnected", ps.err)
+	if !errors.Is(ps.err, ErrDisconnected) || errors.Is(ps.err, ErrNotConnected) {
+		t.Errorf("pending stream err = %v, want non-retryable ErrDisconnected", ps.err)
 	}
 	if n := cli.inflightCount(); n != 0 {
 		t.Errorf("inflight map kept %d entries after the drop", n)
@@ -324,6 +324,9 @@ func TestClientReconnectsAfterConnectionDrop(t *testing.T) {
 	case callErr := <-pending:
 		if callErr == nil {
 			t.Error("an in-flight call must fail when the tunnel drops, not complete")
+		}
+		if errors.Is(callErr, ErrNotConnected) {
+			t.Errorf("in-flight disconnect incorrectly permits replay: %v", callErr)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("in-flight call hung across the tunnel drop")

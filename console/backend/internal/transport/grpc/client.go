@@ -111,8 +111,13 @@ var (
 	_ transport.StreamTransport = (*Client)(nil)
 )
 
-// ErrNotConnected is returned by Call when there is no live tunnel.
+// ErrNotConnected means no request was dispatched and no stream input was read.
+// Callers may retry only this pre-dispatch error when waiting for a tunnel.
 var ErrNotConnected = errors.New("transport/grpc: tunnel not connected")
+
+// ErrDisconnected means an accepted call lost its tunnel. Its remote outcome
+// may be unknown: retrying could repeat a side effect or corrupt a byte stream.
+var ErrDisconnected = errors.New("transport/grpc: dispatched call lost its tunnel")
 
 // NewClient builds the client. reverse routes reverse calls to the local dom0;
 // it must never decide authorization itself.
@@ -177,7 +182,7 @@ func (c *Client) resolveTLS() (*tls.Config, error) {
 	return c.cfg.TLS, nil
 }
 
-func (c *Client) runOnce(ctx context.Context) error {
+func (c *Client) runOnce(ctx context.Context) (runErr error) {
 	// Resolve mTLS for THIS connection. With a TLSProvider, each reconnect picks
 	// up the current cert — this is how rotation takes effect without a restart.
 	tlsCfg, err := c.resolveTLS()
@@ -204,13 +209,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 		return fmt.Errorf("open tunnel: %w", err)
 	}
 
-	// Publish the live stream; clear it (and fail inflight) on the way out.
-	c.setStream(stream)
-	defer c.clearStream(ErrNotConnected)
-
-	if err := c.send(handshakeFrame(c.cfg.RelayName, c.cfg.RemoteName)); err != nil {
+	// Send the handshake before allowing a call to write its first header.
+	if err := c.sendOn(stream, handshakeFrame(c.cfg.RelayName, c.cfg.RemoteName)); err != nil {
 		return fmt.Errorf("send handshake: %w", err)
 	}
+	c.setStream(stream)
+	defer func() { c.clearStream(runErr) }()
 
 	// Keepalive ticker runs alongside recvLoop; both stop when streamCtx is done.
 	go c.keepAliveLoop(streamCtx)
@@ -268,7 +272,8 @@ func (c *Client) call(ctx context.Context, target, service string, in []byte) (t
 	pc := &pendingCall{done: make(chan callResult, 1)}
 
 	c.mu.Lock()
-	if c.stream == nil {
+	stream := c.stream
+	if stream == nil {
 		c.mu.Unlock()
 		return transport.Result{}, ErrNotConnected
 	}
@@ -287,16 +292,16 @@ func (c *Client) call(ctx context.Context, target, service string, in []byte) (t
 		deadlineMs = dl.UnixMilli()
 	}
 
-	// Header + request body + EOS(request). Sends are serialized by c.send.
-	if err := c.send(requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
+	// Bind every frame to the tunnel on which this request was registered.
+	if err := c.sendOn(stream, requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
 		return transport.Result{}, fmt.Errorf("send header: %w", err)
 	}
 	if len(in) > 0 {
-		if err := c.send(dataFrame(reqID, streamRequest, in)); err != nil {
+		if err := c.sendOn(stream, dataFrame(reqID, streamRequest, in)); err != nil {
 			return transport.Result{}, fmt.Errorf("send body: %w", err)
 		}
 	}
-	if err := c.send(eosFrame(reqID, streamRequest)); err != nil {
+	if err := c.sendOn(stream, eosFrame(reqID, streamRequest)); err != nil {
 		return transport.Result{}, fmt.Errorf("send eos: %w", err)
 	}
 
@@ -326,7 +331,8 @@ func (c *Client) CallStream(ctx context.Context, target, service string, stdin i
 	ps := &pendingStream{recv: make(chan []byte, 16)}
 
 	c.mu.Lock()
-	if c.stream == nil {
+	stream := c.stream
+	if stream == nil {
 		c.mu.Unlock()
 		return ErrNotConnected
 	}
@@ -342,28 +348,15 @@ func (c *Client) CallStream(ctx context.Context, target, service string, stdin i
 	if dl, ok := ctx.Deadline(); ok {
 		deadlineMs = dl.UnixMilli()
 	}
-	if err := c.send(requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
+	if err := c.sendOn(stream, requestHeaderFrame(reqID, pb.Direction_LOCAL_TO_REMOTE, service, c.cfg.RelayName, target, deadlineMs)); err != nil {
 		return fmt.Errorf("send header: %w", err)
 	}
 
 	// stdin → request data frames, EOS when it ends. A send error means the
 	// tunnel died; the recv side observes that too and returns.
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, rerr := stdin.Read(buf)
-			if n > 0 {
-				chunk := append([]byte(nil), buf[:n]...)
-				if err := c.send(dataFrame(reqID, streamRequest, chunk)); err != nil {
-					return
-				}
-			}
-			if rerr != nil {
-				_ = c.send(eosFrame(reqID, streamRequest))
-				return
-			}
-		}
-	}()
+	pumpCtx, stopPump := context.WithCancel(ctx)
+	defer stopPump()
+	go c.sendStreamInput(pumpCtx, stream, reqID, stdin)
 
 	// response chunks → stdout until EOS (recv closed) or ctx cancels.
 	for {
@@ -377,6 +370,28 @@ func (c *Client) CallStream(ctx context.Context, target, service string, stdin i
 			if _, err := stdout.Write(chunk); err != nil {
 				return err
 			}
+		}
+	}
+}
+
+// sendStreamInput never follows a reconnect. The caller owns stdin and must
+// close it to release a blocked Read after CallStream returns.
+func (c *Client) sendStreamInput(ctx context.Context, stream pb.RelayTransport_TunnelClient, reqID string, stdin io.Reader) {
+	buf := make([]byte, 32*1024)
+	for ctx.Err() == nil {
+		n, rerr := stdin.Read(buf)
+		if ctx.Err() != nil {
+			return
+		}
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			if err := c.sendOn(stream, dataFrame(reqID, streamRequest, chunk)); err != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			_ = c.sendOn(stream, eosFrame(reqID, streamRequest))
+			return
 		}
 	}
 }
@@ -554,11 +569,14 @@ func (c *Client) clearStream(cause error) {
 	streams := c.streams
 	c.streams = make(map[string]*pendingStream)
 	c.mu.Unlock()
+	// Do not wrap ErrNotConnected from a lower layer: these calls were already
+	// accepted and therefore cannot promise that retrying is safe.
+	err := fmt.Errorf("%w: %v", ErrDisconnected, cause)
 	for _, pc := range pending {
-		pc.done <- callResult{err: fmt.Errorf("%s: %w", codeUnavailable, cause)}
+		pc.done <- callResult{err: err}
 	}
 	for _, ps := range streams {
-		ps.err = fmt.Errorf("%s: %w", codeUnavailable, cause)
+		ps.err = err
 		close(ps.recv)
 	}
 }
@@ -571,9 +589,18 @@ func (c *Client) send(frame *pb.Frame) error {
 	if stream == nil {
 		return ErrNotConnected
 	}
+	return c.sendOn(stream, frame)
+}
+
+// sendOn serializes writes on the selected tunnel. A failed Send has an
+// ambiguous remote outcome and must never surface the safe-to-retry sentinel.
+func (c *Client) sendOn(stream pb.RelayTransport_TunnelClient, frame *pb.Frame) error {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	return stream.Send(frame)
+	if err := stream.Send(frame); err != nil {
+		return fmt.Errorf("%w: %v", ErrDisconnected, err)
+	}
+	return nil
 }
 
 // jitter returns d ± up to 20% to avoid thundering-herd reconnects.
