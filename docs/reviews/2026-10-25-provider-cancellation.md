@@ -20,3 +20,15 @@ context 错误、无响应字节，并关闭响应体。现有真实 HTTPS 取�
 `make pre-commit audit` 全部通过，包含 provider 全包 race、双平台 lint、完整安全扫描、
 依赖检查、前端 0 error/0 warning、ShellCheck、YAML、文档和入口冒烟。
 独立 PR 与合并后的 CI 仍需通过，之后才恢复修复版发布。
+
+## 连接清理测试的并发边界
+
+后续 PR 的取消测试通过，但旧的 `TestCloseIdleConnectionsReleasesTheSweepConnections`
+失败：读前与读后的全进程 goroutine 数都是 7。该计数还包含其他测试异步退出的连接，
+不能用来判断当前 sweep 是否保留或关闭了自己的 keep-alive 连接。
+
+测试改为记录独立 HTTPS 服务的 `ConnState`，先证明请求结束后连接实际空闲，再调用
+`CloseIdleConnections` 并证明全部连接关闭；生产清理逻辑保持原样。临时 Go overlay
+省略关闭调用后，测试如期失败；保留关闭调用后，取消、真实 HTTPS 超时和连接清理
+连续 100 次 race 运行全部通过。补充改动后的 `make pre-commit audit` 再次全部通过，
+覆盖率为 75.6%，前端 0 error/0 warning。该结果仍不代替当前 PR 和合并提交 CI。
