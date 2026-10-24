@@ -154,6 +154,13 @@ purge 的 compute 清理使用同一正常关机边界。关机失败、超时�
 未加密盘首次初始化要求完整读取且全零，探测空输出本身不构成格式化依据；未知非零内容、
 分区表或读取失败都会停止。已有 whole-disk ext4 直接复用。首次读取耗时取决于盘大小与吞吐，
 失败时保留原盘排查，不要清零后重试。见[未加密盘初始化记录](reviews/2026-10-24-plain-data-initialization.md)。
+当前 cloud-init 会在探测/格式化前检查唯一 scsi1 设备与 `/data`，在挂载后核验设备号、ext4
+根和读写属性；错误已有挂载、子挂载、只读挂载及不安全目录均拒绝。缺盘最多重试 15 次，
+每次等待 1 秒，仍缺盘则失败。
+agent 的数据单元依赖及每次启动前复验会阻止失败启动，避免写入临时根盘。
+该 checker 由 cloud-init 安装到 `/usr/local/lib/qubes-air/data-mount.py`，与 agent 包的
+`/usr/lib/qubes-air/data-mount.py` 共用源码但不相互覆盖；既有实例不会自动获得新的 cloud-init。
+实现与隔离验收见[未加密挂载身份记录](reviews/2026-10-25-plain-data-mount-identity.md)。
 
 UnlockData 会核对 scsi1、LUKS UUID、mapper backing device 和 `/data` 挂载身份；只接受 root
 持有、普通用户不可替换的可写 ext4 根，错误来源、子挂载、只读挂载或符号链接均失败。签名探测失败

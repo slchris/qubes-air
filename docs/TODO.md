@@ -46,6 +46,10 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   验收边界：自动化覆盖迁移成功、部分失败、标记重试与拒绝路径；按盘真机核验密钥来源
   仍归 QA-01，未迁移盘不能宣称 crypto-shred。证据见
   [数据密钥迁移记录](reviews/2026-09-21-data-keys.md)。
+- [x] **DATA-02：未加密数据盘挂载身份。** 已实现唯一 scsi1 root 块设备、安全目录、
+  ext4 来源/根/可写属性检查和 agent 启动门禁；保留完整零读保护。红回归、真实 QEMU
+  格式化/挂载/缺盘/启动拒绝、包回归与完整门禁通过；对应 G-H13，既有实例的部署另验，见
+  [挂载身份记录](reviews/2026-10-25-plain-data-mount-identity.md)。
 - [ ] **OPS-01：离机恢复及 CA 演练。** 真实离机归档、原 keyring/CA、签名吊销、只读
   provider 对账及错口令/错 keyring/已有目标拒绝已通过，见[首轮记录](reviews/2026-10-23-production-closure.md)。
   补验恢复副本连接运行中 agent 的真实 mTLS Ping：27 Qubes、106 jobs、5 凭据解密，

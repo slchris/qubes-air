@@ -1,0 +1,12 @@
+[Unit]
+Description=Mount the Qubes Air persistent data disk
+After=local-fs.target
+Before=qubes-air-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/qubes-air-mount-data
+
+[Install]
+WantedBy=multi-user.target

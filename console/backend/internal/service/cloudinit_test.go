@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/slchris/qubes-air/console/internal/guestassets"
 	"github.com/slchris/qubes-air/console/internal/pki"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,9 +96,9 @@ func TestRenderedUserDataIsValidYAML(t *testing.T) {
 		"cloud-init requires the #cloud-config header to treat this as config")
 
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 6,
+	assert.Len(t, cc.WriteFiles, 8,
 		"the CA, the bootstrap token, the env file, the package installer, "+
-			"the data-mount script and its systemd unit")
+			"the data checker, agent dependency, mount script and systemd unit")
 	assert.NotEmpty(t, cc.Runcmd)
 }
 
@@ -116,23 +117,40 @@ func TestDataDiskMountIsDelivered(t *testing.T) {
 	require.NotEmpty(t, script, "the data-mount script must be delivered")
 
 	// Resolve by stable scsi address, never by /dev/sdX (the OS disk can be sdb).
-	assert.Contains(t, script, "by-path/*-scsi-0:0:0:1",
+	checker := fileContent(t, cc, "data-mount.py")
+	require.NotEmpty(t, checker, "identity checks must exist before the agent is installed")
+	assert.Equal(t, guestassets.DataMountChecker(), checker, "cloud-init must preserve the checked source bytes")
+	assert.Equal(t, guestassets.PlainDataMountScript(), script)
+	assert.Contains(t, checker, `glob("*-scsi-0:0:0:1")`,
 		"the data disk must be resolved by its stable scsi address")
+	assert.Contains(t, script, dataMountCheckerPath)
 	assert.NotContains(t, script, "/dev/sdb",
 		"hard-coding /dev/sdb would eventually reformat the OS disk")
 
 	// Execution tests in cloudinit_datamount_test.go cover the actual first-use
 	// guard, including failed reads and nonzero data without a known signature.
 	assert.Contains(t, out, "  - diffutils\n", "the complete zero-read dependency must be delivered")
+	assert.Contains(t, out, "  - python3\n", "the pre-install identity checker dependency must be delivered")
 
 	unit := fileContent(t, cc, "qubes-air-data.service")
 	require.NotEmpty(t, unit, "the data-mount systemd unit must be delivered")
+	assert.Equal(t, guestassets.PlainDataMountUnit(), unit)
 	assert.Contains(t, unit, "ExecStart="+dataMountScriptPath)
 
 	// The unit is armed on this boot and every future one. Runcmd entries are
 	// YAML sequences ([]any), so flatten to text before scanning.
 	assert.Contains(t, fmt.Sprint(cc.Runcmd...), dataMountService,
 		"runcmd must enable the data-mount unit so it runs on first boot")
+}
+
+func TestPlainDataFailureBlocksAgentStart(t *testing.T) {
+	out, _ := renderFixture(t)
+	dropin := fileContent(t, parseConfig(t, out), "20-data-mount.conf")
+	require.NotEmpty(t, dropin)
+	assert.Equal(t, guestassets.PlainDataAgentDependency(), dropin)
+	assert.Contains(t, dropin, "Requires=qubes-air-data.service")
+	assert.Contains(t, dropin, "After=qubes-air-data.service")
+	assert.Contains(t, dropin, "plain-ready")
 }
 
 // TestCASurvivesYAMLRoundTrip is the one that would fail silently.
@@ -257,6 +275,10 @@ func TestEncryptedQubeDeliversNoPlaintextMount(t *testing.T) {
 		"the plaintext mount script must NOT ship for an encrypted qube")
 	assert.Empty(t, fileContent(t, cc, "qubes-air-data.service"),
 		"the plaintext mount unit must NOT ship for an encrypted qube")
+	assert.Empty(t, fileContent(t, cc, "20-data-mount.conf"),
+		"encrypted bootstrap must not depend on a plaintext data mount")
+	assert.Empty(t, fileContent(t, cc, "data-mount.py"),
+		"encrypted checks are supplied by the agent package after bootstrap installation")
 	assert.NotContains(t, fmt.Sprint(cc.Runcmd...), dataMountService,
 		"runcmd must NOT enable the plaintext mount for an encrypted qube")
 
@@ -420,9 +442,9 @@ func TestUnsafePackageURLIsNeverEmbedded(t *testing.T) {
 func TestUnpinnedConsoleDegradesSafely(t *testing.T) {
 	out, _ := renderWith(t, AgentPackage{})
 	cc := parseConfig(t, out)
-	assert.Len(t, cc.WriteFiles, 6,
+	assert.Len(t, cc.WriteFiles, 8,
 		"the document stays complete when no package is pinned "+
-			"(CA, token, env, installer, data-mount script and unit)")
+			"(CA, token, env, installer, checker, dependency, mount script and unit)")
 
 	installer := fileContent(t, cc, agentInstallerPath)
 	assert.Contains(t, installer, "PKG_URL=''")
