@@ -75,6 +75,17 @@ func TestLaunchApp_OK(t *testing.T) {
 	assert.Equal(t, startAppServicePrefix+"firefox.desktop", fake.Calls[0].Service)
 }
 
+func TestLaunchApp_MaximumTransportArgument(t *testing.T) {
+	fake := &transport.FakeTransport{}
+	svc, id, cleanup := setupWithTransport(t, fake)
+	defer cleanup()
+
+	_, err := svc.LaunchApp(context.Background(), id, strings.Repeat("a", 113))
+	require.NoError(t, err)
+	require.Len(t, fake.Calls, 1)
+	assert.Len(t, fake.Calls[0].Service, 128)
+}
+
 // TestLaunchApp_InvalidAppID — a malformed app id is refused BEFORE the
 // transport: zero upstream calls, whatever the shape of the call.
 func TestLaunchApp_InvalidAppID(t *testing.T) {
@@ -82,7 +93,10 @@ func TestLaunchApp_InvalidAppID(t *testing.T) {
 	svc, id, cleanup := setupWithTransport(t, fake)
 	defer cleanup()
 
-	for _, bad := range []string{"../firefox", "a/b", "a b", "a\nb", "x;reboot", "", strings.Repeat("a", MaxAppIDLen+1)} {
+	for _, bad := range []string{
+		"../firefox", "a/b", "a b", "a\nb", "x;reboot", "", ".", "..", "a..b",
+		strings.Repeat("a", 114), strings.Repeat("a", 128),
+	} {
 		_, err := svc.LaunchApp(context.Background(), id, bad)
 		require.ErrorIs(t, err, ErrInvalidAppID, "app %q", bad)
 	}
@@ -103,7 +117,7 @@ func TestValidAppID(t *testing.T) {
 	// flattened to dashes) all fall inside [A-Za-z0-9._+-].
 	for _, good := range []string{
 		"firefox.desktop", "org.gnome.Terminal", "a+b", "A_b.c-d",
-		strings.Repeat("a", MaxAppIDLen),
+		strings.Repeat("a", 113),
 	} {
 		assert.True(t, ValidAppID(good), "app %q", good)
 	}
@@ -111,7 +125,7 @@ func TestValidAppID(t *testing.T) {
 	// metacharacters, over-long ids — is refused.
 	for _, bad := range []string{
 		"", "../firefox", "a/b", "a b", "a\nb", "a\tb", "x;rm", "`reboot`", "$(x)",
-		strings.Repeat("a", MaxAppIDLen+1),
+		".", "..", "a..b", strings.Repeat("a", 114), strings.Repeat("a", 128), "é",
 	} {
 		assert.False(t, ValidAppID(bad), "app %q", bad)
 	}

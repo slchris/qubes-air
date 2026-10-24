@@ -17,13 +17,9 @@ export interface DesktopApp {
 }
 
 // Mirrors service.ValidAppID (console/backend/internal/service/qube_service.go)
-// and the case pattern in remote/qubes-rpc/qubes.StartApp.
-const validAppId = /^[A-Za-z0-9._+-]{1,128}$/;
-
-// An id made only of dots passes the character allowlist but is a URL path
-// dot-segment: `/apps/../launch` is normalised by the browser into a request
-// for a different endpoint. No .desktop basename looks like that.
-const dotSegment = /^\.+$/;
+// and remote/qubes-rpc/qubes.StartApp. The 15-byte service prefix shares the
+// Relay/agent's 128-byte limit with this ASCII id.
+const invalidAppIdCharacter = /[^A-Za-z0-9._+-]/;
 
 /**
  * Upper bound on listed applications. A qube with a real desktop has tens; the
@@ -36,7 +32,7 @@ const localizedName = /^Name\[[^\]]+\]$/;
 
 /** Reports whether an id may be sent back as the launch argument. */
 export function isLaunchableAppId(id: string): boolean {
-  return validAppId.test(id) && !dotSegment.test(id);
+  return id.length >= 1 && id.length <= 113 && !invalidAppIdCharacter.test(id) && id !== '.' && !id.includes('..');
 }
 
 interface Draft {
@@ -98,35 +94,30 @@ export function parseAppMenus(raw: string): DesktopApp[] {
  * What the remote qubes.StartApp answered, read for the operator.
  *
  * - launched: the reply is the service's own success line for this app id.
- * - refused: the reply is one of the service's refusal lines.
  * - unrecognised: anything else (another agent build, an empty or truncated
  *   reply). Never read as a launch: saying "started" for a reply nobody
  *   understood is the failure this reader exists to avoid.
  */
 export interface LaunchOutcome {
-  result: 'launched' | 'refused' | 'unrecognised';
+  result: 'launched' | 'unrecognised';
   detail: string;
 }
 
-// remote/qubes-rpc/qubes.StartApp always exits 0 so its stdout reaches the
-// caller; whether the app started is in that text, not in the HTTP status.
-// Its only success output is one line naming the app and the display.
-const startAppLaunched = /^qubes\.StartApp: launched '([^'\n]*)' on [^\s]+$/;
-// Its three refusal prefixes.
-const startAppRefusal = /^qubes\.StartApp: (failed to launch|refusing|missing app id)/;
+// Nonzero service exits become HTTP errors. Success only confirms that the
+// launch helper accepted the request; it does not prove a window is visible.
+const startAppLaunched = /^qubes\.StartApp: launched '([^'\n]*)' on :[0-9]{1,5}(?:\.[0-9]{1,2})?$/;
 
 /** Longest reply shown verbatim; the text is the remote's, not the console's. */
 const MAX_DETAIL = 300;
 
 /**
  * Reads qubes.StartApp's reply to a launch of `appId`. A 200 from the launch
- * endpoint only means the request reached the qube.
+ * endpoint still needs a recognised acknowledgement for this exact app.
  */
 export function readLaunchReply(reply: string, appId: string): LaunchOutcome {
   const text = reply.trim();
   const detail = text.slice(0, MAX_DETAIL);
   const launched = startAppLaunched.exec(text);
-  if (launched && launched[1] === appId) return { result: 'launched', detail };
-  if (startAppRefusal.test(text)) return { result: 'refused', detail };
+  if (launched && launched[1] === appId && isLaunchableAppId(appId)) return { result: 'launched', detail };
   return { result: 'unrecognised', detail };
 }

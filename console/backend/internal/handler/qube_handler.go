@@ -268,7 +268,8 @@ func (h *QubeHandler) LaunchApp(c *gin.Context) {
 	app := c.Param("app")
 	if !service.ValidAppID(app) {
 		respondError(c, http.StatusBadRequest,
-			fmt.Errorf("%w: app id must match [A-Za-z0-9._+-] and be at most %d characters", service.ErrInvalidAppID, service.MaxAppIDLen))
+			fmt.Errorf("%w: use 1–%d ASCII letters, digits or ._+-; a single dot and consecutive dots are forbidden",
+				service.ErrInvalidAppID, service.MaxAppIDLen))
 		return
 	}
 

@@ -69,21 +69,21 @@ const appmenusService = "qubes.GetAppmenus"
 // native qubes-core-agent uses, so the remote script needs no changes.
 const startAppServicePrefix = "qubes.StartApp+"
 
-// MaxAppIDLen bounds a .desktop app id. Bound length so a crafted id cannot
-// grow a qrexec service argument without limit.
-const MaxAppIDLen = 128
+// MaxAppIDLen leaves room for the service prefix within the Relay/agent's
+// 128-byte service-name limit.
+const MaxAppIDLen = 128 - len(startAppServicePrefix)
 
 // validAppIDRe matches the app-id character set the remote qubes.StartApp
 // script itself allows ([A-Za-z0-9._+-]); the id becomes the qrexec service
 // argument, so anything else must be refused before it reaches the wire.
-var validAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]{1,128}$`)
+var validAppIDRe = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 
 // ValidAppID reports whether app may be used as the qrexec service argument of
 // qubes.StartApp. Enforced HERE (the point where the service name is built) and
 // again by the handler (so an invalid id maps to 400 before any transport
 // call).
 func ValidAppID(app string) bool {
-	return len(app) <= MaxAppIDLen && validAppIDRe.MatchString(app)
+	return len(app) <= MaxAppIDLen && validAppIDRe.MatchString(app) && app != "." && !strings.Contains(app, "..")
 }
 
 // QubeService defines qube business logic operations.

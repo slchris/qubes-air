@@ -5,6 +5,7 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
+| [2026-10-24 应用启动契约](2026-10-24-app-launch-contract.md) | 应用 ID 跨入口校验、非零失败、输出上限与 stdin 隔离 | 本地自动化；未部署 agent，桌面会话/权限、Xpra 与完整 GUI 仍开放 |
 | [2026-10-23 ConnectTCP 身份与断线](2026-10-23-connecttcp-identity.md) | 目标映射、交付摘要、已派发请求不重放；旧流非零退出、新调用真实回包 | 已合入部署；未覆盖 dom0 GUI policy、Xpra、完整桌面或 Relay 整机重启 |
 | [2026-10-23 恢复后在线 agent Ping](2026-10-23-restored-agent-probe.md) | 真实离机归档、原信任材料、恢复副本 mTLS Ping、当前规模耗时 | 原 Console 仍提供吊销服务；非完整控制域重建或单写入方接管 |
 | [2026-10-23 Console 持久入站](2026-10-23-console-ingress.md) | 精确网关/端口规则、开机与 firewall hook、重复 apply 和重启验证 | Salt #6 已合入部署；未覆盖上游转发重建与 Relay 重启 |

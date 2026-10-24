@@ -45,7 +45,8 @@ Token 从环境或配置读取，不放命令行；凭据端点仅返回元数�
 ## 桌面能力
 
 应用列表通过 `GET /api/v1/qubes/{id}/appmenus` 调用 qubes.GetAppmenus；应用启动通过
-`POST /api/v1/qubes/{id}/apps/{app}/launch` 调用 qubes.StartApp，app id 在上游调用前校验。
+`POST /api/v1/qubes/{id}/apps/{app}/launch` 调用 qubes.StartApp，app id 在上游调用前校验：
+1–113 字节 ASCII `[A-Za-z0-9._+-]`，拒绝单点和连续点；不先去掉首尾空白来改写应用 ID。
 已有应用列表/启动原语不代表完整 computer-use 或桌面验收完成。
 
 desktop_frame_get 先 `POST /api/v1/qubes/{id}/desktop-access` 请求批准：Console 把请求放进
@@ -59,8 +60,8 @@ image 内容块返回。Deny、超时、Stop、没有桌面传输或 qube 不就
 Console 取帧时经该 qube 自己的 agent 连接（短期 `console-desktop` 证书，对端钉在 `agent-<qube>`），
 由 agent 代理到 qube 内 `127.0.0.1:10005` 的 Xpra 服务端，用 `console/backend/internal/xpra` 的
 单次截图客户端（`GetScreenshot`）读一帧。**qube 内的 Xpra TCP 监听目前没有部署**：本仓库与
-qubes-salt-config 都没有创建它的状态（`remote/qubes-rpc/qubes.StartApp` 只引用
-`qubes-air-xpra.service` 与 display `:100`），没有监听时取帧以 502 失败关闭。输入不在该包范围内。
+qubes-salt-config 都没有创建它的状态（`remote/qubes-rpc/qubes.StartApp` 仅设置默认 display
+`:100`），没有监听时取帧以 502 失败关闭。输入不在该包范围内。
 
 交换过程按 Xpra 上游源码编写，读过的是 v5.0、v6.2、v6.3、v6.4 与 master 下 `xpra/server/` 的
 hello 处理（`core.py`，v5.0 为 `server_core.py`/`server_base.py`）、截图处理（`mixins/display.py`

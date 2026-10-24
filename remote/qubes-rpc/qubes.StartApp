@@ -1,56 +1,55 @@
 #!/bin/bash
-# qubes.StartApp — launch one of this remote's apps so its window forwards to the
-# local desktop.
-# =====================================================================================
-# dom0's menu (and qvm-run) invoke this over the RemoteVM transport (rewritten via
-# transport_rpc to the relay, then to this agent) when you click a remote app. The
-# qrexec service ARGUMENT is the app id — the .desktop basename qubes.GetAppmenus
-# emitted (with or without the .desktop suffix).
+# qubes.StartApp — request one desktop application on the local Xpra display.
+# The app id shares the Relay/agent's 128-byte limit with "qubes.StartApp+".
+# Invalid input and helper failures are nonzero results with bounded stderr.
+# A success acknowledges the helper, not a visible or persistent application.
 #
-# The app is started under the per-user Xpra server's display, NOT the agent's, so the
-# window travels to the local Xpra client (over the §0.11 mTLS stream) and appears as a
-# native window on the caller's desktop — the seamless half of docs §0.14. Runs via
-# systemd-run to escape the agent sandbox, as the desktop user, exactly like
-# qubesair.Exec. Always exits 0 so the invoker returns our stdout.
-# =====================================================================================
+# The existing systemd-run path still delegates outside the agent sandbox.
+# Replacing it and the desktop Exec parser belongs to GUI-01; do not treat this
+# request/result contract as acceptance of the complete desktop boundary.
 set -uo pipefail
+export LC_ALL=C
 
 app="${1:-}"
-if [ -z "$app" ]; then
-    echo "qubes.StartApp: missing app id (pass it as the qrexec service argument)"
-    exit 0
+if [ "$#" -ne 1 ] || [ "${#app}" -gt 113 ] ||
+    [[ ! "$app" =~ ^[A-Za-z0-9._+-]+$ || "$app" == '.' || "$app" == *..* ]]; then
+    echo 'qubes.StartApp: expected one valid app id' >&2
+    exit 64
 fi
-# The id becomes an argument to qubes-desktop-run; keep it to safe .desktop-name chars
-# so nothing shell-hostile reaches the launcher.
-case "$app" in
-    *[!a-zA-Z0-9._+-]*) echo "qubes.StartApp: refusing suspicious app id '$app'"; exit 0 ;;
-esac
 
-# The Xpra display and desktop user. :100 is the server qubes-air-xpra.service binds
-# (see docs §0.14). The user is the first regular login account (uid 1000) — the same
-# one the Xpra server runs as.
-XPRA_DISPLAY="${QUBESAIR_XPRA_DISPLAY:-:100}"
-runuser_name="$(getent passwd 1000 | cut -d: -f1)"
-: "${runuser_name:=user}"
-home="$(getent passwd "$runuser_name" | cut -d: -f6)"
-: "${home:=/home/$runuser_name}"
+desktop_display="${QUBESAIR_XPRA_DISPLAY:-:100}"
+if [[ ! "$desktop_display" =~ ^:[0-9]{1,5}(\.[0-9]{1,2})?$ ]]; then
+    echo 'qubes.StartApp: invalid desktop display' >&2
+    exit 69
+fi
 
-launch() {
-    if command -v systemd-run >/dev/null 2>&1; then
-        systemd-run --collect --quiet \
-            --uid="$runuser_name" \
-            --setenv=HOME="$home" \
-            --setenv=DISPLAY="$XPRA_DISPLAY" \
-            --setenv=XDG_RUNTIME_DIR="/run/user/$(id -u "$runuser_name")" \
-            -- qubes-desktop-run "$app" 2>&1
-    else
-        DISPLAY="$XPRA_DISPLAY" HOME="$home" runuser -u "$runuser_name" -- qubes-desktop-run "$app" 2>&1
-    fi
-}
+if ! command -v systemd-run >/dev/null 2>&1; then
+    echo 'qubes.StartApp: desktop launcher is unavailable' >&2
+    exit 69
+fi
 
-if out="$(launch)"; then
-    echo "qubes.StartApp: launched '$app' on $XPRA_DISPLAY"
+if ! desktop_entry="$(getent passwd 1000)"; then
+    echo 'qubes.StartApp: desktop account is unavailable' >&2
+    exit 69
+fi
+IFS=: read -r desktop_user _ desktop_uid _ _ desktop_home _ <<< "$desktop_entry"
+if [[ "$desktop_entry" == *$'\n'* || "$desktop_uid" != 1000 ||
+    ! "$desktop_user" =~ ^[A-Za-z_][A-Za-z0-9_-]{0,31}$ ||
+    ! "$desktop_home" =~ ^/[A-Za-z0-9/._-]+$ || "$desktop_home" == *..* ]]; then
+    echo 'qubes.StartApp: desktop account is unavailable' >&2
+    exit 69
+fi
+
+# The service accepts no payload. Helper output must not corrupt its single
+# acknowledgement or leak unbounded diagnostics through the transport.
+if systemd-run --collect --quiet --property=Type=exec \
+    --uid="$desktop_user" \
+    --setenv=HOME="$desktop_home" \
+    --setenv=DISPLAY="$desktop_display" \
+    --setenv=XDG_RUNTIME_DIR=/run/user/1000 \
+    -- qubes-desktop-run "$app" </dev/null >/dev/null 2>&1; then
+    printf "qubes.StartApp: launched '%s' on %s\n" "$app" "$desktop_display"
 else
-    echo "qubes.StartApp: failed to launch '$app' on $XPRA_DISPLAY: $out"
+    printf "qubes.StartApp: failed to launch '%s' on %s\n" "$app" "$desktop_display" >&2
+    exit 1
 fi
-exit 0

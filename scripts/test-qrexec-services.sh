@@ -309,6 +309,12 @@ expect_stderr_has() {
     grep -qF -- "$1" "$C/stderr" || fail "stderr lacks [$1]"
 }
 
+expect_stderr() {
+    local got
+    got="$(cat "$C/stderr")"
+    [ "$got" = "$1" ] || fail "stderr: want [$1], got [$got]"
+}
+
 # calls.log with process-substitution fd numbers normalized.
 calls() { sed -E 's#/dev/fd/[0-9]+#/dev/fd/N#g' "$C/calls.log"; }
 
@@ -1159,18 +1165,19 @@ start_setup() {
 }
 
 start_calls() { # APP: the full command sequence of a systemd launch
-    printf 'getent [passwd] [1000]\ngetent [passwd] [alice]\nid [-u] [alice]\n'
-    printf 'systemd-run [--collect] [--quiet] [--uid=alice] [--setenv=HOME=/home/alice] [--setenv=DISPLAY=:100] [--setenv=XDG_RUNTIME_DIR=/run/user/1000] [--] [qubes-desktop-run] [%s]' "$1"
+    printf 'getent [passwd] [1000]\n'
+    printf 'systemd-run [--collect] [--quiet] [--property=Type=exec] [--uid=alice] [--setenv=HOME=/home/alice] [--setenv=DISPLAY=:100] [--setenv=XDG_RUNTIME_DIR=/run/user/1000] [--] [qubes-desktop-run] [%s]' "$1"
 }
 
 t_startapp_missing_id() {
     local arg
     for arg in '' '<none>'; do
-        case_begin "StartApp: missing app id ($arg) launches nothing" || continue
+        case_begin "StartApp: missing app id ($arg) is a nonzero failure" || continue
         start_setup
         if [ "$arg" = '<none>' ]; then run_svc -- "$SVC"; else run_svc -- "$SVC" "$arg"; fi
-        expect_rc 0
-        expect_stdout 'qubes.StartApp: missing app id (pass it as the qrexec service argument)'
+        expect_rc 64
+        expect_stdout_empty
+        expect_stderr 'qubes.StartApp: expected one valid app id'
         expect_no_calls
         case_end
     done
@@ -1179,80 +1186,124 @@ t_startapp_missing_id() {
 t_startapp_illegal_id() {
     local app
     for app in 'a b' 'a;reboot' '../../usr/bin/id' 'a/b' '$(id)' '`id`' $'a\nb' 'a|b' 'a&b' \
-        '*' "a'b" 'a"b' 'a\b' 'gedit%U' 'a>b'; do
-        case_begin "StartApp: app id '$app' is refused" || continue
+        '*' "a'b" 'a"b' 'a\b' 'gedit%U' 'a>b' '.' '..' 'a..b' 'é' "$(long_string a 114)" "$(long_string a 4096)"; do
+        case_begin "StartApp: invalid app id '${app:0:40}' is refused before lookup" || continue
         start_setup
         run_svc -- "$SVC" "$app"
-        expect_rc 0
-        expect_stdout "qubes.StartApp: refusing suspicious app id '$app'"
+        expect_rc 64
+        expect_stdout_empty
+        expect_stderr 'qubes.StartApp: expected one valid app id'
         expect_no_calls
         case_end
     done
 }
 
-# A leading '-' lands after `--` and is only ever a file name to qubes-desktop-run;
-# a long id stays one argument (the agent caps service+argument at 128 bytes).
+t_startapp_extra_argument() {
+    case_begin "StartApp: more than one argument launches nothing" || return 0
+    start_setup
+    run_svc -- "$SVC" gedit extra
+    expect_rc 64
+    expect_stdout_empty
+    expect_stderr 'qubes.StartApp: expected one valid app id'
+    expect_no_calls
+    case_end
+}
+
+# The full service name is 15 prefix bytes plus at most 113 app-id bytes.
 t_startapp_launches() {
     local app
-    for app in org.gnome.Calculator org.kde.konsole.desktop 'a_b-c+d' '-h' "$(long_string a 4096)"; do
-        case_begin "StartApp: '${app:0:40}' launches as the desktop user on the Xpra display" || continue
+    for app in org.gnome.Calculator org.kde.konsole.desktop 'a_b-c+d' '-h' "$(long_string a 113)"; do
+        case_begin "StartApp: '${app:0:40}' launches with no caller stdin or helper output" || continue
         start_setup
         cp "$BLOB" "$C/stdin"
+        put "$C/ctl/systemd-run.capture-stdin" ''
+        put "$C/ctl/systemd-run.stdout" 'launcher diagnostic'
         run_svc -- "$SVC" "$app"
         expect_rc 0
         expect_stdout "qubes.StartApp: launched '$app' on :100"
         expect_calls "$(start_calls "$app")"
+        [ ! -s "$C/got/systemd-run.stdin" ] || fail "launcher inherited caller stdin"
         case_end
     done
 }
 
 t_startapp_launch_failure() {
-    case_begin "StartApp: a failed launch is reported on stdout, exit stays 0" || return 0
+    case_begin "StartApp: failed launch returns nonzero and no stdout" || return 0
     start_setup
     put "$C/ctl/systemd-run.rc" 1
-    put "$C/ctl/systemd-run.stderr" 'Failed to start transient service unit: Unit already exists.'
+    put "$C/ctl/systemd-run.stderr" 'launcher private diagnostic'
     run_svc -- "$SVC" gedit
-    expect_rc 0
-    expect_stdout "qubes.StartApp: failed to launch 'gedit' on :100: Failed to start transient service unit: Unit already exists."
+    expect_rc 1
+    expect_stdout_empty
+    expect_stderr "qubes.StartApp: failed to launch 'gedit' on :100"
     case_end
 }
 
 t_startapp_large_launcher_output() {
-    case_begin "StartApp: 1 MiB of launcher output is relayed, exit stays 0" || return 0
+    case_begin "StartApp: 1 MiB of failed launcher output is discarded" || return 0
     start_setup
     put "$C/ctl/systemd-run.rc" 1
     long_string e 1048576 >"$C/ctl/systemd-run.stderr"
     run_svc -- "$SVC" gedit
-    expect_rc 0
-    [ "$(wc -c <"$C/stdout")" -gt 1048576 ] || fail "the launcher output was truncated"
+    expect_rc 1
+    expect_stdout_empty
+    expect_stderr "qubes.StartApp: failed to launch 'gedit' on :100"
     case_end
+}
+
+t_startapp_missing_account() {
+    case_begin "StartApp: missing uid 1000 does not fall back to another account" || return 0
+    start_setup
+    put "$C/passwd" $'root:x:0:0:root:/root:/bin/bash\nuser:x:1001:1001:User:/home/user:/bin/bash\n'
+    run_svc -- "$SVC" gedit
+    expect_rc 69
+    expect_stdout_empty
+    expect_stderr 'qubes.StartApp: desktop account is unavailable'
+    expect_calls 'getent [passwd] [1000]'
+    case_end
+}
+
+t_startapp_invalid_display() {
+    local display
+    for display in 'host:100' ':100 --help' $':100\n:101' ':100/' ':abc'; do
+        case_begin "StartApp: non-local or malformed display is refused" || continue
+        start_setup
+        run_svc QUBESAIR_XPRA_DISPLAY="$display" -- "$SVC" gedit
+        expect_rc 69
+        expect_stdout_empty
+        expect_stderr 'qubes.StartApp: invalid desktop display'
+        expect_no_calls
+        case_end
+    done
 }
 
 t_startapp_without_systemd() {
-    case_begin "StartApp: without systemd-run it uses runuser with the Xpra environment" || return 0
+    case_begin "StartApp: missing systemd-run does not try a sandboxed fallback" || return 0
     start_setup
     rm -f "$C/bin/systemd-run"
     run_svc QUBESAIR_XPRA_DISPLAY=:101 -- "$SVC" gedit
-    expect_rc 0
-    expect_stdout "qubes.StartApp: launched 'gedit' on :101"
-    expect_calls 'getent [passwd] [1000]
-getent [passwd] [alice]
-runuser [-u] [alice] [--] [qubes-desktop-run] [gedit]'
-    expect_got_env runuser 'DISPLAY=:101'
-    expect_got_env runuser 'HOME=/home/alice'
+    expect_rc 69
+    expect_stdout_empty
+    expect_stderr 'qubes.StartApp: desktop launcher is unavailable'
+    expect_no_calls
     case_end
 }
 
-t_startapp_runuser_failure() {
-    case_begin "StartApp: a failing runuser is reported, exit stays 0" || return 0
-    start_setup
-    rm -f "$C/bin/systemd-run"
-    put "$C/ctl/runuser.rc" 1
-    put "$C/ctl/runuser.stderr" 'runuser: user alice does not exist'
-    run_svc -- "$SVC" gedit
-    expect_rc 0
-    expect_stdout "qubes.StartApp: failed to launch 'gedit' on :100: runuser: user alice does not exist"
-    case_end
+t_startapp_invalid_account() {
+    local entry
+    for entry in 'bad user:x:1000:1000:User:/home/user:/bin/bash' \
+        'alice:x:1000:1000:User:relative:/bin/bash' \
+        'alice:x:1000:1000:User:/home/../root:/bin/bash'; do
+        case_begin 'StartApp: malformed desktop account refuses the launch' || continue
+        start_setup
+        put "$C/passwd" "$entry"$'\n'
+        run_svc -- "$SVC" gedit
+        expect_rc 69
+        expect_stdout_empty
+        expect_stderr 'qubes.StartApp: desktop account is unavailable'
+        expect_calls 'getent [passwd] [1000]'
+        case_end
+    done
 }
 
 # =====================================================================================

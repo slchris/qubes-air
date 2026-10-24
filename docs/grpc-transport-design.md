@@ -114,7 +114,13 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 `qubes.GetAppmenus` 枚举 `.desktop` 应用，`qubes.StartApp+<app-id>` 在远端 Xpra display
 启动应用。传输对带 `+arg` 的服务保留参数；Relay 的 `GrpcProxy` 按 agent 的同一规则
 （字符集 `[A-Za-z0-9._+-]`、不含 `..`、服务名连参数最多 128 字节）先行拒绝非法参数（exit 126），
-不为它调用 `relay-call`。完整菜单/桌面体验仍在收尾。
+不为它调用 `relay-call`。应用 ID 在浏览器、MCP、API/service 和 StartApp 同样校验，
+限 1–113 字节，拒绝 `.` 或包含 `..`，为 `qubes.StartApp+` 留足前缀长度。
+StartApp 参数错误返回 64，桌面账户/本机 display/启动 helper 不可用返回 69，helper
+启动失败返回 1；错误只写有界 stderr，调用者 stdin 不转交给桌面。Console 将非零结果
+返回为 HTTP 502，UI 展示错误并等待显式重试。成功仅表示 helper 接受请求，不证明窗口可见。
+现有 systemd-run 与 Exec 解析的权限问题、完整菜单/桌面体验仍待 GUI-01 后续修复与验收；
+见[阶段记录](reviews/2026-10-24-app-launch-contract.md)。
 
 ### UnlockData / RekeyData
 

@@ -41,13 +41,14 @@ interface Backend {
   createdPayload: unknown;
   purgeBodies: unknown[];
   launched: string[];
+  launchError: string | null;
   unhandled: string[];
 }
 
 function newBackend(): Backend {
   return {
     authenticated: false, qube: null, jobs: {}, streamOpens: {},
-    createdPayload: null, purgeBodies: [], launched: [], unhandled: [],
+    createdPayload: null, purgeBodies: [], launched: [], launchError: null, unhandled: [],
   };
 }
 
@@ -210,6 +211,10 @@ const ROUTES: MockRoute[] = [
     handle: forQube(async (route, backend, _qube, [, encodedApp]) => {
       const app = decodeURIComponent(encodedApp);
       backend.launched.push(app);
+      if (backend.launchError) {
+        await route.fulfill({ status: 502, json: { error: 'Bad Gateway', message: backend.launchError, code: 502 } });
+        return;
+      }
       await route.fulfill({ contentType: 'text/plain', body: `qubes.StartApp: launched '${app}' on :100\n` });
     }),
   },
@@ -332,12 +337,21 @@ test('operator logs in, provisions a qube, starts an app, suspends it, and purge
   await page.waitForTimeout(3_000);
   expect(backend.streamOpens['job-create']).toBe(opens);
 
-  // Start a desktop app from the menu the qube reports.
+  // A nonzero remote launch is an HTTP error. Only an explicit retry sends
+  // another request; the failed attempt must not show a success notice.
+  backend.launchError = 'Remote application launch failed';
   await page.getByRole('button', { name: 'Apps' }).click();
   const apps = page.getByRole('dialog', { name: 'Applications' });
   await apps.getByRole('button', { name: 'Launch Firefox' }).click();
-  await expect(apps.getByRole('status')).toContainText('Launch request sent for Firefox');
+  await expect(apps.getByRole('alert')).toHaveText(backend.launchError);
+  await expect(apps.getByRole('status')).toHaveCount(0);
+  await expect(apps.getByRole('button', { name: 'Launch Firefox' })).toBeEnabled();
   expect(backend.launched).toEqual(['firefox.desktop']);
+  backend.launchError = null;
+  await apps.getByRole('button', { name: 'Launch Firefox' }).click();
+  await expect(apps.getByRole('status')).toContainText('Launch request sent for Firefox');
+  await expect(apps.getByRole('alert')).toHaveCount(0);
+  expect(backend.launched).toEqual(['firefox.desktop', 'firefox.desktop']);
   await apps.getByRole('button', { name: 'Close applications' }).click();
   await expect(apps).toBeHidden();
   await expect(page.getByRole('button', { name: 'Apps' })).toBeFocused();
