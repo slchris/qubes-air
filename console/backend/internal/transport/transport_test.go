@@ -36,16 +36,16 @@ func TestNoopTransport(t *testing.T) {
 func TestNoopStreamTransport(t *testing.T) {
 	var tr StreamTransport = NoopTransport{} // compile-time: NoopTransport can be asked to stream
 	for _, bad := range []struct{ target, service string }{
-		{"bad target", "qubesair.StreamTCP+10005"},
+		{"bad target", "qubesair.StreamDesktop"},
 		{"remote-gpu", "has space"},
-		{"", "qubesair.StreamTCP+10005"},
+		{"", "qubesair.StreamDesktop"},
 		{"remote-gpu", ""},
 	} {
 		if err := tr.CallStream(context.Background(), bad.target, bad.service, nil, nil); !errors.Is(err, ErrInvalidName) {
 			t.Fatalf("CallStream(%q, %q) = %v, want ErrInvalidName", bad.target, bad.service, err)
 		}
 	}
-	if err := tr.CallStream(context.Background(), "remote-gpu", "qubesair.StreamTCP+10005", nil, nil); !errors.Is(err, ErrNoTransport) {
+	if err := tr.CallStream(context.Background(), "remote-gpu", "qubesair.StreamDesktop", nil, nil); !errors.Is(err, ErrNoTransport) {
 		t.Fatalf("valid request error = %v, want ErrNoTransport", err)
 	}
 }

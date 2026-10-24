@@ -42,8 +42,10 @@ Exec 使用有界 JSON 参数列表直接执行；FileCopy 使用不跟随符号
 
 桌面菜单和启动经固定 Unix socket 请求独立的 UID 1000 broker，根进程只验证受限协议，
 GIO 在该账户内解释 Desktop Entry。broker unit 随包交付但默认禁用，agent 沙箱保持原样。
-该链路的安装/GIO/Xvfb 验证不能替代 Xpra 与 dom0 真机验收；见
-[桌面 broker 阶段](reviews/2026-10-24-desktop-broker.md)。
+桌面流另经固定 `qubesair.StreamDesktop` 连接 UID 1000 的 Xpra Unix socket；旧 TCP 10005 被拒绝。
+安装/GIO/Xvfb 与真实 Xpra 容器验证不能替代 dom0 真机验收；见
+[桌面 broker 阶段](reviews/2026-10-24-desktop-broker.md)与
+[Xpra 阶段](reviews/2026-10-24-xpra-session.md)。
 
 ## 身份生命周期
 

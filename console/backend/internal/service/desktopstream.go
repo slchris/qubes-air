@@ -1,7 +1,7 @@
 // desktopstream.go — the connection a desktop frame is read over.
 //
 // A frame is read from the Xpra server inside the qube, through the agent's
-// stream proxy (qubesair.StreamTCP+10005). That needs a tunnel to THIS qube's
+// stream proxy (qubesair.StreamDesktop). That needs a tunnel to THIS qube's
 // agent, which the global transport cannot give (it is pinned to one
 // configured endpoint), so each capture dials the qube itself, the way the
 // data-disk unlocker does: a short-lived client certificate, the agent
@@ -9,7 +9,7 @@
 // capture.
 //
 // The certificate carries the console-desktop name. The agent opens the
-// desktop port only to that console identity (and to relays), so a probe or
+// desktop socket only to that console identity (and to relays), so a probe or
 // renewal certificate cannot read the screen, and this one can do nothing the
 // agent reserves for another identity.
 package service

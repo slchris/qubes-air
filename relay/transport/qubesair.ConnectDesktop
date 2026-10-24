@@ -1,0 +1,38 @@
+#!/bin/bash
+# Fixed Xpra stream through the agent's mTLS tunnel. dom0 policy authorizes
+# the caller; the agent checks role/target/revocation before its Unix dial.
+set -uo pipefail
+export LC_ALL=C
+
+valid_endpoint() {
+    local a b c d port octet
+    [[ "$1" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || return 1
+    IFS='.:' read -r a b c d port <<< "$1"
+    for octet in "$a" "$b" "$c" "$d"; do
+        (( 10#$octet <= 255 )) || return 1
+    done
+    (( 10#$port >= 1 && 10#$port <= 65535 ))
+}
+
+remote="${1:-}"
+if [ "$#" -ne 1 ] || [[ ! "$remote" =~ ^remote-[A-Za-z0-9._-]+$ ]]; then
+    echo 'qubesair.ConnectDesktop: expected one remote-* target' >&2
+    exit 126
+fi
+if ! ep="$(qubesdb-read "/remote-endpoint/$remote" 2>/dev/null)"; then
+    echo 'qubesair.ConnectDesktop: target endpoint unavailable' >&2
+    exit 1
+fi
+if ! valid_endpoint "$ep"; then
+    echo 'qubesair.ConnectDesktop: invalid target endpoint' >&2
+    exit 1
+fi
+RELAY_DIR="${QUBES_AIR_RELAY_DIR:-/rw/config/qubesair-relay}"
+if [ ! -r "$RELAY_DIR/relay.crt" ]; then
+    echo 'qubesair.ConnectDesktop: relay identity unavailable' >&2
+    exit 1
+fi
+remote_name="${remote#remote-}"
+exec /usr/local/bin/relay-call -stream -timeout 12h \
+    -cert "$RELAY_DIR/relay.crt" -key "$RELAY_DIR/relay.key" -ca "$RELAY_DIR/ca.crt" \
+    -addr "$ep" "$remote_name" desktop

@@ -14,12 +14,15 @@ Relay/Console 角色。角色校验不依赖 CertRegistry 是否存在。Console
 `console-bootstrap` 的 console 角色证书执行；其它 CA 签发的 Relay/Console 证书（探测、续期、
 relay-call）在进入 invoker 前被拒。
 
-桌面端口 `qubesair.StreamTCP+10005`（`transport/grpc` 的 `DesktopStreamPort`，Xpra 监听端口）同样
+桌面 service `qubesair.StreamDesktop`（`transport/grpc` 的 `DesktopStreamService`）同样
 按身份开放：Relay 角色照旧可以打开（操作者自己的 GUI 通道，由本地 dom0 policy 把关）；console
 角色只接受 CN 为 `console-desktop` 的证书，也就是 Console 为一次已批准的 MCP 取帧临时签发的那张，
 探测、续期、解锁与 bootstrap 证书在拨号之前就被拒（`authorizeStreamCaller`）。其它 GUI 端口
 （5900–5910、10000–10010 中的其余端口）规则不变。这条检查只在按本版本构建的 agent 上生效，
-升级顺序见[升级与回滚](upgrade-rollback.md) §2.6。
+升级顺序见[升级与回滚](upgrade-rollback.md) §2.6。agent 只连接固定
+`/run/qubes-air-desktop/xpra.sock` 并验证内核对端 UID 1000；请求不能提供 socket 路径。
+原桌面 TCP 10005 在 ConnectTCP 和 agent 均被拒绝，没有回退。Xpra 侧还必须按内核 UID
+认证本机调用方，不能用仅绑定 Unix socket 代替认证。
 
 实际 agent 启动入口必须配置 `--revocation-url`；打包 unit 从
 `QUBESAIR_REVOCATION_URL` 传入。Console 用以下配置把地址写进 cloud-init：
@@ -704,6 +707,6 @@ PNG。实现：`internal/desktopaccess`（状态机）、`internal/handler/deskt
   响应、审计行与队列里都没有 grant。
 - 请求与 grant 只在进程内存中；重启即全部失效。待决加有效请求上限 128，超出 429。
 
-限制：qube 里需要有监听 `127.0.0.1:10005` 的 Xpra 服务端（6.3 及以上内联 PNG），本仓库与
-qubes-salt-config 都还没有部署它，也没有 Xpra 认证；没有监听时取帧以 502 失败关闭。与真实 Xpra
-服务端的互通尚未验证（[MCP 接入](mcp-design.md#桌面能力)）。
+限制：qube 里需要有监听固定 Unix socket、运行于 UID 1000 且启用 peercred 的 Xpra 服务端。
+生产会话与持久 HOME 尚未部署；没有会话时取帧以 502 失败关闭。真实包的认证、窗口与 PNG
+互通验证范围见 [Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。

@@ -16,7 +16,7 @@ import (
 // port exposed on the remote's LAN.
 func TestClientServerStreamTCP(t *testing.T) {
 	// A loopback echo server on an allowed GUI port (10000-10010).
-	const port = "10005"
+	const port = "10004"
 	echoLis, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
 		t.Skipf("cannot bind 127.0.0.1:%s: %v", port, err)

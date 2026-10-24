@@ -196,7 +196,7 @@ data disk 未设置时由 provider 落 `defaultDataDiskGB = 10`（`internal/prov
 | UD-26f | 并发取帧上限 | **2**；满时立即 503 + `Retry-After: 1`，不消耗 grant | `internal/handler/desktop_access_handler.go:35`（`MaxConcurrentDesktopFrames`） |
 | UD-26g | 单次取帧总时限 / `console-desktop` 证书寿命 | **20s / 2 分钟** | `internal/service/desktopframe.go:35`（`desktopFrameTimeout`）、`internal/service/desktopstream.go:34`（`desktopCertLifetime`） |
 | UD-26h | Xpra 对端数据上限 | 单 record **4 MiB**；会话 **10s**；PNG **2 MiB**、单边 **8192 px**、总像素 **4 Mi**。上限内的解码放大实测约 8.7 MB（集合）与 34 MB（16 位 RGBA PNG），UD-26f 因此限制并发 | `internal/xpra/rencode.go:26`（`MaxEncodedPacket`）；`internal/xpra/screenshot.go:22`（`ScreenshotTimeout`）、`:24`、`:26`、`:28` |
-| UD-26i | 桌面端口 | **10005**（`qubesair.StreamTCP+10005`）；agent 只对 Relay 与 `console-desktop` 开放 | `internal/transport/grpc/server.go:848`（`DesktopStreamPort`）、`:859`（`authorizeStreamCaller`） |
+| UD-26i | 桌面 endpoint | `qubesair.StreamDesktop` → `/run/qubes-air-desktop/xpra.sock`；agent 只对 Relay 与 `console-desktop` 开放，并核验 Unix 服务端 UID 1000；TCP 10005 被拒绝 | `internal/transport/grpc/server.go`（`DesktopStreamService`、`authorizeStreamCaller`）；`internal/desktop/xpra.go`（`XpraSocketPath`） |
 
 ## 2. SQLite 结构（D-6）
 

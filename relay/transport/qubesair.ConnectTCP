@@ -38,10 +38,10 @@ if [[ ! "$port" =~ ^[0-9]{1,5}$ ]]; then
     log "拒绝: 非法端口 '$port'"; exit 126
 fi
 
-# 端口白名单:VNC 5900-5910、Xpra/其它 GUI 10000-10010。改这里即可放宽/收紧。
-if ! { [ "$port" -ge 5900 ] && [ "$port" -le 5910 ]; } \
-   && ! { [ "$port" -ge 10000 ] && [ "$port" -le 10010 ]; }; then
-    log "拒绝: 端口 $port 不在允许的 GUI 段 (5900-5910 / 10000-10010)"; exit 126
+# GUI 端口白名单。10005 已停用，桌面必须使用固定的 ConnectDesktop Unix 通道。
+if [ "$port" -eq 10005 ] || { ! { [ "$port" -ge 5900 ] && [ "$port" -le 5910 ]; } \
+   && ! { [ "$port" -ge 10000 ] && [ "$port" -le 10010 ]; }; }; then
+    log "拒绝: 端口 $port 不在允许的 GUI 段 (5900-5910 / 10000-10010，排除 10005)"; exit 126
 fi
 
 # 端点表由 relay 的 refresh-endpoints 从 console 拉取,值形如 ip:8443(agent 的 mTLS 端口)。

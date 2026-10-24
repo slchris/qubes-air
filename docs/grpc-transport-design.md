@@ -101,8 +101,14 @@ rename；成功响应包含字节数和 SHA256。错误写入 stderr 并返回�
 
 建立原始双向 byte stream，供 Xpra/VNC/RDP 等协议使用。端口不直接暴露给 LAN，数据仍经过
 agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 target 和 port。agent 只拨
-本机回环上的 5900–5910 与 10000–10010；其中 Xpra 桌面端口 10005 只对 Relay 与
-`console-desktop` 身份开放（[安全控制](security-controls.md)“Agent 身份与吊销”）。
+本机回环上的 5900–5910 与 10000–10010，排除已停用的 10005。
+
+桌面使用独立的 `qubesair.ConnectDesktop+<remote-name>` Relay 入口，经
+`qubesair.StreamDesktop` 连接 agent 内固定 `/run/qubes-air-desktop/xpra.sock`。
+agent 核验 Unix 服务端 UID 1000，且只接受 Relay 与 `console-desktop` 身份；Xpra 必须独立
+验证本机调用方 UID（[安全控制](security-controls.md)“Agent 身份与吊销”）。不允许调用者提供路径，
+没有 TCP 回退。Salt 的入口安装与 dom0 policy 仍需同步，验收范围见
+[Xpra 阶段记录](reviews/2026-10-24-xpra-session.md)。
 
 控制台侧的流式调用是可选能力 `transport.StreamTransport`（`CallStream`），与只做一问一答的
 `transport.Transport` 分开：gRPC `Client` 实现它；默认的 `NoopTransport` 校验名字后返回

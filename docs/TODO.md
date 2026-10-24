@@ -74,7 +74,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   Xpra 部署/认证与完整桌面仍未通过。[启动契约修复](reviews/2026-10-24-app-launch-contract.md)
   统一应用 ID 的 113 字节边界与点段拒绝，StartApp 失败返回非零；尚未部署本轮 agent 修复。
   [broker 阶段](reviews/2026-10-24-desktop-broker.md)已替换动态 systemd-run 和 shell Exec
-  解释，接入默认禁用的 UID 1000 unit 与 GIO；剩余持久 HOME、Xpra 部署/认证和真机桌面验收。
+  解释，接入默认禁用的 UID 1000 unit 与 GIO；[Xpra 阶段](reviews/2026-10-24-xpra-session.md)
+  加入固定认证 Unix 桌面流及真实包互通测试。剩余生产依赖/mmap 策略、持久 HOME、会话生命周期、
+  Salt/dom0 接线和真机桌面验收。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建/编辑 Qube、purge 确认、应用菜单、zone 创建只提供已实现 provider
   及后端拒绝的组件测试（2026-09-26 合并树上 vitest 20 个测试文件、238 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge
   （`make frontend-e2e`、CI `frontend-e2e` job）；agent deb 的安装、依赖解析、升级 conffile 保留、完整性、卸载与启动拒绝路径
@@ -102,8 +104,9 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 - [ ] **CLOUD-01：GCP 原生适配器。** 实现资源与可信网络路径，完成独立生命周期及销毁验收。
 - [ ] **CLOUD-02：AWS 原生适配器。** 同样独立验收；不因 GCP 或 Proxmox 通过而视作可用。
 - [ ] **MCP-01：桌面帧与输入。** 部分完成：desktop_frame_get 经 Console 逐帧人工批准（Desktop access 页 Allow/Deny/Stop）后读一帧，
-  一次性 grant、`console-desktop` 身份与 agent 端口限制有自动化测试（[记录](reviews/2026-09-23-mcp-xpra-screenshot.md)）。剩余：qube 内 Xpra 监听与认证的部署、
-  与真实 Xpra 的互通验收、输入（desktop_input_send 仍显式失败）、dom0 policy 层的接管提示；依赖 GUI-01 与 SEC-01。
+  一次性 grant、`console-desktop` 身份与 agent 桌面 service 限制有自动化测试（[记录](reviews/2026-09-23-mcp-xpra-screenshot.md)）。
+  固定 socket 与真实 Xpra PNG/mTLS 互通见 [Xpra 阶段](reviews/2026-10-24-xpra-session.md)。
+  剩余：生产 Xpra 会话与认证的部署、真机验收、输入（desktop_input_send 仍显式失败）、dom0 policy 层的接管提示；依赖 GUI-01 与 SEC-01。
 - [ ] **MCP-02：可选 HTTP transport。** 先明确部署需求与监听/认证边界，再考虑 loopback 或
   受控网络入口；stdio 继续作为当前入口，不把候选设计当作已提供能力。
 - [ ] **PUB-01：发布材料。** 决定开源时补许可证、安全报告入口；发布说明引用同版本构建、

@@ -73,8 +73,8 @@ type Screenshot struct {
 // stream. The exchange is a single client hello carrying request=screenshot,
 // answered by a single image packet. Upstream servers from 6.2 answer that
 // request from their hello handler with the image alone and send no server
-// hello (read from the v6.2, v6.3, v6.4 and master sources; 5.x does not
-// handle the request; nothing has been run against a live server). The
+// hello (verified with the pinned 6.5.5 server in make xpra-integration;
+// 5.x does not handle the request). The
 // client reads exactly one record: a challenge, ssl-upgrade, disconnect,
 // server hello or any other packet fails the session. It never attaches as a
 // desktop client and sends no window, input or clipboard traffic. The stream

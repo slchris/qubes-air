@@ -28,6 +28,18 @@ func TestRealKernelPeerCredentials(t *testing.T) {
 	}
 }
 
+func TestXpraDialUsesKernelServerIdentity(t *testing.T) {
+	_, path := testSocket(t)
+	conn, err := dialXpra(context.Background(), path, peerUID)
+	if os.Getuid() != DesktopUID {
+		require.Error(t, err, "an actual non-desktop listener must be rejected")
+		require.Nil(t, conn)
+		return
+	}
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+}
+
 func TestSocketDoesNotReplaceExistingEndpoint(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0700))

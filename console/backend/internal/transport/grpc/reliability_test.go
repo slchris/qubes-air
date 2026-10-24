@@ -422,7 +422,7 @@ func TestCallStreamCancellationReturnsAndStopsStdinPump(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- cli.CallStream(ctx, "remote-gpu", streamServicePrefix+"10005", stdinR, io.Discard)
+		done <- cli.CallStream(ctx, "remote-gpu", DesktopStreamService, stdinR, io.Discard)
 	}()
 	waitFor(t, 2*time.Second, "the pending stream to be registered", func() bool {
 		return cli.streamCount() == 1
