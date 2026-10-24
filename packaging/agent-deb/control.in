@@ -13,6 +13,9 @@
 #               failure it causes shows up only when a probe is answered — long
 #               after install, looking like a transport fault.
 #
+#   libblkid1 — UnlockData uses its read-only probe API to distinguish an I/O
+#               error from no recognized signature before initializing a disk.
+#
 #   qemu-guest-agent — deliberately NOT a dependency. It is a hypervisor
 #               concern, not an agent concern: the provisioner needs it to learn the
 #               VM's address, and cloud-init already installs it via the
@@ -27,7 +30,7 @@ Maintainer: Qubes Air <slarlenesu@gmail.com>
 Section: admin
 Priority: optional
 Installed-Size: @INSTALLED_SIZE@
-Depends: systemd, hostname, python3, python3-gi, gir1.2-glib-2.0, dbus-daemon, x11-utils
+Depends: systemd, hostname, python3, python3-gi, gir1.2-glib-2.0, dbus-daemon, x11-utils, libblkid1
 Homepage: https://github.com/slchris/qubes-air
 Description: Qubes Air RemoteVM agent
  Gives a non-Qubes remote host qrexec semantics without Xen vchan, so that a

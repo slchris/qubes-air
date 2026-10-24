@@ -61,6 +61,7 @@ for f in /usr/bin/qubes-air-agent \
     /usr/bin/qubes-desktop-run \
     /usr/lib/qubes-air/desktop-worker.py \
     /usr/lib/qubes-air/xpra-session.py \
+    /usr/lib/qubes-air/data-mount.py \
     /lib/systemd/system/qubes-air-desktop.service \
     /lib/systemd/system/qubes-air-agent.service \
     /etc/qubes-rpc/qubesair.Ping \
@@ -126,6 +127,27 @@ printf '%s' "$new_version_out" | grep -qF "$upgraded" || fail "--version after u
 
 note "installed desktop broker and GIO integration"
 /usr/bin/python3 /tmp/desktop-tests/run_desktop_integration.py
+note "installed native signature probe"
+/usr/bin/python3 -I - <<'PY'
+import importlib.util
+from pathlib import Path
+import tempfile
+
+spec = importlib.util.spec_from_file_location("data_mount", "/usr/lib/qubes-air/data-mount.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with tempfile.TemporaryDirectory() as root:
+    disk = Path(root) / "blank.raw"
+    with disk.open("wb") as output:
+        output.truncate(2 * 1024 * 1024)
+    assert module.probe_signature(disk) == "unrecognized"
+    try:
+        module.probe_signature(Path(root) / "missing.raw")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("missing device did not fail closed")
+PY
 if systemctl is-enabled --quiet qubes-air-desktop.service; then
     fail "upgrade enabled the desktop broker"
 fi

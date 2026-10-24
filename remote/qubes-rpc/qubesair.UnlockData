@@ -19,10 +19,10 @@
 #            (same reason qubesair.Exec exits 0 — see internal/agent/invoker.go).
 #
 # Safety:
-#   - Formats ONLY a genuinely blank disk. A disk that already carries a non-LUKS
-#     filesystem is REFUSED, never overwritten — that guards a plaintext disk that was
-#     never meant to be encrypted from being wiped.
-#   - Idempotent: an already-open, already-mounted /data returns success and does nothing.
+#   - Initializes only a newly provisioned disk whose probe explicitly finds no
+#     filesystem or partition signatures. Known plaintext filesystems and probe
+#     errors are refused. Unrecognized raw user data is not safe to initialize.
+#   - Idempotent only after proving scsi1, LUKS/mapper and /data mount identities agree.
 #   - Runs the privileged part under systemd-run: the agent unit's sandbox
 #     (ProtectSystem=full, PrivateTmp, restricted caps) is inherited by children and
 #     would break cryptsetup/mount. systemd-run re-enters PID 1's namespace as root.
@@ -44,6 +44,7 @@ export LC_ALL=C
 unset TMOUT
 
 SELF="/etc/qubes-rpc/qubesair.UnlockData"
+MOUNT_CHECK="/usr/lib/qubes-air/data-mount.py"
 # The console sends a 43-character base64 key. The cap only keeps a hostile caller
 # from making this service buffer unbounded input (RekeyData caps its request for
 # the same reason); a longer passphrase is refused, never truncated.
@@ -67,7 +68,13 @@ if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
     mapper="qubesair-data"
     mapped="/dev/mapper/$mapper"
 
-    # Idempotent: already open and mounted -> nothing to do.
+    # A foreign mount or stale mapping must fail before any disk mutation.
+    if ! python3 -I "$MOUNT_CHECK" preflight; then
+        printf '{"unlocked":false,"detail":"data device or mount identity invalid"}\n'
+        exit 0
+    fi
+
+    # Preflight proves an existing mount is this disk's writable filesystem.
     if [ -e "$mapped" ] && mountpoint -q /data; then
         printf '{"unlocked":true,"detail":"already unlocked and mounted"}\n'
         exit 0
@@ -86,9 +93,12 @@ if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
             fi
         fi
     else
-        fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null)"
-        if [ -n "$fstype" ]; then
-            printf '{"unlocked":false,"detail":"disk carries a %s filesystem, not LUKS; refusing to overwrite"}\n' "$fstype"
+        fstype="$(python3 -I "$MOUNT_CHECK" probe-raw)"
+        probe_status=$?
+        # Only a successful low-level probe with no recognized signature can
+        # initialize this newly provisioned disk. CLI blkid exit 2 is ambiguous.
+        if [ "$probe_status" -ne 0 ] || [ "$fstype" != unrecognized ]; then
+            printf '{"unlocked":false,"detail":"data disk is not blank or could not be inspected"}\n'
             exit 0
         fi
         if ! cryptsetup luksFormat --type luks2 --batch-mode \
@@ -103,17 +113,39 @@ if [ "${1:-}" = "__unlock" ] && [ "${QUBESAIR_UNLOCK_INNER:-}" = "1" ]; then
         fi
     fi
 
-    # Make sure the container holds a filesystem (first ever open is blank), then mount.
-    if [ -z "$(blkid -o value -s TYPE "$mapped" 2>/dev/null)" ]; then
-        mkfs.ext4 -q -L qubesair-data "$mapped" >&2
+    # Verify the just-opened mapping before probing or creating a filesystem.
+    if ! python3 -I "$MOUNT_CHECK" mapped; then
+        printf '{"unlocked":false,"detail":"data mapping identity invalid"}\n'
+        exit 0
     fi
+
+    # Make sure the container holds a filesystem (first ever open is blank), then mount.
+    fstype="$(python3 -I "$MOUNT_CHECK" probe-mapped)"
+    probe_status=$?
+    case "$probe_status:$fstype" in
+        0:unrecognized)
+            if ! mkfs.ext4 -q -L qubesair-data "$mapped" >&2; then
+                printf '{"unlocked":false,"detail":"data filesystem creation failed"}\n'
+                exit 0
+            fi
+            ;;
+        0:ext4) ;;
+        *)
+            printf '{"unlocked":false,"detail":"data filesystem is unsupported or could not be inspected"}\n'
+            exit 0
+            ;;
+    esac
     mkdir -p /data
     if ! mountpoint -q /data; then
         mount "$mapped" /data >&2
     fi
 
     if mountpoint -q /data; then
-        printf '{"unlocked":true,"detail":"unlocked and mounted"}\n'
+        if python3 -I "$MOUNT_CHECK" mounted; then
+            printf '{"unlocked":true,"detail":"unlocked and mounted"}\n'
+        else
+            printf '{"unlocked":false,"detail":"mounted data identity invalid"}\n'
+        fi
     else
         printf '{"unlocked":false,"detail":"opened but mount failed"}\n'
     fi
