@@ -1,10 +1,13 @@
 # 生产可用性缺口清单
 
-更新：2026-10-24。Air #90–#93 与 Salt #3–#7 已合入，合并 CI 通过；网络资格、purge
+更新：2026-10-25。Air #90–#93 与 Salt #3–#7 已合入，合并 CI 通过；网络资格、purge
 自动回收、Console 持久入站和活跃传输中断已部署并完成本轮真机验收。记录见
 [清理验收](reviews/2026-10-23-purge-residual-cleanup.md)、
 [传输验收](reviews/2026-10-23-connecttcp-identity.md)与
-[恢复后在线 Ping](reviews/2026-10-23-restored-agent-probe.md)。尚未发布新 release。
+[恢复后在线 Ping](reviews/2026-10-23-restored-agent-probe.md)。
+[v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布八项部署制品与摘要，
+包含 Air #104/#105 的 release URL 安装和 Proxmox 取消处理修复；#106 的未加密挂载身份
+校验已合入主干。制品可下载、隔离验收通过均不替代新版本的真机生命周期验收。
 未重验项目保留各行的证据日期与边界，不把早期汇总数量当作当前完成率。
 本文只回答一个问题：**离"能拿它当生产用"还差什么**。所有结论附可回放命令或 `文件:行号`；
 无法证实的写在 §5，不写成结论。
@@ -68,7 +71,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M1-15 日志流不被 WriteTimeout 截断 | 随 M0 | 流自管每事件写截止时间（G-H6） |
 | M1-2/3/4/9 | 现场记录 | M1-2 完整 qrexec、M1-3 文件持久性及 M1-4 小规模离机恢复已通过；M1-9 旧盘迁移仍待验收，生产规模/接管未覆盖 |
 | M1-8 带外核对 | — | **PVE 半边已核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**SSH 指纹半边仍缺**：API 取不到主机键（`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点 HTTP 501 "not implemented"），需一条节点侧命令，已写进 `runbook-qa01.md` §2 |
-| M1-10 首次 release | — | 需要对外发布的决定（打 `v*` tag），且"用 release URL 置备"需要真实 provider。**后续**：同日打了 tag `v0.1.0` 并由 `release.yml` 发布（见 G-A4 与 M1-10 条目）；用 release URL 置备仍未做 |
+| M1-10 release 交付 | — | `v0.2.1` 已发布八项部署制品与 `SHA256SUMS`，release URL 安装修复已有隔离验证；以正式 URL 完成真机 provider 生命周期仍未闭环，见 G-C4 |
 
 本轮两个由**验证**而非实现方自述发现的缺陷：
 
@@ -144,7 +147,7 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 | G-C1 | 离机归档、原 keyring/CA、签名吊销、只读 provider 对账及恢复副本在线 agent Ping 已通过 | 290,996 字节归档，5 凭据解密；恢复至健康 0.860 秒、至 Ping 0.962 秒，见[记录](reviews/2026-10-23-restored-agent-probe.md) | 部分解除；用户未设规模/RTO 硬指标，先记录实测 | 完整控制域重建、入口/吊销服务迁移与单写入方接管；原 Console 仍服务的 Ping 不等于接管 |
 | G-C2 | 备份部署、重启、实际触发与归档恢复通过 | 权威 Salt states 已合入部署：精确 mountpoint、持久 SSHFS、模板提交、开机/受控 timer 归档；见[首轮](reviews/2026-10-23-production-closure.md)与[恢复副本](reviews/2026-10-23-restored-agent-probe.md)记录 | 已解除，本轮范围 | 常驻 daily timer 正常 waiting；继续定期复验，不声称已观察每次日历触发 |
 | G-C3 | ~~无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过~~ **契约已成文（M1-6，PR #14 `e5f7f55`）**：[升级与回滚](upgrade-rollback.md) 给出四个制品的钉法、兼容矩阵、升级顺序与回滚路径；**仍未在真机演练过**（该文 §6） | `internal/database/database.go:232`（`SchemaVersion`）、`:293-308`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | 部分解除（原 **A-阻塞**；runbook 已成文。剩余：真机升级 + 回滚演练未做，见[升级与回滚](upgrade-rollback.md) §6） | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
-| G-C4 | 新版制品分发仍依赖现场 artifact store，未用当前 release URL 完成 provision | `v0.1.0` 已发布但不含本轮修复；现行制品绑定干净 revision 和 SHA256，尚未发布新 release | A-需要（B-阻塞） | 发布包含当前修复的制品，使用其 URL + SHA256 完成生命周期，不能回退旧 agent 充当验收 |
+| G-C4 | 当前 release URL 的真机 provider 生命周期尚未闭环 | `v0.2.1` 已发布 Console/Web/backup/agent 与四个 helper；[URL 安装修复](reviews/2026-10-24-release-url-installer.md)的隔离验证不等于真实 bootstrap、持久性与销毁验收 | A-需要（B-阻塞） | 使用包含当前修复的正式 URL + SHA256 完成 provision → suspend → resume → purge，不能回退旧 agent 充当验收 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 136 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
 
 ### 2.D 安全与身份
@@ -247,7 +250,7 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
 - [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本——PVE 版本历史核对保留；Proxmox/NAS SSH 指纹仍缺独立可信来源，用户确认当前没有备用入口，不用现有 SSH 会话冒充独立验证。步骤见[真机验收清单](acceptance-real-machine.md)（G-B5）。
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
-- [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）—— **前一半已完成（2026-09-22）**：tag `v0.1.0` → `020b086`，`release.yml` run 35733774718 成功，发布 console、web tarball、agent deb、`qubes-air-backup` 与 `SHA256SUMS` 5 个制品（G-A4 已解除）；**剩余**：用 release URL 完成一次 provision（G-C4），所以本项仍不勾选
+- [ ] **M1-10** release 交付与真机生命周期 —— 正式发布流程已跑通，`v0.2.1` 提供八项部署制品与 `SHA256SUMS`（G-A4 已解除）；**剩余**：使用正式 release URL + SHA256 完成 provision、持久性、suspend/resume 与 purge（G-C4），所以本项仍不勾选。
 - [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
 - [x] **M1-12** purge 不可逆步骤与入队解耦：不可逆步骤成为 destroy job 的第一步（`Runner.Submit` 接受 `Step`，worker 在 job 行落库之后、provider 调用之前执行）；入队被拒时零销毁，错误文本同时说明"什么都没销毁"与 claim 已记录的部分；步骤中途失败时 job 行列出已完成步骤。测试：`internal/service/qube_purge_ordering_test.go`（拒绝入队 ×2 / 部分失败 / 幂等重试）、`internal/orchestrator/runner_steps_test.go`（顺序 / 失败跳过 action / 超时） —— 依赖：无（G-H3）；**已提交并独立复验**（两处变异红见 G-H3 行；真机生命周期属 M0-5）
 - [x] **M1-13** 修 `X-Forwarded-For` 可伪造：显式不信任任何代理（`SetTrustedProxies(nil)`），负向测试证明伪造 XFF 既不改 `ClientIP` 也换不到新限流桶 —— 已完成（G-H5）

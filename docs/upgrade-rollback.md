@@ -296,14 +296,15 @@ qubes-air-console version=unknown revision=unknown build_time=unknown tree=unkno
 | 启动日志有 `WARNING: settings: stored session timeout` | 旧版本存下的越界值；session 已回退 30 分钟 | 在设置页保存一个 5–1440 的值 |
 | provision、解锁、证书签发或续期失败，journal 里有 `SECURITY: pki: console credential is ambiguous` | `credentials` 表里有控制台没写过、却对得上它某个密钥名称的行（多出一行同名行、大小写或字符变体、类型不是 `pki`）。控制台从这一版起拒绝使用这类名称，而不是取最新的一行 | 错误里列出了涉及行的 ID。停止控制台，先备份，再按[安全控制](security-controls.md)“Console API 凭据”的核查步骤判断哪一行不是控制台写的，离线删除它。不要为了让服务跑起来而删掉真正的那一行：删 DEK 会让该盘不可恢复，删一半 CA 会让签发停止 |
 
-## 6. 尚未闭合
+## 6. 验收边界与剩余事项
 
-- **没有真机演练过**：本机没有 dom0 入口，§3、§4 的步骤是按 Salt 状态与代码读出来的，未在真机
-  上跑过一遍升级 + 回滚。真机项（M1-2~M1-4、M1-9）阻塞中。
-- **备份调度没有在真机触发过**（M1-5）：留存策略（`qubes-air-backup prune`）与 unit/timer 写法见
-  [灾难恢复](disaster-recovery.md)〈调度与留存〉，timer 由 `qubes-salt-config` `v0.1.0` 的 `qubesair.backup`
-  提供（默认关闭）；本文仍只要求升级前手动备份一次。
-- **还没有从 release 制品完成过一次真机部署或升级**（M1-10 的剩余一半）：首次 release 已经跑通——
-  `v0.1.0`（2026-09-22，`release.yml` run 35733774718）发布了 §1 表里的制品与 `SHA256SUMS`，发布制品的
-  `--version` 读数见[真机验收清单](acceptance-real-machine.md)步骤 1；但还没有按本文的钉法在真机上用
-  这些制品完成一次部署、升级或用 release URL 置备。
+- **完整接管与回滚仍需单独验收**：§3、§4 定义升级与恢复契约；
+  [已记录的离机恢复和在线 Ping](reviews/2026-10-23-restored-agent-probe.md)不代表入口、
+  吊销服务及单写入方已经完成灾难接管。旧盘 DEK 迁移也仍属 M1-9。
+- **备份调度已有受控真机记录**（M1-5）：开机与受控 timer 触发见
+  [生产闭环记录](reviews/2026-10-23-production-closure.md)。留存和恢复步骤见
+  [灾难恢复](disaster-recovery.md)；升级前仍须创建并核验本次备份。
+- **正式发布与 provider 生命周期分别验收**（M1-10 / G-C4）：
+  [v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布八项部署制品和
+  `SHA256SUMS`，并包含 release URL 安装修复。制品可下载和隔离安装成功不能替代正式 URL
+  的真机 provision → suspend → resume → purge；该生命周期继续保持未闭环。

@@ -8,12 +8,13 @@ agent。
 
 ## 当前状态
 
-状态更新于 2026-10-23。本轮在 `codex/production-closure` 分支完成 Salt 重复部署、
-Console 重启、完整 qrexec Exec/FileCopy、数据持久性与离机恢复验收；
-Console/agent 构建为 `eb753f4`，Relay handler 修复为 `4455409`。
-详见[本轮记录](docs/reviews/2026-10-23-production-closure.md)。这些分支变更尚未合入或发布，
-不能代替 `v0.1.0` 的发布验收；剩余事项见[路线图](docs/roadmap-to-production.md)与
-[生产可用性缺口](docs/production-readiness-gaps.md)。
+状态更新于 2026-10-25。生产闭环分支已合入主干，
+[v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布 Console、Web、
+backup、agent 和四个 Relay helper 的制品及摘要，并修复 release URL 安装与依赖解析。
+主干另已合入[未加密数据盘挂载身份校验](docs/reviews/2026-10-25-plain-data-mount-identity.md)，
+通过隔离 QEMU、包回归与完整门禁。发布、隔离验证和真机验收分别记录；已有
+[真机记录](docs/reviews/2026-10-23-production-closure.md)不代表新版本生命周期已通过。
+剩余事项见[路线图](docs/roadmap-to-production.md)与[生产可用性缺口](docs/production-readiness-gaps.md)。
 
 | 能力 | 状态 | 说明 |
 |---|---|---|

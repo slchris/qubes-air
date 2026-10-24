@@ -1,9 +1,11 @@
 # 当前状态与路线图
 
-更新日期：2026-10-24。本文区分已合入实现、现场部署与剩余验收；逐项状态见
-[生产可用性缺口](production-readiness-gaps.md)。现场 Console/relay-call 为 `2b62128`、
-agent 为 `eb753f4`、GrpcProxy 为 `4455409`。Air #90–#93 与 Salt #3–#7 均已合入，
-合并 CI 通过；未用旧 `v0.1.0` release URL 置备，也未发布新版本。
+更新日期：2026-10-25。本文区分已合入实现、发布制品与真机验收；逐项状态见
+[生产可用性缺口](production-readiness-gaps.md)。生产闭环修复已合入，
+[v0.2.1](https://github.com/slchris/qubes-air/releases/tag/v0.2.1) 已发布八项部署制品与
+`SHA256SUMS`，包括 release URL 安装和 Proxmox 取消处理修复。主干另已合入
+[DATA-02](reviews/2026-10-25-plain-data-mount-identity.md)，完成隔离挂载与启动门禁验收。
+当前 release URL 的完整 provider 生命周期仍需独立真机验证。
 
 项目已具备 Proxmox 核心闭环，仍适合受控实验与开发，尚不是通用生产发行版。
 
