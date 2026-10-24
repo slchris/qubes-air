@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -306,31 +307,44 @@ func TestRuntimeMetricsReportsProviderFailures(t *testing.T) {
 	}
 }
 
-// A metrics sweep builds its adapter, reads, and drops it. The connection it
-// used must not outlive the sweep as an idle keep-alive (two goroutines per
-// connection on the client side, until the provider hangs up).
+// Observe this server's sockets, since other tests' connection goroutines may
+// exit during the sweep and invalidate a process-wide goroutine baseline.
 func TestCloseIdleConnectionsReleasesTheSweepConnections(t *testing.T) {
-	ad, _ := newTestAdapter(t, func(w http.ResponseWriter, r *http.Request) {
+	states := &sync.Map{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/config") {
 			writeData(w, map[string]string{"description": ownerMarker(testQube(), "compute")})
 			return
 		}
 		writeData(w, map[string]any{"status": vmStatusRunning, "cpu": 0.1, "mem": int64(1), "maxmem": int64(2)})
+	}))
+	srv.Config.ConnState = func(conn net.Conn, state http.ConnState) { states.Store(conn, state) }
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	ad, err := New(Config{
+		Endpoint: srv.URL, APIToken: "test-token", Timeout: 5 * time.Second,
+		CAPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})),
 	}, Options{})
-	baseline := runtime.NumGoroutine()
-
-	_, err := ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
 	require.NoError(t, err)
-	require.Greater(t, runtime.NumGoroutine(), baseline, "the keep-alive connection is pooled after the read")
+	t.Cleanup(ad.CloseIdleConnections)
+	allConnections := func(want http.ConnState) bool {
+		count, matched := 0, true
+		states.Range(func(_, value any) bool {
+			count++
+			matched = matched && value == want
+			return true
+		})
+		return count > 0 && matched
+	}
+
+	_, err = ad.RuntimeMetrics(context.Background(), testQube(), provider.Infra{Node: "infra-node1", ComputeVMID: 106})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return allConnections(http.StateIdle) }, 5*time.Second, time.Millisecond,
+		"the sweep's own keep-alive connections must be idle after the read")
 
 	ad.CloseIdleConnections()
-	// Polled inline: require.Eventually runs its condition on goroutines of its
-	// own, which would be counted.
-	deadline := time.Now().Add(5 * time.Second)
-	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	require.LessOrEqual(t, runtime.NumGoroutine(), baseline, "no connection goroutine may outlive CloseIdleConnections")
+	require.Eventually(t, func() bool { return allConnections(http.StateClosed) }, 5*time.Second, time.Millisecond,
+		"CloseIdleConnections must close every socket used by this sweep")
 }
 
 func TestEnsureCompute_ClonesConfiguresStarts(t *testing.T) {
