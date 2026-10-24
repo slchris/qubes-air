@@ -1,8 +1,9 @@
 # 后续 TODO
 
-更新：2026-10-23。勾选表示代码与自动化验收完成并已合入 `main`；不表示已部署或已通过真机验收。
+更新：2026-10-24。勾选表示代码与自动化验收完成并已合入 `main`；不表示已部署或已通过真机验收。
 2026-10-23 现场修复已由 Air PR #90（`7a5fc9a`）和 Salt PR #3（`cc8c11c`）合入，合并 CI 通过；
-网络资格修复由 PR #91（`d7a9dbd`）合入，合并 CI 通过。部分验收通过不代表整个 OPS-01/QA-01 完成。
+网络资格、自动清理和传输修复分别由 Air #91/#92/#93 合入，Salt #4–#7 配套部署与合入，
+合并 CI 通过。部分验收通过不代表整个 OPS-01/QA-01 完成。
 当前能力见[路线图](roadmap-to-production.md)，历史检查见[记录索引](reviews/README.md)。
 M0–M3 里程碑与 G-* 缺口的逐项状态见[生产可用性缺口](production-readiness-gaps.md)。
 P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.md)，
@@ -45,30 +46,33 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
   验收边界：自动化覆盖迁移成功、部分失败、标记重试与拒绝路径；按盘真机核验密钥来源
   仍归 QA-01，未迁移盘不能宣称 crypto-shred。证据见
   [数据密钥迁移记录](reviews/2026-09-21-data-keys.md)。
-- [ ] **OPS-01：离机恢复及 CA 演练。** 受控范围已通过（2026-10-23，分支验收）：
-  真实离机归档、原 keyring 解密 4 条凭据、原 CA 指纹、27 条签名吊销记录、只读 provider
-  对账、错口令/错 keyring/已有目标拒绝均完成。Console AppVM 重启及受控 timer 触发后，
-  最新归档恢复至健康耗时 1.503 秒。见[闭环记录](reviews/2026-10-23-production-closure.md)。
-  剩余：生产数据量 RTO、完整控制域重建与在线 agent 接管；小规模结果不覆盖这些场景。
+- [ ] **OPS-01：离机恢复及 CA 演练。** 真实离机归档、原 keyring/CA、签名吊销、只读
+  provider 对账及错口令/错 keyring/已有目标拒绝已通过，见[首轮记录](reviews/2026-10-23-production-closure.md)。
+  补验恢复副本连接运行中 agent 的真实 mTLS Ping：27 Qubes、106 jobs、5 凭据解密，
+  从恢复开始至健康 0.860 秒、至 Ping 成功 0.962 秒，见[在线探测记录](reviews/2026-10-23-restored-agent-probe.md)。
+  用户未设定生产规模/RTO 硬指标，当前记录准备好恢复主机后的实测。原 Console 仍提供
+  吊销服务；完整控制域重建、入口/吊销服务迁移与单写入方接管仍未覆盖。
 - [x] **NET-01：静态 IP 池已撤销。** 按产品决定移除 Proxmox Zone 的 `ip_pool`/`gateway`
   配置和静态分配逻辑；新建 compute 使用 DHCP，恢复时保留已有网络配置。剩余真机网络验证纳入 QA-01。
-- [ ] **QA-01：完整 Proxmox 回归记录。** 2026-10-23 分支验收已补齐此前被 dom0 policy
+- [ ] **QA-01：完整 Proxmox 回归记录。** 2026-10-23 至 24 日验收已补齐此前被 dom0 policy
   阻断的 Exec/FileCopy 完整 qrexec 正反例，1 MiB 往返及 suspend/resume 后原文件读取均通过。
-  当前 Console/agent `eb753f4`、handler `4455409`；生命周期、证书换发及两个已授权测试对象
-  purge 完成，历史资源保留，临时精确授权已撤销。见[闭环记录](reviews/2026-10-23-production-closure.md)。
-  节点网络资格修复已由 PR #91 合入，覆盖自动调度和 provider 分配前检查，真实只读探针证明六个
-  节点中仅一个满足 zone 网络条件；完整门禁及合并 CI 通过，部署后生命周期仍待完成，见
-  [网络资格记录](reviews/2026-10-23-network-eligibility.md)。purge 后 Console identity YAML
-  与 Relay endpoint 缓存自动回收的实现、回归及本地完整门禁已通过，PR/部署和真机复验仍待完成，见
-  [清理记录](reviews/2026-10-23-purge-residual-cleanup.md)；上一轮残留已手动清理。
+  当前 Console/relay-call 为 `2b62128`、agent 为 `eb753f4`、GrpcProxy 为 `4455409`。
+  [网络资格修复](reviews/2026-10-23-network-eligibility.md)部署后，专用对象自动选中唯一合格节点；
+  [持久入站规则](reviews/2026-10-23-console-ingress.md)已通过 Console 重启验证。
+  新对象的完整 qrexec、持久文件和最终 purge 均通过，identity YAML/Relay endpoint 自动回收、
+  重复 purge 不新增 destroy job、历史资源保留，详见[清理记录](reviews/2026-10-23-purge-residual-cleanup.md)。
+  [ConnectTCP](reviews/2026-10-23-connecttcp-identity.md)已验证身份映射、流中断明确失败与新调用恢复。
   另待：旧盘 DEK 迁移、SSH 主机键独立带外核对、release URL 置备及 Relay 自身重启。
+  用户确认没有独立备用管理入口/指纹来源，SSH 指纹及 Relay 重启的环境限制不能用现有 SSH 会话替代。
   历史验收见[生产部署记录](reviews/2026-10-19-production-deploy.md)与
   [当前 main 生命周期记录](reviews/2026-10-19-current-main-real-machine.md)。
 
 ## P2：产品与扩展
 
 - [ ] **GUI-01：无缝桌面闭环。** 验收 appmenu、单击启动、多窗口、退出状态、断线恢复，
-  明确 Xpra 与 RemoteVM 权限边界；已有服务原语不能替代完整桌面验收。
+  明确 Xpra 与 RemoteVM 权限边界；ConnectTCP handler/mTLS 流已复验，但 dom0 GUI policy、
+  Xpra 部署/认证与完整桌面仍未通过。当前 StartApp 仍把失败当成功并经 systemd-run 脱离
+  agent 沙箱，desktop launcher 仍使用 shell 解释 Exec；下一阶段先修这些启动边界。
 - [ ] **QA-02：交互和安装回归。** 已补：登录/session、创建/编辑 Qube、purge 确认、应用菜单、zone 创建只提供已实现 provider
   及后端拒绝的组件测试（2026-09-26 合并树上 vitest 20 个测试文件、238 个用例，随 pre-commit 与 CI 运行）；模拟 API 的 Playwright E2E 走完登录→创建→应用启动→挂起→purge
   （`make frontend-e2e`、CI `frontend-e2e` job）；agent deb 的安装、依赖解析、升级 conffile 保留、完整性、卸载与启动拒绝路径
@@ -105,9 +109,10 @@ P0 实现与门禁证据见[安全加固记录](reviews/2026-09-20-p0-security.m
 
 ## 推荐推进顺序
 
-Air/Salt 上一轮变更已合入。当前先完成节点网络资格检查，再修退役资源自动回收，之后补
-OPS-01 的容量/接管、QA-01 的旧盘迁移/带外指纹/release URL，之后推进 GUI-01。
-本轮完整 qrexec、数据持久性与小规模离机恢复已有证据，不再列为“缺少环境入口”。
+Air/Salt 修复合入、节点网络资格、退役资源自动回收与活跃传输中断已完成本轮验收。
+继续推进 GUI-01 启动边界和完整桌面；OPS-01 完整接管、QA-01 旧盘迁移、带外指纹、
+Relay 重启及新 release URL 置备按各自前提补齐，不用已通过的窄范围测试替代。
+本轮完整 qrexec、数据持久性与恢复副本在线 Ping 已有证据，不再列为“缺少环境入口”。
 
 完成任务时，在本清单勾选并附测试/验收记录；提交后补 commit 标识，同时更新路线图和相关专题文档。
 后端入口相对 `console/backend/`；远端脚本路径相对仓库根目录。

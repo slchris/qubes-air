@@ -1,9 +1,11 @@
 # 生产可用性缺口清单
 
-更新：2026-10-23。本轮复验并更新部署、完整 qrexec、离机恢复相关条目；证据见
-[生产闭环记录](reviews/2026-10-23-production-closure.md)。Air/Salt 的本轮修复位于
-`codex/production-closure` 分支，尚未合入或发布。未重验的项目保留各行的证据日期与边界，
-不把早期汇总数量当作当前完成率。
+更新：2026-10-24。Air #90–#93 与 Salt #3–#7 已合入，合并 CI 通过；网络资格、purge
+自动回收、Console 持久入站和活跃传输中断已部署并完成本轮真机验收。记录见
+[清理验收](reviews/2026-10-23-purge-residual-cleanup.md)、
+[传输验收](reviews/2026-10-23-connecttcp-identity.md)与
+[恢复后在线 Ping](reviews/2026-10-23-restored-agent-probe.md)。尚未发布新 release。
+未重验项目保留各行的证据日期与边界，不把早期汇总数量当作当前完成率。
 本文只回答一个问题：**离"能拿它当生产用"还差什么**。所有结论附可回放命令或 `文件:行号`；
 无法证实的写在 §5，不写成结论。
 
@@ -13,13 +15,14 @@
 
 | 档 | 定义 | 当前 | 还差什么 | 粗估 |
 |---|---|---|---|---|
-| **A 受控自用生产** | 自有 Qubes + Proxmox 长期承载工作负载 | 本轮重复部署、完整 qrexec、持久文件、受控离机恢复通过；仍未整体达标 | 分支审查/合入、节点网络资格、退役缓存自动回收、生产规模/接管、旧盘迁移、带外 SSH 指纹、release URL 置备 | 依赖逐项验收 |
+| **A 受控自用生产** | 自有 Qubes + Proxmox 长期承载工作负载 | 网络调度、自动清理、完整 qrexec、持久文件、活跃流中断及恢复副本在线 Ping 通过；仍未整体达标 | 完整灾难接管、旧盘迁移、带外 SSH 指纹、Relay 整机重启、新 release URL 置备 | 依赖逐项验收 |
 | **B 对外发布** | 陌生人按文档装起来能用：多用户身份、监控告警、桌面闭环、许可证与发布材料 | **未达标** | A 档全部 + §2.E / §2.G | A 档之上再 3+ Sprint |
 
-本轮已经取得重复 Salt 部署、Console AppVM 重启、Exec/FileCopy 完整 qrexec、
-文件跨 suspend/resume、两个测试对象 purge 和真实离机恢复的证据。同时确认两项实现缺口：
-自动调度未检查节点是否具有 zone bridge，purge 未自动回收本地 identity YAML 与 Relay
-endpoint 缓存。本轮测试残留已按精确对象手动清理，不能把这两个缺口写成自动闭环。
+本轮新专用对象已自动选中唯一合格节点，完成完整 qrexec、文件跨 suspend/resume、
+最终 purge 与重复请求核验。identity YAML 和 Relay endpoint 自动回收，未手工补删；
+历史 holder 保留。Console 入站规则重启后自动恢复；ConnectTCP 已建立流在 agent 中断后
+非零退出，新调用正常返回。恢复副本已完成真实在线 agent Ping，但原 Console 仍提供
+吊销状态，完整控制域/入口/单写入方接管仍未证明。
 
 三个里程碑（详见 §3）：
 
@@ -46,7 +49,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | M0-3 合并 main | 已完成 `5f0fd88` | 21/21 全绿后用 **merge commit** 合并（不能用 squash/rebase：会改写 `4f52953` 这些已被 QA 记录的 revision，已核对仍在 main 历史里）；合并后在 main 上重跑 `make audit` **rc=0** |
 | M1-11 job 超时 | 已完成 `1731d3d` | 默认 15 分钟 → 45 分钟并可配置；M0-5 lifecycle 已通过，但未触发 45 分钟上限，长 provision 复现仍未覆盖 |
 | M1-13 XFF 可伪造 | 已完成 `f8e154a` | `SetTrustedProxies(nil)` + 负向测试；关掉修复即复现 |
-| M0-5 / M1-2 / M1-3 / M1-4 真机项 | 本轮现场通过受控范围，分支待合入 | `eb753f4` lifecycle、`4455409` handler 完整 qrexec、1 MiB 持久文件、原 keyring/CA 离机恢复与只读对账；生产规模/在线接管未验证。见[记录](reviews/2026-10-23-production-closure.md) |
+| M0-5 / M1-2 / M1-3 / M1-4 真机项 | 受控范围通过，修复已合入 | 2026-10-24 补验：网络选择、自动清理、完整 qrexec、1 MiB 持久文件与恢复副本在线 Ping；完整接管仍未验证。见[清理](reviews/2026-10-23-purge-residual-cleanup.md)与[恢复](reviews/2026-10-23-restored-agent-probe.md)记录 |
 
 ### 0.3 M1 实现来源与后续验收
 
@@ -55,7 +58,7 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 | 项 | PR | 关键证据 |
 |---|---|---|
 | M1-1 Exec/FileCopy 白名单下发 | [#15](https://github.com/slchris/qubes-air/pull/15) `735f8f1` | 新增 `agent_exec_allow` / `agent_filecopy_roots`（冒号分隔，与 agent 的 `split(":")` 一致），写入 `agent.env`，空则整键省略；路径规则在启动配置校验与渲染时**各校验一次**。独立复验：把校验函数中和成恒真 → 配置侧 6 个、渲染侧 7 个子用例 FAIL；删掉写入 → 投递用例 FAIL |
-| M1-5 备份留存策略 | [#16](https://github.com/slchris/qubes-air/pull/16) `a500fb9` | prune 实现保留；本轮 Salt 修复精确 mountpoint 门禁、持久 SSHFS 与模板提交顺序，开机/受控 timer 备份及最新归档恢复通过，部署分支待合入 |
+| M1-5 备份留存策略 | [#16](https://github.com/slchris/qubes-air/pull/16) `a500fb9` | prune 实现保留；Salt #3 已合入并部署精确 mountpoint 门禁、持久 SSHFS 与模板提交顺序，开机/受控 timer 备份及最新归档恢复通过 |
 | M1-6 升级/回滚契约 | [#14](https://github.com/slchris/qubes-air/pull/14) `e5f7f55` | 四制品 Salt 钉法、协议集合语义（零 flag day）、schema 前向单向（回滚二进制≠回滚数据）、升级顺序与回滚表 |
 | M1-7 部署硬要求 | [#12](https://github.com/slchris/qubes-air/pull/12) `25cc35d` | 13 条"默认不满足、代码不兜底"逐条给后果与核对命令（TLS/loopback、审计留存、session、share 导出、bootstrap 窗口） |
 | M1-11 job 超时 | 随 M0 | 默认 45 分钟覆盖真机 provision 长尾（G-H1） |
@@ -94,10 +97,10 @@ M0 已启动。首轮 CI 的结果本身就是本清单最想要的证据：它�
 
 阻塞列含义：**A-阻塞** = 不解决就不能算 A 档；**A-需要** = A 档应有、可短期绕过；**B-阻塞** = 只挡对外发布；技术债 = 不挡可用性，挡长期回归风险。
 
-本轮只复验 G-B2/G-B3、G-C1/G-C2 与首次 bootstrap 相关边界，未对全部 G-* 做全量
-重新评级，因此不沿用 2026-09-26 的数量汇总。验收满足但仍有分支合入、容量/接管或其他
-明确剩余工作时，继续写“部分解除”。§3 的勾选保留原交付语义；本轮现场已通过但待合入
-的条目在正文明确标识，不能把它读成仍缺环境入口。
+本轮复验 G-B2/G-B3、G-C1/G-C2、首次 bootstrap、节点网络选择、自动清理与流中断边界，
+未对全部 G-* 重新评级，因此不沿用早期数量汇总。仍有完整接管或其他明确剩余工作时，
+继续写“部分解除”。§3 的勾选保留交付语义：本轮对应实现已合入且验收通过的 M1-2/M1-5
+已勾选，范围更大的 OPS-01/QA-01 继续开放。
 
 ### 0.2 M0 收尾结果（2026-09-22）
 
@@ -112,7 +115,7 @@ M0 的产出不是"CI 绿了"，而是**第一次把积压的 24 个 commit 交�
 
 当时未完成的 M0-5 已于 2026-10-19 通过，并在本轮绑定 `eb753f4` 重跑生命周期。
 **M0-6** 已于 2026-09-22 完成——`qubes-salt-config` 的 QA-01 改动提交为 `6f6d0dc`，与其上的接线改动 `9866baa` 一起经 PR #1 合并（`db1b68d`）并打 tag `v0.1.0`；
-M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复已在本轮验证；部署修复待合入。
+M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复已在本轮验证；部署修复已由 Salt #3 合入。
 
 ### 2.A 交付链（最先做，且是其余一切的前置）
 
@@ -128,20 +131,20 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
 | G-B1 | Console 与部署侧 Exec/FileCopy allowlist 下发已实现并验证 | Console PR #15、Salt `v0.1.0` 已接线；2026-10-19 [生产记录](reviews/2026-10-19-production-deploy.md)确认 guest 白名单，本轮完整 qrexec 正反例见[闭环记录](reviews/2026-10-23-production-closure.md) | 已解除（下发能力） | 本轮按单 guest 设置窄测试 allowlist，未扩大 fleet 默认值；传输修复合入见 G-B2 |
-| G-B2 | Exec/FileCopy 的完整 qrexec 验收已通过 | `eb753f4` agent + `4455409` handler；17 例 runner、未授权 source 拒绝、1 MiB push/pull 与 resume 后原文件 pull；临时精确 grant 已撤销，见[记录](reviews/2026-10-23-production-closure.md) | 现场解除，Air/Salt 分支待合入 | 合并对应修复；GUI/ConnectTCP 不在此结论内 |
+| G-B2 | Exec/FileCopy 完整 qrexec 正反例已通过 | 17 例 runner、未授权 source 拒绝、1 MiB push/pull 与 resume 后原文件 pull；新对象复验见[记录](reviews/2026-10-23-purge-residual-cleanup.md) | 已解除，Air/Salt 对应修复均已合入 | GUI 独立验收；ConnectTCP handler 的流证据见[传输记录](reviews/2026-10-23-connecttcp-identity.md) |
 | G-B3 | ~~suspend/resume 的**数据持久性**未验证（只验证了数据盘保留与重新解锁，未验证文件真的还在）~~ **已解除（2026-10-19）** | 在生产 `qa-deploy-4-20261019`（`66325fb`）上向 `/data/qubes-air-check.txt` 写入 27 字节，suspend 后 compute 销毁、storage VM 保留；resume 后新 compute 的 `/data` 仍为 `/dev/mapper/qubesair-data`（ext4），内容仍为 `qubes-air-persist-20261019`（[记录](reviews/2026-10-19-production-deploy.md)） | 已解除（原 **A-阻塞**） | 满足：写入文件 → suspend → resume → 读出同一内容 |
-| G-B4 | 旧盘 DEK 迁移（DATA-01）无真机验证，环境里没有 per-qube DEK 之前的加密盘 | 同上第 71 行；[data-keys 记录](reviews/2026-09-21-data-keys.md) 第 40 行 | A-需要 | 按 [runbook §5](runbook-qa01.md) 在有旧盘的环境补迁移验收 |
-| G-B5 | 节点 SSH known_hosts 是 `ssh-keyscan` 的 TOFU 结果，未与带外指纹核对；PVE 集群版本同样未带外核对。**PVE 版本半边已带外核对**（2026-09-22，经 PVE API）：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；同一次会话确认 console 默认 snippet datastore 在真实集群上允许 `snippets`（`internal/provider/proxmox/adapter.go`:77 的 `"local"`），置备前置成立。**指纹半边仍开**：主机键**不能**经 PVE API 取得——`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"，必须由执行者在任一节点上导出再逐条比对 | 原证据 QA-01 记录第 19、73 行；本次为 2026-09-22 的 PVE API 带外读数（本行不含任何真实主机名/节点名/地址，遵守 G-D6 的"新文档不再写真实地址"）；核对命令与做法 `docs/runbook-qa01.md` §2 | 部分解除（**A-需要**，等级不变：指纹未替换 TOFU 结果，TOFU 就还在。PVE 版本半边与带外核对方法已完成；剩余：在真机节点上导出主机键、替换 `pve_known_hosts` 里的 TOFU 键并落记录） | 带外方式与命令已成文；剩下一步是在真机任一节点上跑那条命令，用输出替换 console `pve_known_hosts` 里的 TOFU 键（并记录到 `docs/reviews/` 的执行记录） |
-| G-B6 | 真机证据的 revision 绑定：QA-01 跑在 `fae0aea`。**Sprint 1 未改任何生产代码**（diff 只有测试/文档/脚本），故代码面证据仍成立；但合并后任何 `.go` 改动都会使其失效 | `git diff --name-only fae0aea 4f52953`（无 `.go` 生产文件、无 `.svelte`） | A-需要 | 每次合并进 `main` 后重跑一次真机生命周期冒烟，记录新 SHA |
+| G-B4 | 旧盘 DEK 迁移尚无真机证据 | 已核对历史对象 `qa01-regression-20260925`：已有 DEK、migration_pending=false；当前 Console 没有 legacy master，不能冒充未迁移旧盘 | A-需要，缺真实旧盘及原 master | 按 [runbook §5](runbook-qa01.md) 在具备旧盘和原密钥的环境验收，不创建替代 master |
+| G-B5 | SSH known_hosts 仍缺独立带外指纹核验 | 2026-09-22 经 PVE API 核对版本的历史结论保留；用户确认当前无独立备用入口或可信指纹来源，不能用同一 SSH 会话证明自身可信 | 部分解除，SSH 指纹仍开 | 经独立可信渠道核对 Proxmox/NAS host key；[核对步骤](runbook-qa01.md)不等于已执行 |
+| G-B6 | 真机证据按制品 revision 绑定 | Console/relay-call `2b62128`、agent `eb753f4`、lister `06cfff3`、GrpcProxy `4455409`；实际 SHA256 与 Salt pin 一致，详见[传输](reviews/2026-10-23-connecttcp-identity.md)与[清理](reviews/2026-10-23-purge-residual-cleanup.md)记录 | 本轮已绑定，后续变更仍需相应复验 | 不把一个入口的测试外推到未部署的 agent、GUI 或 release 制品 |
 
 ### 2.C 恢复与运维（A 档阻塞）
 
 | ID | 缺口 | 证据 | 阻塞 | 验收条件 |
 |---|---|---|---|---|
-| G-C1 | 离机归档、原 keyring/CA、签名吊销恢复及只读 provider 对账已通过；生产规模/在线接管未覆盖 | 最新 286,900 字节归档恢复至健康 1.503 秒；4 凭据解密、27 签名吊销验证、历史 holder/volume 匹配，见[记录](reviews/2026-10-23-production-closure.md) | 部分解除 | 完整控制域重建、生产数据量 RTO、恢复 Console 到在线 agent 的接管验证 |
-| G-C2 | 备份部署、重启、实际触发与最新归档恢复通过 | 权威 Salt states：精确 mountpoint 拒绝普通本地目录、持久 SSHFS、模板关机提交；开机和受控临时 timer 均生成离机归档，常驻 daily timer 保持 waiting；见[记录](reviews/2026-10-23-production-closure.md) | 现场解除，Salt 分支待合入 | 合入部署修复；持续运维按恢复文档定期复验，未声称等到下一次 daily 日历触发 |
+| G-C1 | 离机归档、原 keyring/CA、签名吊销、只读 provider 对账及恢复副本在线 agent Ping 已通过 | 290,996 字节归档，5 凭据解密；恢复至健康 0.860 秒、至 Ping 0.962 秒，见[记录](reviews/2026-10-23-restored-agent-probe.md) | 部分解除；用户未设规模/RTO 硬指标，先记录实测 | 完整控制域重建、入口/吊销服务迁移与单写入方接管；原 Console 仍服务的 Ping 不等于接管 |
+| G-C2 | 备份部署、重启、实际触发与归档恢复通过 | 权威 Salt states 已合入部署：精确 mountpoint、持久 SSHFS、模板提交、开机/受控 timer 归档；见[首轮](reviews/2026-10-23-production-closure.md)与[恢复副本](reviews/2026-10-23-restored-agent-probe.md)记录 | 已解除，本轮范围 | 常驻 daily timer 正常 waiting；继续定期复验，不声称已观察每次日历触发 |
 | G-C3 | ~~无 console 升级/回滚契约：schema 迁移是**前向单向**的（`user_version` 单调，备份拒绝更新版本），回滚的实际手段是"从备份恢复"，但没写进文档、也没演练过~~ **契约已成文（M1-6，PR #14 `e5f7f55`）**：[升级与回滚](upgrade-rollback.md) 给出四个制品的钉法、兼容矩阵、升级顺序与回滚路径；**仍未在真机演练过**（该文 §6） | `internal/database/database.go:232`（`SchemaVersion`）、`:293-308`（打开更新的库时报错拒绝）；升级仅在 [quickstart](quickstart.md) 第 33 行一句话；[runbook](runbook-remotevm.md) §10 只覆盖 agent 发布与单 compute 故障 | 部分解除（原 **A-阻塞**；runbook 已成文。剩余：真机升级 + 回滚演练未做，见[升级与回滚](upgrade-rollback.md) §6） | 一篇升级/回滚 runbook：console 二进制、web tarball、agent deb 的升级顺序与兼容边界；schema 升级前必做的备份；回滚=恢复备份并验证 |
-| G-C4 | 产物分发仍依赖局域网 artifact store（`10.31.0.2`），离开该网段无法 bootstrap——这正是 [release.yml](../.github/workflows/release.yml) 存在的理由。该 workflow 已在 `v0.1.0` 跑通（G-A4），但还没有用 release 制品 URL 完成过一次 provision | `release.yml` 第 1-20 行自述；`docs/bootstrap-design.md`:67-73；G-A4 | A-需要（B-阻塞） | 用 release 制品（URL + SHA256）完成一次 provision，不依赖 LAN 地址 |
+| G-C4 | 新版制品分发仍依赖现场 artifact store，未用当前 release URL 完成 provision | `v0.1.0` 已发布但不含本轮修复；现行制品绑定干净 revision 和 SHA256，尚未发布新 release | A-需要（B-阻塞） | 发布包含当前修复的制品，使用其 URL + SHA256 完成生命周期，不能回退旧 agent 充当验收 |
 | G-C5 | artifact store 的认证/签名与发布审计未定义 | [bootstrap-design](bootstrap-design.md) 第 136 行 | B-阻塞 | digest 由可信通道下发 + 发布审计可追溯 |
 
 ### 2.D 安全与身份
@@ -226,7 +229,7 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 - [x] **M0-2** 修掉 CI 暴露的问题（如有），每条失败都按真实原因修，不使用 `|| true`/`continue-on-error` —— 已完成：gitleaks 按值放行 `fa2b8a4`、deb 版本排序 `3afbcd7`、gosec 29 条 `a118c3c` + 门禁等价 `5f1bf72`；第二轮 CI 复验（G-A1）
 - [x] **M0-3** 合并 `kixpower/sprint-1` → `main`，合并后重跑 `make audit` —— 已完成：`5f0fd88`（merge commit，保留 QA 记录的 revision），`main` 上 `make audit` rc=0（G-A2）
 - [x] **M0-4** 清理过时分支 `fix/security-audit`、`feat/mcp-server` —— 已完成：PR #7 关闭并说明被 `bodylimit` 取代，两个远端分支删除（本地保留）（G-A3）
-- [x] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 已完成（2026-10-19）：在修复后的 `0d23189`（#73 / `24f8e0c`）上走通 provision→suspend→resume→suspend→purge，job 成功、证书轮换、PVE 匹配 VM 为 0；[记录](reviews/2026-10-19-current-main-real-machine.md)。随后在生产 `66325fb` 上三次重跑 lifecycle，并复验 RemoteVM 注册/注销、Exec/FileCopy agent 侧正反例与数据盘持久性（M1-3 已完成；M1-2 的完整 qrexec 已于 2026-10-23 补验通过，修复待合入）
+- [x] **M0-5** 在 `main` 新 HEAD 上重跑一次真机生命周期冒烟（provision→suspend→resume→purge），刷新 revision 绑定 —— 已完成（2026-10-19）：在修复后的 `0d23189`（#73 / `24f8e0c`）上走通 provision→suspend→resume→suspend→purge，job 成功、证书轮换、PVE 匹配 VM 为 0；[记录](reviews/2026-10-19-current-main-real-machine.md)。随后在生产 `66325fb` 上三次重跑 lifecycle，并复验 RemoteVM 注册/注销、Exec/FileCopy agent 侧正反例与数据盘持久性（M1-3 已完成；M1-2 的完整 qrexec 已于 2026-10-23 补验通过，修复已合入）
 - [x] **M0-6** 提交 `qubes-salt-config` 的 QA-01 期间改动并打 tag —— 2026-09-22 完成：`6f6d0dc`（清 terraform 时代）+ `9866baa`（白名单 env + 备份 state），PR [#1](https://github.com/slchris/qubes-salt-config/pull/1) `--merge` → `db1b68d`，tag `v0.1.0`；该仓 CI（yamllint / salt-lint / top-pairing）三项 pass —— 依赖：无（G-G4）
 
 ### M1 — A 档硬阻塞（自用生产的最小闭环）
@@ -235,13 +238,13 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 失败含义（M1-2/3 见 §B，M1-4、M1-5 见 §C，M1-8 的指纹半边见 §D）。
 
 - [x] **M1-1** console 侧下发 Exec/FileCopy 白名单：新增 `agent_exec_allow` / `agent_filecopy_roots`（env `QUBES_AIR_EXEC_ALLOW` / `QUBES_AIR_FILECOPY_ROOTS`，冒号分隔，默认空=服务在 guest 内禁用），写入 cloud-init `agent.env`（空则整键省略）；路径规则（绝对、规范化、无冒号/控制字符、FileCopy 拒绝 `/`）在启动配置校验与渲染时**各校验一次**，两侧测试的变异验证分别有 6/7 个子用例失败；**部署侧也已到位**（2026-09-22）：`qubes-salt-config` `v0.1.0` 把两个键写进 `console.env`（冒号分隔，空=未设置=guest 内禁用），此前该 state 从不写这两个键，于是控制台无论怎么配都会下发空白名单 —— 真机正值/负值记录属 M1-2 —— 依赖：M0（G-B1）
-- [ ] **M1-2** 完整 qrexec Exec/FileCopy 正反例——**本轮真机通过，Air/Salt 分支待合入**：17 例 runner 与未授权 source 拒绝，1 MiB push/pull 及 suspend/resume 后原文件 pull；G-B2，见[记录](reviews/2026-10-23-production-closure.md)。
+- [x] **M1-2** 完整 qrexec Exec/FileCopy 正反例——**真机通过且修复已合入**：17 例 runner 与未授权 source 拒绝，1 MiB push/pull 及 suspend/resume 后原文件 pull；新对象复验见[记录](reviews/2026-10-23-purge-residual-cleanup.md)，G-B2 已解除。
 - [x] **M1-3** 真机补跑 suspend/resume 数据持久性（写文件→suspend→resume→读回）—— 已完成（2026-10-19，`66325fb`，生产 `qa-deploy-4-20261019`）：`/data/qubes-air-check.txt` 的 27 字节内容在 suspend/resume 后原样读出，`/data` 仍为 `/dev/mapper/qubesair-data`（ext4）；[记录](reviews/2026-10-19-production-deploy.md)（G-B3 已解除）
-- [ ] **M1-4** 离机恢复——**本轮受控范围通过**：真实离机归档、原 keyring/CA、签名吊销、只读 provider 对账与 1.503 秒服务恢复；生产规模 RTO、控制域重建与在线接管仍开（G-C1），见[记录](reviews/2026-10-23-production-closure.md)。
-- [ ] **M1-5** 备份调度与留存——**本轮真机通过，Salt 分支待合入**：精确挂载门禁、开机自动备份、受控 timer 触发、最新归档恢复及恢复文档；常驻 daily timer waiting，不宣称已等待到下一次日历触发（G-C2）。
+- [ ] **M1-4** 离机恢复——原信任材料恢复、只读 provider 对账和恢复副本真实 agent Ping 已通过；当前准备好主机后恢复至健康 0.860 秒、至 Ping 0.962 秒。完整控制域、入口/吊销服务与单写入方接管仍开（G-C1），见[记录](reviews/2026-10-23-restored-agent-probe.md)。
+- [x] **M1-5** 备份调度与留存——**真机通过且 Salt 修复已合入**：精确挂载门禁、开机自动备份、受控 timer 触发、真实归档恢复及恢复文档；常驻 daily timer waiting，不声称已等待到下一次日历触发（G-C2）。
 - [x] **M1-6** 升级/回滚 runbook 成文：`docs/upgrade-rollback.md` 给出四个制品的 Salt 钉法、console↔relay/agent 协议兼容矩阵（版本集合而非相等判断，零 flag day；`BuildVersion` 只做观测）、schema 前向单向导致"回滚二进制≠回滚数据"、升级顺序（先备份）、两种回滚路径、失败模式速查；并写明今天**只能**用二进制 sha256 认构建（`/health.version` 是编译期常量 `0.1.0`，G-H8/M2-10） —— 依赖：无（G-C3、G-G2）；**注**：该限制已由 M2-10 解除，`docs/upgrade-rollback.md` §3.1/§3.2 已同步为"构建身份 + 摘要两条都看"
 - [x] **M1-7** 生产部署安全要求成文：`docs/deployment-requirements.md` 逐条给出"默认不满足、代码不兜底"的硬要求、后果与可核对命令（含 G-D7 的 share 导出约束与 G-H11 的 bootstrap 窗口），并从 `docs/README.md` 与根 `README.md` 的安全提示接入（G-D2、G-D3、G-D5、G-D7）
-- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本，替换 TOFU 结果 —— **PVE 半边已带外核对（2026-09-22，经 PVE API）**：`pve-manager` 9.2.10（release 9.2、单一 repoid），六个集群节点全部在线且同版本，集群 quorate；顺带确认 console 默认 snippet datastore（`internal/provider/proxmox/adapter.go`:77 的 `"local"`）在真实集群上允许 `snippets` 内容类型，置备前置成立。**指纹半边未核对，且不能经 API 取得**：`/nodes/{node}/certificates/info` 只回 API 证书，几个 SSH 端点都是 HTTP 501 "not implemented"；只能在任一节点上跑 `for f in /etc/ssh/ssh_host_*_key.pub; do ssh-keygen -lf "$f"; done`，把输出与 console 的 `pve_known_hosts` 逐条比对（命令与做法已写进 `docs/runbook-qa01.md` §2），所以本项**仍不勾选** —— 依赖：无（G-B5）；完整比对与替换步骤见[真机验收清单](acceptance-real-machine.md) 步骤 29-33
+- [ ] **M1-8** 带外核对节点 SSH 指纹与 PVE 集群版本——PVE 版本历史核对保留；Proxmox/NAS SSH 指纹仍缺独立可信来源，用户确认当前没有备用入口，不用现有 SSH 会话冒充独立验证。步骤见[真机验收清单](acceptance-real-machine.md)（G-B5）。
 - [ ] **M1-9** 有旧盘时补 DEK 迁移真机验收 —— 依赖：真机环境（G-B4）
 - [ ] **M1-10** 首次跑通 release：打 `v*` tag，产出 console/web/agent 制品 + `SHA256SUMS`，并用 release URL 完成一次 provision —— 依赖：M0（G-A4、G-C4）—— **前一半已完成（2026-09-22）**：tag `v0.1.0` → `020b086`，`release.yml` run 35733774718 成功，发布 console、web tarball、agent deb、`qubes-air-backup` 与 `SHA256SUMS` 5 个制品（G-A4 已解除）；**剩余**：用 release URL 完成一次 provision（G-C4），所以本项仍不勾选
 - [x] **M1-11** 修 job 超时：`Timeout` 可配置、默认 45 分钟覆盖真机 provision 长尾，并登记进 `runtime-defaults.md` UD-1e —— 已完成（G-H1）；**真机复现仍待 M0-5**
@@ -283,7 +286,7 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 | 本文 ID | 既有 ID | 说明 |
 |---|---|---|
 | G-B1..G-B4 | QA-01 剩余项 | 本文把 G-B1（下发能力）从 QA-01 里拆出来单列，因为它是**代码缺口**而非环境缺口 |
-| G-C1 | OPS-01 | 同一条：本轮小规模离机恢复通过，容量与在线接管仍待验收 |
+| G-C1 | OPS-01 | 本轮恢复副本已连接在线 agent；完整控制域、入口/吊销服务和单写入方接管仍待验收 |
 | G-C2/C3 | 新增 | 原清单没有独立的备份调度与升级回滚条目 |
 | G-A1..A4、G-G1..G4 | PUB-01 + 本文新增 | PUB-01 只覆盖发布材料，交付链状态此前散落在 sprint 文档里 |
 | G-E1..E6 | UI-01 / OBS-01 / GUI-01 / QA-02 / MCP-01/02 / CLOUD-01/02 | 一一对应 |
@@ -293,23 +296,18 @@ M1-5 的真实挂载、开机备份、受控 timer 触发和最新归档恢复�
 ## 5. 未核实与不确定
 
 - ~~**CI 真实结果未知**：本地 20 个 commit 从未 push，无法预判 7 个 workflow 是否全绿~~ 已由 M0 回答：PR #9 合并前第四轮 CI 21/21 全绿（§0.1）；`main` 之后在直推的 `a011ce8` 上回退为红，修复 `2d409fd` 与本次状态更正一起合入（G-A1）。
-- **生产数据量下的 RTO 未知**：预演库约 115 KB，不能外推到真实规模。
+- **完整灾难恢复 RTO 未知**：当前 290,996 字节归档至健康 0.860 秒、至在线 Ping 0.962 秒，只覆盖准备好恢复主机后的流程。用户未设规模指标，不能将实测外推为控制域重建与接管耗时。
 - **未知漏洞面**：未做外部安全审计，现有安全结论只覆盖已检查的边界。
 - **节点 SSH 指纹**仍未从带外渠道核对（G-B5 / M1-8）。PVE 集群版本那一半见 M1-8 条目：2026-09-22 经 PVE API 读取，读数记在本文 M1-8 条目，没有单独入库的执行记录。
 - **§2.H 的证据等级**：那 10 条来自一次与本清单作者独立的补盲审计，我逐条回读了本仓代码以及两个依赖的源码
   （`go-sqlite3@v1.14.22`、`gin@v1.9.1`）确认。但除库行为本身外，**均未在真机复现**——
   尤其 G-H1 是否真的触发取决于真实 provision 时长（代码自述 15-25 分钟，与 15 分钟超时重叠，属"有时会中"）。
   建议先按 M1-11 复现再修，不要把"应该会超时"当成已证实的故障。
-- G-B2/G-B3 的现场路径已在本轮完成；剩余自动回收与网络调度属于实现修复，不能继续归类成缺环境。
+- G-B2/G-B3 的现场路径、节点网络调度与退役身份/端点自动回收均已完成本轮验收；完整 GUI、Relay 重启和灾难接管仍有独立缺口。
 - 本文的 Sprint 数估算（A 档 2 个、B 档再 3+）是**排序用的粗估**，不是承诺；实际取决于真机环境可用性与 M0 暴露的 CI 问题数量。
-- **外部仓（`qubes-salt-config`）的改动一次都没真正 apply 过**：本机没有 Salt（它只在 dom0 跑），所以
-  `qubesair.backup` 与两个白名单 env 键的结论只来自两处：①该仓自身 CI 的三项检查（yamllint / salt-lint / top-pairing，全 pass，
-  且在本地用变异证明 linter 确实在读文件）；②Jinja 渲染出的**实际文本**（两个 unit 内容、rc.local 的两种 `run_at_boot` 取值、
-  `console.env` 空白与冒号连接两种取值）。**未验证**：systemd 是否接受这些 unit 文本、`RequiresMountsFor` 在离机介质缺失时
-  是否真的让 unit 失败、`Persistent=true` 的补跑戳是否真的随 AppVM 根卷重置而失效——最后这条是 systemd 语义 + Qubes 根卷
-  行为的**推理**，而它正是"每次启动补跑一次"这个设计的依据，真机上应当反向验证：把 `run_at_boot` 置 False、关机跨过计划时间
-  再开机，确认没有补跑。另外 salt-lint 与 yamllint **都不解析 Jinja**：本会话其中一个真实错误（`#` 注释写在 `{% set cfg %}`
-  块里，会让模板直接加载失败）就是渲染查出来的，两个 linter 当时全绿。
+- **Salt 真机执行已补齐**：本轮已实际 apply Console/Relay/dom0、验证普通目录挂载拒绝、
+  持久 SSHFS、Console 重启、入站规则自动恢复、自动回收和临时 grant 撤销；证据见本轮专题记录。
+  未声称已经验证关闭 `run_at_boot` 后跨过日历时间的所有组合；渲染/lint 通过仍不能代替现场验证。
 - **三处只会出现在本地全盘扫描里的 gitleaks 假阳性**（`--no-git` 扫描整个工作树时命中，PR 范围的 commit 扫描不会命中，
   所以不挡 CI）：`internal/keyring/keyring_test.go`:12、`internal/repository/credential_repository_test.go`:15 是占位 key 字面量；
   `internal/pki/ca_test.go`:72 命中的是 PEM 头字面量 `-----BEGIN EC PRIVATE KEY-----`，而那段测试恰恰在断言 CA 私钥**不得**

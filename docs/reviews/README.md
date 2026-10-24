@@ -5,9 +5,12 @@
 
 | 记录 | 范围 | 限制 |
 |---|---|---|
-| [2026-10-23 purge 残留自动清理](2026-10-23-purge-residual-cleanup.md) | Console 身份所有权回收、完整端点快照、Relay 同步清理与并发边界 | 本地完整门禁通过；PR/部署及真机复验待完成 |
-| [2026-10-23 节点网络资格检查](2026-10-23-network-eligibility.md) | 调度筛选 bridge/VLAN、provider 分配前复查；失败关闭回归、完整门禁与六节点只读探针通过 | PR #91 已合入，合并 CI 通过；部署后生命周期复验尚未完成 |
-| [2026-10-23 生产闭环修复](2026-10-23-production-closure.md) | schema 只读预检、Salt 重复部署与 Console 重启；完整 qrexec 正反例、持久文件与已授权 purge；原 keyring/CA 离机恢复、只读对账与实测 RTO | 分支验收；生产规模/接管、节点网络调度、退役缓存自动回收、Relay 重启及 GUI 未闭环 |
+| [2026-10-23 ConnectTCP 身份与断线](2026-10-23-connecttcp-identity.md) | 目标映射、交付摘要、已派发请求不重放；旧流非零退出、新调用真实回包 | 已合入部署；未覆盖 dom0 GUI policy、Xpra、完整桌面或 Relay 整机重启 |
+| [2026-10-23 恢复后在线 agent Ping](2026-10-23-restored-agent-probe.md) | 真实离机归档、原信任材料、恢复副本 mTLS Ping、当前规模耗时 | 原 Console 仍提供吊销服务；非完整控制域重建或单写入方接管 |
+| [2026-10-23 Console 持久入站](2026-10-23-console-ingress.md) | 精确网关/端口规则、开机与 firewall hook、重复 apply 和重启验证 | Salt #6 已合入部署；未覆盖上游转发重建与 Relay 重启 |
+| [2026-10-23 purge 残留自动清理](2026-10-23-purge-residual-cleanup.md) | 身份所有权回收、完整端点快照、Relay 同步清理；新对象生命周期及重复 purge | 已合入部署并于 24 日完成无残留核验；历史资源和备份内旧密钥保留 |
+| [2026-10-23 节点网络资格检查](2026-10-23-network-eligibility.md) | bridge/VLAN 筛选、provider 分配前复查；唯一合格节点自动选择及生命周期 | PR #91 已合入部署并复验；不覆盖任意上游网络配置 |
+| [2026-10-23 生产闭环修复](2026-10-23-production-closure.md) | 首轮重复部署、完整 qrexec、持久文件、原信任材料离机恢复及手动残留清理 | 保留当时失败/手动清理事实；后续自动清理、网络与传输证据见上方记录 |
 | [2026-10-19 生产 console 部署与复验](2026-10-19-production-deploy.md) | 五次部署（`b73cae1`→`87ef8c1`→`66325fb`→`d4eb48c`→`e23265a`），schema 2→6，数据保留；四次完整 lifecycle；RemoteVM 注册预算（#78）、resume 地址落库（#79）、purge 状态文案（#82）与 Proxmox zone VLAN 标签（#85）；Exec/FileCopy agent 侧正反例、数据盘跨 resume 持久性；VLAN 4094 隔离与 qa-deploy-8 真机通过；LAN DHCP 静态段已排除；qa-deploy-9（2026-10-22）复验含 running purge 409 文案 | 手工部署；Salt pin 未更新；Exec/FileCopy 的 qrexec transport/dom0 policy 未验证；强制超时幂等未覆盖 |
 | [2026-10-19 当前 main 真机测试](2026-10-19-current-main-real-machine.md) | 当前 HEAD 构建、独立实例、PVE credential/zone/capacity、job 日志写入与保留/过期、完整 lifecycle（provision→suspend→resume→suspend→purge）、证书轮换与销毁；定位并修复 completion 上下文 bug | 独立实例测试；Exec/FileCopy、数据持久性、生产部署升级与 RemoteVM 注册未覆盖 |
 | [2026-10-19 告警确认与历史视图](2026-10-19-alert-ui.md) | Monitoring 视图的告警确认、操作者/时间显示与分页历史；失败路径测试 | 组件测试，无真实登录/触发器的 E2E 或真机验证 |

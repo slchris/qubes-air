@@ -38,8 +38,31 @@ Salt 的 scoped updater 最初漏投 ConnectTCP；补入精确文件白名单、
 header/body 之后的四种组合还会返回可重试错误或把后续帧写入新连接。修复后的回归
 同时检查不重放、明确失败、未派发重试、新调用恢复、各发送阶段失败与取消后的输入。
 
-新 relay-call 的真机中断与重连结果在配套部署后补充。直接运行 Relay handler 只覆盖 handler 与 mTLS
-stream，不能代替 dom0 ConnectTCP policy、Xpra 认证、单击启动、多窗口及断线恢复验收。
+## 部署与真机验收
+
+Air 修复 `2b621289d113af4dedc2bd50029b7f3e1a4909c2` 经 PR #93 合入 `b40d312`；
+Salt 配套 `34a277f03a542d6ed67eb16291b746fc2fd20f8d` 经 PR #7 合入 `dcb03dc`。
+两个合并提交的 CI 均通过。Air 完整 `make pre-commit` 和 `make audit` 通过，语句覆盖率
+75.1%；Salt 56 项回归、全量 lint、严格 YAML 与 100 对 state/top 检查通过。
+
+Go 1.26.10 从干净 Air 源码构建 linux/amd64 制品；Salt 清单和现场读回的 SHA256 一致：
+
+| 制品 | SHA256 |
+|---|---|
+| Console | `6f387a38df66dfe48f045036414e0ac391d8287d48d9fd6bc8715f82396fbd7a` |
+| relay-call | `daa16fe8bf0ce22ce1a058a7f987d3529ca2cac118ec320ff0bfda44c5df47af` |
+| ConnectTCP handler | `0d3fd2b8d42c35dc92c3f6075b8dbf4b7e74ef983907df8ac8c41673146c451e` |
+
+Relay apply 为 18 成功、0 失败，Console apply 为 39 成功、0 失败；Console 健康、
+离机挂载和备份 timer 正常。以已授权对象 `qa-cleanup-20261023` 做真机验收：
+
+- 通过实际 Relay handler 建立流并完成 4096 字节双向回包，再终止该对象的 agent 进程。
+- agent PID 从 1372 变为 1547，旧流以 exit 1 结束，新独立调用以 exit 0 返回相同 4096 字节。
+  数据 SHA256 为 `c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193`。
+- 临时 loopback echo 服务停止、脚本移除；随后对象按既有精确授权最终 purge。
+
+直接运行 Relay handler 只覆盖 handler 与 mTLS stream，不能代替 dom0 ConnectTCP policy、
+Xpra 认证、单击启动、多窗口及 GUI 断线恢复验收，也没有重启 Relay 整机。
 
 前一次 FileCopy 中断探针不计作在途传输证据：普通 relay-call 先缓冲完整 stdin，随后才
 拨号。保持 stdin 未关闭时重启 agent，并未形成在途 RPC；关闭 stdin 后发生的是一次
