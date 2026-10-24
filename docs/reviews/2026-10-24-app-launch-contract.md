@@ -10,7 +10,8 @@
 - StartApp 缺少/非法/多余参数返回非零状态；缺少桌面账户、非法 display 或启动 helper
   失败也返回非零状态。失败只写有界 stderr，stdout 不伪造成功；不回传 helper 的任意输出。
 - stdin 不用于应用启动。UID 1000 缺失时不猜测其他用户。display 仅接受本机 X display。
-  缺少 systemd-run 明确失败；移除不能可靠访问真实 HOME 的 runuser 回退。
+  已移除不能可靠访问真实 HOME 的 runuser 回退；当前 launcher 边界见后续
+  [broker 阶段](2026-10-24-desktop-broker.md)。
 - HTTP 层保留已有非零远端结果 → 502 的行为，前端展示错误，不自动重试；成功响应仅表示
   启动 helper 接受请求，不能据此宣称窗口可见或应用已持续运行。
 
@@ -31,6 +32,6 @@ API 拒绝不得触碰 transport。
 
 ## 尚未覆盖
 
-此阶段不把 GUI-01 标为完成：现有 systemd-run 桌面启动仍越出 agent 沙箱，desktop launcher
-仍需替换 shell Exec 解释；菜单枚举与启动解析需要统一，launcher 打包与非 root 桌面会话
-需要接线。Xpra 部署/认证、dom0 GUI policy、单击启动、多窗口、退出与重连仍需真机验收。
+此阶段不把 GUI-01 标为完成。后续 [broker 阶段](2026-10-24-desktop-broker.md)接管非 root
+启动、GIO 解析与打包；Xpra 部署/认证、持久 HOME、dom0 GUI policy、单击启动、多窗口、
+退出与重连仍需真机验收。

@@ -24,13 +24,17 @@ configure)
     fi
 
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl daemon-reload || true
-        systemctl enable qubes-air-agent.service || true
+        systemctl enable qubes-air-agent.service
 
         # try-restart, not restart: it replaces a running agent on upgrade and
         # does nothing at all when the unit is stopped, so an install still
         # cannot start an agent that has no certificates.
-        systemctl try-restart qubes-air-agent.service || true
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+            systemctl try-restart qubes-air-agent.service
+        fi
+        # The desktop unit is opt-in. Restarting it kills its applications, so
+        # an upgrade leaves it running until an explicit maintenance restart.
     fi
     ;;
 

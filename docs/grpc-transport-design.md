@@ -116,11 +116,14 @@ agent mTLS。调用端必须经 dom0 policy，Relay/agent 还应限制允许的 
 （字符集 `[A-Za-z0-9._+-]`、不含 `..`、服务名连参数最多 128 字节）先行拒绝非法参数（exit 126），
 不为它调用 `relay-call`。应用 ID 在浏览器、MCP、API/service 和 StartApp 同样校验，
 限 1–113 字节，拒绝 `.` 或包含 `..`，为 `qubes.StartApp+` 留足前缀长度。
-StartApp 参数错误返回 64，桌面账户/本机 display/启动 helper 不可用返回 69，helper
-启动失败返回 1；错误只写有界 stderr，调用者 stdin 不转交给桌面。Console 将非零结果
-返回为 HTTP 502，UI 展示错误并等待显式重试。成功仅表示 helper 接受请求，不证明窗口可见。
-现有 systemd-run 与 Exec 解析的权限问题、完整菜单/桌面体验仍待 GUI-01 后续修复与验收；
-见[阶段记录](reviews/2026-10-24-app-launch-contract.md)。
+三个桌面入口只调用固定 `qubes-air-desktop` 客户端，经 Unix socket 连接 UID 1000 broker。
+GIO 在非 root worker 内统一解析菜单、嵌套 ID、用户覆盖和 Exec 参数；不再创建动态
+systemd unit 或使用 shell 解释 Exec。agent 的 ProtectHome/PrivateTmp 保持启用。
+参数错误返回 64，不可用返回 69，操作失败返回 70，派发后结果不确定返回 75，错误 peer
+返回 77。错误只写有界 stderr，调用者 stdin 不转交给桌面。Console 将非零结果返回为
+HTTP 502，UI 展示错误并等待显式重试。成功仅表示 GIO 接受请求，不证明窗口可见。
+broker 包含在 agent 包中但默认不启用；Xpra 部署/认证、持久 HOME 与完整桌面真机体验
+仍待 GUI-01 后续验收，见[broker 边界](reviews/2026-10-24-desktop-broker.md)。
 
 ### UnlockData / RekeyData
 
